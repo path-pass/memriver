@@ -2,6 +2,7 @@ import pytest
 from fastmcp import Client
 from memriver.server import build_server
 from memriver_core.entry import Entry
+from memriver_core.scope import project_slug
 from memriver_core.store import MemoryStore
 
 # valid ULID shapes, used for hand-written (hand-edited) entry files
@@ -135,6 +136,36 @@ async def test_update_outside_scope_is_refused(tmp_path, project):
     assert MemoryStore(root).read(foreign.id).superseded_by is None
     files = list(root.glob("**/entries/*.md"))
     assert files == [path]  # no replacement entry was written anywhere
+
+
+async def test_write_to_foreign_project_scope_is_refused(tmp_path, project):
+    # 'project:<other-slug>' passes resolve_scope untouched, so without an
+    # explicit guard memory_write would seed another project's directory
+    root = tmp_path / "mem"
+    server = build_server(root=root, project_dir=project)
+    async with Client(server) as c:
+        r = (await c.call_tool("memory_write", {
+            "content": "planted by a foreign scope", "type": "fact",
+            "scope": "project:other-000000"})).data
+        assert "error" in r and "scope" in r["error"]
+        idx = (await c.call_tool("memory_index", {})).data
+        assert "no memories yet" in idx
+
+    assert list(root.glob("**/entries/*.md")) == []
+
+
+async def test_write_with_current_project_explicit_scope_succeeds(tmp_path, project):
+    # the explicit form of the *current* project is inside the boundary
+    root = tmp_path / "mem"
+    server = build_server(root=root, project_dir=project)
+    scope = f"project:{project_slug(project)}"
+    async with Client(server) as c:
+        r = (await c.call_tool("memory_write", {
+            "content": "explicit current scope is allowed", "type": "fact",
+            "scope": scope})).data
+        assert r.get("scope") == scope and "id" in r
+        idx = (await c.call_tool("memory_index", {})).data
+        assert r["id"] in idx
 
 
 async def test_unreadable_entry_files_are_skipped_at_startup(tmp_path, project):
