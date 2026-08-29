@@ -68,12 +68,14 @@ def build_server(root: Path, project_dir: Path,
     @mcp.tool
     async def memory_index() -> str:
         """List all active memories (global + current project) as a compact index."""
+        store.recover_pending()
         return render_index(store, scopes=scopes,
                             budget_lines=settings.index_budget_lines)
 
     @mcp.tool
     async def memory_read(entry_id: str) -> dict:
         """Read one memory entry in full by id."""
+        store.recover_pending()
         try:
             e = store.read(entry_id)
         except KeyError:
@@ -92,6 +94,7 @@ def build_server(root: Path, project_dir: Path,
     @mcp.tool
     async def memory_search(query: str, limit: int | None = None) -> list[dict]:
         """Search memories relevant to a task (global + current project)."""
+        store.recover_pending()
         # the configured default is applied here rather than in the signature so
         # the advertised tool schema stays a plain integer for every client
         limit = settings.search_limit_default if limit is None else limit
@@ -102,6 +105,10 @@ def build_server(root: Path, project_dir: Path,
                            sync: bool = True, harness: str = "unknown") -> dict:
         """Save a durable fact / preference / decision / lesson to shared memory.
         scope: 'project' (default) or 'global' (cross-project user facts only)."""
+        # memory_write never takes the store lock itself (plain store.write +
+        # index.add, no supersede), so without this it would neither notice nor
+        # repair a peer's crashed supersede on its way to adding a new entry
+        store.recover_pending()
         try:
             # 'harness' is persisted verbatim into the frontmatter, so without
             # these it is a gate-free channel for secrets or megabytes of text.

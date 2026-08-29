@@ -166,6 +166,37 @@ async def test_peer_crash_recovery_reconciles_the_live_index(tmp_path, project):
         assert read_old["superseded_by"] == replacement.id
 
 
+async def test_read_only_tool_recovers_a_peer_crash_without_any_update(
+        tmp_path, project):
+    # a server that only ever serves memory_search / memory_index / memory_read
+    # after a peer crashed mid-supersede used to keep the obsolete entry in its
+    # index forever: recovery only ran inside locked(), which only supersede
+    # (and rebuild) acquire. A read-only call must now trigger it too.
+    root = tmp_path / "mem"
+    server = build_server(root=root, project_dir=project)
+    store = MemoryStore(root)
+
+    async with Client(server) as c:
+        old = (await c.call_tool("memory_write", {
+            "content": "部署流程走 staging 环境", "type": "fact",
+            "scope": "global"})).data
+
+        # the crash state a peer would leave behind: replacement file on disk,
+        # journal recorded, old entry not yet marked -- and the server untouched
+        replacement = Entry.new(body="部署流程走 production 环境", type="fact",
+                                scope="global",
+                                source={"harness": "test", "method": "agent"})
+        store.write(replacement)
+        journal = root / ".supersede.journal"
+        store._atomic_write(journal, f"{old['id']} {replacement.id}")
+
+        # no memory_update anywhere in this test -- only a read-only tool
+        hits = (await c.call_tool("memory_search", {"query": "部署流程走"})).data
+        assert {h["id"] for h in hits} == {replacement.id}
+        assert all("staging" not in h["snippet"] for h in hits)
+        assert not journal.exists()
+
+
 async def test_update_keeps_its_journal_until_the_index_transition_commits(
         tmp_path, project, monkeypatch):
     # the index file is shared by every peer process, so a crash between the

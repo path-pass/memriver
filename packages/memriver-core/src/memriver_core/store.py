@@ -150,6 +150,20 @@ class MemoryStore:
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
+    def recover_pending(self) -> None:
+        """Replay an interrupted supersede left by a crashed peer, if any.
+
+        Read-only callers (memory_search, memory_index, memory_read) never take
+        the store lock on their own, so without this they could keep serving a
+        pre-crash picture indefinitely -- recovery previously ran only inside
+        `locked()`, which only supersede (and rebuild) acquire. Cheap when idle:
+        a single stat of the journal path; the lock is taken only when a journal
+        actually exists.
+        """
+        if (self.root / _JOURNAL).exists():
+            with self.locked():
+                pass  # locked() runs _recover() on acquisition
+
     def _recover(self) -> None:
         """Replay an interrupted supersede recorded in the journal.
 

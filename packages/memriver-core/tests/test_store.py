@@ -133,6 +133,30 @@ def test_recovery_discards_malformed_journal(store):
     assert not journal.exists()
 
 
+def test_recover_pending_is_a_noop_when_no_journal_exists(store):
+    # read-only tools call this on every invocation, so the idle path must stay
+    # cheap and must never disturb a store that has nothing to recover
+    a = _e(body="A"); store.write(a)
+    store.recover_pending()
+    assert store.read(a.id).superseded_by is None
+    assert not (store.root / ".supersede.journal").exists()
+
+
+def test_recover_pending_replays_a_left_over_journal(store):
+    # this is what lets a read-only tool (memory_search etc.) notice and repair
+    # a supersede a peer crashed mid-way through, without ever taking the lock
+    # itself unless a journal is actually present
+    a = _e(body="A"); store.write(a)
+    b = _e(body="A v2"); store.write(b)  # the orphaned "new" entry
+    journal = store.root / ".supersede.journal"
+    store._atomic_write(journal, f"{a.id} {b.id}")
+
+    store.recover_pending()
+
+    assert store.read(a.id).superseded_by == b.id
+    assert not journal.exists()
+
+
 def test_recovery_notifies_an_owner_holding_derived_state(store):
     # a peer process crashed mid-supersede, so this process repairs the chain --
     # but an owner that keeps a search index open across operations still holds
