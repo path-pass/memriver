@@ -168,6 +168,35 @@ def test_entry_whose_frontmatter_scope_contradicts_its_directory_is_skipped(stor
     assert [h.id for h in fts.search("stays visible", scopes=["global"])] == [mine.id]
 
 
+def test_read_refuses_entry_whose_frontmatter_scope_contradicts_its_directory(store):
+    # _find resolves an id by globbing every project directory, so a direct read
+    # used to trust the file's own frontmatter: a hand-edited file misplaced
+    # under another project could be read (and superseded) across the boundary
+    misplaced = _e(body="foreign project secret plan", scope="project:other-000000")
+    path = store.write(misplaced)
+    misplaced.scope = "global"
+    path.write_text(misplaced.to_markdown(), encoding="utf-8")
+
+    with pytest.raises(KeyError):
+        store.read(misplaced.id)
+    assert path.read_text(encoding="utf-8") == misplaced.to_markdown()
+
+
+def test_supersede_of_misplaced_entry_is_refused(store):
+    # supersede reads first, so the same guard has to stop the rewrite too
+    misplaced = _e(body="foreign project secret plan", scope="project:other-000000")
+    path = store.write(misplaced)
+    misplaced.scope = "global"
+    path.write_text(misplaced.to_markdown(), encoding="utf-8")
+    before = path.read_text(encoding="utf-8")
+
+    replacement = _e(body="hijacked")
+    with pytest.raises(KeyError):
+        store.supersede(misplaced.id, replacement)
+    assert path.read_text(encoding="utf-8") == before
+    assert not (store.root / "global" / "entries" / f"{replacement.id}.md").exists()
+
+
 def test_read_missing_raises(store):
     with pytest.raises(KeyError):
         store.read("01UNKNOWNULID0000000000000")

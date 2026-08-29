@@ -80,7 +80,18 @@ class MemoryStore:
         raise KeyError(entry_id)
 
     def read(self, entry_id: str) -> Entry:
-        return Entry.from_markdown(self._find(entry_id).read_text(encoding="utf-8"))
+        path = self._find(entry_id)
+        entry = Entry.from_markdown(path.read_text(encoding="utf-8"))
+        # _find resolves an id across every project directory, so the file's own
+        # frontmatter would otherwise decide which scope it answers for: a
+        # hand-edited file left under one project while declaring another scope
+        # could be read -- and superseded -- across the physical boundary. The
+        # directory is the truth here for the same reason it is in iter_entries;
+        # an entry that contradicts it does not exist as far as callers go.
+        if entry.scope != _dir_scope(path.parent):
+            logger.warning("refusing entry with mismatched scope: %s", path)
+            raise KeyError(entry_id)
+        return entry
 
     def iter_entries(self, scopes: list[str] | None = None,
                      include_superseded: bool = False) -> Iterator[Entry]:

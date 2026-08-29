@@ -167,6 +167,46 @@ async def test_update_outside_scope_is_refused(tmp_path, project):
     assert files == [path]  # no replacement entry was written anywhere
 
 
+def _seed_misplaced(root):
+    # a hand-edited file that stays under another project's directory but claims
+    # the global scope: the frontmatter alone must not carry it across the
+    # physical boundary that store.read() resolves ids through
+    e = Entry.new(body="foreign project secret plan", type="fact",
+                  scope="project:other-000000",
+                  source={"harness": "test", "method": "agent"})
+    path = MemoryStore(root).write(e)
+    e.scope = "global"
+    path.write_text(e.to_markdown(), encoding="utf-8")
+    return e, path
+
+
+async def test_read_of_misplaced_entry_is_refused(tmp_path, project):
+    root = tmp_path / "mem"
+    misplaced, _ = _seed_misplaced(root)
+
+    server = build_server(root=root, project_dir=project)
+    async with Client(server) as c:
+        r = (await c.call_tool("memory_read", {"entry_id": misplaced.id})).data
+        assert "error" in r
+        assert "secret plan" not in str(r)
+
+
+async def test_update_of_misplaced_entry_is_refused(tmp_path, project):
+    root = tmp_path / "mem"
+    misplaced, path = _seed_misplaced(root)
+    before = path.read_bytes()
+
+    server = build_server(root=root, project_dir=project)
+    async with Client(server) as c:
+        r = (await c.call_tool("memory_update", {
+            "entry_id": misplaced.id, "content": "hijacked"})).data
+        assert "error" in r
+
+    assert path.read_bytes() == before
+    files = list(root.glob("**/entries/*.md"))
+    assert files == [path]  # no replacement entry was written anywhere
+
+
 async def test_write_to_foreign_project_scope_is_refused(tmp_path, project):
     # 'project:<other-slug>' passes resolve_scope untouched, so without an
     # explicit guard memory_write would seed another project's directory
