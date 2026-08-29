@@ -5,7 +5,7 @@ from .store import MemoryStore
 
 def render_index(store: MemoryStore, scopes: list[str], budget_lines: int = 100) -> str:
     entries = sorted(store.iter_entries(scopes=scopes),
-                     key=lambda e: e.updated, reverse=True)
+                     key=lambda e: (e.updated, e.id), reverse=True)
     if not entries:
         return "(no memories yet)"
     lines = []

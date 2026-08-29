@@ -16,3 +16,18 @@ def test_render_lines_and_budget(store):
 
 def test_render_empty(store):
     assert "no memories yet" in render_index(store, scopes=["global"])
+
+
+def test_render_orders_newest_first_with_ulid_tiebreak(store):
+    a = Entry.new(body="older entry", type="fact", scope="global", source=SOURCE)
+    b = Entry.new(body="tied but larger id", type="fact", scope="global", source=SOURCE)
+    c = Entry.new(body="newest entry", type="fact", scope="global", source=SOURCE)
+    a.id = "01" + "A" * 24; a.updated = "2026-08-01T00:00:00Z"
+    b.id = "01" + "B" * 24; b.updated = "2026-08-01T00:00:00Z"
+    c.id = "01" + "C" * 24; c.updated = "2026-08-02T00:00:00Z"
+    for e in (a, b, c):
+        store.write(e)
+    lines = render_index(store, scopes=["global"]).splitlines()
+    assert "newest entry" in lines[0]
+    assert "tied but larger id" in lines[1]  # ULID tiebreak within a timestamp tie
+    assert "older entry" in lines[2]
