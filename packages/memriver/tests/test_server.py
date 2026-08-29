@@ -191,6 +191,20 @@ async def test_update_outside_scope_is_refused(tmp_path, project):
     assert files == [path]  # no replacement entry was written anywhere
 
 
+async def test_delete_outside_scope_is_refused(tmp_path, project):
+    root = tmp_path / "mem"
+    foreign = _seed_foreign(root)
+    path = root / "projects" / "other-000000" / "entries" / f"{foreign.id}.md"
+    before = path.read_bytes()
+
+    server = build_server(root=root, project_dir=project)
+    async with Client(server) as c:
+        r = (await c.call_tool("memory_delete", {"entry_id": foreign.id})).data
+        assert "error" in r
+
+    assert path.read_bytes() == before
+
+
 def _seed_misplaced(root):
     # a hand-edited file that stays under another project's directory but claims
     # the global scope: the frontmatter alone must not carry it across the
@@ -287,6 +301,23 @@ async def test_read_unreadable_entry_returns_error_dict(tmp_path, project):
         u = (await c.call_tool("memory_update", {
             "entry_id": BAD_YAML_ID, "content": "replacement"})).data
         assert "error" in u and "unreadable" in u["error"]
+
+
+async def test_delete_of_non_entry_file_is_refused(tmp_path, project):
+    # a hand-written note whose name happens to match the slug shape must not
+    # be unlinked by memory_delete just because its name resolves
+    root = tmp_path / "mem"
+    _write_raw(root, "notes.md", "just some hand-written notes\n")
+    path = root / "global" / "entries" / "notes.md"
+
+    server = build_server(root=root, project_dir=project)
+    async with Client(server) as c:
+        r = (await c.call_tool("memory_delete", {"entry_id": "notes"})).data
+        assert "error" in r
+        # the OS/parse error is never echoed back to the caller
+        assert str(root) not in r["error"]
+
+    assert path.read_text(encoding="utf-8") == "just some hand-written notes\n"
 
 
 async def test_settings_tune_the_body_budget(tmp_path, project):

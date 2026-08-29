@@ -133,6 +133,22 @@ def test_delete_removes_file(tmp_path):
         store.delete("n", scopes=["global"])
 
 
+def test_delete_refuses_a_hand_written_non_entry_file(tmp_path):
+    # a hand-written note whose filename happens to match the slug shape must
+    # not be unlinked just because its name resolves: delete() has to parse it
+    # like read() does, and refuse instead of deleting an unparseable file
+    store = MemoryStore(tmp_path)
+    d = tmp_path / "global" / "entries"
+    d.mkdir(parents=True)
+    path = d / "notes.md"
+    path.write_text("just some hand-written notes\n", encoding="utf-8")
+
+    with pytest.raises(KeyError):
+        store.delete("notes", scopes=["global"])
+    assert path.exists()
+    assert path.read_text(encoding="utf-8") == "just some hand-written notes\n"
+
+
 def test_exists(tmp_path):
     store = MemoryStore(tmp_path)
     assert not store.exists("n", scopes=["global"])

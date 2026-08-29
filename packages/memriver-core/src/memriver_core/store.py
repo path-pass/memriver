@@ -118,8 +118,12 @@ class MemoryStore:
 
     def delete(self, entry_id: str, scopes: list[str]) -> None:
         with self.locked():
-            path = self._find(entry_id, scopes)
-            path.unlink()
+            # resolve through read() first: a hand-written non-entry file, or
+            # one whose frontmatter scope contradicts its directory, must
+            # raise here rather than being unlinked untouched -- the same
+            # directory-is-truth check read() already enforces
+            self.read(entry_id, scopes)
+            self._find(entry_id, scopes).unlink()
 
     def iter_entries(self, scopes: list[str] | None = None) -> Iterator[Entry]:
         if scopes is None:

@@ -126,6 +126,10 @@ def build_server(root: Path, project_dir: Path,
                 store.write(e)
         except (GateError, ValueError) as err:
             return {"error": str(err)}
+        except Exception:
+            # e.g. a full disk or a permission error from the atomic write;
+            # tools never raise, and the OS message may carry the store path
+            return {"error": "could not write entry"}
         return {"id": e.id, "scope": e.scope}
 
     @mcp.tool
@@ -150,6 +154,11 @@ def build_server(root: Path, project_dir: Path,
             store.delete(entry_id, scopes=scopes)
         except KeyError:
             return {"error": f"no such entry: {entry_id}"}
+        except Exception:
+            # e.g. a permission error unlinking the file, or a hand-written
+            # file that does not parse as an entry; the OS message may carry
+            # the store's absolute path, so it is never echoed to the client
+            return {"error": f"could not delete entry: {entry_id}"}
         return {"deleted": entry_id}
 
     return mcp
