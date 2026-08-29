@@ -168,6 +168,35 @@ async def test_write_refuses_to_clobber_a_hand_written_non_entry_file(tmp_path, 
     assert path.read_bytes() == before
 
 
+async def test_write_refuses_clobber_when_name_equals_missing_frontmatter_key(
+        tmp_path, project):
+    # Entry.from_markdown looks up frontmatter keys by name (m["source"], ...);
+    # a hand-written file missing exactly the key that happens to match the
+    # proposed entry name used to raise a bare KeyError indistinguishable from
+    # "name not found" and get silently clobbered
+    root = tmp_path / "mem"
+    _write_raw(root, "source.md", "---\n"
+               "id: source\n"
+               "type: user\n"
+               "scope: global\n"
+               "sync: true\n"
+               "created: 2026-08-29T10:00:00Z\n"
+               "updated: 2026-08-29T10:00:00Z\n"
+               "trust: agent\n"
+               "---\n\n"
+               "hand-written, missing the source: key\n")
+    path = root / "global" / "entries" / "source.md"
+    before = path.read_bytes()
+
+    server = build_server(root=root, project_dir=project)
+    async with Client(server) as c:
+        out = (await c.call_tool("memory_write", {
+            "content": "v1", "type": "user", "name": "source", "scope": "global"})).data
+        assert "error" in out
+
+    assert path.read_bytes() == before
+
+
 async def test_update_rewrites_in_place(server):
     async with Client(server) as c:
         await c.call_tool("memory_write", {

@@ -18,6 +18,14 @@ logger = logging.getLogger(__name__)
 _ID_RE = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9][a-z0-9-]{0,63}")
 
 
+class EntryNotFound(KeyError):
+    """No entry lives under this id/scope -- distinct from a file that exists
+    under that name but fails to parse as an entry (a plain KeyError from a
+    hand-edited file missing a frontmatter key). A subclass of KeyError so
+    existing `except KeyError` callers keep working unchanged.
+    """
+
+
 def _dir_scope(entries_dir: Path) -> str | None:
     """Inverse of `_scope_dir`: the scope a directory of entries stands for.
 
@@ -72,7 +80,7 @@ class MemoryStore:
     def _find(self, entry_id: str, scopes: list[str] | None = None) -> Path:
         # entry ids are untrusted tool input; reject unknown shapes before globbing
         if not _ID_RE.fullmatch(entry_id):
-            raise KeyError(entry_id)
+            raise EntryNotFound(entry_id)
         if scopes is None:
             patterns = [f"global/entries/{entry_id}.md",
                         f"projects/*/entries/{entry_id}.md"]
@@ -84,7 +92,7 @@ class MemoryStore:
         for pattern in patterns:
             for path in self.root.glob(pattern):
                 return path
-        raise KeyError(entry_id)
+        raise EntryNotFound(entry_id)
 
     def read(self, entry_id: str, scopes: list[str] | None = None) -> Entry:
         path = self._find(entry_id, scopes)
@@ -94,10 +102,13 @@ class MemoryStore:
         # hand-edited file left under one project while declaring another scope
         # could be read across the physical boundary. The directory is the
         # truth here for the same reason it is in iter_entries; an entry that
-        # contradicts it does not exist as far as callers go.
+        # contradicts it does not exist as far as callers go -- EntryNotFound,
+        # not a bare KeyError, so callers that distinguish "free" from "exists
+        # but unreadable" (e.g. memory_write's collision check) treat it the
+        # same as a genuinely absent name.
         if entry.scope != _dir_scope(path.parent):
             logger.warning("refusing entry with mismatched scope: %s", path)
-            raise KeyError(entry_id)
+            raise EntryNotFound(entry_id)
         return entry
 
     def update_body(self, entry_id: str, body: str, scopes: list[str]) -> Entry:

@@ -12,7 +12,7 @@ from memriver_core.gate import GateError, check_content
 from memriver_core.render import render_index
 from memriver_core.scope import project_slug, resolve_scope, sanitize_name
 from memriver_core.search import search_entries
-from memriver_core.store import MemoryStore
+from memriver_core.store import EntryNotFound, MemoryStore
 
 INSTRUCTIONS = """Shared long-term memory across coding agents (memriver).
 ALWAYS call memory_index before starting a task; memory_read fetches one
@@ -56,7 +56,7 @@ def build_server(root: Path, project_dir: Path,
         """Read one memory entry in full by name."""
         try:
             e = store.read(entry_id, scopes=scopes)
-        except KeyError:
+        except EntryNotFound:
             return {"error": f"no such entry: {entry_id}"}
         except Exception:  # noqa: BLE001
             return {"error": f"unreadable entry file: {entry_id}"}
@@ -112,20 +112,12 @@ def build_server(root: Path, project_dir: Path,
                     check_scopes = None if full_scope == "global" else scopes
                     try:
                         old = store.read(entry_id, scopes=check_scopes)
-                    except KeyError as err:
-                        # `read` raises this exact shape both when nothing owns
-                        # this name yet and when a hand-edited file's frontmatter
-                        # scope contradicts its directory (store.py: "does not
-                        # exist as far as callers go") -- both leave the name
-                        # safe to claim. Any other message means the file exists
-                        # under this name but failed to parse as an entry at
-                        # all (e.g. a missing frontmatter key), which must
-                        # refuse rather than be silently clobbered.
-                        if err.args != (entry_id,):
-                            return {"error": f"name {entry_id!r} is taken by a "
-                                             "file that is not a readable entry"}
+                    except EntryNotFound:
                         old = None
                     except Exception:  # noqa: BLE001
+                        # the name resolves to a file, but it is not a
+                        # readable entry (e.g. a hand-written note missing a
+                        # frontmatter key) -- refuse rather than clobber it
                         return {"error": f"name {entry_id!r} is taken by a "
                                          "file that is not a readable entry"}
                     if old is not None:
@@ -165,7 +157,7 @@ def build_server(root: Path, project_dir: Path,
             e = store.update_body(entry_id, content, scopes=scopes)
         except GateError as err:
             return {"error": str(err)}
-        except KeyError:
+        except EntryNotFound:
             return {"error": f"no such entry: {entry_id}"}
         except Exception:  # noqa: BLE001
             return {"error": f"unreadable entry file: {entry_id}"}
@@ -176,7 +168,7 @@ def build_server(root: Path, project_dir: Path,
         """Delete a memory that is no longer true or no longer wanted."""
         try:
             store.delete(entry_id, scopes=scopes)
-        except KeyError:
+        except EntryNotFound:
             return {"error": f"no such entry: {entry_id}"}
         except Exception:  # noqa: BLE001
             # e.g. a permission error unlinking the file, or a hand-written
