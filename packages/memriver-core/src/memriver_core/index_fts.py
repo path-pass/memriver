@@ -74,10 +74,13 @@ class FtsIndex:
             rows = self.conn.execute(sql, (*scopes, _like_pattern(query), limit)).fetchall()
             return [SearchHit(id=r[0], scope=r[1], type=r[2], snippet=_truncate(r[3]),
                               score=0.0) for r in rows]
+        # double any embedded quote so the whole query stays one FTS5 phrase
+        # literal and cannot terminate it to inject operators
+        escaped = query.replace('"', '""')
         sql = (f"SELECT id, scope, type, snippet(entries, 4, '', '', '…', 20), rank "
                f"FROM entries WHERE entries MATCH ? AND active = 1 "
                f"AND scope IN ({marks}) ORDER BY rank LIMIT ?")
-        rows = self.conn.execute(sql, (f'"{query}"', *scopes, limit)).fetchall()
+        rows = self.conn.execute(sql, (f'"{escaped}"', *scopes, limit)).fetchall()
         return [SearchHit(id=r[0], scope=r[1], type=r[2], snippet=r[3], score=-r[4])
                 for r in rows]
 

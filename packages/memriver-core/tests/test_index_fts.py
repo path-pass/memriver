@@ -44,3 +44,31 @@ def test_rebuild_from_store(tmp_path, store):
     idx = _idx(tmp_path)
     idx.rebuild(store)
     assert idx.search("重建", scopes=["global"], limit=5)[0].id == e.id
+
+
+def test_query_with_embedded_quotes_is_safe(tmp_path):
+    idx = _idx(tmp_path)
+    idx.add(_e("normal body about testing memory"))
+    secret = _e("secret target body")
+    idx.add(secret)
+    # odd number of quotes must not raise
+    assert idx.search('he said "hello', scopes=["global"], limit=5) == []
+    # even quotes must not escape the phrase and match unrelated rows
+    hits = idx.search('zzz" OR "secret', scopes=["global"], limit=5)
+    assert secret.id not in {h.id for h in hits}
+
+
+def test_fallback_wildcards_do_not_dump_table(tmp_path):
+    idx = _idx(tmp_path)
+    idx.add(_e("body one"))
+    idx.add(_e("body two"))
+    assert idx.search("%", scopes=["global"], limit=10) == []
+    assert idx.search("_", scopes=["global"], limit=10) == []
+
+
+def test_fallback_short_ascii_query_hits(tmp_path):
+    idx = _idx(tmp_path)
+    e = _e("uv is the package manager")
+    idx.add(e)
+    hits = idx.search("uv", scopes=["global"], limit=5)
+    assert [h.id for h in hits] == [e.id]
