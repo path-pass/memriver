@@ -6,14 +6,14 @@ from memriver_core.entry import Entry
 SOURCE = {"harness": "claude-code", "session": "s1", "method": "agent"}
 
 def test_new_generates_ulid_and_timestamps():
-    e = Entry.new(body="用户偏好中文回复", type="preference", scope="global", source=SOURCE)
+    e = Entry.new(body="用户偏好中文回复", type="user", scope="global", source=SOURCE)
     assert re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{26}", e.id)  # ULID
     assert e.created == e.updated
     assert e.created.endswith("Z") or "+" in e.created
-    assert e.sync is True and e.trust == "agent" and e.superseded_by is None
+    assert e.sync is True and e.trust == "agent"
 
 def test_markdown_roundtrip():
-    e = Entry.new(body="line1\n\nline2", type="fact", scope="project:demo-abc123", source=SOURCE)
+    e = Entry.new(body="line1\n\nline2", type="project", scope="project:demo-abc123", source=SOURCE)
     text = e.to_markdown()
     assert text.startswith("---\n")
     e2 = Entry.from_markdown(text)
@@ -22,3 +22,32 @@ def test_markdown_roundtrip():
 def test_invalid_type_rejected():
     with pytest.raises(ValueError):
         Entry.new(body="x", type="task", scope="global", source=SOURCE)
+
+
+def test_new_accepts_caller_id():
+    e = Entry.new(body="b", type="project", scope="global",
+                  source={}, id="my-slug")
+    assert e.id == "my-slug"
+
+
+def test_new_generates_ulid_without_id():
+    e = Entry.new(body="b", type="project", scope="global", source={})
+    assert len(e.id) == 26
+
+
+def test_old_types_rejected():
+    with pytest.raises(ValueError):
+        Entry.new(body="b", type="preference", scope="global", source={})
+
+
+def test_unknown_type_reads_as_project():
+    e = Entry.new(body="b", type="user", scope="global", source={})
+    text = e.to_markdown().replace("type: user", "type: lesson")
+    assert Entry.from_markdown(text).type == "project"
+
+
+def test_superseded_by_key_ignored_on_read():
+    e = Entry.new(body="b", type="user", scope="global", source={})
+    text = e.to_markdown().replace("id:", "superseded_by: X\nid:")
+    loaded = Entry.from_markdown(text)
+    assert not hasattr(loaded, "superseded_by")

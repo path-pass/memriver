@@ -7,7 +7,12 @@ from typing import Literal, get_args
 import frontmatter
 from ulid import ULID
 
-MemoryType = Literal["preference", "fact", "decision", "state", "lesson", "pointer"]
+# Claude Code's auto-memory taxonomy, adopted verbatim (docs/memory-model.md):
+#   user       who the user is: role, expertise, preferences
+#   feedback   guidance on how to work: corrections and confirmed approaches
+#   project    ongoing work, goals, constraints not derivable from the code
+#   reference  pointers to external resources: URLs, dashboards, tickets
+MemoryType = Literal["user", "feedback", "project", "reference"]
 
 # Provenance tier of an entry, graded by how trustworthy its SOURCE MATERIAL is
 # (not by which code path wrote it):
@@ -36,26 +41,25 @@ class Entry:
     updated: str
     source: dict
     trust: str
-    superseded_by: str | None
     body: str
 
     @classmethod
     def new(cls, *, body: str, type: str, scope: str, source: dict,
-            trust: str = "agent", sync: bool = True) -> "Entry":
+            trust: str = "agent", sync: bool = True,
+            id: str | None = None) -> "Entry":
         if type not in get_args(MemoryType):
             raise ValueError(f"invalid memory type: {type!r}")
         if trust not in get_args(Trust):
             raise ValueError(f"invalid trust: {trust!r}")
         now = _now()
-        return cls(id=str(ULID()), type=type, scope=scope, sync=sync,
-                   created=now, updated=now, source=dict(source), trust=trust,
-                   superseded_by=None, body=body.strip())
+        return cls(id=id if id is not None else str(ULID()), type=type,
+                   scope=scope, sync=sync, created=now, updated=now,
+                   source=dict(source), trust=trust, body=body.strip())
 
     def to_markdown(self) -> str:
         meta = {"id": self.id, "type": self.type, "scope": self.scope,
                 "sync": self.sync, "created": self.created, "updated": self.updated,
-                "source": self.source, "trust": self.trust,
-                "superseded_by": self.superseded_by}
+                "source": self.source, "trust": self.trust}
         post = frontmatter.Post(self.body, **meta)
         return frontmatter.dumps(post) + "\n"
 
@@ -63,7 +67,10 @@ class Entry:
     def from_markdown(cls, text: str) -> "Entry":
         post = frontmatter.loads(text)
         m = post.metadata
-        return cls(id=m["id"], type=m["type"], scope=m["scope"], sync=bool(m["sync"]),
+        # a hand-edited or pre-rename file may carry a type this version does
+        # not know; reading it as "project" keeps it visible instead of lost
+        mtype = m["type"] if m["type"] in get_args(MemoryType) else "project"
+        return cls(id=m["id"], type=mtype, scope=m["scope"], sync=bool(m["sync"]),
                    created=str(m["created"]), updated=str(m["updated"]),
                    source=dict(m["source"]), trust=m["trust"],
-                   superseded_by=m.get("superseded_by"), body=post.content.strip())
+                   body=post.content.strip())
