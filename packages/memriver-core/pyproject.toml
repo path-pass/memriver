@@ -1,7 +1,7 @@
 [project]
 name = "memriver-core"
 version = "0.1.0"
-description = "memriver core: immutable markdown memory store with rebuildable FTS index"
+description = "memriver core: markdown memory store with a deterministic write gate"
 requires-python = ">=3.12"
 license = "Apache-2.0"
 # pydantic/pydantic-settings are repo-wide baseline, not a heavy dependency;
