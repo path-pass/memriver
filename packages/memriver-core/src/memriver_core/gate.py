@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import math
 import re
+import warnings
+from collections import Counter
+
+from .gate_rules import VENDORED_RULES
 
 MAX_BODY_CHARS = 8000
 
@@ -34,6 +39,34 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
 ]
 
 
+def _compile_vendored() -> list[tuple[str, re.Pattern, float | None, int, tuple[str, ...]]]:
+    """Compile the generated gitleaks rules once, at import.
+
+    The sync script already proves every pattern compiles, so a failure here
+    means the generated file was hand-edited; drop that one rule rather than
+    taking the whole gate -- and with it every write -- down with it.
+    """
+    compiled = []
+    for rule_id, pattern, entropy, group, keywords in VENDORED_RULES:
+        try:
+            compiled.append((rule_id, re.compile(pattern), entropy, group, keywords))
+        except re.error as exc:
+            warnings.warn(f"skipping uncompilable vendored rule {rule_id}: {exc}",
+                          RuntimeWarning, stacklevel=2)
+    return compiled
+
+
+_VENDORED = _compile_vendored()
+
+
+def _shannon_entropy(text: str) -> float:
+    """Shannon entropy in bits per character, as gitleaks measures it."""
+    if not text:
+        return 0.0
+    total = len(text)
+    return -sum((n / total) * math.log2(n / total) for n in Counter(text).values())
+
+
 class GateError(ValueError):
     pass
 
@@ -51,5 +84,27 @@ def check_content(body: str, max_chars: int = MAX_BODY_CHARS) -> None:
                         "store a summary or pointer instead")
     for label, pat in _SECRET_PATTERNS:
         if pat.search(body):
-            raise GateError(f"content rejected: looks like a secret ({label}). "
-                            "Store a pointer (e.g. 'token is in 1Password item X') instead.")
+            raise GateError(_rejection(label))
+    lowered = body.lower()
+    for rule_id, pat, entropy, group, keywords in _VENDORED:
+        # gitleaks' own prefilter: a rule declaring keywords cannot match a body
+        # that contains none of them, and skipping the regex is far cheaper
+        if keywords and not any(k in lowered for k in keywords):
+            continue
+        match = pat.search(body)
+        if match is None:
+            continue
+        if entropy is not None:
+            secret = (match.group(group)
+                      if 0 < group <= pat.groups and match.group(group) is not None
+                      else match.group(0))
+            if _shannon_entropy(secret) < entropy:
+                continue
+        raise GateError(_rejection(rule_id))
+
+
+def _rejection(label: str) -> str:
+    # the matched text is deliberately absent: an error message travels into
+    # logs and agent transcripts, which is exactly where a secret must not go
+    return (f"content rejected: looks like a secret ({label}). "
+            "Store a pointer (e.g. 'token is in 1Password item X') instead.")
