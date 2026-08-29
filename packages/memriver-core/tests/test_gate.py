@@ -7,6 +7,9 @@ BLOCKED = [
     ("-----BEGIN RSA PRIVATE KEY-----\nabc", "PRIVATE KEY"),
     ("xoxb-123456789012-abcdefghijkl", "xoxb-"),
     ('api_key = "sk-abcdefghij1234567890"', "sk-abcdefghij1234567890"),
+    # fine-grained PATs do not match gh[pousr]_ and are often written unquoted,
+    # so neither the classic token rule nor the assignment rule catches them
+    ("token github_pat_" + "a" * 60 + " end", "github_pat_"),
 ]
 
 @pytest.mark.parametrize("text,marker", BLOCKED)

@@ -7,6 +7,9 @@ MAX_BODY_CHARS = 8000
 _SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("AWS access key", re.compile(r"AKIA[0-9A-Z]{16}")),
     ("GitHub token", re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}")),
+    # fine-grained PATs use a different prefix and allow '_' in the body, so the
+    # classic gh[pousr]_ rule never matches them
+    ("GitHub fine-grained PAT", re.compile(r"github_pat_[A-Za-z0-9_]{20,}")),
     ("private key block", re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----")),
     ("Slack token", re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}")),
     ("credential assignment",
