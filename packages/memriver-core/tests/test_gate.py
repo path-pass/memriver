@@ -3,6 +3,8 @@ from memriver_core.gate import GateError, check_content
 
 BLOCKED = [
     ("aws key AKIAIOSFODNN7EXAMPLE ok", "AKIAIOSFODNN7EXAMPLE"),
+    # STS temporary access-key ids start with ASIA, not AKIA
+    ("AWS_ACCESS_KEY_ID=ASIAIOSFODNN7EXAMPLE", "ASIAIOSFODNN7EXAMPLE"),
     ("token ghp_" + "a" * 36, "ghp_"),
     ("-----BEGIN RSA PRIVATE KEY-----\nabc", "PRIVATE KEY"),
     ("xoxb-123456789012-abcdefghijkl", "xoxb-"),

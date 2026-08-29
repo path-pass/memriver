@@ -5,7 +5,7 @@ import re
 MAX_BODY_CHARS = 8000
 
 _SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
-    ("AWS access key", re.compile(r"AKIA[0-9A-Z]{16}")),
+    ("AWS access key", re.compile(r"A[KS]IA[0-9A-Z]{16}")),
     ("GitHub token", re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}")),
     # fine-grained PATs use a different prefix and allow '_' in the body, so the
     # classic gh[pousr]_ rule never matches them
