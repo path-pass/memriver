@@ -1,0 +1,11 @@
+[project]
+name = "memriver-core"
+version = "0.1.0"
+description = "memriver core: immutable markdown memory store with rebuildable FTS index"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+dependencies = ["python-frontmatter>=1.1", "python-ulid>=2.7"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

@@ -1,0 +1,21 @@
+[project]
+name = "memriver"
+version = "0.1.0"
+description = "Shared memory layer for coding agents across harnesses, exposed via MCP"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+dependencies = ["memriver-core", "fastmcp>=2.0"]
+
+[project.scripts]
+memriver = "memriver.cli:main"
+
+[project.optional-dependencies]
+# Filled in Phase 3+: vector = ["memriver-vector"], dream = [...], sync = [...], all = [...]
+
+[tool.uv.sources]
+memriver-core = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

@@ -1,2 +1,6 @@
 .research/
 .superpowers/
+.venv/
+__pycache__/
+*.egg-info/
+dist/
