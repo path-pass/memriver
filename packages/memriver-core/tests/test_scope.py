@@ -1,7 +1,7 @@
 import hashlib
 
 import pytest
-from memriver_core.scope import project_slug, resolve_scope, storage_root
+from memriver_core.scope import project_slug, resolve_scope, storage_root, sanitize_name
 
 def test_storage_root_env_override(monkeypatch, tmp_path):
     monkeypatch.setenv("MEMRIVER_ROOT", str(tmp_path / "mem"))
@@ -26,3 +26,22 @@ def test_resolve_scope(tmp_path):
     assert resolve_scope("project", repo).startswith("project:demo-")
     with pytest.raises(ValueError):
         resolve_scope("project", tmp_path / "nowhere")
+
+
+def test_sanitize_passthrough():
+    assert sanitize_name("mise-runtime-management") == "mise-runtime-management"
+
+
+def test_sanitize_normalizes():
+    assert sanitize_name("Mise Runtime_Mgmt!") == "mise-runtime-mgmt"
+    assert sanitize_name("--weird--") == "weird"
+
+
+def test_sanitize_caps_length():
+    assert len(sanitize_name("a" * 200)) == 64
+
+
+def test_sanitize_unsalvageable():
+    assert sanitize_name("") is None
+    assert sanitize_name("!!!") is None
+    assert sanitize_name("記憶") is None

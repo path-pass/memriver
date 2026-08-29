@@ -37,3 +37,14 @@ def resolve_scope(scope: str, project_dir: Path) -> str:
             raise ValueError(f"not inside a git project: {project_dir}")
         return f"project:{slug}"
     raise ValueError(f"invalid scope: {scope!r}")
+
+
+def sanitize_name(proposal: str) -> str | None:
+    """Agent-proposed entry name -> permanent id, or None when unsalvageable.
+
+    The agent only ever contributes a human-readable hint; shape, charset and
+    length are the server's (docs/memory-model.md). Non-ASCII proposals fall
+    back to None -> the caller uses a ULID instead.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", proposal.lower()).strip("-")[:64].rstrip("-")
+    return slug if re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", slug) else None
