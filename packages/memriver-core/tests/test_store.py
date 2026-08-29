@@ -149,13 +149,6 @@ def test_delete_refuses_a_hand_written_non_entry_file(tmp_path):
     assert path.read_text(encoding="utf-8") == "just some hand-written notes\n"
 
 
-def test_exists(tmp_path):
-    store = MemoryStore(tmp_path)
-    assert not store.exists("n", scopes=["global"])
-    store.write(Entry.new(body="b", type="user", scope="global", source={}, id="n"))
-    assert store.exists("n", scopes=["global"])
-
-
 def test_update_body_serializes_concurrent_writers(tmp_path):
     # instrument the critical section directly: end-state assertions alone
     # can't discriminate a missing lock, because _atomic_write's mkstemp +

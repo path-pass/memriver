@@ -33,7 +33,7 @@ scope: global
 sync: true
 created: 2026-08-29T10:00:00Z
 updated: 2026-08-29T10:00:00Z
-source: {harness: claude-code, project: my-app}
+source: {harness: claude-code, method: agent}
 trust: user
 ---
 
@@ -61,7 +61,10 @@ The agent proposes a short kebab-case name; the server disposes:
 - The server sanitizes the proposal against a strict slug whitelist. Once
   accepted, **the name is the permanent id**: the filename, the update
   handle, and the future sync key. It is never renamed, even if the content
-  drifts (delete and rewrite if the name becomes truly wrong).
+  drifts (delete and rewrite if the name becomes truly wrong). A global name
+  is unique across the entire store; a project name is unique within its
+  project and may not be claimed by a later global write. Different projects
+  may reuse the same name.
 - **Name collisions are refused, not resolved.** A write against an existing
   name returns the existing entry's summary instead of writing. The agent —
   which has the semantic context — then decides: same fact → update the
@@ -119,17 +122,17 @@ to. The protocol reaches their agents through three layers:
    tool descriptions to its model, so any harness that can connect the
    server has already been taught — this is why MCP is the integration
    surface in the first place.
-2. **Refusal as correction (backstop).** An unknown type, a bad name, or a
-   name collision comes back as a structured refusal that names the valid
-   values. The agent self-corrects within the same turn. The server never
-   guesses; it refuses and teaches.
-3. **Installed protocol instructions (richer guidance).** Tool descriptions
-   cannot carry behavioral guidance — when to write a memory, what not to
-   store, check the index before writing. `memriver install` injects a
-   single server-maintained protocol block into each harness's native
-   instruction file (Codex `AGENTS.md`, Claude Code `CLAUDE.md`, Cursor
-   rules, Kiro steering). The injection points differ per harness; the
-   text is one source, maintained in the server.
+2. **Refusal as correction (backstop).** An unknown type or a name collision
+   comes back as a structured refusal that names the valid values. The agent
+   self-corrects within the same turn. The server never guesses; it refuses
+   and teaches.
+3. **Installed protocol instructions (richer guidance, planned).** Tool
+   descriptions cannot carry behavioral guidance — when to write a memory,
+   what not to store, check the index before writing. A planned `memriver
+   install` will inject a single server-maintained protocol block into each
+   harness's native instruction file (Codex `AGENTS.md`, Claude Code
+   `CLAUDE.md`, Cursor rules, Kiro steering). The injection points differ
+   per harness; the text would be one source, maintained in the server.
 
 Layers 1–2 alone make an unconfigured harness work correctly; layer 3
 upgrades "works" to "works well". The taxonomy's four words fitting in a

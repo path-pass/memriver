@@ -18,5 +18,5 @@ def render_index(store: MemoryStore, scopes: list[str],
         lines.append(f"- [{e.type}] {e.id}: {first} ({e.updated[:10]})")
     omitted = len(entries) - budget_lines
     if omitted > 0:
-        lines.append(f"… ({omitted} more entries omitted; use memory_search or raise index_budget_lines)")
+        lines.append(f"… ({omitted} more entries omitted; use memory_search)")
     return "\n".join(lines)

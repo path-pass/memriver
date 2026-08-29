@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import logging
 import os
+import tomllib
 from pathlib import Path
 
-import tomllib
 from pydantic import Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 

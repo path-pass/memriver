@@ -12,7 +12,8 @@ def test_render_lines_and_budget(store):
     lines = out.splitlines()
     assert len(lines) == 4  # 3 entries + 1 omitted-notice line
     assert lines[0].startswith("- [project] ")
-    assert "2 more entries omitted" in lines[-1]
+    assert "2 more entries omitted; use memory_search" in lines[-1]
+    assert "index_budget_lines" not in lines[-1]  # agents cannot change this knob
 
 def test_render_empty(store):
     assert "no memories yet" in render_index(store, scopes=["global"])

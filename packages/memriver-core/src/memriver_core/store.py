@@ -100,13 +100,6 @@ class MemoryStore:
             raise KeyError(entry_id)
         return entry
 
-    def exists(self, entry_id: str, scopes: list[str]) -> bool:
-        try:
-            self._find(entry_id, scopes)
-        except KeyError:
-            return False
-        return True
-
     def update_body(self, entry_id: str, body: str, scopes: list[str]) -> Entry:
         # read-modify-write must not interleave with a peer process
         with self.locked():

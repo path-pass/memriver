@@ -6,7 +6,7 @@ Local-only mode uses no LLM and no network.
 
 Monorepo (uv workspace):
 
-- `packages/memriver-core` — immutable markdown entry store, write gate
+- `packages/memriver-core` — mutable, one-file-per-memory markdown entry store, write gate
 - `packages/memriver` — CLI + MCP server (the package users install)
 - planned: `memriver-vector` / `memriver-dream` / `memriver-sync`
   (installed on demand via extras, e.g. `memriver[vector]`)
@@ -38,8 +38,9 @@ memories land under the project you are actually working in (use `--directory`
 and every project would share memriver's own slug). Pass `--project-dir` to the
 `memriver` command to pin a project explicitly.
 
-Storage layout: `~/agent-memory/{global,projects/<slug>}/entries/<ulid>.md`
-(override root with `MEMRIVER_ROOT`).
+Storage layout: `~/agent-memory/{global,projects/<slug>}/entries/<name>.md`
+(a kebab-case name proposed by the agent, or a server-generated ULID when no
+usable name is given; override root with `MEMRIVER_ROOT`).
 
 ## Configuration
 

@@ -1,8 +1,8 @@
 import logging
 import re
+import tomllib
 
 import pytest
-import tomllib
 from memriver_core.gate import _RULES, _RULES_DIR, GateError, _load_rules, check_content
 
 # Every vector here is synthetic, but a contiguous provider prefix is enough to

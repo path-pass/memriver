@@ -1,8 +1,8 @@
+import tomllib
 from pathlib import Path
 
 import fastmcp
 import memriver
-import tomllib
 
 
 def test_version():

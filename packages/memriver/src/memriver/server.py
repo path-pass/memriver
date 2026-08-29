@@ -106,17 +106,42 @@ def build_server(root: Path, project_dir: Path,
                 # check-then-write must hold the lock, or two writers race to
                 # the same name and the loser silently overwrites the winner
                 if entry_id is not None:
+                    # a global name must never shadow, or claim, a name any
+                    # project already uses -- so a global write checks every
+                    # scope in the store, not just the caller's own two
+                    check_scopes = None if full_scope == "global" else scopes
                     try:
-                        old = store.read(entry_id, scopes=scopes)
-                    except KeyError:
+                        old = store.read(entry_id, scopes=check_scopes)
+                    except KeyError as err:
+                        # `read` raises this exact shape both when nothing owns
+                        # this name yet and when a hand-edited file's frontmatter
+                        # scope contradicts its directory (store.py: "does not
+                        # exist as far as callers go") -- both leave the name
+                        # safe to claim. Any other message means the file exists
+                        # under this name but failed to parse as an entry at
+                        # all (e.g. a missing frontmatter key), which must
+                        # refuse rather than be silently clobbered.
+                        if err.args != (entry_id,):
+                            return {"error": f"name {entry_id!r} is taken by a "
+                                             "file that is not a readable entry"}
                         old = None
                     except Exception:  # noqa: BLE001
-                        old = None  # unreadable file under this name still blocks nothing
+                        return {"error": f"name {entry_id!r} is taken by a "
+                                         "file that is not a readable entry"}
                     if old is not None:
+                        if full_scope == "global" and old.scope != full_scope:
+                            # the collision lives in another scope (a project,
+                            # reached only because a global write searches the
+                            # whole store); its content/type must not leak
+                            # across that boundary, so the refusal stays generic
+                            return {"error": f"name {entry_id!r} is already "
+                                             "used elsewhere in the store; "
+                                             "choose another name"}
                         return {"error": f"name {entry_id!r} already exists; "
                                          "memory_update it, or choose a more "
                                          "precise name if this is a different fact",
                                 "existing": {"id": old.id, "type": old.type,
+                                             "scope": old.scope,
                                              "updated": old.updated,
                                              "snippet": old.body[:120]}}
                 e = Entry.new(body=content, type=type, scope=full_scope,

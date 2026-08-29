@@ -122,7 +122,50 @@ async def test_write_name_collision_refused_with_echo(server):
             "content": "v1", "type": "user", "name": "n", "scope": "global"})
         out = (await c.call_tool("memory_write", {
             "content": "v2", "type": "user", "name": "n", "scope": "global"})).data
-        assert "error" in out and out["existing"]["snippet"] == "v1"
+        assert "error" in out
+        assert out["existing"]["snippet"] == "v1"
+        assert out["existing"]["scope"] == "global"
+
+
+async def test_global_write_refused_when_a_project_holds_the_name(tmp_path, project):
+    # store._find/read resolve a global write's collision check across the
+    # caller's own two scopes only; a global write for a name some OTHER
+    # project already owns must still be refused, and must not echo that
+    # project's content or type back to the caller
+    root = tmp_path / "mem"
+    foreign = Entry.new(body="foreign project secret plan", type="project",
+                        scope="project:other-000000", id="n",
+                        source={"harness": "test", "method": "agent"})
+    path = MemoryStore(root).write(foreign)
+    before = path.read_bytes()
+
+    server = build_server(root=root, project_dir=project)
+    async with Client(server) as c:
+        out = (await c.call_tool("memory_write", {
+            "content": "v2", "type": "user", "name": "n", "scope": "global"})).data
+        assert "error" in out
+        assert "existing" not in out
+        assert "secret plan" not in str(out) and "project" not in str(out.get("error", ""))
+
+    assert path.read_bytes() == before
+    assert list(root.glob("global/entries/*.md")) == []
+
+
+async def test_write_refuses_to_clobber_a_hand_written_non_entry_file(tmp_path, project):
+    # the collision check must fail closed on a file it cannot parse, not
+    # treat the name as free and let store.write overwrite it
+    root = tmp_path / "mem"
+    _write_raw(root, "notes.md", "just some hand-written notes\n")
+    path = root / "global" / "entries" / "notes.md"
+    before = path.read_bytes()
+
+    server = build_server(root=root, project_dir=project)
+    async with Client(server) as c:
+        out = (await c.call_tool("memory_write", {
+            "content": "v1", "type": "user", "name": "notes", "scope": "global"})).data
+        assert "error" in out
+
+    assert path.read_bytes() == before
 
 
 async def test_update_rewrites_in_place(server):

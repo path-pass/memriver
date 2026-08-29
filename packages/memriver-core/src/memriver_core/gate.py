@@ -3,12 +3,11 @@ from __future__ import annotations
 import logging
 import math
 import re
+import tomllib
 import warnings
 from collections import Counter
 from importlib.resources import files
 from typing import TYPE_CHECKING
-
-import tomllib
 
 if TYPE_CHECKING:
     from importlib.abc import Traversable
