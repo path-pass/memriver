@@ -1,8 +1,9 @@
+import logging
 import re
+import tomllib
 
 import pytest
-from memriver_core.gate import GateError, check_content
-from memriver_core.gate_rules import VENDORED_RULES
+from memriver_core.gate import _RULES, _RULES_DIR, GateError, _load_rules, check_content
 
 # Every vector here is synthetic, but a contiguous provider prefix is enough to
 # trip GitHub push protection on the way to origin, so the prefixes are spliced
@@ -37,7 +38,7 @@ def test_vendored_secrets_blocked(text, marker):
 
 
 # Memory bodies are prose, ULIDs and links; a vendored rule that fires on any of
-# these belongs in EXCLUDED_RULE_IDS in tools/sync_gitleaks_rules.py.
+# these has to be dealt with in gate.py, since gitleaks.toml is vendored verbatim.
 PASSING = [
     "用户偏好：回复用中文；runtime 用 mise 管理，python 包用 uv。gitleaks 的社区"
     "规则集 vendor 进 memriver-core。Slack 通知走 webhook，Notion 文档同步的"
@@ -57,10 +58,60 @@ def test_ordinary_memory_content_passes(text):
     check_content(text)
 
 
+def _raw(name):
+    return tomllib.loads((_RULES_DIR / name).read_text(encoding="utf-8"))["rules"]
+
+
 def test_vendored_rules_are_usable():
-    assert len(VENDORED_RULES) > 100
-    for rule_id, pattern, *_ in VENDORED_RULES:
-        re.compile(pattern)  # raises if the generated file is corrupt
+    # the vendored file is a real ruleset, and enough of it survives compilation
+    # on this interpreter to be worth loading at all
+    assert len(_raw("gitleaks.toml")) > 150
+    assert len(_RULES) > 100
+
+
+def test_memriver_floor_rules_all_load():
+    # our own rules are hand-written for Python `re`: none may be skipped, and
+    # they must come first so a floor rule wins over a same-named upstream one
+    floor = _raw("memriver.toml")
+    assert len(floor) == 7
+    loaded = [r[0] for r in _RULES[:len(floor)]]
+    assert loaded == [r["id"] for r in floor]
+    assert all(rid.startswith("memriver-") for rid in loaded)
+
+
+def test_rule_ids_are_unique():
+    ids = [rule_id for rule_id, *_ in _RULES]
+    assert len(ids) == len(set(ids))
+
+
+def test_duplicate_ids_across_files_keep_the_first(tmp_path, caplog):
+    # first file wins, so memriver.toml's floor rules cannot be displaced by an
+    # upstream rule that happens to share an id
+    (tmp_path / "a.toml").write_text('[[rules]]\nid = "dup"\nregex = "aaa"\n')
+    (tmp_path / "b.toml").write_text('[[rules]]\nid = "dup"\nregex = "bbb"\n')
+    with caplog.at_level(logging.DEBUG, logger="memriver_core.gate"):
+        rules = _load_rules(tmp_path / "a.toml", tmp_path / "b.toml")
+    assert [(rid, pat.pattern) for rid, pat, *_ in rules] == [("dup", "aaa")]
+    assert "dup" in caplog.text
+
+
+def test_uncompilable_rule_is_skipped_not_fatal(tmp_path, caplog):
+    # gitleaks patterns are RE2; some are invalid Python `re`, and which ones
+    # varies by interpreter. One bad rule must not take the whole gate down.
+    (tmp_path / "rules.toml").write_text(
+        '[[rules]]\nid = "bad-regex"\nregex = "(unclosed"\n\n'
+        '[[rules]]\nid = "posix-class"\nregex = "[[:alnum:]]{10}"\n\n'
+        '[[rules]]\nid = "path-only"\npath = "\\\\.pem$"\n\n'
+        '[[rules]]\nid = "good"\nregex = "ZQ9[0-9]{4}"\n'
+    )
+    with caplog.at_level(logging.DEBUG, logger="memriver_core.gate"):
+        rules = _load_rules(tmp_path / "rules.toml")
+    assert [rid for rid, *_ in rules] == ["good"]
+    # each dropped rule is named, so a sync that loses coverage is diagnosable
+    assert "bad-regex" in caplog.text
+    # a POSIX class compiles in Python with a *different* meaning; it must be
+    # rejected too, not silently mis-matched
+    assert "posix-class" in caplog.text
 
 
 def test_shannon_entropy():
@@ -86,7 +137,7 @@ def test_shannon_entropy():
 
 def _with_rules(monkeypatch, *rules):
     monkeypatch.setattr(
-        "memriver_core.gate._VENDORED",
+        "memriver_core.gate._RULES",
         [(rid, re.compile(p), ent, grp, ()) for rid, p, ent, grp in rules],
     )
 

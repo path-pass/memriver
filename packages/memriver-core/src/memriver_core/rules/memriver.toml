@@ -1,0 +1,60 @@
+# memriver's own floor rules, in the gitleaks [[rules]] schema so one engine
+# loads both files. They are layered before the vendored gitleaks set and are
+# deliberately entropy-free: these are deterministic floors that must block
+# every time they match, including the low-entropy placeholder credentials that
+# turn up in notes and examples. Entropy tuning belongs to the vendored rules.
+#
+# Keywords are omitted on purpose too: seven regexes over an 8000-char body cost
+# nothing, and a prefilter here would only add a way to silently stop matching.
+
+title = "memriver floor rules"
+
+[[rules]]
+id = "memriver-aws-access-key"
+description = "AWS access key id (AKIA long-lived, ASIA temporary/STS)"
+regex = 'A[KS]IA[0-9A-Z]{16}'
+
+[[rules]]
+id = "memriver-github-token"
+description = "GitHub personal access / OAuth / refresh token"
+regex = 'gh[pousr]_[A-Za-z0-9]{36,}'
+
+[[rules]]
+id = "memriver-github-fine-grained-pat"
+# fine-grained PATs use a different prefix and allow '_' in the body, so the
+# classic gh[pousr]_ rule never matches them
+description = "GitHub fine-grained personal access token"
+regex = 'github_pat_[A-Za-z0-9_]{20,}'
+
+[[rules]]
+id = "memriver-private-key-header"
+description = "PEM private key block header"
+regex = '-----BEGIN[A-Z ]*PRIVATE KEY-----'
+
+[[rules]]
+id = "memriver-slack-token"
+description = "Slack bot / app / user / refresh token"
+regex = 'xox[baprs]-[A-Za-z0-9-]{10,}'
+
+[[rules]]
+id = "memriver-openai-api-key"
+description = "OpenAI API key"
+regex = '\bsk-[A-Za-z0-9_-]{20,}'
+
+# quotes are optional: env files, shell exports and log lines carry none.
+# No word boundary around the keyword: '_' is a word character, so the usual
+# env var names (OPENAI_API_KEY, AWS_SECRET_ACCESS_KEY) have none before the
+# keyword nor after it, and the trailing name parts have to be consumed too.
+# The required '[:=]' is what keeps prose out ('token 管理方式', '1Password').
+# The value has three branches because real passwords carry punctuation: a
+# single restricted character class stopped at the first '@' or '!' and counted
+# too few characters, so 'PASSWORD="P@ssw0rd!234567"' passed. Each quote style
+# needs its own branch, since one class shared by both stops at the *opposite*
+# quote inside the value and the unquoted branch then stops at the first space
+# -- 'PASSWORD="it's a very long secret phrase"' slipped through both. Each
+# quoted branch now runs to its own closing quote; the unquoted branch takes any
+# run of non-whitespace, which still keeps a sentence after ':' out.
+[[rules]]
+id = "memriver-credential-assignment"
+description = "credential assigned to a key/secret/token/password name"
+regex = '''(?i)(api[ _-]?key|secret|token|password|passwd)(?:[ _-][A-Za-z0-9]+)*\s*[:=]\s*(?:"[^"]{12,}"|'[^']{12,}'|\S{12,})'''

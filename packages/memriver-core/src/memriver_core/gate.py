@@ -1,62 +1,77 @@
 from __future__ import annotations
 
+import logging
 import math
 import re
+import tomllib
 import warnings
 from collections import Counter
+from importlib.resources import files
+from typing import TYPE_CHECKING
 
-from .gate_rules import VENDORED_RULES
+if TYPE_CHECKING:
+    from importlib.abc import Traversable
 
 MAX_BODY_CHARS = 8000
 
-_SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
-    ("AWS access key", re.compile(r"A[KS]IA[0-9A-Z]{16}")),
-    ("GitHub token", re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}")),
-    # fine-grained PATs use a different prefix and allow '_' in the body, so the
-    # classic gh[pousr]_ rule never matches them
-    ("GitHub fine-grained PAT", re.compile(r"github_pat_[A-Za-z0-9_]{20,}")),
-    ("private key block", re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----")),
-    ("Slack token", re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}")),
-    ("OpenAI API key", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}")),
-    # quotes are optional: env files, shell exports and log lines carry none.
-    # No word boundary around the keyword: '_' is a word character, so the usual
-    # env var names (OPENAI_API_KEY, AWS_SECRET_ACCESS_KEY) have none before the
-    # keyword nor after it, and the trailing name parts have to be consumed too.
-    # The required '[:=]' is what keeps prose out ('token 管理方式', '1Password').
-    # The value has three branches because real passwords carry punctuation: a
-    # single restricted character class stopped at the first '@' or '!' and
-    # counted too few characters, so 'PASSWORD="P@ssw0rd!234567"' passed. Each
-    # quote style needs its own branch, since one class shared by both stops at
-    # the *opposite* quote inside the value and the unquoted branch then stops
-    # at the first space -- 'PASSWORD="it's a very long secret phrase"' slipped
-    # through both. Each quoted branch now runs to its own closing quote; the
-    # unquoted branch takes any run of non-whitespace, which still keeps a
-    # sentence after ':' out
-    ("credential assignment",
-     re.compile(r"(?i)(api[ _-]?key|secret|token|password|passwd)"
-                r"(?:[ _-][A-Za-z0-9]+)*\s*[:=]\s*"
-                r"(?:\"[^\"]{12,}\"|'[^']{12,}'|\S{12,})")),
-]
+_log = logging.getLogger(__name__)
+
+# (rule id, compiled pattern, entropy threshold, secretGroup, lowercased keywords)
+_Rule = tuple[str, "re.Pattern[str]", float | None, int, tuple[str, ...]]
+
+_RULES_DIR = files(__package__) / "rules"
 
 
-def _compile_vendored() -> list[tuple[str, re.Pattern, float | None, int, tuple[str, ...]]]:
-    """Compile the generated gitleaks rules once, at import.
+def _load_rules(*sources: "Traversable") -> list[_Rule]:
+    """Parse and compile the vendored rule TOMLs once, at import.
 
-    The sync script already proves every pattern compiles, so a failure here
-    means the generated file was hand-edited; drop that one rule rather than
-    taking the whole gate -- and with it every write -- down with it.
+    The patterns are written for Go's RE2, so a couple of dozen are not valid
+    Python `re` -- and *which* ones depends on the interpreter (`\\z` only became
+    legal in 3.14). Each is compiled here rather than at vendoring time so the
+    ruleset adapts to whatever runs it; an incompatible rule is dropped with its
+    id logged, never raised, because a bad pattern must not take down the gate
+    and with it every write.
+
+    Warnings are promoted to errors so that constructs Python merely tolerates
+    with a *different* meaning (POSIX classes such as `[[:alnum:]]`, which Python
+    reads as a nested set) are skipped rather than silently mis-matching.
+
+    Sources are read in order and ids are deduplicated first-wins, so memriver's
+    own floor rules take precedence over an upstream rule of the same id.
     """
-    compiled = []
-    for rule_id, pattern, entropy, group, keywords in VENDORED_RULES:
-        try:
-            compiled.append((rule_id, re.compile(pattern), entropy, group, keywords))
-        except re.error as exc:
-            warnings.warn(f"skipping uncompilable vendored rule {rule_id}: {exc}",
-                          RuntimeWarning, stacklevel=2)
-    return compiled
+    rules: list[_Rule] = []
+    seen: set[str] = set()
+    for source in sources:
+        config = tomllib.loads(source.read_text(encoding="utf-8"))
+        for rule in config.get("rules", ()):
+            rule_id = rule["id"]
+            pattern = rule.get("regex")
+            if not pattern:
+                continue  # path-only rule: memriver gates content, not files
+            if rule_id in seen:
+                _log.debug("gate: rule %s already defined, keeping the first", rule_id)
+                continue
+            seen.add(rule_id)
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error")
+                    compiled = re.compile(pattern)
+            except (re.error, Warning, RecursionError) as exc:
+                _log.debug("gate: skipping rule %s, regex unusable on this "
+                           "interpreter: %s", rule_id, exc)
+                continue
+            entropy = rule.get("entropy")
+            rules.append((
+                rule_id,
+                compiled,
+                float(entropy) if entropy is not None else None,
+                int(rule.get("secretGroup", 0)),
+                tuple(k.lower() for k in rule.get("keywords", ())),
+            ))
+    return rules
 
 
-_VENDORED = _compile_vendored()
+_RULES = _load_rules(_RULES_DIR / "memriver.toml", _RULES_DIR / "gitleaks.toml")
 
 
 def _shannon_entropy(text: str) -> float:
@@ -82,11 +97,8 @@ def check_content(body: str, max_chars: int = MAX_BODY_CHARS) -> None:
     if len(body) > max_chars:
         raise GateError(f"content too large ({len(body)} > {max_chars} chars); "
                         "store a summary or pointer instead")
-    for label, pat in _SECRET_PATTERNS:
-        if pat.search(body):
-            raise GateError(_rejection(label))
     lowered = body.lower()
-    for rule_id, pat, entropy, group, keywords in _VENDORED:
+    for rule_id, pat, entropy, group, keywords in _RULES:
         # gitleaks' own prefilter: a rule declaring keywords cannot match a body
         # that contains none of them, and skipping the regex is far cheaper
         if keywords and not any(k in lowered for k in keywords):
@@ -99,7 +111,7 @@ def check_content(body: str, max_chars: int = MAX_BODY_CHARS) -> None:
         raise GateError(_rejection(rule_id))
 
 
-def _secret_of(match: re.Match, group: int) -> str:
+def _secret_of(match: "re.Match[str]", group: int) -> str:
     """The substring upstream measures entropy over.
 
     gitleaks tunes its thresholds against the credential itself, not the
@@ -114,8 +126,8 @@ def _secret_of(match: re.Match, group: int) -> str:
     return match.group(0)
 
 
-def _rejection(label: str) -> str:
+def _rejection(rule_id: str) -> str:
     # the matched text is deliberately absent: an error message travels into
     # logs and agent transcripts, which is exactly where a secret must not go
-    return (f"content rejected: looks like a secret ({label}). "
+    return (f"content rejected: looks like a secret ({rule_id}). "
             "Store a pointer (e.g. 'token is in 1Password item X') instead.")
