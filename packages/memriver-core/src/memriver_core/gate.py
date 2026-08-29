@@ -94,13 +94,24 @@ def check_content(body: str, max_chars: int = MAX_BODY_CHARS) -> None:
         match = pat.search(body)
         if match is None:
             continue
-        if entropy is not None:
-            secret = (match.group(group)
-                      if 0 < group <= pat.groups and match.group(group) is not None
-                      else match.group(0))
-            if _shannon_entropy(secret) < entropy:
-                continue
+        if entropy is not None and _shannon_entropy(_secret_of(match, group)) < entropy:
+            continue
         raise GateError(_rejection(rule_id))
+
+
+def _secret_of(match: re.Match, group: int) -> str:
+    """The substring upstream measures entropy over.
+
+    gitleaks tunes its thresholds against the credential itself, not the
+    boilerplate a pattern has to anchor on -- a keyword and separator dragged
+    into the match depress its entropy and let a real secret through. So take
+    the rule's declared secretGroup, else the first capture group, and fall
+    back to the whole match only when the pattern captures nothing.
+    """
+    for n in (group, 1):
+        if 0 < n <= match.re.groups and match.group(n) is not None:
+            return match.group(n)
+    return match.group(0)
 
 
 def _rejection(label: str) -> str:

@@ -7,6 +7,12 @@ Source: https://raw.githubusercontent.com/gitleaks/gitleaks/master/config/gitlea
 Upstream minVersion: v8.25.0
 Fetched: 2026-08-29
 
+Divergences from upstream gitleaks:
+  - allowlists/stopwords are not vendored; these rules fire more
+    often than upstream gitleaks would.
+  - entropy rejects at `>= threshold`; upstream skips at
+    `<= threshold`, so this gate is stricter by the boundary case.
+
 gitleaks is distributed under the MIT License,
 Copyright (c) 2019 Zachary Rice. The rule patterns below are
 reproduced from its default configuration under that licence;

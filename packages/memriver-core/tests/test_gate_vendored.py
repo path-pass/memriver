@@ -72,3 +72,61 @@ def test_shannon_entropy():
     assert _shannon_entropy("aabb") == pytest.approx(1.0)
     # 'abcd': four symbols at p=0.25 -> 2.0 bits/char
     assert _shannon_entropy("abcd") == pytest.approx(2.0)
+
+
+# --- entropy and secret-group semantics ------------------------------------
+#
+# Real vendored rules cannot pin these branches: none of them lets the entropy
+# of the whole match land on the opposite side of the threshold from the
+# entropy of its capture group, which is exactly the distinction under test.
+# So the rule list is swapped for synthetic rules whose numbers are known:
+# 'aaaaaaaa' has entropy 0.0, 'abcdefgh' has 3.0, and 'ZQ-aaaaaaaa' -- the
+# whole match in the group cases -- has ~1.28. A threshold of 1.0 therefore
+# separates "measured the group" from "measured the whole match".
+
+def _with_rules(monkeypatch, *rules):
+    monkeypatch.setattr(
+        "memriver_core.gate._VENDORED",
+        [(rid, re.compile(p), ent, grp, ()) for rid, p, ent, grp in rules],
+    )
+
+
+def test_entropy_below_threshold_passes(monkeypatch):
+    _with_rules(monkeypatch, ("low-entropy", r"aaaaaaaa", 1.0, 0))
+    check_content("release notes for aaaaaaaa builds")
+
+
+def test_entropy_above_threshold_rejects(monkeypatch):
+    _with_rules(monkeypatch, ("high-entropy", r"ZQ9[A-Za-z0-9]+", 3.0, 0))
+    with pytest.raises(GateError) as ei:
+        check_content("value ZQ9abcdefgh here")
+    assert "high-entropy" in str(ei.value)
+    assert "ZQ9abcdefgh" not in str(ei.value)
+
+
+def test_entropy_uses_declared_secret_group(monkeypatch):
+    # secretGroup=2 selects 'aaaaaaaa' (0.0); group 1 or the whole match would
+    # both clear the threshold, so a pass proves group 2 was the one measured
+    _with_rules(monkeypatch, ("grouped", r"ZQ-(\w+)-(\w+)", 1.0, 2))
+    check_content("marker ZQ-abcdefgh-aaaaaaaa end")
+
+
+def test_declared_secret_group_still_rejects_a_real_secret(monkeypatch):
+    # same rule, operands swapped: group 2 is now 'abcdefgh' (3.0)
+    _with_rules(monkeypatch, ("grouped", r"ZQ-(\w+)-(\w+)", 1.0, 2))
+    with pytest.raises(GateError) as ei:
+        check_content("marker ZQ-aaaaaaaa-abcdefgh end")
+    assert "grouped" in str(ei.value)
+
+
+def test_entropy_prefers_group_one_when_no_secret_group(monkeypatch):
+    # no secretGroup: group 1 is 'aaaaaaaa' (0.0) but the whole match
+    # 'ZQ-aaaaaaaa' is ~1.28, so measuring the whole match would reject
+    _with_rules(monkeypatch, ("ungrouped", r"ZQ-(\w+)", 1.0, 0))
+    check_content("marker ZQ-aaaaaaaa end")
+
+
+def test_entropy_falls_back_to_whole_match_without_groups(monkeypatch):
+    _with_rules(monkeypatch, ("no-groups", r"ZQ-\w+", 1.0, 0))
+    with pytest.raises(GateError):
+        check_content("marker ZQ-aaaaaaaa end")
