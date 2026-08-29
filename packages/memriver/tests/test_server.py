@@ -98,6 +98,45 @@ async def test_update_supersedes(server):
         assert {h["id"] for h in hits} == {new["id"]}
 
 
+def _seed_foreign(root) -> Entry:
+    # store.read() globs every projects/* directory, so an id leaked from another
+    # project must still be refused by the tools of the current project
+    e = Entry.new(body="foreign project secret plan", type="fact",
+                  scope="project:other-000000",
+                  source={"harness": "test", "method": "agent"})
+    MemoryStore(root).write(e)
+    return e
+
+
+async def test_read_outside_scope_is_refused(tmp_path, project):
+    root = tmp_path / "mem"
+    foreign = _seed_foreign(root)
+
+    server = build_server(root=root, project_dir=project)
+    async with Client(server) as c:
+        r = (await c.call_tool("memory_read", {"entry_id": foreign.id})).data
+        assert "error" in r and "scope" in r["error"]
+        assert "secret plan" not in str(r)
+
+
+async def test_update_outside_scope_is_refused(tmp_path, project):
+    root = tmp_path / "mem"
+    foreign = _seed_foreign(root)
+    path = root / "projects" / "other-000000" / "entries" / f"{foreign.id}.md"
+    before = path.read_text(encoding="utf-8")
+
+    server = build_server(root=root, project_dir=project)
+    async with Client(server) as c:
+        r = (await c.call_tool("memory_update", {
+            "entry_id": foreign.id, "content": "hijacked"})).data
+        assert "error" in r and "scope" in r["error"]
+
+    assert path.read_text(encoding="utf-8") == before
+    assert MemoryStore(root).read(foreign.id).superseded_by is None
+    files = list(root.glob("**/entries/*.md"))
+    assert files == [path]  # no replacement entry was written anywhere
+
+
 async def test_unreadable_entry_files_are_skipped_at_startup(tmp_path, project):
     root = tmp_path / "mem"
     healthy = _seed_healthy(root)

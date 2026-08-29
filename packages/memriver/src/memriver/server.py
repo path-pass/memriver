@@ -54,6 +54,10 @@ def build_server(root: Path, project_dir: Path) -> FastMCP:
         except Exception:
             # hand-edited file that no longer parses as an entry
             return {"error": f"unreadable entry file: {entry_id}"}
+        # store.read() resolves an id across every project directory, so an id
+        # leaked from another project would otherwise be readable here
+        if e.scope not in scopes:
+            return {"error": f"entry {entry_id} is outside the current project scope"}
         return {"id": e.id, "type": e.type, "scope": e.scope, "body": e.body,
                 "created": e.created, "updated": e.updated,
                 "superseded_by": e.superseded_by, "trust": e.trust}
@@ -100,6 +104,10 @@ def build_server(root: Path, project_dir: Path) -> FastMCP:
             return {"error": f"no such entry: {entry_id}"}
         except Exception:
             return {"error": f"unreadable entry file: {entry_id}"}
+        # refuse before any check or write: an id leaked from another project must
+        # never let this server supersede a foreign entry
+        if old.scope not in scopes:
+            return {"error": f"entry {entry_id} is outside the current project scope"}
         # updating an already superseded id would fork the chain and leave two
         # contradictory active entries; point the caller at the head instead
         if old.superseded_by:
