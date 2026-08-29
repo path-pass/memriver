@@ -6,11 +6,17 @@ import os
 import re
 import tempfile
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from .entry import Entry, _now
 
 logger = logging.getLogger(__name__)
+
+# Records an in-flight supersede so a crash between its two writes can be
+# replayed. It lives at the store root, next to .lock, where no entry glob
+# ("*/entries/*.md") can ever pick it up as a memory.
+_JOURNAL = ".supersede.journal"
 
 
 def _scope_dir(scope: str) -> Path:
@@ -82,25 +88,77 @@ class MemoryStore:
                 if include_superseded or e.superseded_by is None:
                     yield e
 
-    def supersede(self, old_id: str, new_entry: Entry) -> Entry:
-        # Several server processes may share one root, and each of them checks
-        # "is it superseded?" before writing. Without a cross-process lock two of
-        # them can both pass that check and fork the chain into two contradictory
-        # active entries, so the read-check-write below is serialized on a lock
-        # file and re-reads the old entry inside the lock.
-        # fcntl is POSIX-only: this project does not support Windows yet.
+    @contextmanager
+    def locked(self) -> Iterator[None]:
+        """Hold the store-wide exclusive lock for the duration of the block.
+
+        Several processes may share one root, so any read-check-write over
+        entries (supersede) and any full snapshot of them (index rebuild) has to
+        be serialized here, or two of them interleave and fork the chain into
+        contradictory active entries. Recovery of an interrupted supersede runs
+        first, inside the lock, so every holder sees a consistent store.
+        fcntl is POSIX-only: this project does not support Windows yet.
+        """
         self.root.mkdir(parents=True, exist_ok=True)
         with open(self.root / ".lock", "a+") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             try:
-                old = self.read(old_id)
-                if old.superseded_by is not None:
-                    raise ValueError(f"entry {old_id} already superseded "
-                                     f"by {old.superseded_by}")
-                self.write(new_entry)
-                old.superseded_by = new_entry.id
-                old.updated = _now()
-                self.write(old)
+                self._recover()
+                yield
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
+
+    def _recover(self) -> None:
+        """Replay an interrupted supersede recorded in the journal.
+
+        Only ever called with the lock held. If the new entry landed, the old
+        one is marked to match it; if it never landed the operation never
+        happened and the old entry stays active. Either way the journal goes.
+        """
+        journal = self.root / _JOURNAL
+        try:
+            parts = journal.read_text(encoding="utf-8").split()
+        except FileNotFoundError:
+            return
+        except OSError:
+            logger.warning("unreadable supersede journal, discarding: %s", journal)
+            parts = []
+        if len(parts) == 2:
+            self._replay_supersede(*parts)
+        elif parts:
+            logger.warning("malformed supersede journal, discarding: %s", journal)
+        journal.unlink(missing_ok=True)
+
+    def _replay_supersede(self, old_id: str, new_id: str) -> None:
+        try:
+            self._find(new_id)
+        except KeyError:
+            # the new entry never landed: nothing to point the old one at
+            return
+        try:
+            old = self.read(old_id)
+        except Exception:
+            logger.warning("supersede journal names an unreadable entry: %s", old_id)
+            return
+        if old.superseded_by is None:
+            old.superseded_by = new_id
+            old.updated = _now()
+            self.write(old)
+
+    def supersede(self, old_id: str, new_entry: Entry) -> Entry:
+        with self.locked():
+            old = self.read(old_id)
+            if old.superseded_by is not None:
+                raise ValueError(f"entry {old_id} already superseded "
+                                 f"by {old.superseded_by}")
+            # The two writes below are individually atomic but not atomic as a
+            # pair: a crash between them would leave both entries active
+            # forever. Record the intent first so the next lock holder can
+            # finish or discard the operation.
+            self._atomic_write(self.root / _JOURNAL, f"{old_id} {new_entry.id}")
+            self.write(new_entry)
+            old.superseded_by = new_entry.id
+            old.updated = _now()
+            self.write(old)
+            (self.root / _JOURNAL).unlink(missing_ok=True)
         return new_entry

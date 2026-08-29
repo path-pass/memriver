@@ -87,6 +87,62 @@ def test_concurrent_supersede_has_exactly_one_winner(store):
     assert len(winners) == 1 and len(losers) == 1
 
 
+def test_recovery_completes_supersede_interrupted_between_writes(store):
+    # a crash between "write the new entry" and "mark the old one" used to leave
+    # both entries active forever; the journal lets the next lock finish the job
+    a = _e(body="A"); store.write(a)
+    b = _e(body="A v2"); store.write(b)  # the orphaned "new" entry
+    journal = store.root / ".supersede.journal"
+    store._atomic_write(journal, f"{a.id} {b.id}")
+
+    with store.locked():
+        pass
+
+    assert store.read(a.id).superseded_by == b.id
+    assert not journal.exists()
+    assert {e.id for e in store.iter_entries(scopes=["global"])} == {b.id}
+
+
+def test_recovery_keeps_old_active_when_new_entry_never_landed(store):
+    # crash before the first write: the operation never happened, so the old
+    # entry must stay active rather than point at a file that does not exist
+    a = _e(body="A"); store.write(a)
+    never_written = _e(body="A v2")
+    journal = store.root / ".supersede.journal"
+    store._atomic_write(journal, f"{a.id} {never_written.id}")
+
+    with store.locked():
+        pass
+
+    assert store.read(a.id).superseded_by is None
+    assert not journal.exists()
+    assert {e.id for e in store.iter_entries(scopes=["global"])} == {a.id}
+
+
+def test_recovery_discards_malformed_journal(store):
+    a = _e(body="A"); store.write(a)
+    journal = store.root / ".supersede.journal"
+    store._atomic_write(journal, "not a journal")
+
+    with store.locked():
+        pass
+
+    assert store.read(a.id).superseded_by is None
+    assert not journal.exists()
+
+
+def test_supersede_removes_its_journal(store):
+    a = _e(); store.write(a)
+    store.supersede(a.id, _e(body="v2"))
+    assert not (store.root / ".supersede.journal").exists()
+
+
+def test_journal_is_not_visible_as_an_entry(store):
+    a = _e(); store.write(a)
+    store._atomic_write(store.root / ".supersede.journal", f"{a.id} {_e().id}")
+    assert {e.id for e in store.iter_entries()} == {a.id}
+
+
 def test_read_missing_raises(store):
     with pytest.raises(KeyError):
         store.read("01UNKNOWNULID0000000000000")
