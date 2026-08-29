@@ -1,6 +1,32 @@
 import pytest
 from fastmcp import Client
 from memriver.server import build_server
+from memriver_core.entry import Entry
+from memriver_core.store import MemoryStore
+
+# valid ULID shapes, used for hand-written (hand-edited) entry files
+BAD_YAML_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+BAD_TYPE_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAW"
+
+
+def _write_raw(root, name: str, text: str) -> None:
+    d = root / "global" / "entries"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_text(text, encoding="utf-8")
+
+
+def _seed_healthy(root) -> Entry:
+    e = Entry.new(body="uv manages this workspace", type="fact", scope="global",
+                  source={"harness": "test", "method": "agent"})
+    MemoryStore(root).write(e)
+    return e
+
+
+def _hand_written_entry(entry_id: str, type: str) -> str:
+    return (f"---\nid: {entry_id}\ntype: {type}\nscope: global\nsync: true\n"
+            'created: "2026-01-01T00:00:00Z"\nupdated: "2026-01-01T00:00:00Z"\n'
+            "source: {harness: manual, method: human}\ntrust: agent\n"
+            "superseded_by: null\n---\nhand written entry\n")
 
 
 @pytest.fixture
@@ -70,3 +96,59 @@ async def test_update_supersedes(server):
         assert read_old["superseded_by"] == new["id"]
         hits = (await c.call_tool("memory_search", {"query": "用中文回复"})).data
         assert {h["id"] for h in hits} == {new["id"]}
+
+
+async def test_unreadable_entry_files_are_skipped_at_startup(tmp_path, project):
+    root = tmp_path / "mem"
+    healthy = _seed_healthy(root)
+    _write_raw(root, "notes.md", "just some hand-written notes\n")
+    _write_raw(root, f"{BAD_YAML_ID}.md", "---\nid: [unclosed\n---\nbody\n")
+
+    server = build_server(root=root, project_dir=project)
+    async with Client(server) as c:
+        idx = (await c.call_tool("memory_index", {})).data
+        assert healthy.id in idx
+        assert "hand-written notes" not in idx and "unclosed" not in idx
+        hits = (await c.call_tool("memory_search", {"query": "workspace"})).data
+        assert [h["id"] for h in hits] == [healthy.id]
+
+
+async def test_read_unreadable_entry_returns_error_dict(tmp_path, project):
+    root = tmp_path / "mem"
+    _write_raw(root, f"{BAD_YAML_ID}.md", "---\nid: [unclosed\n---\nbody\n")
+
+    server = build_server(root=root, project_dir=project)
+    async with Client(server) as c:
+        r = (await c.call_tool("memory_read", {"entry_id": BAD_YAML_ID})).data
+        assert "error" in r and "unreadable" in r["error"]
+        u = (await c.call_tool("memory_update", {
+            "entry_id": BAD_YAML_ID, "content": "replacement"})).data
+        assert "error" in u and "unreadable" in u["error"]
+
+
+async def test_update_of_invalid_hand_edited_entry_returns_error_dict(tmp_path, project):
+    root = tmp_path / "mem"
+    _write_raw(root, f"{BAD_TYPE_ID}.md", _hand_written_entry(BAD_TYPE_ID, "task"))
+
+    server = build_server(root=root, project_dir=project)
+    async with Client(server) as c:
+        r = (await c.call_tool("memory_update", {
+            "entry_id": BAD_TYPE_ID, "content": "replacement"})).data
+        assert "error" in r and "task" in r["error"]
+
+
+async def test_update_of_superseded_entry_is_refused(server):
+    async with Client(server) as c:
+        first = (await c.call_tool("memory_write", {
+            "content": "deploys run on friday", "type": "fact",
+            "scope": "global"})).data
+        second = (await c.call_tool("memory_update", {
+            "entry_id": first["id"], "content": "deploys run on monday"})).data
+        stale = (await c.call_tool("memory_update", {
+            "entry_id": first["id"], "content": "deploys run on tuesday"})).data
+
+        assert "error" in stale
+        assert stale["superseded_by"] == second["id"]
+        idx = (await c.call_tool("memory_index", {})).data
+        assert idx.count("\n") == 0 and second["id"] in idx
+        assert "tuesday" not in idx

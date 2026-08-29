@@ -51,6 +51,9 @@ def build_server(root: Path, project_dir: Path) -> FastMCP:
             e = store.read(entry_id)
         except KeyError:
             return {"error": f"no such entry: {entry_id}"}
+        except Exception:
+            # hand-edited file that no longer parses as an entry
+            return {"error": f"unreadable entry file: {entry_id}"}
         return {"id": e.id, "type": e.type, "scope": e.scope, "body": e.body,
                 "created": e.created, "updated": e.updated,
                 "superseded_by": e.superseded_by, "trust": e.trust}
@@ -95,11 +98,24 @@ def build_server(root: Path, project_dir: Path) -> FastMCP:
             return {"error": str(err)}
         except KeyError:
             return {"error": f"no such entry: {entry_id}"}
-        new = Entry.new(body=content, type=old.type, scope=old.scope,
-                        sync=old.sync, source=old.source, trust=old.trust)
-        store.supersede(entry_id, new)
-        index.mark_superseded(entry_id)
-        index.add(new)
+        except Exception:
+            return {"error": f"unreadable entry file: {entry_id}"}
+        # updating an already superseded id would fork the chain and leave two
+        # contradictory active entries; point the caller at the head instead
+        if old.superseded_by:
+            return {"error": f"entry {entry_id} was superseded by "
+                             f"{old.superseded_by}; update that one instead",
+                    "superseded_by": old.superseded_by}
+        # a hand-edited entry may carry an invalid type or trust, so the whole
+        # rewrite stays guarded: tools never raise to MCP clients
+        try:
+            new = Entry.new(body=content, type=old.type, scope=old.scope,
+                            sync=old.sync, source=old.source, trust=old.trust)
+            store.supersede(entry_id, new)
+            index.mark_superseded(entry_id)
+            index.add(new)
+        except (GateError, ValueError) as err:
+            return {"error": str(err)}
         return {"id": new.id, "supersedes": entry_id}
 
     return mcp

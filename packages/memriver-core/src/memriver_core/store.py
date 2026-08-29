@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 import tempfile
@@ -7,6 +8,8 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from .entry import Entry, _now
+
+logger = logging.getLogger(__name__)
 
 
 def _scope_dir(scope: str) -> Path:
@@ -68,7 +71,13 @@ class MemoryStore:
             if not d.is_dir():
                 continue
             for f in sorted(d.glob("*.md")):
-                e = Entry.from_markdown(f.read_text(encoding="utf-8"))
+                # the store is hand-editable and users may drop their own notes
+                # next to entries: one broken file must never break a traversal
+                try:
+                    e = Entry.from_markdown(f.read_text(encoding="utf-8"))
+                except Exception:
+                    logger.warning("skipping unreadable entry file: %s", f)
+                    continue
                 if include_superseded or e.superseded_by is None:
                     yield e
 
