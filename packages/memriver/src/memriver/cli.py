@@ -12,7 +12,9 @@ def main() -> None:
     parser.add_argument("--version", action="store_true")
     parser.add_argument("--root", type=Path, default=None,
                         help="storage root (default: $MEMRIVER_ROOT or ~/agent-memory)")
-    parser.add_argument("--project-dir", type=Path, default=Path.cwd())
+    parser.add_argument("--project-dir", type=Path, default=Path.cwd(),
+                        help="project whose 'project' memory scope is used "
+                             "(default: the current working directory)")
     args = parser.parse_args()
 
     if args.version:

@@ -21,18 +21,24 @@ uv run memriver          # stdio MCP server, storage at ~/agent-memory
 
 ## Hook up a harness (manual, until `memriver install` ships)
 
-Claude Code: `claude mcp add memriver -- uv run --directory /path/to/repo memriver`
+Claude Code: `claude mcp add memriver -- uv run --project /path/to/repo memriver`
 
 Codex (`~/.codex/config.toml`):
 
 ```toml
 [mcp_servers.memriver]
 command = "uv"
-args = ["run", "--directory", "/path/to/repo", "memriver"]
+args = ["run", "--project", "/path/to/repo", "memriver"]
 ```
 
 Cursor (`~/.cursor/mcp.json`) / Kiro: same `command`/`args` shape under
 `mcpServers.memriver`.
+
+The MCP client's working directory determines project attribution: `--project`
+runs memriver from this checkout while keeping that directory, so `scope="project"`
+memories land under the project you are actually working in (use `--directory`
+and every project would share memriver's own slug). Pass `--project-dir` to the
+`memriver` command to pin a project explicitly.
 
 Storage layout: `~/agent-memory/{global,projects/<slug>}/entries/<ulid>.md`
 (override root with `MEMRIVER_ROOT`).
