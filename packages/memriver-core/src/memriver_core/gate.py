@@ -38,11 +38,22 @@ def _load_rules(*sources: "Traversable") -> list[_Rule]:
 
     Sources are read in order and ids are deduplicated first-wins, so memriver's
     own floor rules take precedence over an upstream rule of the same id.
+
+    A `[policy]` table in any source names, in `honor_entropy_only_for`, the ids
+    whose entropy threshold survives loading; every other rule is enforced by
+    shape alone. That is what lets gitleaks.toml stay vendored verbatim while
+    memriver applies a stricter reading of it. No `[policy]` table anywhere means
+    every threshold is honoured -- upstream semantics, so a hand-trimmed or
+    third-party rules file fails safe toward changing nothing.
     """
     rules: list[_Rule] = []
     seen: set[str] = set()
+    honored: set[str] | None = None
     for source in sources:
         config = tomllib.loads(source.read_text(encoding="utf-8"))
+        policy = config.get("policy")
+        if policy is not None:
+            honored = set(policy.get("honor_entropy_only_for", ()))
         for rule in config.get("rules", ()):
             rule_id = rule["id"]
             pattern = rule.get("regex")
@@ -68,7 +79,10 @@ def _load_rules(*sources: "Traversable") -> list[_Rule]:
                 int(rule.get("secretGroup", 0)),
                 tuple(k.lower() for k in rule.get("keywords", ())),
             ))
-    return rules
+    if honored is None:
+        return rules
+    return [(rid, pat, ent if rid in honored else None, grp, kw)
+            for rid, pat, ent, grp, kw in rules]
 
 
 _RULES = _load_rules(_RULES_DIR / "memriver.toml", _RULES_DIR / "gitleaks.toml")

@@ -2,42 +2,50 @@
 # loads both files. They are layered before the vendored gitleaks set and are
 # deliberately entropy-free: these are deterministic floors that must block
 # every time they match, including the low-entropy placeholder credentials that
-# turn up in notes and examples. Entropy tuning belongs to the vendored rules.
+# turn up in notes and examples. What survives here is only what the vendored
+# set genuinely misses -- upstream pins each provider rule to one exact length
+# or infix, and a truncated or misremembered credential is still a credential.
 #
-# Keywords are omitted on purpose too: seven regexes over an 8000-char body cost
+# Keywords are omitted on purpose too: five regexes over an 8000-char body cost
 # nothing, and a prefilter here would only add a way to silently stop matching.
 
 title = "memriver floor rules"
 
-[[rules]]
-id = "memriver-aws-access-key"
-description = "AWS access key id (AKIA long-lived, ASIA temporary/STS)"
-regex = 'A[KS]IA[0-9A-Z]{16}'
+[policy]
+# Entropy gates exist to suppress false positives on LOOSE patterns.
+# Provider-specific rules have distinctive prefixes; enforce them by shape
+# alone so a low-entropy token cannot slip past a deliberately strict gate.
+# A rule that proves noisy in practice gets its id appended here (data-only fix).
+honor_entropy_only_for = ["generic-api-key"]
 
-[[rules]]
-id = "memriver-github-token"
-description = "GitHub personal access / OAuth / refresh token"
-regex = 'gh[pousr]_[A-Za-z0-9]{36,}'
+# AWS access key ids and the gh[pousr]_ token family used to have floor rules
+# here. With entropy off, the vendored aws-access-token and github-pat /
+# github-oauth / github-app-token / github-refresh-token rules cover the same
+# shapes, so the duplicates are gone.
 
 [[rules]]
 id = "memriver-github-fine-grained-pat"
-# fine-grained PATs use a different prefix and allow '_' in the body, so the
-# classic gh[pousr]_ rule never matches them
+# upstream's github-fine-grained-pat demands exactly 82 body chars; a truncated
+# or line-wrapped PAT in a note is still a leak
 description = "GitHub fine-grained personal access token"
 regex = 'github_pat_[A-Za-z0-9_]{20,}'
 
 [[rules]]
 id = "memriver-private-key-header"
+# no vendored rule matches a PEM header on its own, only whole key blocks
 description = "PEM private key block header"
 regex = '-----BEGIN[A-Z ]*PRIVATE KEY-----'
 
 [[rules]]
 id = "memriver-slack-token"
+# upstream's xox[bp] rules demand two numeric segments of 10-13 digits
 description = "Slack bot / app / user / refresh token"
 regex = 'xox[baprs]-[A-Za-z0-9-]{10,}'
 
 [[rules]]
 id = "memriver-openai-api-key"
+# upstream's openai-api-key demands the literal 'T3BlbkFJ' infix, which the
+# sk-proj- keys people paste into notes do not always still carry
 description = "OpenAI API key"
 regex = '\bsk-[A-Za-z0-9_-]{20,}'
 

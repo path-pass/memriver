@@ -37,6 +37,71 @@ def test_vendored_secrets_blocked(text, marker):
     assert marker not in str(ei.value)
 
 
+def _blocked_by(text, marker, rule_id):
+    with pytest.raises(GateError) as ei:
+        check_content(text)
+    assert marker not in str(ei.value)
+    # the parenthesised form pins the exact id: 'x' would otherwise be satisfied
+    # by a floor rule named 'memriver-x' that shadowed the vendored rule
+    assert f"({rule_id})" in str(ei.value)
+
+
+# A provider prefix followed by near-uniform filler: the shape of a credential
+# with almost no entropy. Upstream gates every provider rule on entropy, so all
+# of these cleared the vendored layer, and the first two -- shapes memriver has
+# no floor rule for -- passed the gate outright. The [policy] table honours
+# entropy only for the loose generic-api-key, so shape alone rejects them now.
+# Each case also pins WHICH rule id rejected it: a floor rule quietly taking over
+# a vendored rule's job is how the vendored layer rots unnoticed.
+LOW_ENTROPY_BLOCKED = [
+    ("key AIza" + "a" * 35 + " end", "AIza" + "a" * 35, "gcp-api-key"),
+    ("STRIPE=" + "sk_" + "live_" + "a" * 24, "live_" + "a" * 24, "stripe-access-token"),
+    ("token ghp_" + "a" * 36, "ghp_" + "a" * 36, "github-pat"),
+    ("oauth gho_" + "b" * 36, "gho_" + "b" * 36, "github-oauth"),
+    ("aws key AKIA" + "A" * 16 + " noted", "AKIA" + "A" * 16, "aws-access-token"),
+]
+# Full-length low-entropy Slack and fine-grained-PAT shapes are covered by the
+# de-entropy'd vendored rules too, but a floor rule still matches them first, so
+# they are pinned in FLOOR_ONLY_BLOCKED below rather than here.
+
+
+@pytest.mark.parametrize("text,marker,rule_id", LOW_ENTROPY_BLOCKED)
+def test_low_entropy_provider_shapes_blocked(text, marker, rule_id):
+    _blocked_by(text, marker, rule_id)
+
+
+# The shapes the vendored layer still misses, entropy or not: these are why the
+# matching floor rules survive the de-entropy'd vendored coverage. Each vector is
+# a real-world truncation or spelling of a credential that upstream pins to one
+# exact length or one exact infix.
+FLOOR_ONLY_BLOCKED = [
+    # upstream's github-fine-grained-pat demands exactly 82 body chars
+    ("token github_pat_" + "a" * 60 + " end", "github_pat_" + "a" * 60,
+     "memriver-github-fine-grained-pat"),
+    # upstream's slack-bot-token demands two numeric segments
+    ("xoxb-123456789012-abcdefghijkl", "xoxb-123456789012", "memriver-slack-token"),
+    # upstream's openai-api-key demands the literal 'T3BlbkFJ' infix
+    ("OpenAI key is sk-proj-abcdefghij1234567890xyz somewhere",
+     "sk-proj-abcdefghij1234567890xyz", "memriver-openai-api-key"),
+    # no vendored rule matches a PEM header on its own
+    ("-----BEGIN RSA PRIVATE KEY-----\nabc", "PRIVATE KEY",
+     "memriver-private-key-header"),
+    # the credential-assignment heuristic: no provider shape at all
+    ("password: correcthorsebattery", "correcthorsebattery",
+     "memriver-credential-assignment"),
+]
+
+
+@pytest.mark.parametrize("text,marker,rule_id", FLOOR_ONLY_BLOCKED)
+def test_floor_rules_cover_what_vendored_rules_miss(text, marker, rule_id):
+    _blocked_by(text, marker, rule_id)
+
+
+def test_shipped_policy_honours_entropy_only_for_generic_api_key():
+    # the loaded ruleset is the contract: every other rule is enforced by shape
+    assert [rid for rid, _p, ent, *_ in _RULES if ent is not None] == ["generic-api-key"]
+
+
 # Memory bodies are prose, ULIDs and links; a vendored rule that fires on any of
 # these has to be dealt with in gate.py, since gitleaks.toml is vendored verbatim.
 PASSING = [
@@ -73,7 +138,7 @@ def test_memriver_floor_rules_all_load():
     # our own rules are hand-written for Python `re`: none may be skipped, and
     # they must come first so a floor rule wins over a same-named upstream one
     floor = _raw("memriver.toml")
-    assert len(floor) == 7
+    assert len(floor) == 5
     loaded = [r[0] for r in _RULES[:len(floor)]]
     assert loaded == [r["id"] for r in floor]
     assert all(rid.startswith("memriver-") for rid in loaded)
@@ -112,6 +177,51 @@ def test_uncompilable_rule_is_skipped_not_fatal(tmp_path, caplog):
     # a POSIX class compiles in Python with a *different* meaning; it must be
     # rejected too, not silently mis-matched
     assert "posix-class" in caplog.text
+
+
+# --- [policy] honor_entropy_only_for --------------------------------------
+
+_SYNTHETIC = """
+[[rules]]
+id = "synthetic-key"
+regex = '''ZQ9\\w+'''
+entropy = 3.0
+"""
+
+# 'ZQ9aaaaaaaa' measures ~1.28 bits/char, comfortably under the rule's 3.0
+_BELOW_THRESHOLD = "marker ZQ9aaaaaaaa end"
+
+
+def _policy_rules(tmp_path, text):
+    (tmp_path / "p.toml").write_text(text, encoding="utf-8")
+    return _load_rules(tmp_path / "p.toml")
+
+
+def test_entropy_honored_for_listed_rule(tmp_path, monkeypatch):
+    rules = _policy_rules(
+        tmp_path, '[policy]\nhonor_entropy_only_for = ["synthetic-key"]\n' + _SYNTHETIC)
+    monkeypatch.setattr("memriver_core.gate._RULES", rules)
+    # the rule is listed, so its threshold still gates: below it, nothing happens
+    check_content(_BELOW_THRESHOLD)
+
+
+def test_entropy_dropped_for_unlisted_rule(tmp_path, monkeypatch):
+    rules = _policy_rules(
+        tmp_path, '[policy]\nhonor_entropy_only_for = ["other-rule"]\n' + _SYNTHETIC)
+    assert rules[0][2] is None
+    monkeypatch.setattr("memriver_core.gate._RULES", rules)
+    # same body, same threshold: unlisted means shape alone rejects
+    with pytest.raises(GateError) as ei:
+        check_content(_BELOW_THRESHOLD)
+    assert "(synthetic-key)" in str(ei.value)
+
+
+def test_missing_policy_table_honors_every_entropy(tmp_path, monkeypatch):
+    # a hand-trimmed rules file with no [policy] keeps upstream semantics
+    rules = _policy_rules(tmp_path, _SYNTHETIC)
+    assert rules[0][2] == 3.0
+    monkeypatch.setattr("memriver_core.gate._RULES", rules)
+    check_content(_BELOW_THRESHOLD)
 
 
 def test_shannon_entropy():
