@@ -53,3 +53,12 @@ def test_invalid_scope_slug_rejected(store):
         store.write(_e(scope="project:../evil"))
     with pytest.raises(ValueError):
         store.write(_e(scope="project:"))
+
+
+def test_read_rejects_malformed_ids(store):
+    # entry ids are untrusted input; glob metacharacters and traversal must not resolve
+    e = _e()
+    store.write(e)
+    for bad in ("*", "../../../outside", ""):
+        with pytest.raises(KeyError):
+            store.read(bad)

@@ -46,6 +46,9 @@ class MemoryStore:
         return path
 
     def _find(self, entry_id: str) -> Path:
+        # entry ids are untrusted tool input; reject non-ULID shapes before globbing
+        if not re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{26}", entry_id):
+            raise KeyError(entry_id)
         for pattern in (f"global/entries/{entry_id}.md", f"projects/*/entries/{entry_id}.md"):
             for path in self.root.glob(pattern):
                 return path
