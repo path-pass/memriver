@@ -21,6 +21,9 @@ BLOCKED = [
     # '@' or '!' counts too few characters and lets the whole assignment pass
     ('PASSWORD="P@ssw0rd!234567"', "P@ssw0rd!234567"),
     ("DB_PASSWORD=P@ss:w0rd!23456", "P@ss:w0rd!23456"),
+    # bare OpenAI key in prose: no ':'/'=' right after a key name, so the
+    # credential-assignment rule never matches it
+    ("OpenAI key is sk-proj-abcdefghij1234567890xyz somewhere", "sk-proj-abcdefghij1234567890xyz"),
 ]
 
 @pytest.mark.parametrize("text,marker", BLOCKED)

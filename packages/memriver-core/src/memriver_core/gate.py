@@ -12,6 +12,7 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("GitHub fine-grained PAT", re.compile(r"github_pat_[A-Za-z0-9_]{20,}")),
     ("private key block", re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----")),
     ("Slack token", re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}")),
+    ("OpenAI API key", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}")),
     # quotes are optional: env files, shell exports and log lines carry none.
     # No word boundary around the keyword: '_' is a word character, so the usual
     # env var names (OPENAI_API_KEY, AWS_SECRET_ACCESS_KEY) have none before the
