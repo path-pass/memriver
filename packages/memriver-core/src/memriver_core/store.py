@@ -73,9 +73,29 @@ class MemoryStore:
             raise
 
     def write(self, entry: Entry) -> Path:
+        # entry.id is untrusted at the core-API boundary too (Entry.new accepts
+        # it verbatim by design -- the server sanitizes, but this store must
+        # not assume every caller does); reject unknown shapes before
+        # _entry_path interpolates it into a filesystem path
+        if not _ID_RE.fullmatch(entry.id):
+            raise ValueError(f"invalid entry id: {entry.id!r}")
         path = self._entry_path(entry)
         self._atomic_write(path, entry.to_markdown())
         return path
+
+    def occupied(self, entry_id: str, scopes: list[str] | None = None) -> bool:
+        """Whether any file sits at this name -- parsed or not.
+
+        The write-side collision check must treat every existing file as
+        occupying its name, including files read() refuses (unparseable, or
+        frontmatter scope contradicting the directory): claiming such a name
+        would atomically replace a file the user may have hand-edited.
+        """
+        try:
+            self._find(entry_id, scopes)
+        except EntryNotFound:
+            return False
+        return True
 
     def _find(self, entry_id: str, scopes: list[str] | None = None) -> Path:
         # entry ids are untrusted tool input; reject unknown shapes before globbing

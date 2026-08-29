@@ -197,6 +197,28 @@ async def test_write_refuses_clobber_when_name_equals_missing_frontmatter_key(
     assert path.read_bytes() == before
 
 
+async def test_write_refuses_when_name_taken_by_scope_mismatched_file(tmp_path, project):
+    # store.read() treats a file whose frontmatter scope contradicts its
+    # directory as EntryNotFound (directory is truth), so a collision check
+    # built only on read() would conclude the name is free and let
+    # store.write atomically replace a file the user may have hand-edited
+    root = tmp_path / "mem"
+    mismatched = Entry.new(body="hand-edited, wrong scope for its directory",
+                           type="user", scope="project:elsewhere-000000", id="n",
+                           source={"harness": "test", "method": "agent"})
+    _write_raw(root, "n.md", mismatched.to_markdown())
+    path = root / "global" / "entries" / "n.md"
+    before = path.read_bytes()
+
+    server = build_server(root=root, project_dir=project)
+    async with Client(server) as c:
+        out = (await c.call_tool("memory_write", {
+            "content": "v1", "type": "user", "name": "n", "scope": "global"})).data
+        assert "error" in out
+
+    assert path.read_bytes() == before
+
+
 async def test_update_rewrites_in_place(server):
     async with Client(server) as c:
         await c.call_tool("memory_write", {

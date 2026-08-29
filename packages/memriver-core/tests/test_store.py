@@ -76,6 +76,17 @@ def test_invalid_scope_slug_rejected(store):
         store.write(_e(scope="project:"))
 
 
+def test_write_rejects_path_traversal_id(store):
+    # reads validate ids with _ID_RE before globbing; write must validate too,
+    # or a core-API consumer's id="../../../outside" escapes the store root
+    # when _entry_path interpolates it straight into the filesystem path
+    e = Entry.new(body="x", type="user", scope="global", source=SOURCE,
+                  id="../../../outside")
+    with pytest.raises(ValueError):
+        store.write(e)
+    assert list(store.root.glob("**/*.md")) == []
+
+
 def test_read_rejects_malformed_ids(store):
     # entry ids are untrusted input; glob metacharacters and traversal must not resolve
     e = _e()

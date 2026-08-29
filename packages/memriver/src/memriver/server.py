@@ -110,16 +110,18 @@ def build_server(root: Path, project_dir: Path,
                     # project already uses -- so a global write checks every
                     # scope in the store, not just the caller's own two
                     check_scopes = None if full_scope == "global" else scopes
-                    try:
-                        old = store.read(entry_id, scopes=check_scopes)
-                    except EntryNotFound:
-                        old = None
-                    except Exception:  # noqa: BLE001
-                        # the name resolves to a file, but it is not a
-                        # readable entry (e.g. a hand-written note missing a
-                        # frontmatter key) -- refuse rather than clobber it
-                        return {"error": f"name {entry_id!r} is taken by a "
-                                         "file that is not a readable entry"}
+                    old = None
+                    if store.occupied(entry_id, scopes=check_scopes):
+                        # a file sits at this name -- read() may still refuse
+                        # it (unparseable, or frontmatter scope contradicting
+                        # its directory); either way the name is taken and
+                        # store.write must not be allowed to replace it
+                        try:
+                            old = store.read(entry_id, scopes=check_scopes)
+                        except Exception:  # noqa: BLE001
+                            return {"error": f"name {entry_id!r} is taken by "
+                                             "a file that is not a readable "
+                                             "entry"}
                     if old is not None:
                         if full_scope == "global" and old.scope != full_scope:
                             # the collision lives in another scope (a project,
