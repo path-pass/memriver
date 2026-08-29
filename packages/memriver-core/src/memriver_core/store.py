@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import logging
 import os
 import re
@@ -82,9 +83,24 @@ class MemoryStore:
                     yield e
 
     def supersede(self, old_id: str, new_entry: Entry) -> Entry:
-        old = self.read(old_id)
-        self.write(new_entry)
-        old.superseded_by = new_entry.id
-        old.updated = _now()
-        self.write(old)
+        # Several server processes may share one root, and each of them checks
+        # "is it superseded?" before writing. Without a cross-process lock two of
+        # them can both pass that check and fork the chain into two contradictory
+        # active entries, so the read-check-write below is serialized on a lock
+        # file and re-reads the old entry inside the lock.
+        # fcntl is POSIX-only: this project does not support Windows yet.
+        self.root.mkdir(parents=True, exist_ok=True)
+        with open(self.root / ".lock", "a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                old = self.read(old_id)
+                if old.superseded_by is not None:
+                    raise ValueError(f"entry {old_id} already superseded "
+                                     f"by {old.superseded_by}")
+                self.write(new_entry)
+                old.superseded_by = new_entry.id
+                old.updated = _now()
+                self.write(old)
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
         return new_entry

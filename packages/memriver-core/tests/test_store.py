@@ -1,3 +1,5 @@
+import threading
+
 import pytest
 from memriver_core.entry import Entry
 
@@ -40,6 +42,49 @@ def test_supersede_marks_old(store):
     store.supersede(a.id, new)
     old = store.read(a.id)
     assert old.superseded_by == new.id and old.updated >= old.created
+
+
+def test_supersede_of_superseded_entry_raises(store):
+    # the server pre-checks this, but a second process can pass that pre-check
+    # before the first writes: the store itself must be the final guard
+    a = _e(); store.write(a)
+    b = _e(body="v2"); store.supersede(a.id, b)
+    c = _e(body="v3")
+    with pytest.raises(ValueError, match=b.id):
+        store.supersede(a.id, c)
+    assert not (store.root / "global" / "entries" / f"{c.id}.md").exists()
+
+
+def test_concurrent_supersede_has_exactly_one_winner(store):
+    # both threads clear the (nonexistent) pre-check together; the file lock plus
+    # the in-lock re-read must let exactly one of them win
+    a = _e(); store.write(a)
+    barrier = threading.Barrier(2)
+    results: list[Exception | None] = []
+    lock = threading.Lock()
+
+    def attempt() -> None:
+        new = _e(body="rival")
+        barrier.wait()
+        try:
+            store.supersede(a.id, new)
+            outcome: Exception | None = None
+        except Exception as err:
+            outcome = err
+        with lock:
+            results.append(outcome)
+
+    threads = [threading.Thread(target=attempt) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+        assert not t.is_alive()
+
+    assert len(results) == 2
+    winners = [r for r in results if r is None]
+    losers = [r for r in results if isinstance(r, ValueError)]
+    assert len(winners) == 1 and len(losers) == 1
 
 
 def test_read_missing_raises(store):
