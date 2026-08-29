@@ -1,4 +1,5 @@
 import threading
+import time
 
 import pytest
 from memriver_core.entry import Entry
@@ -140,23 +141,43 @@ def test_exists(tmp_path):
 
 
 def test_update_body_serializes_concurrent_writers(tmp_path):
-    # each thread opens .lock separately, so flock genuinely serializes the two
-    # in-process calls; without it a torn write could corrupt the file or leave
-    # a stray temp file behind instead of exactly one clean entry
+    # instrument the critical section directly: end-state assertions alone
+    # can't discriminate a missing lock, because _atomic_write's mkstemp +
+    # os.replace already guarantees a single clean winner either way. Count
+    # concurrent entries into _atomic_write instead -- with the store-wide
+    # flock held for the whole read-modify-write, only one thread can ever
+    # be inside it at a time.
     store = MemoryStore(tmp_path)
     store.write(Entry.new(body="base", type="user", scope="global", source={}, id="n"))
+    active = 0
+    max_active = 0
+    counter_lock = threading.Lock()
+    real_write = store._atomic_write
+
+    def observed_write(path, text):
+        nonlocal active, max_active
+        with counter_lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.02)  # widen the window so an unserialized peer overlaps
+        try:
+            real_write(path, text)
+        finally:
+            with counter_lock:
+                active -= 1
+
+    store._atomic_write = observed_write
     barrier = threading.Barrier(2)
-    markers = ["marker-A", "marker-B"]
     errors: list[Exception] = []
 
     def attempt(marker: str) -> None:
-        barrier.wait()
         try:
+            barrier.wait(timeout=5)
             store.update_body("n", marker, scopes=["global"])
         except Exception as err:  # noqa: BLE001
             errors.append(err)
 
-    threads = [threading.Thread(target=attempt, args=(m,)) for m in markers]
+    threads = [threading.Thread(target=attempt, args=(m,)) for m in ("a", "b")]
     for t in threads:
         t.start()
     for t in threads:
@@ -164,5 +185,5 @@ def test_update_body_serializes_concurrent_writers(tmp_path):
         assert not t.is_alive()
 
     assert errors == []
-    assert store.read("n").body in markers
-    assert len(list(store.iter_entries(scopes=["global"]))) == 1
+    assert max_active == 1  # flock serialized the two critical sections
+    assert store.read("n").body in {"a", "b"}
