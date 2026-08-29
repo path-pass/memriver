@@ -57,7 +57,12 @@ LOW_ENTROPY_BLOCKED = [
     ("key AIza" + "a" * 35 + " end", "AIza" + "a" * 35, "gcp-api-key"),
     ("STRIPE=" + "sk_" + "live_" + "a" * 24, "live_" + "a" * 24, "stripe-access-token"),
     ("token ghp_" + "a" * 36, "ghp_" + "a" * 36, "github-pat"),
+    # all five gh*_ prefixes: the deleted memriver-github-token covered the whole
+    # family, so a vendoring sync that drops one upstream rule must fail here
     ("oauth gho_" + "b" * 36, "gho_" + "b" * 36, "github-oauth"),
+    ("token ghu_" + "a" * 36, "ghu_" + "a" * 36, "github-app-token"),
+    ("token ghs_" + "a" * 36, "ghs_" + "a" * 36, "github-app-token"),
+    ("token ghr_" + "a" * 36, "ghr_" + "a" * 36, "github-refresh-token"),
     ("aws key AKIA" + "A" * 16 + " noted", "AKIA" + "A" * 16, "aws-access-token"),
 ]
 # Full-length low-entropy Slack and fine-grained-PAT shapes are covered by the
