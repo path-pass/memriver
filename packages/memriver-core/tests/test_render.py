@@ -18,6 +18,16 @@ def test_render_empty(store):
     assert "no memories yet" in render_index(store, scopes=["global"])
 
 
+def test_render_tolerates_empty_body(store):
+    # entry files are hand-editable, so an empty body can reach the store
+    # without passing through the write gate; it must not break the index
+    e = Entry.new(body="placeholder", type="fact", scope="global", source=SOURCE)
+    e.body = ""
+    store.write(e)
+    out = render_index(store, scopes=["global"])
+    assert e.id in out
+
+
 def test_render_orders_newest_first_with_ulid_tiebreak(store):
     a = Entry.new(body="older entry", type="fact", scope="global", source=SOURCE)
     b = Entry.new(body="tied but larger id", type="fact", scope="global", source=SOURCE)

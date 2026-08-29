@@ -16,6 +16,13 @@ def test_secrets_blocked(text, marker):
         check_content(text)
     assert marker not in str(ei.value)
 
+@pytest.mark.parametrize("text", ["", "   ", "\n\t \n"])
+def test_empty_content_blocked(text):
+    # an empty body would store a useless entry and break index rendering
+    with pytest.raises(GateError):
+        check_content(text)
+
+
 def test_oversize_blocked():
     with pytest.raises(GateError):
         check_content("x" * 8001)

@@ -66,6 +66,11 @@ class FtsIndex:
             self.conn.execute("UPDATE entries SET active = 0 WHERE id = ?", (entry_id,))
 
     def search(self, query: str, scopes: list[str], limit: int = 5) -> list[SearchHit]:
+        # a NUL truncates the query inside FTS5 and surfaces as
+        # sqlite3.OperationalError, which callers cannot reasonably catch
+        query = query.replace("\x00", "")
+        if not query:
+            return []
         marks = ",".join("?" for _ in scopes)
         if len(query) < _MIN_TRIGRAM:
             sql = (f"SELECT id, scope, type, body FROM entries "

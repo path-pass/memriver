@@ -10,7 +10,8 @@ def render_index(store: MemoryStore, scopes: list[str], budget_lines: int = 100)
         return "(no memories yet)"
     lines = []
     for e in entries[:budget_lines]:
-        first = e.body.splitlines()[0][:60]
+        # entry files are hand-editable, so an empty body must not break the index
+        first = (e.body.splitlines() or [""])[0][:60]
         lines.append(f"- [{e.type}] {first} ({e.id}, {e.updated[:10]})")
     omitted = len(entries) - budget_lines
     if omitted > 0:

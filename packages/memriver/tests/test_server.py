@@ -42,6 +42,23 @@ async def test_malformed_explicit_scope_returns_error_dict(server):
         assert "error" in r
 
 
+async def test_blank_content_rejected(server):
+    async with Client(server) as c:
+        r = (await c.call_tool("memory_write", {
+            "content": "   ", "type": "fact"})).data
+        assert "error" in r
+        idx = (await c.call_tool("memory_index", {})).data
+        assert "no memories yet" in idx
+
+
+async def test_nul_bytes_do_not_escape_as_tool_error(server):
+    async with Client(server) as c:
+        assert (await c.call_tool("memory_search", {"query": "a\x00b"})).data == []
+        r = (await c.call_tool("memory_write", {
+            "content": "x\x00y", "type": "fact"})).data
+        assert "id" in r
+
+
 async def test_update_supersedes(server):
     async with Client(server) as c:
         old = (await c.call_tool("memory_write", {

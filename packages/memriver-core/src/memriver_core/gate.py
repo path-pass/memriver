@@ -19,6 +19,8 @@ class GateError(ValueError):
 
 
 def check_content(body: str) -> None:
+    if not body.strip():
+        raise GateError("content is empty; nothing to store")
     if len(body) > MAX_BODY_CHARS:
         raise GateError(f"content too large ({len(body)} > {MAX_BODY_CHARS} chars); "
                         "store a summary or pointer instead")

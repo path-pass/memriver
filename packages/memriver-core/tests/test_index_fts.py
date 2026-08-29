@@ -66,6 +66,15 @@ def test_fallback_wildcards_do_not_dump_table(tmp_path):
     assert idx.search("_", scopes=["global"], limit=10) == []
 
 
+def test_nul_bytes_in_query_do_not_raise(tmp_path):
+    idx = _idx(tmp_path)
+    idx.add(_e("body one"))
+    # a NUL truncates the query string inside FTS5 and used to surface as
+    # sqlite3.OperationalError, which no caller catches
+    assert isinstance(idx.search("evil\x00query", scopes=["global"], limit=5), list)
+    assert idx.search("\x00", scopes=["global"], limit=5) == []
+
+
 def test_fallback_short_ascii_query_hits(tmp_path):
     idx = _idx(tmp_path)
     e = _e("uv is the package manager")
