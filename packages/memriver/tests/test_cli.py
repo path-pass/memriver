@@ -64,7 +64,7 @@ def _write_over_stdio(root, cwd, extra_args: list[str], content: str) -> dict:
                      "params": {}})
         _send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
                      "params": {"name": "memory_write",
-                                "arguments": {"content": content, "type": "fact",
+                                "arguments": {"content": content, "type": "project",
                                               "scope": "project"}}})
         return _await_response(proc, 2)
     finally:
