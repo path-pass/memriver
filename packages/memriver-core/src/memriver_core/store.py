@@ -129,6 +129,15 @@ class MemoryStore:
         if entry.scope != _dir_scope(path.parent):
             logger.warning("refusing entry with mismatched scope: %s", path)
             raise EntryNotFound(entry_id)
+        # the filename is the identity, same reason as the scope check above:
+        # a hand-edited frontmatter `id` that no longer matches its filename
+        # does not exist as far as callers go. Without this, update_body would
+        # mutate this Entry and store.write would route it by entry.id --
+        # writing under the declared id (e.g. bar.md) while this file (foo.md)
+        # stays untouched, potentially clobbering an unrelated existing entry.
+        if entry.id != path.stem:
+            logger.warning("refusing entry with mismatched id: %s", path)
+            raise EntryNotFound(entry_id)
         return entry
 
     def update_body(self, entry_id: str, body: str, scopes: list[str],
@@ -177,6 +186,13 @@ class MemoryStore:
                 # physical truth; a file that contradicts it is not trusted.
                 if e.scope != expected:
                     logger.warning("skipping entry with mismatched scope: %s", f)
+                    continue
+                # same as the scope check above: the filename is the identity,
+                # and an id that doesn't resolve back to its own file must not
+                # be exposed through the index/search -- it would name an id
+                # that read()/update_body() can no longer find
+                if e.id != f.stem:
+                    logger.warning("skipping entry with mismatched id: %s", f)
                     continue
                 yield e
 

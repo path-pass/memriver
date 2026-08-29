@@ -235,6 +235,30 @@ async def test_write_refuses_when_name_taken_by_scope_mismatched_file(tmp_path, 
     assert path.read_bytes() == before
 
 
+async def test_write_refuses_when_name_taken_by_id_mismatched_file(tmp_path, project):
+    # store.read() now treats a file whose frontmatter id contradicts its own
+    # filename as EntryNotFound (filename is truth); the collision check must
+    # still refuse the name rather than concluding it is free and letting
+    # store.write create a second file (bar.md) while foo.md is untouched
+    root = tmp_path / "mem"
+    mismatched = Entry.new(body="hand-edited, id no longer matches filename",
+                           type="user", scope="global", id="foo",
+                           source={"harness": "test", "method": "agent"})
+    path = MemoryStore(root).write(mismatched)
+    mismatched.id = "bar"
+    path.write_text(mismatched.to_markdown(), encoding="utf-8")
+    before = path.read_bytes()
+
+    server = build_server(root=root, project_dir=project)
+    async with Client(server) as c:
+        out = (await c.call_tool("memory_write", {
+            "content": "v1", "type": "user", "name": "foo", "scope": "global"})).data
+        assert "error" in out
+
+    assert path.read_bytes() == before
+    assert not (root / "global" / "entries" / "bar.md").exists()
+
+
 async def test_update_rewrites_in_place(server):
     async with Client(server) as c:
         await c.call_tool("memory_write", {

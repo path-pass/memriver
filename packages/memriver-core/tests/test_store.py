@@ -63,6 +63,45 @@ def test_read_refuses_entry_whose_frontmatter_scope_contradicts_its_directory(st
     assert path.read_text(encoding="utf-8") == misplaced.to_markdown()
 
 
+def test_read_refuses_entry_whose_frontmatter_id_contradicts_its_filename(store):
+    # the filename is the identity: a hand-edited frontmatter `id` that no
+    # longer matches foo.md must not be trusted, or update_body would later
+    # write under the declared id (bar.md) while foo.md sits untouched --
+    # potentially clobbering an unrelated existing memory named "bar"
+    mine = _e(body="original body")
+    path = store.write(mine)
+    mine.id = "bar"
+    path.write_text(mine.to_markdown(), encoding="utf-8")
+
+    with pytest.raises(KeyError):
+        store.read(path.stem)
+    assert path.read_text(encoding="utf-8") == mine.to_markdown()
+
+
+def test_iter_entries_skips_entry_whose_id_contradicts_its_filename(store):
+    mine = _e(body="mine stays visible")
+    retagged = _e(body="id no longer matches filename")
+    store.write(mine)
+    path = store.write(retagged)
+    retagged.id = "some-other-id"
+    path.write_text(retagged.to_markdown(), encoding="utf-8")
+
+    assert {e.id for e in store.iter_entries(scopes=["global"])} == {mine.id}
+    assert {e.id for e in store.iter_entries()} == {mine.id}
+
+
+def test_update_body_refuses_when_id_contradicts_filename(store):
+    mine = _e(body="original body")
+    path = store.write(mine)
+    mine.id = "bar"
+    path.write_text(mine.to_markdown(), encoding="utf-8")
+
+    with pytest.raises(KeyError):
+        store.update_body(path.stem, "hijacked", scopes=["global"])
+    assert not (path.parent / "bar.md").exists()
+    assert path.read_text(encoding="utf-8") == mine.to_markdown()
+
+
 def test_read_missing_raises(store):
     with pytest.raises(KeyError):
         store.read("01UNKNOWNULID0000000000000")
