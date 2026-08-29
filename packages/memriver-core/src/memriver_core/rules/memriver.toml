@@ -45,7 +45,8 @@ regex = '\bsk-[A-Za-z0-9_-]{20,}'
 # No word boundary around the keyword: '_' is a word character, so the usual
 # env var names (OPENAI_API_KEY, AWS_SECRET_ACCESS_KEY) have none before the
 # keyword nor after it, and the trailing name parts have to be consumed too.
-# The required '[:=]' is what keeps prose out ('token 管理方式', '1Password').
+# The required '[:=]' is what keeps prose out: 'the token lives in 1Password'
+# and 'see the API key rotation notes' have no ':' or '=' after the key name.
 # The value has three branches because real passwords carry punctuation: a
 # single restricted character class stopped at the first '@' or '!' and counted
 # too few characters, so 'PASSWORD="P@ssw0rd!234567"' passed. Each quote style

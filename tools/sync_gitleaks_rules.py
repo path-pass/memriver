@@ -31,16 +31,22 @@ def main() -> None:
                     help="gitleaks git ref to fetch the config from")
     url = SOURCE_URL.format(ref=ap.parse_args().ref)
 
-    with urllib.request.urlopen(url, timeout=30) as resp:  # noqa: S310 - fixed https URL
-        OUTPUT.write_bytes(resp.read())
-
-    # imported after the write so the counts describe what was just vendored
     import sys  # noqa: PLC0415
     import tomllib  # noqa: PLC0415
 
+    with urllib.request.urlopen(url, timeout=30) as resp:  # noqa: S310 - fixed https URL
+        data = resp.read()
+
+    # Parse BEFORE overwriting, never after: gate.py's import-time tomllib.loads
+    # is deliberately unguarded, so a truncated or non-TOML 200 written to disk
+    # would break `import memriver_core.gate` outright -- and with it every
+    # write. A failed sync must leave the previous good ruleset in place.
+    raw = tomllib.loads(data.decode("utf-8"))["rules"]
+    OUTPUT.write_bytes(data)
+
+    # imported after the write so the counts describe what was just vendored
     from memriver_core.gate import _RULES  # noqa: PLC0415
 
-    raw = tomllib.loads(OUTPUT.read_text(encoding="utf-8"))["rules"]
     loaded = {rule_id for rule_id, *_ in _RULES}
     print(f"wrote {OUTPUT}: {len(raw)} upstream rules, "
           f"{sum(r['id'] in loaded for r in raw)} usable on Python "

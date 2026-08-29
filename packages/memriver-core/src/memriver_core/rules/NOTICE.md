@@ -27,6 +27,17 @@ id) rather than failing the import. The patterns are written for Go's RE2, so a
 couple of dozen use constructs Python's `re` rejects, and which ones depends on
 the interpreter version — `\z` is only valid from Python 3.14 on.
 
+> **Which rules are active depends on the running Python version, so the same
+> content can be rejected on one machine and accepted on another sharing the
+> same store.** Skipping happens at load time, per interpreter: 3.14 loads 198
+> of the 222 upstream rules, 3.12 loads 195. The four rules using `\z`
+> (`curl-auth-header`, `curl-auth-user`, `openshift-user-token`,
+> `sentry-org-token`) are the difference — `curl-auth-header` is skipped on both
+> for a separate reason, so the net gain on 3.14 is three rules. A newer
+> interpreter therefore gates strictly more content than an older one; it never
+> gates less. Pin the interpreter if uniform verdicts across a shared store
+> matter.
+
 ### Divergences from gitleaks' own behaviour
 
 - Allowlists and stopwords are not applied; these rules therefore fire more
