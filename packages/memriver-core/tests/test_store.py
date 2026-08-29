@@ -1,3 +1,5 @@
+import threading
+
 import pytest
 from memriver_core.entry import Entry
 from memriver_core.store import MemoryStore
@@ -135,3 +137,32 @@ def test_exists(tmp_path):
     assert not store.exists("n", scopes=["global"])
     store.write(Entry.new(body="b", type="user", scope="global", source={}, id="n"))
     assert store.exists("n", scopes=["global"])
+
+
+def test_update_body_serializes_concurrent_writers(tmp_path):
+    # each thread opens .lock separately, so flock genuinely serializes the two
+    # in-process calls; without it a torn write could corrupt the file or leave
+    # a stray temp file behind instead of exactly one clean entry
+    store = MemoryStore(tmp_path)
+    store.write(Entry.new(body="base", type="user", scope="global", source={}, id="n"))
+    barrier = threading.Barrier(2)
+    markers = ["marker-A", "marker-B"]
+    errors: list[Exception] = []
+
+    def attempt(marker: str) -> None:
+        barrier.wait()
+        try:
+            store.update_body("n", marker, scopes=["global"])
+        except Exception as err:  # noqa: BLE001
+            errors.append(err)
+
+    threads = [threading.Thread(target=attempt, args=(m,)) for m in markers]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+        assert not t.is_alive()
+
+    assert errors == []
+    assert store.read("n").body in markers
+    assert len(list(store.iter_entries(scopes=["global"]))) == 1

@@ -152,9 +152,12 @@ class MemoryStore:
     def locked(self) -> Iterator[None]:
         """Hold the store-wide exclusive lock for the duration of the block.
 
-        Several processes may share one root, so any read-check-write over
-        entries (update, delete, name-collision check + write) has to be
-        serialized here. fcntl is POSIX-only: no Windows support yet.
+        Several processes may share one root, so a caller doing its own
+        read-check-write over entries (e.g. a name-collision check before
+        write) should wrap it here to serialize against peers. Not reentrant:
+        `update_body` and `delete` already take this lock internally, so
+        calling either of them from inside a `locked()` block deadlocks.
+        fcntl is POSIX-only: no Windows support yet.
         """
         self.root.mkdir(parents=True, exist_ok=True)
         with open(self.root / ".lock", "a+") as lock:
