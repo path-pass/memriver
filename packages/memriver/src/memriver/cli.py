@@ -22,10 +22,18 @@ def main() -> None:
         print(__version__)
         return
 
+    from pydantic import ValidationError
+
     from .config import load_settings
     from .server import build_server
 
-    settings = load_settings(root_override=args.root)
+    try:
+        settings = load_settings(root_override=args.root)
+    except ValidationError as err:
+        # an invalid config *file* is warned about and ignored; only a bad
+        # MEMRIVER_* environment variable reaches here, and that is worth
+        # failing on -- but as a readable message, not a bare traceback
+        raise SystemExit(f"memriver: invalid MEMRIVER_* environment setting\n{err}")
     build_server(root=settings.root, project_dir=args.project_dir,
                  settings=settings).run()  # stdio
 

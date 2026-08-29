@@ -15,7 +15,7 @@ from pathlib import Path
 from memriver_core.gate import MAX_BODY_CHARS
 from memriver_core.index_fts import MAX_SEARCH_LIMIT
 from memriver_core.scope import storage_root
-from pydantic import Field
+from pydantic import Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 log = logging.getLogger(__name__)
@@ -41,10 +41,24 @@ class Settings(BaseSettings):
     # storage_root() also honours MEMRIVER_ROOT, so this default agrees with the
     # env layer above it; calling it lazily keeps Path.home() out of import time
     root: Path = Field(default_factory=storage_root)
-    max_body_chars: int = MAX_BODY_CHARS
-    search_limit_default: int = DEFAULT_SEARCH_LIMIT
-    search_limit_max: int = MAX_SEARCH_LIMIT
-    index_budget_lines: int = DEFAULT_INDEX_BUDGET_LINES
+    # every knob is a count or a budget: zero and negative values are never
+    # meaningful, and gt=0 turns them into a startup error instead of a server
+    # that silently answers nothing
+    max_body_chars: int = Field(MAX_BODY_CHARS, gt=0)
+    search_limit_default: int = Field(DEFAULT_SEARCH_LIMIT, gt=0)
+    search_limit_max: int = Field(MAX_SEARCH_LIMIT, gt=0)
+    index_budget_lines: int = Field(DEFAULT_INDEX_BUDGET_LINES, gt=0)
+
+    @field_validator("max_body_chars", "search_limit_default", "search_limit_max",
+                     "index_budget_lines", mode="before")
+    @classmethod
+    def _no_booleans(cls, value: object) -> object:
+        # pydantic's lax mode reads True as 1 and gt=0 lets it through, so
+        # 'search_limit_max = true' would silently cap every search at one hit.
+        # TOML has a real boolean type, so this is a plausible typo.
+        if isinstance(value, bool):
+            raise ValueError("expected an integer, got a boolean")
+        return value
 
 
 def _read_config_file(path: Path) -> dict:
@@ -80,7 +94,8 @@ def load_settings(root_override: Path | None = None) -> Settings:
     can live inside the store it configures.
     """
     root = Path(root_override) if root_override is not None else storage_root()
-    file_values = _read_config_file(root / CONFIG_FILENAME)
+    config_path = root / CONFIG_FILENAME
+    file_values = _read_config_file(config_path)
     # pydantic-settings ranks constructor arguments *above* the env layer, so
     # handing it the file values wholesale would let the file beat the
     # environment. Dropping the keys the environment already sets restores the
@@ -88,4 +103,15 @@ def load_settings(root_override: Path | None = None) -> Settings:
     env_keys = {k.upper() for k in os.environ}
     file_values = {k: v for k, v in file_values.items()
                    if f"{ENV_PREFIX}{k.upper()}" not in env_keys}
-    return Settings(root=root, **file_values)
+    if not file_values:
+        return Settings(root=root)
+    try:
+        return Settings(root=root, **file_values)
+    except ValidationError as err:
+        # a typo'd *value* is as likely as a typo'd key, and neither may stop an
+        # agent's memory server from starting. The whole file is dropped rather
+        # than the offending key: a partially applied config is harder to reason
+        # about than none at all, and the warning names the file to fix.
+        log.warning("ignoring %s, falling back to environment and defaults: %s",
+                    config_path, err)
+        return Settings(root=root)

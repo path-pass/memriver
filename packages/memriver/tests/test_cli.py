@@ -1,4 +1,5 @@
 import json
+import os
 import select
 import subprocess
 import sys
@@ -119,3 +120,14 @@ def test_config_file_in_root_is_honoured_end_to_end(tmp_path):
     assert response["result"]["isError"] is False  # tools report, never raise
     assert "too large" in json.dumps(response["result"])
     assert not _entry_files(root, repo)
+
+
+def test_bad_env_value_reports_readably(tmp_path):
+    """A bad MEMRIVER_* env var fails loudly, but not as a bare traceback."""
+    env = {**os.environ, "MEMRIVER_MAX_BODY_CHARS": "abc"}
+    out = subprocess.run([sys.executable, "-m", "memriver.cli",
+                          "--root", str(tmp_path / "mem")],
+                         capture_output=True, text=True, env=env, timeout=30)
+    assert out.returncode != 0
+    assert "Traceback" not in out.stderr
+    assert "MEMRIVER_" in out.stderr and "max_body_chars" in out.stderr

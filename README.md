@@ -46,8 +46,11 @@ Storage layout: `~/agent-memory/{global,projects/<slug>}/entries/<ulid>.md`
 ## Configuration
 
 Settings are read from `--root` / `MEMRIVER_*` environment variables and an
-optional `<root>/config.toml`, in that order of precedence (unknown keys in the
-file are ignored with a warning):
+optional `<root>/config.toml`, in that order of precedence. All four file
+settings are positive integers; an unknown key, an unparsable file or an invalid
+value is warned about and the file is ignored, so a typo can never stop the
+server from starting (a bad `MEMRIVER_*` variable does fail, with a readable
+message):
 
 ```toml
 # ~/agent-memory/config.toml
