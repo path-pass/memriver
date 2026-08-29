@@ -13,6 +13,10 @@ BLOCKED = [
     # env-file and log style assignments carry no quotes at all
     ("API_KEY=abcdefghijklmnop", "abcdefghijklmnop"),
     ("password: correcthorsebattery", "correcthorsebattery"),
+    # '_' is a word character, so a leading \b never matches inside the usual
+    # env var names: the keyword is preceded by '_', not by a word boundary
+    ("OPENAI_API_KEY=sk-proj-abcdef1234567890", "sk-proj-abcdef1234567890"),
+    ("AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIabcdefgh", "wJalrXUtnFEMIabcdefgh"),
 ]
 
 @pytest.mark.parametrize("text,marker", BLOCKED)

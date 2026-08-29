@@ -13,11 +13,14 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("private key block", re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----")),
     ("Slack token", re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}")),
     # quotes are optional: env files, shell exports and log lines carry none.
-    # \b keeps 'token 管理方式' and '1Password' from matching, and the value class
-    # excludes whitespace so a bare prose sentence after ':' cannot trip it
+    # No word boundary around the keyword: '_' is a word character, so the usual
+    # env var names (OPENAI_API_KEY, AWS_SECRET_ACCESS_KEY) have none before the
+    # keyword nor after it, and the trailing name parts have to be consumed too.
+    # The required '[:=]' is what keeps prose out ('token 管理方式', '1Password'),
+    # and the value class excludes whitespace so a sentence after ':' cannot trip it
     ("credential assignment",
-     re.compile(r"(?i)\b(api[_-]?key|secret|token|password|passwd)\b"
-                r"\s*[:=]\s*['\"]?[A-Za-z0-9_\-./+]{12,}")),
+     re.compile(r"(?i)(api[_-]?key|secret|token|password|passwd)"
+                r"(?:[_-][A-Za-z0-9]+)*\s*[:=]\s*['\"]?[A-Za-z0-9_\-./+]{12,}")),
 ]
 
 
