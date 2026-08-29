@@ -659,7 +659,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastmcp", specifier = ">=2.0" },
+    { name = "fastmcp", specifier = ">=3.0" },
     { name = "memriver-core", editable = "packages/memriver-core" },
 ]
 
