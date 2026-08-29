@@ -31,6 +31,10 @@ BLOCKED = [
     # bare OpenAI key in prose: no ':'/'=' right after a key name, so the
     # credential-assignment rule never matches it
     ("OpenAI key is sk-proj-abcdefghij1234567890xyz somewhere", "sk-proj-abcdefghij1234567890xyz"),
+    # space-separated keyword/name variants: 'api key' and 'secret key' with a
+    # literal space instead of '_'/'-' also need to be caught
+    ("API KEY=abcdefghijklmnop", "abcdefghijklmnop"),
+    ("Secret Key: correcthorsebattery12", "correcthorsebattery12"),
 ]
 
 @pytest.mark.parametrize("text,marker", BLOCKED)

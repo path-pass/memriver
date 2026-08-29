@@ -28,8 +28,8 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
     # unquoted branch takes any run of non-whitespace, which still keeps a
     # sentence after ':' out
     ("credential assignment",
-     re.compile(r"(?i)(api[_-]?key|secret|token|password|passwd)"
-                r"(?:[_-][A-Za-z0-9]+)*\s*[:=]\s*"
+     re.compile(r"(?i)(api[ _-]?key|secret|token|password|passwd)"
+                r"(?:[ _-][A-Za-z0-9]+)*\s*[:=]\s*"
                 r"(?:\"[^\"]{12,}\"|'[^']{12,}'|\S{12,})")),
 ]
 
