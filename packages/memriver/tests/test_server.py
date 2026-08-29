@@ -536,3 +536,61 @@ async def test_search_limit_stays_a_plain_integer_in_the_tool_schema(server):
         schema = {t.name: t.inputSchema for t in await c.list_tools()}["memory_search"]
         limit = schema["properties"]["limit"]
         assert limit.get("type") == "integer" or {"type": "integer"} in limit.get("anyOf", [])
+
+
+def _seed_with_updated(root, entry_id, updated, scope="global"):
+    e = Entry.new(body=f"body of {entry_id}", type="project", scope=scope,
+                  source={"harness": "test", "method": "agent"}, id=entry_id,
+                  description=f"description of {entry_id}")
+    e.updated = updated
+    MemoryStore(root).write(e)
+    return e
+
+
+async def test_dream_returns_oldest_entry_first_with_full_content(tmp_path, project):
+    root = tmp_path / "mem"
+    _seed_with_updated(root, "newer", "2026-06-01T00:00:00Z")
+    _seed_with_updated(root, "older", "2026-01-01T00:00:00Z")
+
+    server = build_server(root=root, project_dir=project)
+    async with Client(server) as c:
+        out = (await c.call_tool("memory_dream", {"limit": 2})).data
+        ids = [e["id"] for e in out["entries"]]
+        assert ids == ["older", "newer"]
+        first = out["entries"][0]
+        assert first["body"] == "body of older"
+        assert first["description"] == "description of older"
+
+
+async def test_dream_never_surfaces_entries_outside_current_project_scopes(
+        tmp_path, project):
+    root = tmp_path / "mem"
+    _seed_with_updated(root, "global-entry", "2026-06-01T00:00:00Z")
+    _seed_with_updated(root, "foreign-entry", "2026-01-01T00:00:00Z",
+                       scope="project:other-000000")
+
+    server = build_server(root=root, project_dir=project)
+    async with Client(server) as c:
+        out = (await c.call_tool("memory_dream", {"limit": 10})).data
+        assert "foreign-entry" not in [e["id"] for e in out["entries"]]
+        assert "global-entry" in [e["id"] for e in out["entries"]]
+
+
+async def test_dream_confirm_is_touch_rotates_the_queue(tmp_path, project):
+    # _now() is second-resolution, so seed distinct, clearly-ordered `updated`
+    # values directly rather than relying on real-time writes to differ
+    root = tmp_path / "mem"
+    _seed_with_updated(root, "a", "2020-01-01T00:00:00Z")
+    _seed_with_updated(root, "b", "2021-01-01T00:00:00Z")
+
+    server = build_server(root=root, project_dir=project)
+    async with Client(server) as c:
+        first = (await c.call_tool("memory_dream", {"limit": 1})).data
+        assert first["entries"][0]["id"] == "a"
+
+        # confirming "a" is still true bumps its `updated` to the real current
+        # time, which is far newer than either seeded timestamp
+        await c.call_tool("memory_update", {"entry_id": "a", "content": "body of a"})
+
+        second = (await c.call_tool("memory_dream", {"limit": 1})).data
+        assert second["entries"][0]["id"] == "b"

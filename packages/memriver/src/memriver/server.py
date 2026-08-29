@@ -10,6 +10,7 @@ from memriver_core.config import Settings
 from memriver_core.entry import Entry
 from memriver_core.gate import GateError, check_content
 from memriver_core.render import render_index
+from memriver_core.review import review_queue
 from memriver_core.scope import project_slug, resolve_scope, sanitize_name
 from memriver_core.search import search_entries
 from memriver_core.store import EntryNotFound, MemoryStore
@@ -200,5 +201,21 @@ def build_server(root: Path, project_dir: Path,
             # the store's absolute path, so it is never echoed to the client
             return {"error": f"could not delete entry: {entry_id}"}
         return {"deleted": entry_id}
+
+    @mcp.tool
+    async def memory_dream(limit: int = 3) -> dict:
+        """Maintenance review queue: the entries least recently confirmed true.
+
+        For DEDICATED memory-hygiene sessions only -- do not call this during
+        regular task work. For each returned entry, verify it against reality:
+        still true -> memory_update with the unchanged body (records the
+        confirmation); outdated -> memory_update with the corrected body;
+        no longer true or wanted -> memory_delete."""
+        entries = review_queue(store, scopes=scopes, limit=limit)
+        return {"entries": [
+            {"id": e.id, "type": e.type, "scope": e.scope,
+             "description": e.description, "body": e.body,
+             "created": e.created, "updated": e.updated, "trust": e.trust}
+            for e in entries]}
 
     return mcp

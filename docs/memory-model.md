@@ -107,6 +107,29 @@ practice:
   the number of live memories — naturally bounded, no compaction mechanism
   required.
 
+## Maintenance
+
+Everything above is use-time: an entry is checked, if at all, only when
+retrieval happens to surface it. That leaves a blind spot — a memory nobody
+ever searches for again just sits there, correct or not, indefinitely
+unexamined.
+
+`memory_dream` closes it with amortized full-coverage review instead of
+retrieval-triggered spot checks: each call hands back the batch of entries
+whose `updated` is oldest, for a dedicated maintenance session (started by
+the user, or by a user-scheduled headless run) to check against reality.
+It is a tool for that session alone — a working task session must never
+call it, since a maintenance sweep has nothing to do with the task at hand
+and would just crowd its context.
+
+This works because `updated` doubles as "last confirmed true", not merely
+"last edited". An entry the reviewer finds still correct is confirmed by
+calling `memory_update` with its own unchanged body — same content, but the
+timestamp bump rotates it to the back of the review queue; a changed fact
+gets `memory_update` with the corrected body, and a dead one gets
+`memory_delete`. Read this way, an entry's `updated` date is less "last
+touched" and more "current as of" — the date someone last stood behind it.
+
 ## The write gate
 
 Every write passes a deterministic, LLM-free gate before touching disk:
