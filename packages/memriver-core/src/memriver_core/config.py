@@ -7,16 +7,16 @@ from __future__ import annotations
 
 import logging
 import os
-import tomllib
 from pathlib import Path
 
+import tomllib
 from pydantic import Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .gate import MAX_BODY_CHARS
-from .search import MAX_SEARCH_LIMIT
 from .render import DEFAULT_BUDGET_LINES
 from .scope import storage_root
+from .search import MAX_SEARCH_LIMIT
 
 log = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ class Settings(BaseSettings):
         # 'search_limit_max = true' would silently cap every search at one hit.
         # TOML has a real boolean type, so this is a plausible typo.
         if isinstance(value, bool):
-            raise ValueError("expected an integer, got a boolean")
+            raise ValueError("expected an integer, got a boolean")  # noqa: TRY004
         return value
 
 

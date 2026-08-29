@@ -140,7 +140,7 @@ class MemoryStore:
                 # next to entries: one broken file must never break a traversal
                 try:
                     e = Entry.from_markdown(f.read_text(encoding="utf-8"))
-                except Exception:
+                except Exception:  # noqa: BLE001
                     logger.warning("skipping unreadable entry file: %s", f)
                     continue
                 # this walk selects by directory, so a hand-edited frontmatter

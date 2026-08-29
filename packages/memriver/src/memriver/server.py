@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Literal
 
 from fastmcp import FastMCP
-
 from memriver_core.config import Settings
 from memriver_core.entry import Entry
 from memriver_core.gate import GateError, check_content
@@ -59,7 +58,7 @@ def build_server(root: Path, project_dir: Path,
             e = store.read(entry_id, scopes=scopes)
         except KeyError:
             return {"error": f"no such entry: {entry_id}"}
-        except Exception:
+        except Exception:  # noqa: BLE001
             return {"error": f"unreadable entry file: {entry_id}"}
         return {"id": e.id, "type": e.type, "scope": e.scope, "body": e.body,
                 "created": e.created, "updated": e.updated, "trust": e.trust}
@@ -111,7 +110,7 @@ def build_server(root: Path, project_dir: Path,
                         old = store.read(entry_id, scopes=scopes)
                     except KeyError:
                         old = None
-                    except Exception:
+                    except Exception:  # noqa: BLE001
                         old = None  # unreadable file under this name still blocks nothing
                     if old is not None:
                         return {"error": f"name {entry_id!r} already exists; "
@@ -126,7 +125,7 @@ def build_server(root: Path, project_dir: Path,
                 store.write(e)
         except (GateError, ValueError) as err:
             return {"error": str(err)}
-        except Exception:
+        except Exception:  # noqa: BLE001
             # e.g. a full disk or a permission error from the atomic write;
             # tools never raise, and the OS message may carry the store path
             return {"error": "could not write entry"}
@@ -143,7 +142,7 @@ def build_server(root: Path, project_dir: Path,
             return {"error": str(err)}
         except KeyError:
             return {"error": f"no such entry: {entry_id}"}
-        except Exception:
+        except Exception:  # noqa: BLE001
             return {"error": f"unreadable entry file: {entry_id}"}
         return {"id": e.id, "updated": e.updated}
 
@@ -154,7 +153,7 @@ def build_server(root: Path, project_dir: Path,
             store.delete(entry_id, scopes=scopes)
         except KeyError:
             return {"error": f"no such entry: {entry_id}"}
-        except Exception:
+        except Exception:  # noqa: BLE001
             # e.g. a permission error unlinking the file, or a hand-written
             # file that does not parse as an entry; the OS message may carry
             # the store's absolute path, so it is never echoed to the client

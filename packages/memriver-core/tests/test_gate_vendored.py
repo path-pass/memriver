@@ -1,8 +1,8 @@
 import logging
 import re
-import tomllib
 
 import pytest
+import tomllib
 from memriver_core.gate import _RULES, _RULES_DIR, GateError, _load_rules, check_content
 
 # Every vector here is synthetic, but a contiguous provider prefix is enough to
@@ -20,13 +20,23 @@ VENDORED_BLOCKED = [
     # stripe-access-token: '_' after 'sk' keeps it out of the OpenAI rule
     (f"STRIPE={_STRIPE}", _STRIPE),
     # jwt
-    ("token eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
-     "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0."
-     "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U", "eyJzdWIiOiIxMjM0"),
+    (
+        (
+            "token eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+            "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0."
+            "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+        ),
+        "eyJzdWIiOiIxMjM0",
+    ),
     # pypi-upload-token
-    ("pypi-AgEIcHlwaS5vcmcCJDAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMAAC"
-     "KlszLCJmZmZmZmZmZi1mZmZmLWZmZmYtZmZmZi1mZmZmZmZmZmZmZmYiXQAABiCkeGhwYWNr"
-     "YWdl", "AgEIcHlwaS5vcmcC"),
+    (
+        (
+            "pypi-AgEIcHlwaS5vcmcCJDAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMAAC"
+            "KlszLCJmZmZmZmZmZi1mZmZmLWZmZmYtZmZmZi1mZmZmZmZmZmZmZmYiXQAABiCkeGhwYWNr"
+            "YWdl"
+        ),
+        "AgEIcHlwaS5vcmcC",
+    ),
 ]
 
 
@@ -110,16 +120,22 @@ def test_shipped_policy_honours_entropy_only_for_generic_api_key():
 # Memory bodies are prose, ULIDs and links; a vendored rule that fires on any of
 # these has to be dealt with in gate.py, since gitleaks.toml is vendored verbatim.
 PASSING = [
-    "用户偏好：回复用中文；runtime 用 mise 管理，python 包用 uv。gitleaks 的社区"
-    "规则集 vendor 进 memriver-core。Slack 通知走 webhook，Notion 文档同步的"
-    " api key 存在 1Password 里。Stripe 账单每月看一次，adobe reader 已安装，"
-    "algolia 负责文档搜索，sentry 收集报错，postman collection 在仓库里。",
-    "Entry 01JZ8QK9X3M4N5P6R7S8T9VABC superseded 01JZ8QK9X3M4N5P6R7S8T9VXYZ at "
-    "2026-08-29T12:34:56Z; 01K3M7QW2E4R6T8Y0U1I3O5P7A and "
-    "01K3M7QW2E4R6T8Y0U1I3O5P7B were created 2026-08-28T00:00:00+08:00.",
-    "See https://github.com/gitleaks/gitleaks/blob/master/config/gitleaks.toml"
-    "?utm_source=memriver&utm_campaign=abcdefghijklmnopqrstuvwxyz0123456789"
-    "&ref=aHR0cHM6Ly9leGFtcGxlLmNvbS9sb25nL3BhdGgvdG8vc29tZXRoaW5n#section-4",
+    (
+        "用户偏好：回复用中文；runtime 用 mise 管理，python 包用 uv。gitleaks 的社区"
+        "规则集 vendor 进 memriver-core。Slack 通知走 webhook，Notion 文档同步的"
+        " api key 存在 1Password 里。Stripe 账单每月看一次，adobe reader 已安装，"
+        "algolia 负责文档搜索，sentry 收集报错，postman collection 在仓库里。"
+    ),
+    (
+        "Entry 01JZ8QK9X3M4N5P6R7S8T9VABC updated after "
+        "01K3M7QW2E4R6T8Y0U1I3O5P7A and 01K3M7QW2E4R6T8Y0U1I3O5P7B creation "
+        "at 2026-08-29T12:34:56Z."
+    ),
+    (
+        "See https://github.com/gitleaks/gitleaks/blob/master/config/gitleaks.toml"
+        "?utm_source=memriver&utm_campaign=abcdefghijklmnopqrstuvwxyz0123456789"
+        "&ref=aHR0cHM6Ly9leGFtcGxlLmNvbS9sb25nL3BhdGgvdG8vc29tZXRoaW5n#section-4"
+    ),
 ]
 
 

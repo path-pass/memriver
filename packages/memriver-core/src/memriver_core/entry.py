@@ -46,7 +46,7 @@ class Entry:
     @classmethod
     def new(cls, *, body: str, type: str, scope: str, source: dict,
             trust: str = "agent", sync: bool = True,
-            id: str | None = None) -> "Entry":
+            id: str | None = None) -> Entry:
         if type not in get_args(MemoryType):
             raise ValueError(f"invalid memory type: {type!r}")
         if trust not in get_args(Trust):
@@ -64,7 +64,7 @@ class Entry:
         return frontmatter.dumps(post) + "\n"
 
     @classmethod
-    def from_markdown(cls, text: str) -> "Entry":
+    def from_markdown(cls, text: str) -> Entry:
         post = frontmatter.loads(text)
         m = post.metadata
         # a hand-edited or pre-rename file may carry a type this version does

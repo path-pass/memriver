@@ -1,9 +1,8 @@
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
-
 from memriver_core.config import Settings, load_settings
+from pydantic import ValidationError
 
 CONFIG = "config.toml"
 

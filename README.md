@@ -1,14 +1,12 @@
 # memriver
 
 Shared memory layer for coding agents across harnesses (Claude Code / Codex /
-Cursor / Kiro), exposed via MCP. Markdown is the single source of truth;
-the SQLite FTS5 index is a rebuildable derivative. Local-only mode uses no
-LLM and no network.
+Cursor / Kiro), exposed via MCP. Markdown is the single source of truth.
+Local-only mode uses no LLM and no network.
 
 Monorepo (uv workspace):
 
-- `packages/memriver-core` — immutable markdown entry store, write gate,
-  rebuildable FTS5 index
+- `packages/memriver-core` — immutable markdown entry store, write gate
 - `packages/memriver` — CLI + MCP server (the package users install)
 - planned: `memriver-vector` / `memriver-dream` / `memriver-sync`
   (installed on demand via extras, e.g. `memriver[vector]`)

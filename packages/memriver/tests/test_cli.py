@@ -12,13 +12,13 @@ PROTOCOL_VERSION = "2025-06-18"
 
 def test_version_flag():
     out = subprocess.run([sys.executable, "-m", "memriver.cli", "--version"],
-                         capture_output=True, text=True)
+                         capture_output=True, text=True, check=False)
     assert out.returncode == 0 and "0.1.0" in out.stdout
 
 
 def test_help_documents_project_dir_default():
     out = subprocess.run([sys.executable, "-m", "memriver.cli", "--help"],
-                         capture_output=True, text=True)
+                         capture_output=True, text=True, check=False)
     assert out.returncode == 0
     assert "--project-dir" in out.stdout
     assert "current working directory" in " ".join(out.stdout.split())
@@ -127,7 +127,7 @@ def test_bad_env_value_reports_readably(tmp_path):
     env = {**os.environ, "MEMRIVER_MAX_BODY_CHARS": "abc"}
     out = subprocess.run([sys.executable, "-m", "memriver.cli",
                           "--root", str(tmp_path / "mem")],
-                         capture_output=True, text=True, env=env, timeout=30)
+                         capture_output=True, text=True, env=env, timeout=30, check=False)
     assert out.returncode != 0
     assert "Traceback" not in out.stderr
     assert "MEMRIVER_" in out.stderr and "max_body_chars" in out.stderr

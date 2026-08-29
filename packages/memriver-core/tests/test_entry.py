@@ -46,8 +46,8 @@ def test_unknown_type_reads_as_project():
     assert Entry.from_markdown(text).type == "project"
 
 
-def test_superseded_by_key_ignored_on_read():
+def test_unknown_keys_ignored_on_read():
     e = Entry.new(body="b", type="user", scope="global", source={})
-    text = e.to_markdown().replace("id:", "superseded_by: X\nid:")
+    text = e.to_markdown().replace("id:", "unknown_key: X\nid:")
     loaded = Entry.from_markdown(text)
-    assert not hasattr(loaded, "superseded_by")
+    assert not hasattr(loaded, "unknown_key")

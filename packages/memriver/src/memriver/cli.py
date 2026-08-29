@@ -22,9 +22,8 @@ def main() -> None:
         print(__version__)
         return
 
-    from pydantic import ValidationError
-
     from memriver_core.config import load_settings
+    from pydantic import ValidationError
 
     from .server import build_server
 

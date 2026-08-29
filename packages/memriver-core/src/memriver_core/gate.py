@@ -3,11 +3,12 @@ from __future__ import annotations
 import logging
 import math
 import re
-import tomllib
 import warnings
 from collections import Counter
 from importlib.resources import files
 from typing import TYPE_CHECKING
+
+import tomllib
 
 if TYPE_CHECKING:
     from importlib.abc import Traversable
@@ -22,7 +23,7 @@ _Rule = tuple[str, "re.Pattern[str]", float | None, int, tuple[str, ...]]
 _RULES_DIR = files(__package__) / "rules"
 
 
-def _load_rules(*sources: "Traversable") -> list[_Rule]:
+def _load_rules(*sources: Traversable) -> list[_Rule]:
     """Parse and compile the vendored rule TOMLs once, at import.
 
     The patterns are written for Go's RE2, so a couple of dozen are not valid
@@ -125,7 +126,7 @@ def check_content(body: str, max_chars: int = MAX_BODY_CHARS) -> None:
         raise GateError(_rejection(rule_id))
 
 
-def _secret_of(match: "re.Match[str]", group: int) -> str:
+def _secret_of(match: re.Match[str], group: int) -> str:
     """The substring upstream measures entropy over.
 
     gitleaks tunes its thresholds against the credential itself, not the

@@ -1,7 +1,8 @@
 import hashlib
 
 import pytest
-from memriver_core.scope import project_slug, resolve_scope, storage_root, sanitize_name
+from memriver_core.scope import project_slug, resolve_scope, sanitize_name, storage_root
+
 
 def test_storage_root_env_override(monkeypatch, tmp_path):
     monkeypatch.setenv("MEMRIVER_ROOT", str(tmp_path / "mem"))
