@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import asdict
 from pathlib import Path
 
@@ -73,6 +74,15 @@ def build_server(root: Path, project_dir: Path) -> FastMCP:
         """Save a durable fact / preference / decision / lesson to shared memory.
         scope: 'project' (default) or 'global' (cross-project user facts only)."""
         try:
+            # 'harness' is persisted verbatim into the frontmatter, so without
+            # these it is a gate-free channel for secrets or megabytes of text.
+            # The shape check caps size and charset; the gate then rejects the
+            # values that still look like credentials (a bare 'ghp_...' is all
+            # word characters). Neither error echoes the rejected value.
+            if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", harness):
+                return {"error": "invalid harness identifier "
+                                 "(allowed: letters, digits, ., _, -, max 64 chars)"}
+            check_content(harness)
             check_content(content)
             full_scope = resolve_scope(scope, project_dir)
             # resolve_scope passes an explicit 'project:<slug>' straight through,

@@ -86,6 +86,35 @@ async def test_nul_bytes_do_not_escape_as_tool_error(server):
         assert "id" in r
 
 
+async def test_harness_with_secret_material_is_refused(tmp_path, project):
+    # 'harness' lands verbatim in the frontmatter, so without validation it is a
+    # gate-free channel for secrets or megabytes of text
+    root = tmp_path / "mem"
+    server = build_server(root=root, project_dir=project)
+    secret = "ghp_" + "a" * 36
+    async with Client(server) as c:
+        for bad in (secret,                                  # a credential
+                    "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLE",  # outside the charset
+                    "x" * 65,                                # over the size cap
+                    ""):                                     # empty
+            r = (await c.call_tool("memory_write", {
+                "content": "ok", "type": "fact", "harness": bad})).data
+            assert "error" in r, bad
+            # the rejected value is never echoed back to the caller
+            assert not bad or bad not in r["error"]
+            assert secret[:8] not in r["error"]
+
+    assert list(root.glob("**/entries/*.md")) == []
+
+
+async def test_valid_harness_still_accepted(server):
+    async with Client(server) as c:
+        r = (await c.call_tool("memory_write", {
+            "content": "harness identifiers may carry dots and dashes",
+            "type": "fact", "harness": "claude-code"})).data
+        assert "id" in r
+
+
 async def test_update_supersedes(server):
     async with Client(server) as c:
         old = (await c.call_tool("memory_write", {
