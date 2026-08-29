@@ -108,6 +108,22 @@ async def test_valid_harness_still_accepted(server):
         assert "id" in r
 
 
+async def test_write_name_with_secret_material_is_refused(tmp_path, project):
+    # 'name' is persisted verbatim as the filename + frontmatter id via
+    # sanitize_name, which only lowercases/strips -- it does not scrub
+    # secret-shaped content, so the gate must cover it like content/harness/
+    # description
+    root = tmp_path / "mem"
+    server = build_server(root=root, project_dir=project)
+    token = "xoxb-123456789012-123456789012-abcdefghijklmnopqrstuvwx"
+    async with Client(server) as c:
+        r = (await c.call_tool("memory_write", {
+            "content": "ok", "type": "project", "name": token})).data
+        assert "error" in r and token not in r["error"]
+
+    assert list(root.glob("**/entries/*.md")) == []
+
+
 async def test_write_with_name_uses_it(server):
     async with Client(server) as c:
         r = (await c.call_tool("memory_write", {

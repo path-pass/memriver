@@ -103,6 +103,12 @@ def build_server(root: Path, project_dir: Path,
             # non-empty since it is optional and check_content refuses "".
             if description.strip():
                 check_content(description)
+            # 'name' becomes the filename + frontmatter id verbatim once
+            # sanitize_name lowercases/strips it -- that transform does not
+            # scrub secret-shaped content, so the gate must run on the raw
+            # proposal before sanitize_name, same as content/harness/description
+            if name.strip():
+                check_content(name)
             full_scope = resolve_scope(scope, project_dir)
             # resolve_scope passes an explicit 'project:<slug>' straight through,
             # so without this guard a caller could seed another project's
