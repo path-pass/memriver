@@ -66,6 +66,9 @@ class FtsIndex:
             self.conn.execute("UPDATE entries SET active = 0 WHERE id = ?", (entry_id,))
 
     def search(self, query: str, scopes: list[str], limit: int = 5) -> list[SearchHit]:
+        # sqlite reads a negative LIMIT as "unlimited", so an out-of-range limit
+        # from a tool caller would dump the whole table on either path below
+        limit = max(1, min(limit, 50))
         # a NUL truncates the query inside FTS5 and surfaces as
         # sqlite3.OperationalError, which callers cannot reasonably catch
         query = query.replace("\x00", "")

@@ -75,6 +75,15 @@ def test_nul_bytes_in_query_do_not_raise(tmp_path):
     assert idx.search("\x00", scopes=["global"], limit=5) == []
 
 
+def test_negative_limit_does_not_dump_table(tmp_path):
+    # sqlite treats LIMIT -1 as unlimited, so an unclamped limit leaks the table
+    idx = _idx(tmp_path)
+    for i in range(3):
+        idx.add(_e(f"shared keyword body number {i}"))
+    assert len(idx.search("keyword", scopes=["global"], limit=-1)) == 1
+    assert len(idx.search("keyword", scopes=["global"], limit=10)) == 3
+
+
 def test_fallback_short_ascii_query_hits(tmp_path):
     idx = _idx(tmp_path)
     e = _e("uv is the package manager")
