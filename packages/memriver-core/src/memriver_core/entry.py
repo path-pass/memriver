@@ -8,6 +8,17 @@ import frontmatter
 from ulid import ULID
 
 MemoryType = Literal["preference", "fact", "decision", "state", "lesson", "pointer"]
+
+# Provenance tier of an entry, graded by how trustworthy its SOURCE MATERIAL is
+# (not by which code path wrote it):
+#   user               the user stated it explicitly
+#   agent              an agent judged it worth keeping while working (default)
+#   untrusted-derived  derived from content that entered the context from
+#                      outside: web pages, third-party code, tool output, logs
+# Only "untrusted-derived" is unused today; it is reserved for the background
+# distillation pipeline and for the promotion gate that keeps tainted memories
+# out of shared storage. The vocabulary is fixed now because `trust` is part of
+# the on-disk frontmatter, and widening it later would mean migrating files.
 Trust = Literal["user", "agent", "untrusted-derived"]
 
 
