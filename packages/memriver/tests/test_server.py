@@ -128,6 +128,42 @@ async def test_update_supersedes(server):
         assert {h["id"] for h in hits} == {new["id"]}
 
 
+async def test_peer_crash_recovery_reconciles_the_live_index(tmp_path, project):
+    # a peer process may crash between the two writes of a supersede. This
+    # server's next lock repairs the Markdown chain, but its long-lived index
+    # connection kept the pre-crash picture until a restart: the old entry stayed
+    # searchable as active and its replacement was missing entirely.
+    root = tmp_path / "mem"
+    server = build_server(root=root, project_dir=project)
+    store = MemoryStore(root)
+
+    async with Client(server) as c:
+        old = (await c.call_tool("memory_write", {
+            "content": "部署流程走 staging 环境", "type": "fact",
+            "scope": "global"})).data
+        anchor = (await c.call_tool("memory_write", {
+            "content": "unrelated anchor entry", "type": "fact",
+            "scope": "global"})).data
+
+        # the crash state a peer would leave behind: replacement file on disk,
+        # journal recorded, old entry not yet marked -- and the server untouched
+        replacement = Entry.new(body="部署流程走 production 环境", type="fact",
+                                scope="global",
+                                source={"harness": "test", "method": "agent"})
+        store.write(replacement)
+        store._atomic_write(root / ".supersede.journal",
+                            f"{old['id']} {replacement.id}")
+
+        # any tool that takes the store lock runs recovery; use a different entry
+        await c.call_tool("memory_update", {
+            "entry_id": anchor["id"], "content": "unrelated anchor entry v2"})
+
+        hits = (await c.call_tool("memory_search", {"query": "部署流程走"})).data
+        assert {h["id"] for h in hits} == {replacement.id}
+        read_old = (await c.call_tool("memory_read", {"entry_id": old["id"]})).data
+        assert read_old["superseded_by"] == replacement.id
+
+
 def _seed_foreign(root) -> Entry:
     # store.read() globs every projects/* directory, so an id leaked from another
     # project must still be refused by the tools of the current project

@@ -5,7 +5,7 @@ import logging
 import os
 import re
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -49,6 +49,14 @@ def _scope_dir(scope: str) -> Path:
 class MemoryStore:
     def __init__(self, root: Path):
         self.root = Path(root)
+        # Set by an owner that keeps derived state (a search index) open across
+        # many operations. Several processes share one root, so a peer may crash
+        # mid-supersede and this process's _recover() then repairs the Markdown
+        # chain underneath that owner: without a signal its derived state keeps
+        # the superseded entry active and never learns of the replacement until
+        # a restart. The store must not know what the derived state is -- the
+        # reconciliation is handed back to whoever owns it, as (old_id, new_id).
+        self.on_recover: Callable[[str, str], None] | None = None
 
     def _entry_path(self, entry: Entry) -> Path:
         return self.root / _scope_dir(entry.scope) / "entries" / f"{entry.id}.md"
@@ -178,6 +186,22 @@ class MemoryStore:
             old.superseded_by = new_id
             old.updated = _now()
             self.write(old)
+        # the chain is now complete, whether this call closed it or a previous
+        # one did: either way an owner that has been holding derived state since
+        # before the crash still has to be told. Not reached when the new entry
+        # never landed -- nothing changed there, and the replacement has no file.
+        self._notify_recover(old_id, new_id)
+
+    def _notify_recover(self, old_id: str, new_id: str) -> None:
+        if self.on_recover is None:
+            return
+        try:
+            self.on_recover(old_id, new_id)
+        except Exception:
+            # the callback belongs to the caller; a broken one must never leave
+            # the store unable to recover or to release the lock
+            logger.warning("on_recover callback failed for supersede %s -> %s",
+                           old_id, new_id)
 
     def supersede(self, old_id: str, new_entry: Entry) -> Entry:
         with self.locked():

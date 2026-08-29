@@ -26,6 +26,21 @@ def build_server(root: Path, project_dir: Path) -> FastMCP:
     index = FtsIndex(root / ".derived" / "index.sqlite")
     index.rebuild(store)
 
+    # A peer process sharing this root can crash mid-supersede. The store's own
+    # journal recovery then repairs the Markdown chain on this server's next
+    # locked operation, but this connection would keep the old entry active and
+    # the replacement absent until a restart, so reconcile the index in step.
+    # store.read takes no lock (no recursion), _recover already runs inside
+    # locked(), and both calls land on the thread that owns the connection.
+    def _reconcile(old_id: str, new_id: str) -> None:
+        index.mark_superseded(old_id)
+        try:
+            index.add(store.read(new_id))
+        except KeyError:
+            pass
+
+    store.on_recover = _reconcile
+
     slug = project_slug(project_dir)
     scopes = ["global"] + ([f"project:{slug}"] if slug else [])
 

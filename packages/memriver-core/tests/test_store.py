@@ -133,6 +133,66 @@ def test_recovery_discards_malformed_journal(store):
     assert not journal.exists()
 
 
+def test_recovery_notifies_an_owner_holding_derived_state(store):
+    # a peer process crashed mid-supersede, so this process repairs the chain --
+    # but an owner that keeps a search index open across operations still holds
+    # the pre-crash picture. The callback is how it learns to reconcile.
+    a = _e(body="alpha fact"); store.write(a)
+    b = _e(body="beta fact"); store.write(b)  # the orphaned "new" entry
+    index = FtsIndex(store.root / ".derived" / "index.sqlite")
+    index.add(a)  # only the old entry was ever indexed
+
+    seen: list[tuple[str, str]] = []
+
+    def reconcile(old_id: str, new_id: str) -> None:
+        seen.append((old_id, new_id))
+        index.mark_superseded(old_id)
+        index.add(store.read(new_id))
+
+    store.on_recover = reconcile
+    store._atomic_write(store.root / ".supersede.journal", f"{a.id} {b.id}")
+
+    with store.locked():
+        pass
+
+    assert seen == [(a.id, b.id)]
+    assert [h.id for h in index.search("beta", scopes=["global"])] == [b.id]
+    assert index.search("alpha", scopes=["global"]) == []
+
+
+def test_recovery_does_not_notify_when_the_new_entry_never_landed(store):
+    # nothing was recovered, so an owner's derived state is still correct;
+    # firing here would make it index an entry that does not exist
+    a = _e(body="A"); store.write(a)
+    store._atomic_write(store.root / ".supersede.journal", f"{a.id} {_e(body='A v2').id}")
+    seen: list[tuple[str, str]] = []
+    store.on_recover = lambda old_id, new_id: seen.append((old_id, new_id))
+
+    with store.locked():
+        pass
+
+    assert seen == []
+
+
+def test_recovery_survives_a_broken_on_recover_callback(store):
+    # the callback belongs to the owner and may fail on its own; recovery of the
+    # Markdown chain must complete and the journal must still be cleared
+    a = _e(body="A"); store.write(a)
+    b = _e(body="A v2"); store.write(b)
+    store._atomic_write(store.root / ".supersede.journal", f"{a.id} {b.id}")
+
+    def boom(old_id: str, new_id: str) -> None:
+        raise RuntimeError("owner is broken")
+
+    store.on_recover = boom
+
+    with store.locked():
+        pass
+
+    assert store.read(a.id).superseded_by == b.id
+    assert not (store.root / ".supersede.journal").exists()
+
+
 def test_supersede_removes_its_journal(store):
     a = _e(); store.write(a)
     store.supersede(a.id, _e(body="v2"))
