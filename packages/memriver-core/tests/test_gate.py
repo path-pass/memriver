@@ -10,6 +10,9 @@ BLOCKED = [
     # fine-grained PATs do not match gh[pousr]_ and are often written unquoted,
     # so neither the classic token rule nor the assignment rule catches them
     ("token github_pat_" + "a" * 60 + " end", "github_pat_"),
+    # env-file and log style assignments carry no quotes at all
+    ("API_KEY=abcdefghijklmnop", "abcdefghijklmnop"),
+    ("password: correcthorsebattery", "correcthorsebattery"),
 ]
 
 @pytest.mark.parametrize("text,marker", BLOCKED)

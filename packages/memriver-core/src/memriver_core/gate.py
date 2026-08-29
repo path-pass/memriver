@@ -12,8 +12,12 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("GitHub fine-grained PAT", re.compile(r"github_pat_[A-Za-z0-9_]{20,}")),
     ("private key block", re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----")),
     ("Slack token", re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}")),
+    # quotes are optional: env files, shell exports and log lines carry none.
+    # \b keeps 'token 管理方式' and '1Password' from matching, and the value class
+    # excludes whitespace so a bare prose sentence after ':' cannot trip it
     ("credential assignment",
-     re.compile(r"(?i)(api[_-]?key|secret|token|password)\s*[:=]\s*['\"][^'\"]{12,}['\"]")),
+     re.compile(r"(?i)\b(api[_-]?key|secret|token|password|passwd)\b"
+                r"\s*[:=]\s*['\"]?[A-Za-z0-9_\-./+]{12,}")),
 ]
 
 
