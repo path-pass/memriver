@@ -16,11 +16,15 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
     # No word boundary around the keyword: '_' is a word character, so the usual
     # env var names (OPENAI_API_KEY, AWS_SECRET_ACCESS_KEY) have none before the
     # keyword nor after it, and the trailing name parts have to be consumed too.
-    # The required '[:=]' is what keeps prose out ('token 管理方式', '1Password'),
-    # and the value class excludes whitespace so a sentence after ':' cannot trip it
+    # The required '[:=]' is what keeps prose out ('token 管理方式', '1Password').
+    # The value has two branches because real passwords carry punctuation: a
+    # single restricted character class stopped at the first '@' or '!' and
+    # counted too few characters, so 'PASSWORD="P@ssw0rd!234567"' passed. The
+    # quoted branch takes anything up to the closing quote; the unquoted branch
+    # takes any run of non-whitespace, which still keeps a sentence after ':' out
     ("credential assignment",
      re.compile(r"(?i)(api[_-]?key|secret|token|password|passwd)"
-                r"(?:[_-][A-Za-z0-9]+)*\s*[:=]\s*['\"]?[A-Za-z0-9_\-./+]{12,}")),
+                r"(?:[_-][A-Za-z0-9]+)*\s*[:=]\s*(?:['\"][^'\"]{12,}['\"]|\S{12,})")),
 ]
 
 

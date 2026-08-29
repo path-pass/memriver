@@ -17,6 +17,10 @@ BLOCKED = [
     # env var names: the keyword is preceded by '_', not by a word boundary
     ("OPENAI_API_KEY=sk-proj-abcdef1234567890", "sk-proj-abcdef1234567890"),
     ("AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIabcdefgh", "wJalrXUtnFEMIabcdefgh"),
+    # real passwords carry punctuation: a value class that stops at the first
+    # '@' or '!' counts too few characters and lets the whole assignment pass
+    ('PASSWORD="P@ssw0rd!234567"', "P@ssw0rd!234567"),
+    ("DB_PASSWORD=P@ss:w0rd!23456", "P@ss:w0rd!23456"),
 ]
 
 @pytest.mark.parametrize("text,marker", BLOCKED)
