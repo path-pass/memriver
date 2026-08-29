@@ -18,14 +18,19 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
     # env var names (OPENAI_API_KEY, AWS_SECRET_ACCESS_KEY) have none before the
     # keyword nor after it, and the trailing name parts have to be consumed too.
     # The required '[:=]' is what keeps prose out ('token 管理方式', '1Password').
-    # The value has two branches because real passwords carry punctuation: a
+    # The value has three branches because real passwords carry punctuation: a
     # single restricted character class stopped at the first '@' or '!' and
-    # counted too few characters, so 'PASSWORD="P@ssw0rd!234567"' passed. The
-    # quoted branch takes anything up to the closing quote; the unquoted branch
-    # takes any run of non-whitespace, which still keeps a sentence after ':' out
+    # counted too few characters, so 'PASSWORD="P@ssw0rd!234567"' passed. Each
+    # quote style needs its own branch, since one class shared by both stops at
+    # the *opposite* quote inside the value and the unquoted branch then stops
+    # at the first space -- 'PASSWORD="it's a very long secret phrase"' slipped
+    # through both. Each quoted branch now runs to its own closing quote; the
+    # unquoted branch takes any run of non-whitespace, which still keeps a
+    # sentence after ':' out
     ("credential assignment",
      re.compile(r"(?i)(api[_-]?key|secret|token|password|passwd)"
-                r"(?:[_-][A-Za-z0-9]+)*\s*[:=]\s*(?:['\"][^'\"]{12,}['\"]|\S{12,})")),
+                r"(?:[_-][A-Za-z0-9]+)*\s*[:=]\s*"
+                r"(?:\"[^\"]{12,}\"|'[^']{12,}'|\S{12,})")),
 ]
 
 

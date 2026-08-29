@@ -21,6 +21,11 @@ BLOCKED = [
     # '@' or '!' counts too few characters and lets the whole assignment pass
     ('PASSWORD="P@ssw0rd!234567"', "P@ssw0rd!234567"),
     ("DB_PASSWORD=P@ss:w0rd!23456", "P@ss:w0rd!23456"),
+    # a quoted value may contain the *other* quote: one shared class for both
+    # quote styles stops at that apostrophe, and the unquoted branch stops at
+    # the first space, so the whole passphrase used to slip through
+    ('PASSWORD="it\'s a very long secret phrase"', "it's a very long secret phrase"),
+    ("PASSWORD='say \"friend\" and enter'", 'say "friend" and enter'),
     # bare OpenAI key in prose: no ':'/'=' right after a key name, so the
     # credential-assignment rule never matches it
     ("OpenAI key is sk-proj-abcdefghij1234567890xyz somewhere", "sk-proj-abcdefghij1234567890xyz"),
