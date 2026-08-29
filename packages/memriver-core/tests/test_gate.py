@@ -35,6 +35,17 @@ BLOCKED = [
     # literal space instead of '_'/'-' also need to be caught
     ("API KEY=abcdefghijklmnop", "abcdefghijklmnop"),
     ("Secret Key: correcthorsebattery12", "correcthorsebattery12"),
+    # 'passphrase' and 'credential(s)' are common label variants the original
+    # alternation missed entirely -- neither the vendored gitleaks generic-api-key
+    # rule (entropy-gated, so a low-entropy value like this skips it) nor the
+    # floor rule caught them
+    ("PASSPHRASE=correcthorsebattery", "correcthorsebattery"),
+    ("CREDENTIAL: correcthorsebattery", "correcthorsebattery"),
+    # plural variant: 's' is not a separator char, so 'credential' alone would
+    # leave a stray 's' between the keyword and ':' and fail to match
+    ("CREDENTIALS: correcthorsebattery", "correcthorsebattery"),
+    # case-insensitivity for the new keywords, matching the existing rule's (?i)
+    ("passphrase: correcthorsebattery", "correcthorsebattery"),
 ]
 
 @pytest.mark.parametrize("text,marker", BLOCKED)
@@ -57,6 +68,13 @@ def test_oversize_blocked():
 
 def test_normal_content_passes():
     check_content("用户偏好：回复用中文；token 管理方式见 1Password 的 memriver 条目")
+
+
+def test_credential_prose_without_assignment_passes():
+    # 'credential' without an assignment shape (no ':'/'=' right after the
+    # keyword) must not trip the extended alternation -- proves the fix widened
+    # the keyword list, not the shape the rule matches
+    check_content("rotate the credential monthly")
 
 
 def test_max_chars_is_tunable():

@@ -63,7 +63,11 @@ regex = '\bsk-[A-Za-z0-9_-]{20,}'
 # -- 'PASSWORD="it's a very long secret phrase"' slipped through both. Each
 # quoted branch now runs to its own closing quote; the unquoted branch takes any
 # run of non-whitespace, which still keeps a sentence after ':' out.
+# 'credentials?' (not just 'credential') is needed because 's' is not one of
+# the '[ _-]' separator chars: without the '?' quantifier, 'CREDENTIALS:'
+# would leave a stray 's' between the keyword and the required '\s*[:=]' and
+# never match at all.
 [[rules]]
 id = "memriver-credential-assignment"
-description = "credential assigned to a key/secret/token/password name"
-regex = '''(?i)(api[ _-]?key|secret|token|password|passwd)(?:[ _-][A-Za-z0-9]+)*\s*[:=]\s*(?:"[^"]{12,}"|'[^']{12,}'|\S{12,})'''
+description = "credential assigned to a key/secret/token/password/passphrase/credential name"
+regex = '''(?i)(api[ _-]?key|secret|token|password|passwd|passphrase|credentials?)(?:[ _-][A-Za-z0-9]+)*\s*[:=]\s*(?:"[^"]{12,}"|'[^']{12,}'|\S{12,})'''
