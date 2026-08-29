@@ -175,11 +175,13 @@ def test_recovery_does_not_notify_when_the_new_entry_never_landed(store):
 
 
 def test_recovery_survives_a_broken_on_recover_callback(store):
-    # the callback belongs to the owner and may fail on its own; recovery of the
-    # Markdown chain must complete and the journal must still be cleared
+    # the callback belongs to the owner and may fail on its own: recovery of the
+    # Markdown chain must still complete and the lock must still be released.
+    # The journal stays, because the owner is still owed this transition.
     a = _e(body="A"); store.write(a)
     b = _e(body="A v2"); store.write(b)
-    store._atomic_write(store.root / ".supersede.journal", f"{a.id} {b.id}")
+    journal = store.root / ".supersede.journal"
+    store._atomic_write(journal, f"{a.id} {b.id}")
 
     def boom(old_id: str, new_id: str) -> None:
         raise RuntimeError("owner is broken")
@@ -190,7 +192,68 @@ def test_recovery_survives_a_broken_on_recover_callback(store):
         pass
 
     assert store.read(a.id).superseded_by == b.id
-    assert not (store.root / ".supersede.journal").exists()
+    # the journal is the only record that the owner's derived state (a search
+    # index shared by every peer) still points at the superseded entry; dropping
+    # it here left that index wrong with nothing left to replay
+    assert journal.read_text(encoding="utf-8").split() == [a.id, b.id]
+
+
+def test_supersede_refuses_while_a_pending_recovery_is_outstanding(store):
+    # a retained journal means one transition is still owed to the owner. A new
+    # supersede writes its own journal, so letting it run would overwrite that
+    # record for good: refuse before touching anything.
+    a = _e(body="A"); store.write(a)
+    b = _e(body="A v2"); store.write(b)
+    journal = store.root / ".supersede.journal"
+    store._atomic_write(journal, f"{a.id} {b.id}")
+
+    def boom(old_id: str, new_id: str) -> None:
+        raise RuntimeError("owner is broken")
+
+    store.on_recover = boom
+
+    other = _e(body="unrelated"); store.write(other)
+    replacement = _e(body="unrelated v2")
+    with pytest.raises(ValueError, match="pending memory recovery"):
+        store.supersede(other.id, replacement)
+
+    assert not (store.root / "global" / "entries" / f"{replacement.id}.md").exists()
+    assert store.read(other.id).superseded_by is None
+    assert journal.read_text(encoding="utf-8").split() == [a.id, b.id]
+
+
+def test_recovery_retries_the_owner_until_it_commits(store):
+    # every later lock acquisition replays the retained journal, so the owner
+    # gets the original transition again once it is healthy
+    a = _e(body="A"); store.write(a)
+    b = _e(body="A v2"); store.write(b)
+    journal = store.root / ".supersede.journal"
+    store._atomic_write(journal, f"{a.id} {b.id}")
+    seen: list[tuple[str, str]] = []
+    healthy: list[bool] = []
+
+    def flaky(old_id: str, new_id: str) -> None:
+        seen.append((old_id, new_id))
+        if not healthy:
+            raise RuntimeError("owner is broken")
+
+    store.on_recover = flaky
+
+    with store.locked():
+        pass
+    assert seen == [(a.id, b.id)] and journal.exists()
+
+    healthy.append(True)
+    with store.locked():
+        pass
+    assert seen == [(a.id, b.id), (a.id, b.id)]
+    assert not journal.exists()
+
+    # nothing is owed any more, so the store takes new supersedes again
+    c = _e(body="C"); store.write(c)
+    d = _e(body="C v2")
+    store.supersede(c.id, d)
+    assert store.read(c.id).superseded_by == d.id
 
 
 def test_supersede_removes_its_journal(store):

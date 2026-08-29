@@ -205,6 +205,41 @@ async def test_update_keeps_its_journal_until_the_index_transition_commits(
         assert {h["id"] for h in hits} == {new["id"]}
 
 
+async def test_update_reports_an_outstanding_recovery_instead_of_overwriting_it(
+        tmp_path, project, monkeypatch):
+    # while the index transition of an earlier supersede is still owed, its
+    # journal is the only record of it. A later update writes its own journal
+    # over that record, so it must be refused -- as an error dict, never a raise.
+    root = tmp_path / "mem"
+    server = build_server(root=root, project_dir=project)
+    journal = root / ".supersede.journal"
+
+    def always_fails(self, entry_id: str) -> None:
+        raise RuntimeError("index commit failed")
+
+    async with Client(server) as c:
+        old = (await c.call_tool("memory_write", {
+            "content": "部署流程走 staging 环境", "type": "fact",
+            "scope": "global"})).data
+        anchor = (await c.call_tool("memory_write", {
+            "content": "unrelated anchor entry", "type": "fact",
+            "scope": "global"})).data
+
+        monkeypatch.setattr(FtsIndex, "mark_superseded", always_fails)
+        await c.call_tool("memory_update", {
+            "entry_id": old["id"], "content": "部署流程走 production 环境"})
+        assert journal.exists()
+        pending = journal.read_text(encoding="utf-8")
+
+        r = (await c.call_tool("memory_update", {
+            "entry_id": anchor["id"], "content": "unrelated anchor entry v2"})).data
+        assert "error" in r and "pending memory recovery" in r["error"]
+        # the outstanding transition is still on disk and nothing new was written
+        assert journal.read_text(encoding="utf-8") == pending
+        assert (await c.call_tool(
+            "memory_read", {"entry_id": anchor["id"]})).data["superseded_by"] is None
+
+
 def _seed_foreign(root) -> Entry:
     # store.read() globs every projects/* directory, so an id leaked from another
     # project must still be refused by the tools of the current project

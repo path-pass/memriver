@@ -155,7 +155,11 @@ class MemoryStore:
 
         Only ever called with the lock held. If the new entry landed, the old
         one is marked to match it; if it never landed the operation never
-        happened and the old entry stays active. Either way the journal goes.
+        happened and the old entry stays active. The journal is dropped only
+        once nothing is owed on it: an unusable record, a transition that never
+        happened, or a completed replay the owner also accepted. A replay whose
+        owner reconciliation failed keeps its journal -- it is the only record
+        that the shared derived state is still owed this transition.
         """
         journal = self.root / _JOURNAL
         try:
@@ -166,22 +170,29 @@ class MemoryStore:
             logger.warning("unreadable supersede journal, discarding: %s", journal)
             parts = []
         if len(parts) == 2:
-            self._replay_supersede(*parts)
+            if not self._replay_supersede(*parts):
+                logger.warning("journal retained; index reconciliation pending "
+                               "for supersede %s -> %s", *parts)
+                return
         elif parts:
             logger.warning("malformed supersede journal, discarding: %s", journal)
         journal.unlink(missing_ok=True)
 
-    def _replay_supersede(self, old_id: str, new_id: str) -> None:
+    def _replay_supersede(self, old_id: str, new_id: str) -> bool:
+        """Finish the recorded transition. True when the journal may be dropped."""
         try:
             self._find(new_id)
         except KeyError:
-            # the new entry never landed: nothing to point the old one at
-            return
+            # the new entry never landed: nothing to point the old one at, and
+            # nothing an owner could be owed either
+            return True
         try:
             old = self.read(old_id)
         except Exception:
+            # unreplayable for good; keeping the journal would only wedge the
+            # store against every later supersede
             logger.warning("supersede journal names an unreadable entry: %s", old_id)
-            return
+            return True
         if old.superseded_by is None:
             old.superseded_by = new_id
             old.updated = _now()
@@ -190,7 +201,7 @@ class MemoryStore:
         # one did: either way an owner that has been holding derived state since
         # before the crash still has to be told. Not reached when the new entry
         # never landed -- nothing changed there, and the replacement has no file.
-        self._notify_recover(old_id, new_id)
+        return self._notify_recover(old_id, new_id)
 
     def _notify_recover(self, old_id: str, new_id: str) -> bool:
         """Hand the transition to the owner. True when it is theirs for good."""
@@ -208,6 +219,14 @@ class MemoryStore:
 
     def supersede(self, old_id: str, new_entry: Entry) -> Entry:
         with self.locked():
+            # locked() has just replayed any journal. One that survived that
+            # replay records a transition the owner's derived state is still
+            # owed, and the write below would overwrite it with this operation's
+            # own record -- losing the only trace of what is pending. Refuse
+            # before anything is written; the caller retries once it recovers.
+            if (self.root / _JOURNAL).exists():
+                raise ValueError("a pending memory recovery is outstanding; "
+                                 "retry after the index recovers")
             old = self.read(old_id)
             if old.superseded_by is not None:
                 raise ValueError(f"entry {old_id} already superseded "
