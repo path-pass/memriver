@@ -14,7 +14,7 @@ from pydantic import Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .gate import MAX_BODY_CHARS
-from .index_fts import MAX_SEARCH_LIMIT
+from .search import MAX_SEARCH_LIMIT
 from .render import DEFAULT_BUDGET_LINES
 from .scope import storage_root
 
