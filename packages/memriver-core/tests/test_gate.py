@@ -57,3 +57,11 @@ def test_oversize_blocked():
 
 def test_normal_content_passes():
     check_content("用户偏好：回复用中文；token 管理方式见 1Password 的 memriver 条目")
+
+
+def test_max_chars_is_tunable():
+    # the umbrella package passes a configured budget; core keeps 8000 as default
+    check_content("x" * 20)
+    with pytest.raises(GateError) as ei:
+        check_content("x" * 20, max_chars=10)
+    assert "10" in str(ei.value)

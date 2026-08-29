@@ -42,3 +42,20 @@ and every project would share memriver's own slug). Pass `--project-dir` to the
 
 Storage layout: `~/agent-memory/{global,projects/<slug>}/entries/<ulid>.md`
 (override root with `MEMRIVER_ROOT`).
+
+## Configuration
+
+Settings are read from `--root` / `MEMRIVER_*` environment variables and an
+optional `<root>/config.toml`, in that order of precedence (unknown keys in the
+file are ignored with a warning):
+
+```toml
+# ~/agent-memory/config.toml
+max_body_chars = 8000       # largest body memory_write accepts
+search_limit_default = 5    # memory_search limit when the caller omits it
+search_limit_max = 50       # ceiling applied to any caller-supplied limit
+index_budget_lines = 100    # entries memory_index lists before truncating
+```
+
+The root itself is set with `--root` or `MEMRIVER_ROOT`, not in this file: it is
+what locates the file.

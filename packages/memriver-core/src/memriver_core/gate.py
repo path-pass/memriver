@@ -38,11 +38,16 @@ class GateError(ValueError):
     pass
 
 
-def check_content(body: str) -> None:
+def check_content(body: str, max_chars: int = MAX_BODY_CHARS) -> None:
+    """Reject content that is empty, oversized, or looks like a credential.
+
+    `max_chars` is a plain parameter so callers can configure the budget without
+    core growing a settings dependency; omitting it keeps the historical 8000.
+    """
     if not body.strip():
         raise GateError("content is empty; nothing to store")
-    if len(body) > MAX_BODY_CHARS:
-        raise GateError(f"content too large ({len(body)} > {MAX_BODY_CHARS} chars); "
+    if len(body) > max_chars:
+        raise GateError(f"content too large ({len(body)} > {max_chars} chars); "
                         "store a summary or pointer instead")
     for label, pat in _SECRET_PATTERNS:
         if pat.search(body):

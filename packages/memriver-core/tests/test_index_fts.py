@@ -131,3 +131,13 @@ def test_fallback_short_ascii_query_hits(tmp_path):
     idx.add(e)
     hits = idx.search("uv", scopes=["global"], limit=5)
     assert [h.id for h in hits] == [e.id]
+
+
+def test_max_limit_is_tunable(tmp_path):
+    # the umbrella package passes a configured ceiling; core keeps 50 as default
+    idx = FtsIndex(tmp_path / ".derived" / "index.sqlite", max_limit=2)
+    for i in range(3):
+        idx.add(_e(f"shared keyword body number {i}"))
+    assert len(idx.search("keyword", scopes=["global"], limit=10)) == 2
+    # same database, default ceiling: the clamp is per-index, not per-schema
+    assert len(_idx(tmp_path).search("keyword", scopes=["global"], limit=10)) == 3

@@ -1,5 +1,6 @@
 import pytest
 from fastmcp import Client
+from memriver.config import Settings
 from memriver.server import build_server
 from memriver_core.entry import Entry
 from memriver_core.index_fts import FtsIndex
@@ -403,3 +404,48 @@ async def test_update_of_superseded_entry_is_refused(server):
         idx = (await c.call_tool("memory_index", {})).data
         assert idx.count("\n") == 0 and second["id"] in idx
         assert "tuesday" not in idx
+
+
+async def test_settings_tune_the_body_budget(tmp_path, project):
+    server = build_server(root=tmp_path / "mem", project_dir=project,
+                          settings=Settings(max_body_chars=10))
+    async with Client(server) as c:
+        r = (await c.call_tool("memory_write", {
+            "content": "x" * 11, "type": "fact", "scope": "global"})).data
+        assert "error" in r and "too large" in r["error"]
+        ok = (await c.call_tool("memory_write", {
+            "content": "short", "type": "fact", "scope": "global"})).data
+        assert "id" in ok
+
+
+async def test_settings_tune_the_index_budget(tmp_path, project):
+    server = build_server(root=tmp_path / "mem", project_dir=project,
+                          settings=Settings(index_budget_lines=1))
+    async with Client(server) as c:
+        for i in range(3):
+            await c.call_tool("memory_write", {
+                "content": f"budget entry number {i}", "type": "fact",
+                "scope": "global"})
+        idx = (await c.call_tool("memory_index", {})).data
+        assert idx.count("\n") == 1  # one entry line + the omitted notice
+        assert "2 more entries omitted" in idx
+
+
+async def test_settings_tune_the_search_limits(tmp_path, project):
+    server = build_server(root=tmp_path / "mem", project_dir=project,
+                          settings=Settings(search_limit_default=1, search_limit_max=2))
+    async with Client(server) as c:
+        for i in range(3):
+            await c.call_tool("memory_write", {
+                "content": f"shared keyword body number {i}", "type": "fact",
+                "scope": "global"})
+        assert len((await c.call_tool("memory_search", {"query": "keyword"})).data) == 1
+        assert len((await c.call_tool("memory_search",
+                                      {"query": "keyword", "limit": 10})).data) == 2
+
+
+async def test_search_limit_stays_a_plain_integer_in_the_tool_schema(server):
+    async with Client(server) as c:
+        schema = {t.name: t.inputSchema for t in await c.list_tools()}["memory_search"]
+        limit = schema["properties"]["limit"]
+        assert limit.get("type") == "integer" or {"type": "integer"} in limit.get("anyOf", [])

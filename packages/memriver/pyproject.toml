@@ -5,7 +5,11 @@ description = "Shared memory layer for coding agents across harnesses, exposed v
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
-dependencies = ["memriver-core", "fastmcp>=3.0"]
+dependencies = [
+    "memriver-core",
+    "fastmcp>=3.0",
+    "pydantic-settings>=2.15.0",
+]
 
 [project.scripts]
 memriver = "memriver.cli:main"

@@ -105,3 +105,17 @@ def test_project_scope_defaults_to_working_directory(tmp_path):
                                  content="stored for the cwd repo")
     assert response["result"]["isError"] is False
     assert len(_entry_files(root, repo)) == 1
+
+
+def test_config_file_in_root_is_honoured_end_to_end(tmp_path):
+    """<root>/config.toml tunes the running server, not just load_settings()."""
+    root = tmp_path / "mem"
+    root.mkdir()
+    (root / "config.toml").write_text("max_body_chars = 10\n", encoding="utf-8")
+    repo = _git_repo(tmp_path, "configured-repo")
+
+    response = _write_over_stdio(root, cwd=repo, extra_args=[],
+                                 content="x" * 11)
+    assert response["result"]["isError"] is False  # tools report, never raise
+    assert "too large" in json.dumps(response["result"])
+    assert not _entry_files(root, repo)

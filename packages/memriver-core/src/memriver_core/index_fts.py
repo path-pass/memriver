@@ -19,6 +19,11 @@ CREATE VIRTUAL TABLE IF NOT EXISTS entries USING fts5(
 _MIN_TRIGRAM = 3
 _SNIPPET_CHARS = 60
 
+# Ceiling applied to every caller-supplied search limit. Configurable per index
+# (see FtsIndex.__init__) so the umbrella package can tune it without core
+# depending on a settings library.
+MAX_SEARCH_LIMIT = 50
+
 
 def _like_pattern(query: str) -> str:
     """Build a LIKE pattern that matches `query` literally (ESCAPE '\\')."""
@@ -47,7 +52,8 @@ class IndexBackend(Protocol):
 
 
 class FtsIndex:
-    def __init__(self, db_path: Path):
+    def __init__(self, db_path: Path, max_limit: int = MAX_SEARCH_LIMIT):
+        self.max_limit = max_limit
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(db_path)
         self.conn.execute("PRAGMA journal_mode=WAL")
@@ -72,7 +78,7 @@ class FtsIndex:
     def search(self, query: str, scopes: list[str], limit: int = 5) -> list[SearchHit]:
         # sqlite reads a negative LIMIT as "unlimited", so an out-of-range limit
         # from a tool caller would dump the whole table on either path below
-        limit = max(1, min(limit, 50))
+        limit = max(1, min(limit, self.max_limit))
         # a NUL truncates the query inside FTS5 and surfaces as
         # sqlite3.OperationalError, which callers cannot reasonably catch
         query = query.replace("\x00", "")
