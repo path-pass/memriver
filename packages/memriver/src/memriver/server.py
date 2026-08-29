@@ -26,12 +26,13 @@ def build_server(root: Path, project_dir: Path) -> FastMCP:
     index = FtsIndex(root / ".derived" / "index.sqlite")
     index.rebuild(store)
 
-    # A peer process sharing this root can crash mid-supersede. The store's own
-    # journal recovery then repairs the Markdown chain on this server's next
-    # locked operation, but this connection would keep the old entry active and
-    # the replacement absent until a restart, so reconcile the index in step.
-    # store.read takes no lock (no recursion), _recover already runs inside
-    # locked(), and both calls land on the thread that owns the connection.
+    # Every supersede -- this server's own (memory_update) or one a peer process
+    # crashed halfway through and this server's journal recovery replays -- ends
+    # with the index owing a transition the Markdown writes do not carry. The
+    # store calls this back while its journal is still on disk, so the pair
+    # commits together or is replayed by the next locked operation. store.read
+    # takes no lock (no recursion), supersede and _recover both run inside
+    # locked(), and every call lands on the thread that owns the connection.
     def _reconcile(old_id: str, new_id: str) -> None:
         index.mark_superseded(old_id)
         try:
@@ -149,9 +150,11 @@ def build_server(root: Path, project_dir: Path) -> FastMCP:
         try:
             new = Entry.new(body=content, type=old.type, scope=old.scope,
                             sync=old.sync, source=old.source, trust=old.trust)
+            # the index transition is not applied here: supersede drives it
+            # through _reconcile while its journal is still on disk, so a
+            # failure or a crash mid-transition stays replayable by the next
+            # locked operation instead of stranding this shared index
             store.supersede(entry_id, new)
-            index.mark_superseded(entry_id)
-            index.add(new)
         except (GateError, ValueError) as err:
             return {"error": str(err)}
         return {"id": new.id, "supersedes": entry_id}

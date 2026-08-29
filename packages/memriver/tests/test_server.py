@@ -2,6 +2,7 @@ import pytest
 from fastmcp import Client
 from memriver.server import build_server
 from memriver_core.entry import Entry
+from memriver_core.index_fts import FtsIndex
 from memriver_core.scope import project_slug
 from memriver_core.store import MemoryStore
 
@@ -162,6 +163,46 @@ async def test_peer_crash_recovery_reconciles_the_live_index(tmp_path, project):
         assert {h["id"] for h in hits} == {replacement.id}
         read_old = (await c.call_tool("memory_read", {"entry_id": old["id"]})).data
         assert read_old["superseded_by"] == replacement.id
+
+
+async def test_update_keeps_its_journal_until_the_index_transition_commits(
+        tmp_path, project, monkeypatch):
+    # the index file is shared by every peer process, so a crash between the
+    # Markdown writes and the index transition used to leave it serving the old
+    # entry with no journal left to replay: stale until some process rebuilt.
+    root = tmp_path / "mem"
+    server = build_server(root=root, project_dir=project)
+    journal = root / ".supersede.journal"
+    real = FtsIndex.mark_superseded
+    failed: list[str] = []
+
+    def flaky(self, entry_id: str) -> None:
+        if not failed:
+            failed.append(entry_id)
+            raise RuntimeError("index commit failed")
+        real(self, entry_id)
+
+    async with Client(server) as c:
+        old = (await c.call_tool("memory_write", {
+            "content": "部署流程走 staging 环境", "type": "fact",
+            "scope": "global"})).data
+        anchor = (await c.call_tool("memory_write", {
+            "content": "unrelated anchor entry", "type": "fact",
+            "scope": "global"})).data
+
+        monkeypatch.setattr(FtsIndex, "mark_superseded", flaky)
+        new = (await c.call_tool("memory_update", {
+            "entry_id": old["id"], "content": "部署流程走 production 环境"})).data
+        assert new["supersedes"] == old["id"]  # tools never raise
+        assert journal.exists()
+        monkeypatch.undo()
+
+        # any later locked operation replays the journal and retries the index
+        await c.call_tool("memory_update", {
+            "entry_id": anchor["id"], "content": "unrelated anchor entry v2"})
+        assert not journal.exists()
+        hits = (await c.call_tool("memory_search", {"query": "部署流程走"})).data
+        assert {h["id"] for h in hits} == {new["id"]}
 
 
 def _seed_foreign(root) -> Entry:

@@ -192,9 +192,10 @@ class MemoryStore:
         # never landed -- nothing changed there, and the replacement has no file.
         self._notify_recover(old_id, new_id)
 
-    def _notify_recover(self, old_id: str, new_id: str) -> None:
+    def _notify_recover(self, old_id: str, new_id: str) -> bool:
+        """Hand the transition to the owner. True when it is theirs for good."""
         if self.on_recover is None:
-            return
+            return True
         try:
             self.on_recover(old_id, new_id)
         except Exception:
@@ -202,6 +203,8 @@ class MemoryStore:
             # the store unable to recover or to release the lock
             logger.warning("on_recover callback failed for supersede %s -> %s",
                            old_id, new_id)
+            return False
+        return True
 
     def supersede(self, old_id: str, new_entry: Entry) -> Entry:
         with self.locked():
@@ -218,5 +221,13 @@ class MemoryStore:
             old.superseded_by = new_entry.id
             old.updated = _now()
             self.write(old)
-            (self.root / _JOURNAL).unlink(missing_ok=True)
+            # The owner's derived state (a search index shared by every peer
+            # process) is part of this transition and is not covered by the
+            # Markdown writes. Reconcile it while the journal is still on disk,
+            # so a failure here -- or a crash before the callback returns --
+            # leaves the next lock holder something to replay. Dropping the
+            # journal first would strand the shared index on the old entry with
+            # no record that anything is owed.
+            if self._notify_recover(old_id, new_entry.id):
+                (self.root / _JOURNAL).unlink(missing_ok=True)
         return new_entry

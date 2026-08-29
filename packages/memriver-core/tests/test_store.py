@@ -199,6 +199,51 @@ def test_supersede_removes_its_journal(store):
     assert not (store.root / ".supersede.journal").exists()
 
 
+def test_supersede_reconciles_the_owner_before_dropping_its_journal(store):
+    # the owner's derived state is shared by every peer process and outlives this
+    # call, so the journal has to still be replayable while it is being updated
+    a = _e(); store.write(a)
+    b = _e(body="v2")
+    journal = store.root / ".supersede.journal"
+    seen: list[tuple[str, str, bool]] = []
+    store.on_recover = lambda old_id, new_id: seen.append(
+        (old_id, new_id, journal.exists()))
+
+    store.supersede(a.id, b)
+
+    assert seen == [(a.id, b.id, True)]
+    assert not journal.exists()
+
+
+def test_supersede_keeps_its_journal_when_the_owner_reconcile_fails(store):
+    # a crash between the Markdown writes and the owner's reconcile used to drop
+    # the journal anyway: the shared index then kept serving the superseded entry
+    # with nothing left to replay. Keep the journal; the next lock retries.
+    a = _e(); store.write(a)
+    b = _e(body="v2")
+    journal = store.root / ".supersede.journal"
+    calls: list[tuple[str, str]] = []
+
+    def flaky(old_id: str, new_id: str) -> None:
+        calls.append((old_id, new_id))
+        if len(calls) == 1:
+            raise RuntimeError("index commit failed")
+
+    store.on_recover = flaky
+    store.supersede(a.id, b)
+
+    assert calls == [(a.id, b.id)]
+    assert journal.exists()
+
+    with store.locked():
+        pass
+
+    # replayed against an already-marked chain, so the owner is told again
+    assert calls == [(a.id, b.id), (a.id, b.id)]
+    assert store.read(a.id).superseded_by == b.id
+    assert not journal.exists()
+
+
 def test_journal_is_not_visible_as_an_entry(store):
     a = _e(); store.write(a)
     store._atomic_write(store.root / ".supersede.journal", f"{a.id} {_e().id}")
