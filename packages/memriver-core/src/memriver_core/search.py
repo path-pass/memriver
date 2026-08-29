@@ -35,7 +35,8 @@ def search_entries(store: MemoryStore, query: str, scopes: list[str],
                      key=lambda e: (e.updated, e.id), reverse=True)
     hits = []
     for e in entries:
-        if needle in e.body.lower() or needle in e.id.lower():
+        if (needle in e.body.lower() or needle in e.id.lower()
+                or needle in e.description.lower()):
             body = e.body if len(e.body) <= _SNIPPET_CHARS else e.body[:_SNIPPET_CHARS] + "…"
             hits.append(SearchHit(id=e.id, scope=e.scope, type=e.type, snippet=body))
             if len(hits) == limit:

@@ -131,11 +131,15 @@ class MemoryStore:
             raise EntryNotFound(entry_id)
         return entry
 
-    def update_body(self, entry_id: str, body: str, scopes: list[str]) -> Entry:
+    def update_body(self, entry_id: str, body: str, scopes: list[str],
+                    description: str | None = None) -> Entry:
         # read-modify-write must not interleave with a peer process
         with self.locked():
             entry = self.read(entry_id, scopes)
             entry.body = body.strip()
+            if description is not None:
+                # None keeps the existing description; "" explicitly clears it
+                entry.description = description.strip()
             entry.updated = _now()
             self.write(entry)
         return entry

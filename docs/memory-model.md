@@ -35,6 +35,7 @@ created: 2026-08-29T10:00:00Z
 updated: 2026-08-29T10:00:00Z
 source: {harness: claude-code, method: agent}
 trust: user
+description: mise manages every runtime; check before suggesting installs
 ---
 
 All language runtimes on this machine are managed by mise, not nvm/pyenv.
@@ -44,6 +45,8 @@ All language runtimes on this machine are managed by mise, not nvm/pyenv.
   taxonomy verbatim: who the user is; guidance on how to work; ongoing work
   and constraints; pointers to external resources. Adopted unchanged so that
   agents already trained on this taxonomy need no re-learning.
+- **description** — a one-line recall cue, written for the reader deciding
+  whether to open the entry; rendered in the index.
 - **scope** — `global` (follows the user everywhere) or a project slug.
 - **sync** — per-entry privacy boundary: `false` means this entry never
   leaves the machine, regardless of mode.
@@ -82,9 +85,10 @@ the server. The agent only ever contributes a human-readable hint.
 Recall follows the index-and-read pattern, unchanged from single-harness
 practice:
 
-- `memory_index` renders one line per live entry (name + one-line
-  description) under a line budget, with an explicit truncation notice. The
-  harness injects it at session start; the LLM does the semantic matching.
+- `memory_index` renders one line per live entry (name + description,
+  falling back to the body's first line for entries without one) under a
+  line budget, with an explicit truncation notice. The harness injects it at
+  session start; the LLM does the semantic matching.
 - `memory_read` fetches one entry by name.
 - `memory_search` exists as a tool contract, but the local engine is a plain
   in-memory scan over the files. At local scale (hundreds of entries) an LLM

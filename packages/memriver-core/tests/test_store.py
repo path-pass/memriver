@@ -134,6 +134,22 @@ def test_update_body_rewrites_in_place(tmp_path):
     assert len(list(store.iter_entries(scopes=["global"]))) == 1
 
 
+def test_update_body_description_none_preserves_string_replaces_empty_clears(tmp_path):
+    store = MemoryStore(tmp_path)
+    e = Entry.new(body="old", type="user", scope="global", source={}, id="n",
+                  description="original cue")
+    store.write(e)
+
+    kept = store.update_body("n", "new", scopes=["global"])
+    assert kept.description == "original cue"
+
+    replaced = store.update_body("n", "new2", scopes=["global"], description="new cue")
+    assert replaced.description == "new cue"
+
+    cleared = store.update_body("n", "new3", scopes=["global"], description="")
+    assert cleared.description == ""
+
+
 def test_delete_removes_file(tmp_path):
     store = MemoryStore(tmp_path)
     store.write(Entry.new(body="b", type="user", scope="global", source={}, id="n"))

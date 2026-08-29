@@ -40,6 +40,15 @@ def test_limit_clamped(tmp_path):
     assert search_entries(store, "m", scopes=["global"], limit=10 ** 9)
 
 
+def test_matches_description(tmp_path):
+    store = MemoryStore(tmp_path)
+    store.write(Entry.new(body="unrelated body text", type="user",
+                          scope="global", source={}, id="cue-entry",
+                          description="a distinctive recall cue"))
+    hits = search_entries(store, "distinctive", scopes=["global"], limit=5)
+    assert [h.id for h in hits] == ["cue-entry"]
+
+
 def test_snippet_truncated(tmp_path):
     store = MemoryStore(tmp_path)
     store.write(Entry.new(body="x" * 200, type="user", scope="global",

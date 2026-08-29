@@ -42,11 +42,12 @@ class Entry:
     source: dict
     trust: str
     body: str
+    description: str
 
     @classmethod
     def new(cls, *, body: str, type: str, scope: str, source: dict,
             trust: str = "agent", sync: bool = True,
-            id: str | None = None) -> Entry:
+            id: str | None = None, description: str = "") -> Entry:
         if type not in get_args(MemoryType):
             raise ValueError(f"invalid memory type: {type!r}")
         if trust not in get_args(Trust):
@@ -54,12 +55,14 @@ class Entry:
         now = _now()
         return cls(id=id if id is not None else str(ULID()), type=type,
                    scope=scope, sync=sync, created=now, updated=now,
-                   source=dict(source), trust=trust, body=body.strip())
+                   source=dict(source), trust=trust, body=body.strip(),
+                   description=description.strip())
 
     def to_markdown(self) -> str:
         meta = {"id": self.id, "type": self.type, "scope": self.scope,
                 "sync": self.sync, "created": self.created, "updated": self.updated,
-                "source": self.source, "trust": self.trust}
+                "source": self.source, "trust": self.trust,
+                "description": self.description}
         post = frontmatter.Post(self.body, **meta)
         return frontmatter.dumps(post) + "\n"
 
@@ -73,4 +76,5 @@ class Entry:
         return cls(id=m["id"], type=mtype, scope=m["scope"], sync=bool(m["sync"]),
                    created=str(m["created"]), updated=str(m["updated"]),
                    source=dict(m["source"]), trust=m["trust"],
-                   body=post.content.strip())
+                   body=post.content.strip(),
+                   description=str(m.get("description", "") or "").strip())

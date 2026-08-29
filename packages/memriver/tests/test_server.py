@@ -230,6 +230,69 @@ async def test_update_rewrites_in_place(server):
         assert idx.count("n:") == 1
 
 
+async def test_write_persists_description(server):
+    async with Client(server) as c:
+        r = (await c.call_tool("memory_write", {
+            "content": "v1", "type": "user", "name": "n", "scope": "global",
+            "description": "a one-line recall cue"})).data
+        assert "id" in r
+        read = (await c.call_tool("memory_read", {"entry_id": "n"})).data
+        assert read.get("description") == "a one-line recall cue"
+        idx = (await c.call_tool("memory_index", {})).data
+        assert "a one-line recall cue" in idx
+
+
+async def test_write_collision_echo_carries_description(server):
+    async with Client(server) as c:
+        await c.call_tool("memory_write", {
+            "content": "v1", "type": "user", "name": "n", "scope": "global",
+            "description": "original cue"})
+        out = (await c.call_tool("memory_write", {
+            "content": "v2", "type": "user", "name": "n", "scope": "global"})).data
+        assert out["existing"]["description"] == "original cue"
+
+
+async def test_write_description_with_secret_material_is_refused(server):
+    async with Client(server) as c:
+        r = (await c.call_tool("memory_write", {
+            "content": "ok", "type": "project",
+            "description": "key AKIAIOSFODNN7EXAMPLE"})).data
+        assert "error" in r and "AKIA" not in r["error"]
+        idx = (await c.call_tool("memory_index", {})).data
+        assert "no memories yet" in idx
+
+
+async def test_update_description_none_preserves_string_replaces_empty_clears(server):
+    async with Client(server) as c:
+        await c.call_tool("memory_write", {
+            "content": "v1", "type": "user", "name": "n", "scope": "global",
+            "description": "original cue"})
+
+        await c.call_tool("memory_update", {"entry_id": "n", "content": "v2"})
+        r = (await c.call_tool("memory_read", {"entry_id": "n"})).data
+        assert r["description"] == "original cue"
+
+        await c.call_tool("memory_update", {
+            "entry_id": "n", "content": "v3", "description": "new cue"})
+        r = (await c.call_tool("memory_read", {"entry_id": "n"})).data
+        assert r["description"] == "new cue"
+
+        await c.call_tool("memory_update", {
+            "entry_id": "n", "content": "v4", "description": ""})
+        r = (await c.call_tool("memory_read", {"entry_id": "n"})).data
+        assert r["description"] == ""
+
+
+async def test_update_description_with_secret_material_is_refused(server):
+    async with Client(server) as c:
+        await c.call_tool("memory_write", {
+            "content": "v1", "type": "user", "name": "n", "scope": "global"})
+        r = (await c.call_tool("memory_update", {
+            "entry_id": "n", "content": "v2",
+            "description": "key AKIAIOSFODNN7EXAMPLE"})).data
+        assert "error" in r and "AKIA" not in r["error"]
+
+
 async def test_delete(server):
     async with Client(server) as c:
         await c.call_tool("memory_write", {

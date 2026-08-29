@@ -51,3 +51,29 @@ def test_unknown_keys_ignored_on_read():
     text = e.to_markdown().replace("id:", "unknown_key: X\nid:")
     loaded = Entry.from_markdown(text)
     assert not hasattr(loaded, "unknown_key")
+
+
+def test_description_roundtrips_and_is_stripped():
+    e = Entry.new(body="b", type="user", scope="global", source={},
+                  description="  a one-line recall cue  ")
+    assert e.description == "a one-line recall cue"
+    text = e.to_markdown()
+    assert "description: a one-line recall cue" in text
+    e2 = Entry.from_markdown(text)
+    assert e2 == e
+
+
+def test_description_defaults_empty_and_is_always_in_frontmatter():
+    e = Entry.new(body="b", type="user", scope="global", source={})
+    assert e.description == ""
+    assert "description:" in e.to_markdown()
+
+
+def test_old_files_without_description_parse_as_empty():
+    e = Entry.new(body="b", type="user", scope="global", source={})
+    text = e.to_markdown()
+    # simulate a pre-existing file written before 'description' existed
+    text = "\n".join(line for line in text.splitlines(keepends=False)
+                     if not line.startswith("description:")) + "\n"
+    loaded = Entry.from_markdown(text)
+    assert loaded.description == ""

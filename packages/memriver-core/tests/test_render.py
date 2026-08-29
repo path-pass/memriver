@@ -49,3 +49,29 @@ def test_line_leads_with_name(store):
                           scope="global", source=SOURCE, id="mise-runtimes"))
     out = render_index(store, scopes=["global"])
     assert out.splitlines()[0].startswith("- [user] mise-runtimes: runtimes")
+
+
+def test_render_prefers_description_over_body_first_line(store):
+    store.write(Entry.new(body="the full body text", type="user",
+                          scope="global", source=SOURCE, id="mise-runtimes",
+                          description="mise manages every runtime"))
+    out = render_index(store, scopes=["global"])
+    line = out.splitlines()[0]
+    assert "mise manages every runtime" in line
+    assert "the full body text" not in line
+
+
+def test_render_falls_back_to_body_line_when_description_empty(store):
+    store.write(Entry.new(body="runtimes are managed by mise", type="user",
+                          scope="global", source=SOURCE, id="mise-runtimes"))
+    out = render_index(store, scopes=["global"])
+    assert "runtimes are managed by mise" in out.splitlines()[0]
+
+
+def test_render_truncates_description_to_60_chars(store):
+    long_description = "d" * 100
+    store.write(Entry.new(body="b", type="user", scope="global",
+                          source=SOURCE, id="n", description=long_description))
+    out = render_index(store, scopes=["global"])
+    assert "d" * 60 in out.splitlines()[0]
+    assert "d" * 61 not in out.splitlines()[0]
