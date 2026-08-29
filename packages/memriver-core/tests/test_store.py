@@ -2,6 +2,8 @@ import threading
 
 import pytest
 from memriver_core.entry import Entry
+from memriver_core.index_fts import FtsIndex
+from memriver_core.render import render_index
 
 SOURCE = {"harness": "test", "session": "s", "method": "explicit"}
 
@@ -141,6 +143,29 @@ def test_journal_is_not_visible_as_an_entry(store):
     a = _e(); store.write(a)
     store._atomic_write(store.root / ".supersede.journal", f"{a.id} {_e().id}")
     assert {e.id for e in store.iter_entries()} == {a.id}
+
+
+def test_entry_whose_frontmatter_scope_contradicts_its_directory_is_skipped(store):
+    # entry files are hand-editable: retagging one under global/entries as a
+    # foreign project scope used to leak its body into every project's index,
+    # because iter_entries selects by directory and never rechecks the metadata
+    mine = _e(body="mine stays visible")
+    retagged = _e(body="foreign project secret plan")
+    store.write(mine)
+    path = store.write(retagged)
+    retagged.scope = "project:other-000000"
+    path.write_text(retagged.to_markdown(), encoding="utf-8")
+
+    assert {e.id for e in store.iter_entries(scopes=["global"])} == {mine.id}
+    assert {e.id for e in store.iter_entries()} == {mine.id}
+    index_text = render_index(store, scopes=["global"])
+    assert "secret plan" not in index_text and mine.id in index_text
+
+    fts = FtsIndex(store.root / ".derived" / "index.sqlite")
+    fts.rebuild(store)
+    hits = fts.search("secret plan", scopes=["global", "project:other-000000"])
+    assert hits == []
+    assert [h.id for h in fts.search("stays visible", scopes=["global"])] == [mine.id]
 
 
 def test_read_missing_raises(store):

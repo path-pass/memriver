@@ -19,6 +19,21 @@ logger = logging.getLogger(__name__)
 _JOURNAL = ".supersede.journal"
 
 
+def _dir_scope(entries_dir: Path) -> str | None:
+    """Inverse of `_scope_dir`: the scope a directory of entries stands for.
+
+    None when the directory is not one of the two known shapes.
+    """
+    if entries_dir.name != "entries":
+        return None
+    parent = entries_dir.parent
+    if parent.name == "global":
+        return "global"
+    if parent.parent.name == "projects":
+        return f"project:{parent.name}"
+    return None
+
+
 def _scope_dir(scope: str) -> Path:
     if scope == "global":
         return Path("global")
@@ -77,6 +92,7 @@ class MemoryStore:
         for d in dirs:
             if not d.is_dir():
                 continue
+            expected = _dir_scope(d)
             for f in sorted(d.glob("*.md")):
                 # the store is hand-editable and users may drop their own notes
                 # next to entries: one broken file must never break a traversal
@@ -84,6 +100,13 @@ class MemoryStore:
                     e = Entry.from_markdown(f.read_text(encoding="utf-8"))
                 except Exception:
                     logger.warning("skipping unreadable entry file: %s", f)
+                    continue
+                # this walk selects by directory, so a hand-edited frontmatter
+                # scope that disagrees with it would let one entry answer
+                # queries for a scope it does not live in. The directory is the
+                # physical truth; a file that contradicts it is not trusted.
+                if e.scope != expected:
+                    logger.warning("skipping entry with mismatched scope: %s", f)
                     continue
                 if include_superseded or e.superseded_by is None:
                     yield e
