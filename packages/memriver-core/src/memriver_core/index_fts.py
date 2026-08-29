@@ -54,12 +54,16 @@ class FtsIndex:
         self.conn.execute("PRAGMA busy_timeout=5000")
         self.conn.executescript(_SCHEMA)
 
+    def _insert(self, entry: Entry) -> None:
+        """Replace one row. The caller owns the transaction."""
+        self.conn.execute("DELETE FROM entries WHERE id = ?", (entry.id,))
+        self.conn.execute(
+            "INSERT INTO entries (id, scope, type, active, body) VALUES (?,?,?,?,?)",
+            (entry.id, entry.scope, entry.type, 1, entry.body))
+
     def add(self, entry: Entry) -> None:
         with self.conn:
-            self.conn.execute("DELETE FROM entries WHERE id = ?", (entry.id,))
-            self.conn.execute(
-                "INSERT INTO entries (id, scope, type, active, body) VALUES (?,?,?,?,?)",
-                (entry.id, entry.scope, entry.type, 1, entry.body))
+            self._insert(entry)
 
     def mark_superseded(self, entry_id: str) -> None:
         with self.conn:
@@ -93,7 +97,14 @@ class FtsIndex:
                 for r in rows]
 
     def rebuild(self, store) -> None:
-        with self.conn:
+        # Two hazards this guards against. Without the store lock, another
+        # process can supersede an entry between the moment this walk reads it
+        # and the moment it is inserted, so a stale version is re-indexed as
+        # active and its replacement missed until the next clean rebuild.
+        # Without a single transaction, a reader on another connection sees the
+        # half-empty table; under WAL it now keeps the pre-rebuild snapshot
+        # until this commit lands.
+        with store.locked(), self.conn:
             self.conn.execute("DELETE FROM entries")
-        for e in store.iter_entries(include_superseded=False):
-            self.add(e)
+            for e in store.iter_entries(include_superseded=False):
+                self._insert(e)

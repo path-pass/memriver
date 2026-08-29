@@ -1,3 +1,5 @@
+import threading
+
 from memriver_core.entry import Entry
 from memriver_core.index_fts import FtsIndex
 
@@ -44,6 +46,45 @@ def test_rebuild_from_store(tmp_path, store):
     idx = _idx(tmp_path)
     idx.rebuild(store)
     assert idx.search("重建", scopes=["global"], limit=5)[0].id == e.id
+
+
+def test_rebuild_waits_for_the_store_lock(tmp_path, store):
+    # rebuild must not snapshot entries while another process is halfway through
+    # a supersede, so it takes the same cross-process lock supersede takes
+    store.write(_e("串行化重建的内容"))
+    db = tmp_path / ".derived" / "index.sqlite"
+    done = threading.Event()
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        # sqlite connections are bound to their creating thread
+        try:
+            FtsIndex(db).rebuild(store)
+        except BaseException as err:  # surfaced through the assert below
+            errors.append(err)
+        finally:
+            done.set()
+
+    worker = threading.Thread(target=run)
+    with store.locked():
+        worker.start()
+        assert not done.wait(0.5), "rebuild ran while the store lock was held"
+    worker.join(timeout=10)
+    assert done.is_set() and not errors, f"rebuild did not finish: {errors}"
+    assert _idx(tmp_path).search("串行化", scopes=["global"], limit=5)
+
+
+def test_rebuild_after_recovery_indexes_only_the_survivor(tmp_path, store):
+    # the recovered supersede must not leave both versions searchable
+    a = _e("重建幸存者内容 A")
+    b = _e("重建幸存者内容 B")
+    store.write(a); store.write(b)
+    store._atomic_write(store.root / ".supersede.journal", f"{a.id} {b.id}")
+
+    idx = _idx(tmp_path)
+    idx.rebuild(store)
+
+    assert {h.id for h in idx.search("幸存者", scopes=["global"], limit=10)} == {b.id}
 
 
 def test_query_with_embedded_quotes_is_safe(tmp_path):
