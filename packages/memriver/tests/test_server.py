@@ -34,6 +34,14 @@ async def test_write_secret_rejected(server):
         assert "error" in r and "AKIA" not in r["error"]
 
 
+async def test_malformed_explicit_scope_returns_error_dict(server):
+    async with Client(server) as c:
+        r = (await c.call_tool("memory_write", {
+            "content": "traversal attempt", "type": "fact",
+            "scope": "project:../../etc"})).data
+        assert "error" in r
+
+
 async def test_update_supersedes(server):
     async with Client(server) as c:
         old = (await c.call_tool("memory_write", {

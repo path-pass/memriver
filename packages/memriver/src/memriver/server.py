@@ -70,10 +70,14 @@ def build_server(root: Path, project_dir: Path) -> FastMCP:
             full_scope = resolve_scope(scope, project_dir)
             e = Entry.new(body=content, type=type, scope=full_scope, sync=sync,
                           source={"harness": harness, "method": "agent"})
+            # searched before the entry is indexed, so it cannot match itself
+            similar = index.search(content[:30], scopes=scopes, limit=3)
+            # an explicit 'project:<slug>' scope passes resolve_scope untouched;
+            # the store is what rejects a traversal slug, so keep its ValueError
+            # inside the guard and index only after the entry is durable
+            store.write(e)
         except (GateError, ValueError) as err:
             return {"error": str(err)}
-        similar = index.search(content[:30], scopes=scopes, limit=3)
-        store.write(e)
         index.add(e)
         out: dict = {"id": e.id, "scope": e.scope}
         if similar:
