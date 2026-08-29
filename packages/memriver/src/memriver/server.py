@@ -6,14 +6,13 @@ from pathlib import Path
 
 from fastmcp import FastMCP
 
+from memriver_core.config import Settings
 from memriver_core.entry import Entry
 from memriver_core.gate import GateError, check_content
 from memriver_core.index_fts import FtsIndex
 from memriver_core.render import render_index
 from memriver_core.scope import project_slug, resolve_scope
 from memriver_core.store import MemoryStore
-
-from .config import Settings
 
 INSTRUCTIONS = """Shared long-term memory across coding agents (memriver).
 ALWAYS call memory_index or memory_search before starting a task.

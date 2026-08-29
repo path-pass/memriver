@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from memriver.config import Settings, load_settings
+from memriver_core.config import Settings, load_settings
 
 CONFIG = "config.toml"
 

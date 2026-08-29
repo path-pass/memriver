@@ -4,7 +4,15 @@ version = "0.1.0"
 description = "memriver core: immutable markdown memory store with rebuildable FTS index"
 requires-python = ">=3.12"
 license = "Apache-2.0"
-dependencies = ["python-frontmatter>=1.1", "python-ulid>=2.7"]
+# pydantic/pydantic-settings are repo-wide baseline, not a heavy dependency;
+# the ceiling on core's dependency list targets HEAVY deps only (ML runtimes,
+# cloud SDKs, LLM clients) so future packages (dream/sync/vector) stay light.
+dependencies = [
+    "python-frontmatter>=1.1",
+    "python-ulid>=2.7",
+    "pydantic>=2",
+    "pydantic-settings>=2",
+]
 
 [build-system]
 requires = ["hatchling"]

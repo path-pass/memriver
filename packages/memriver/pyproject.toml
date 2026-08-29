@@ -8,7 +8,6 @@ license = "Apache-2.0"
 dependencies = [
     "memriver-core",
     "fastmcp>=3.0",
-    "pydantic-settings>=2.15.0",
 ]
 
 [project.scripts]

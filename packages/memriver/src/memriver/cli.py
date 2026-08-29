@@ -24,7 +24,8 @@ def main() -> None:
 
     from pydantic import ValidationError
 
-    from .config import load_settings
+    from memriver_core.config import load_settings
+
     from .server import build_server
 
     try:

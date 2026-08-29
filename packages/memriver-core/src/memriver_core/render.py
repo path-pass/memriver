@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from .store import MemoryStore
 
+DEFAULT_BUDGET_LINES = 100
 
-def render_index(store: MemoryStore, scopes: list[str], budget_lines: int = 100) -> str:
+
+def render_index(store: MemoryStore, scopes: list[str],
+                 budget_lines: int = DEFAULT_BUDGET_LINES) -> str:
     entries = sorted(store.iter_entries(scopes=scopes),
                      key=lambda e: (e.updated, e.id), reverse=True)
     if not entries:

@@ -655,14 +655,12 @@ source = { editable = "packages/memriver" }
 dependencies = [
     { name = "fastmcp" },
     { name = "memriver-core" },
-    { name = "pydantic-settings" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "fastmcp", specifier = ">=3.0" },
     { name = "memriver-core", editable = "packages/memriver-core" },
-    { name = "pydantic-settings", specifier = ">=2.15.0" },
 ]
 
 [[package]]
@@ -670,12 +668,16 @@ name = "memriver-core"
 version = "0.1.0"
 source = { editable = "packages/memriver-core" }
 dependencies = [
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
     { name = "python-frontmatter" },
     { name = "python-ulid" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "pydantic", specifier = ">=2" },
+    { name = "pydantic-settings", specifier = ">=2" },
     { name = "python-frontmatter", specifier = ">=1.1" },
     { name = "python-ulid", specifier = ">=2.7" },
 ]

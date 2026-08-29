@@ -1,8 +1,6 @@
-"""Tunable settings for the memriver MCP server.
-
-Only the umbrella package depends on pydantic-settings; memriver-core stays on
-python-frontmatter + python-ulid + the standard library and takes every tunable
-as a plain function or constructor parameter.
+"""Tunable settings for memriver, shared by the umbrella server and any
+future package (dream, sync, vector) that needs the same knobs without
+depending on the MCP umbrella.
 """
 
 from __future__ import annotations
@@ -12,20 +10,19 @@ import os
 import tomllib
 from pathlib import Path
 
-from memriver_core.gate import MAX_BODY_CHARS
-from memriver_core.index_fts import MAX_SEARCH_LIMIT
-from memriver_core.scope import storage_root
 from pydantic import Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from .gate import MAX_BODY_CHARS
+from .index_fts import MAX_SEARCH_LIMIT
+from .render import DEFAULT_BUDGET_LINES
+from .scope import storage_root
 
 log = logging.getLogger(__name__)
 
 CONFIG_FILENAME = "config.toml"
 ENV_PREFIX = "MEMRIVER_"
 
-# render_index's own default; kept here rather than imported because render.py
-# spells it as a signature default and core needs no constant for it
-DEFAULT_INDEX_BUDGET_LINES = 100
 DEFAULT_SEARCH_LIMIT = 5
 
 
@@ -47,7 +44,7 @@ class Settings(BaseSettings):
     max_body_chars: int = Field(MAX_BODY_CHARS, gt=0)
     search_limit_default: int = Field(DEFAULT_SEARCH_LIMIT, gt=0)
     search_limit_max: int = Field(MAX_SEARCH_LIMIT, gt=0)
-    index_budget_lines: int = Field(DEFAULT_INDEX_BUDGET_LINES, gt=0)
+    index_budget_lines: int = Field(DEFAULT_BUDGET_LINES, gt=0)
 
     @field_validator("max_body_chars", "search_limit_default", "search_limit_max",
                      "index_budget_lines", mode="before")

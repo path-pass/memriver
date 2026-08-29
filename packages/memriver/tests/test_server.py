@@ -1,7 +1,7 @@
 import pytest
 from fastmcp import Client
-from memriver.config import Settings
 from memriver.server import build_server
+from memriver_core.config import Settings
 from memriver_core.entry import Entry
 from memriver_core.index_fts import FtsIndex
 from memriver_core.scope import project_slug
