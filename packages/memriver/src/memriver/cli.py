@@ -59,6 +59,20 @@ def _build_parser() -> argparse.ArgumentParser:
                                         "used (default: the directory the harness "
                                         "reports, else the current working directory)")
     hook.set_defaults(handler=_hook)
+
+    install = commands.add_parser(
+        "install", help="configure a harness to use memriver")
+    selector = install.add_mutually_exclusive_group()
+    selector.add_argument("--harness", choices=["claude-code", "codex", "cursor",
+                                                "kiro"],
+                          help="install one harness (default: all of them)")
+    selector.add_argument("--all", action="store_true",
+                          help="install every supported harness (the default)")
+    install.add_argument("--yes", action="store_true",
+                         help="accept every change shown, without prompting")
+    install.add_argument("--dry-run", action="store_true",
+                         help="show the plan and write nothing")
+    install.set_defaults(handler=_install)
     return parser
 
 
@@ -103,6 +117,19 @@ def _hook(args: argparse.Namespace) -> int:
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
     return result.exit_code
+
+
+def _install(args: argparse.Namespace) -> int:
+    import os
+
+    from .install import HARNESSES, run_install
+
+    # no selector means every harness, so the documented optional grammar has
+    # one deterministic meaning rather than a silent no-op
+    harnesses = [args.harness] if args.harness else list(HARNESSES)
+    return run_install(harnesses, yes=args.yes, dry_run=args.dry_run,
+                       home=Path.home(), cwd=Path.cwd(), env=os.environ,
+                       input_fn=input, stdout=sys.stdout, replace_file=os.replace)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

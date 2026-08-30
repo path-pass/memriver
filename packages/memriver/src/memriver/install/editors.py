@@ -386,6 +386,25 @@ def _marker_span(text: str) -> tuple[int, int] | tuple[None, None]:
     return begins[0], ends[0] + len(MARKER_END)
 
 
+def validate_document(text: str, kind: EditorKind) -> None:
+    """Re-parse a fully rendered document, raising ``PlanningError`` if unsound.
+
+    The editors already validate what they render; the orchestrator runs this
+    over the *final* text of every target -- once after planning and again
+    after re-applying only the accepted edits -- so a file is proven whole
+    before it is a candidate for replacement.
+    """
+    if kind == "marker-block":
+        _marker_span(text)
+    elif kind == "toml-table":
+        try:
+            tomlkit.parse(text)
+        except ParseError as error:
+            raise PlanningError(f"file is not valid TOML: {error}") from error
+    else:
+        _parse_json_object(text)
+
+
 def _positions(text: str, marker: str) -> list[int]:
     found, index = [], text.find(marker)
     while index != -1:

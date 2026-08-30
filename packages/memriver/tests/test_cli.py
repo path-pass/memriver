@@ -29,10 +29,11 @@ def test_version_flag_survives_the_legacy_store_options(args):
     assert out.returncode == 0 and "0.1.0" in out.stdout
 
 
-def test_top_level_help_lists_the_serve_and_hook_commands():
+def test_top_level_help_lists_the_serve_hook_and_install_commands():
     out = _run_cli("--help")
     assert out.returncode == 0
     assert "serve" in out.stdout and "hook" in out.stdout
+    assert "install" in out.stdout
 
 
 def test_serve_help_documents_project_dir_default():
@@ -72,8 +73,27 @@ def capture_dispatch(argv: list[str], monkeypatch):
 
     monkeypatch.setattr(cli, "_serve", record)
     monkeypatch.setattr(cli, "_hook", record)
+    monkeypatch.setattr(cli, "_install", record)
     assert cli.main(list(argv)) == 0
     return seen[0]
+
+
+def test_install_parses_its_selector_and_confirmation_flags(monkeypatch):
+    args = capture_dispatch(["install", "--harness", "kiro", "--yes", "--dry-run"],
+                            monkeypatch)
+    assert (args.command, args.harness, args.yes, args.dry_run) == (
+        "install", "kiro", True, True)
+
+
+def test_install_without_a_selector_leaves_the_all_default(monkeypatch):
+    args = capture_dispatch(["install"], monkeypatch)
+    assert args.harness is None and args.yes is False and args.dry_run is False
+
+
+def test_install_rejects_combining_harness_and_all():
+    out = _run_cli("install", "--harness", "codex", "--all")
+    assert out.returncode == 2
+    assert "not allowed with" in out.stderr
 
 
 @pytest.mark.parametrize(
