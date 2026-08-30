@@ -10,9 +10,8 @@ from memriver_core.config import Settings
 from memriver_core.entry import Entry
 from memriver_core.gate import GateError, check_content
 from memriver_core.render import render_index
-from memriver_core.review import review_queue
 from memriver_core.scope import project_slug, resolve_scope, sanitize_name
-from memriver_core.search import search_entries
+from memriver_core.search import review_queue, search_entries
 from memriver_core.store import EntryNotFound, MemoryStore
 
 INSTRUCTIONS = """Shared long-term memory across coding agents (memriver).

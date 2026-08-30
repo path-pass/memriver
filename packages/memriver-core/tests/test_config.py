@@ -2,7 +2,7 @@ import inspect
 from pathlib import Path
 
 import pytest
-from memriver_core import gate, render, review, search
+from memriver_core import gate, render, search
 from memriver_core.config import (
     DEFAULT_BUDGET_LINES,
     DEFAULT_MAX_BODY_CHARS,
@@ -34,7 +34,7 @@ def test_defaults_wired_to_single_source():
             == DEFAULT_SEARCH_LIMIT_MAX)
     assert (inspect.signature(render.render_index).parameters["budget_lines"].default
             == DEFAULT_BUDGET_LINES)
-    assert (inspect.signature(review.review_queue).parameters["max_limit"].default
+    assert (inspect.signature(search.review_queue).parameters["max_limit"].default
             == 10)  # fixed internal guard: a signature literal, not config-backed
 
 
