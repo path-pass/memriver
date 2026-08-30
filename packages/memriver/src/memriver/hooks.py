@@ -146,12 +146,26 @@ def _read_index(root: Path | None, project_dir: Path) -> str:
             build_context(project_dir))
 
 
+def _neutralize_delimiters(index: str) -> str:
+    """Break the phrase both index delimiters are built from, inside the data.
+
+    Both delimiters fit the 60-character cue budget, so a description can spell
+    one verbatim and the single-line normalization upstream never notices: no
+    newline is needed to forge a terminator mid-line. The phrase is what gets
+    hyphenated rather than the dashes, because dashes recombine -- neighbouring
+    text can supply them back around a stripped marker, while the phrase holds
+    the only space and the replacement has none.
+    """
+    return index.replace("memriver index", "memriver-index")
+
+
 def _compose(index: str, source: object) -> str:
     # a store that holds only unreadable entries is indistinguishable from an
     # empty one here, so the copy speaks about visibility, not existence
     if index == _EMPTY_INDEX:
         return EMPTY_VISIBLE
-    delimited = f"{INDEX_BEGIN_DELIMITER}\n{index}\n{INDEX_END_DELIMITER}"
+    delimited = (f"{INDEX_BEGIN_DELIMITER}\n{_neutralize_delimiters(index)}\n"
+                 f"{INDEX_END_DELIMITER}")
     if source == "compact":
         return f"{COMPACT_PREFIX}\n{delimited}\n{COMPACT_RESCUE_SUFFIX}"
     return f"{SESSION_START_PREFIX}\n{delimited}"
