@@ -280,3 +280,13 @@ def test_running_a_hook_does_not_import_the_server_stack():
                     stdin='{"stop_hook_active": false}')
     assert out.returncode == 0, out.stderr
     assert json.loads(out.stdout)["decision"] == "block"
+
+
+def test_install_harness_choices_match_the_installer(monkeypatch):
+    """cli.py spells the four names itself to stay import-light; this pins them
+    to the installer's own registry so the two can never drift."""
+    from memriver.install import HARNESSES
+
+    out = _run_cli("install", "--help")
+    assert out.returncode == 0
+    assert "{" + ",".join(HARNESSES) + "}" in out.stdout

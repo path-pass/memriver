@@ -47,14 +47,16 @@ ALL_HARNESSES = ["claude-code", "codex", "cursor", "kiro"]
 class ReplaceSpy:
     """The injected atomic replace, optionally failing on chosen call numbers."""
 
-    def __init__(self, fail_at: set[int] | None = None) -> None:
+    def __init__(self, fail_at: set[int] | None = None,
+                 raises: type[BaseException] = OSError) -> None:
         self.calls: list[tuple[Path, Path]] = []
         self.fail_at = fail_at or set()
+        self.raises = raises
 
     def __call__(self, source, destination) -> None:
         self.calls.append((Path(source), Path(destination)))
         if len(self.calls) in self.fail_at:
-            raise OSError(f"injected replacement failure #{len(self.calls)}")
+            raise self.raises(f"injected replacement failure #{len(self.calls)}")
         os.replace(source, destination)
 
 
@@ -188,6 +190,13 @@ def symlinked_target(home: Path, project: Path):
     return ["claude-code"], project
 
 
+def symlinked_parent_directory(home: Path, project: Path):
+    elsewhere = home.parent / "claude-elsewhere"
+    elsewhere.mkdir()
+    (home / ".claude").symlink_to(elsewhere, target_is_directory=True)
+    return ["claude-code"], project
+
+
 def all_outside_a_project(home: Path, project: Path):
     elsewhere = home.parent / "elsewhere"
     elsewhere.mkdir()
@@ -200,6 +209,7 @@ PREFLIGHT_FAILURES = [
     duplicate_hook_identities,
     broken_markers,
     symlinked_target,
+    symlinked_parent_directory,
     all_outside_a_project,
 ]
 
@@ -475,6 +485,28 @@ def test_failure_restores_earlier_targets_and_removes_created_ones(home, project
     assert len(backups(home)) == 2  # ~/.claude.json and ~/.codex/config.toml
     assert "restored" in result.stdout and str(claude_json) in result.stdout
     assert "removed" in result.stdout
+
+
+def test_an_interrupt_rolls_the_run_back_and_still_propagates(home, project):
+    """Ctrl-C between replacements must not leave a half-applied tree behind."""
+    claude_json = write(home / ".claude.json", json.dumps({"apiKey": SECRET}),
+                        mode=0o644)
+    codex_toml = write(home / ".codex" / "config.toml", 'model = "gpt"\n')
+    original_json, original_toml = claude_json.read_bytes(), codex_toml.read_bytes()
+    out = io.StringIO()
+    replace = ReplaceSpy(fail_at={3}, raises=KeyboardInterrupt)
+
+    with pytest.raises(KeyboardInterrupt):
+        run_install(["claude-code", "codex"], yes=True, dry_run=False, home=home,
+                    cwd=project, env={}, input_fn=refuse_to_read, stdout=out,
+                    replace_file=replace)
+
+    assert claude_json.read_bytes() == original_json
+    assert mode_of(claude_json) == 0o644
+    assert not (home / ".claude" / "settings.json").exists()
+    assert codex_toml.read_bytes() == original_toml
+    assert "restored" in out.getvalue() and "removed" in out.getvalue()
+    assert len(backups(home)) == 2
 
 
 def test_a_failed_rollback_reports_the_exact_paths_and_keeps_the_backups(home,

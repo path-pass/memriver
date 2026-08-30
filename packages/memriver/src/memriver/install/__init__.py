@@ -117,6 +117,7 @@ class _PlannedChange:
 
 @dataclass(frozen=True)
 class _Plan:
+    project_root: Path | None
     targets: dict[Path, Target]
     snapshots: dict[Path, Snapshot]
     operations: tuple[EditOperation, ...]
@@ -161,14 +162,31 @@ def _collect_targets(harnesses: Sequence[str],
     return classified, per_harness
 
 
-def _read_snapshot(target: Target) -> Snapshot:
-    """Read text and mode for planning only; a symlinked target is refused."""
+def _refuse_symlinks(target: Target, root: Path | None) -> None:
+    """Refuse the target and every path component below ``root`` that is a link.
+
+    Checking only the leaf would still write through a symlinked ``~/.claude``,
+    which lands the file somewhere the user never named. ``root`` itself is not
+    checked: a home or project directory reached through a link is the user's
+    own arrangement, not something this edit redirects.
+    """
+    components = [target.path]
+    if root is not None and target.path.is_relative_to(root):
+        parts = target.path.relative_to(root).parts
+        components = [root.joinpath(*parts[:depth]) for depth in range(1, len(parts) + 1)]
+    for component in components:
+        if component.is_symlink():
+            raise PlanningError(
+                f"{component} is a symlink; memriver will not write through it "
+                f"to {target.path}. Replace it with a regular file or directory "
+                "(or remove it) and run install again"
+            )
+
+
+def _read_snapshot(target: Target, root: Path | None) -> Snapshot:
+    """Read text and mode for planning only; a symlinked path is refused."""
     path = target.path
-    if path.is_symlink():
-        raise PlanningError(
-            f"{path} is a symlink; memriver will not write through it. Replace it "
-            "with a regular file (or remove it) and run install again"
-        )
+    _refuse_symlinks(target, root)
     if not path.exists():
         return Snapshot(target=target, text=None, mode=None)
     if not path.is_file():
@@ -205,7 +223,11 @@ def _plan(harnesses: Sequence[str], home: Path, cwd: Path,
         )
     project_root = _resolve_project_root(harnesses, cwd)
     targets, per_harness = _collect_targets(harnesses, home, project_root)
-    snapshots = {path: _read_snapshot(target) for path, target in targets.items()}
+    roots = {True: home, False: project_root}
+    snapshots = {
+        path: _read_snapshot(target, roots[target.user_level])
+        for path, target in targets.items()
+    }
     operations: list[EditOperation] = []
     for name in harnesses:
         harness_snapshots = tuple(
@@ -217,7 +239,7 @@ def _plan(harnesses: Sequence[str], home: Path, cwd: Path,
         _PlannedChange(operation, render_change_summary(operation, results[operation.id]))
         for operation in operations if results[operation.id].changed
     )
-    return _Plan(targets, snapshots, tuple(operations), changes)
+    return _Plan(project_root, targets, snapshots, tuple(operations), changes)
 
 
 # --- the write transaction ----------------------------------------------------
@@ -268,13 +290,9 @@ def _write_backup(target: Target, original_mode: int, stamp: str) -> Path:
     return backup
 
 
-def _write_target(target: Target, text: str, stamp: str,
+def _write_target(target: Target, text: str, root: Path | None, stamp: str,
                   replace_file: Callable[[Path, Path], None]) -> _Write:
-    if target.path.is_symlink():
-        raise PlanningError(
-            f"{target.path} became a symlink since planning; nothing further "
-            "was written"
-        )
+    _refuse_symlinks(target, root)  # re-checked: planning was a moment ago
     original_mode = _mode_of(target.path) if target.path.exists() else None
     target.path.parent.mkdir(parents=True, exist_ok=True)
     backup = (
@@ -380,8 +398,10 @@ def run_install(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
         stdout.write(f"\nmemriver install: {error}\n")
         return 1
 
+    roots = {True: home, False: plan.project_root}
     pending = [
-        (plan.targets[path], text) for path, text in texts.items()
+        (plan.targets[path], text, roots[plan.targets[path].user_level])
+        for path, text in texts.items()
         if text != (plan.snapshots[path].text or "")
     ]
     return _apply(pending, harnesses, stdout=stdout, replace_file=replace_file)
@@ -400,18 +420,21 @@ def _confirm(changes: Sequence[_PlannedChange], *, yes: bool,
     return tuple(accepted)
 
 
-def _apply(pending: Sequence[tuple[Target, str]], harnesses: Sequence[str], *,
-           stdout: TextIO, replace_file: Callable[[Path, Path], None]) -> int:
+def _apply(pending: Sequence[tuple[Target, str, Path | None]],
+           harnesses: Sequence[str], *, stdout: TextIO,
+           replace_file: Callable[[Path, Path], None]) -> int:
     stamp = _utc_timestamp()
     writes: list[_Write] = []
     try:
-        for target, text in pending:
-            writes.append(_write_target(target, text, stamp, replace_file))
-    except Exception as error:  # noqa: BLE001 - anything at all rolls the run back
+        for target, text, root in pending:
+            writes.append(_write_target(target, text, root, stamp, replace_file))
+    except BaseException as error:  # a Ctrl-C between replacements rolls back too
         stdout.write(f"\nmemriver install failed: {error}\n")
         stdout.write("".join(
             f"  {line}\n" for line in _roll_back(writes, replace_file)))
         stdout.write("  backups were kept; no backup is ever deleted.\n")
+        if not isinstance(error, Exception):
+            raise  # KeyboardInterrupt / SystemExit: rolled back, never swallowed
         return 1
     stdout.write(_success_report(writes, harnesses))
     return 0
