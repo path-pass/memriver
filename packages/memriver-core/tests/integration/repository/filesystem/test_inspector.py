@@ -45,10 +45,20 @@ def build_pathological_file(root: Path, fixture_name: str, monkeypatch) -> Path:
                                  source=SOURCE, id="odd-scope"))
         return _write_raw(root, GLOBAL, "odd-scope.md",
                           text.replace("scope: global", "scope: neither-nor"))
+    if fixture_name == "not-utf8":
+        # readable bytes that are not text: nothing to decode, not an access problem
+        path = _entries_dir(root, GLOBAL) / "binary.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\xff\xfe\x00garbage\x80\x81")
+        return path
     if fixture_name == "wrong-directory":
         return write_memory(root, id="misplaced", scope=PROJECT, directory_scope=GLOBAL)
     if fixture_name == "wrong-stem":
         return write_memory(root, id="bar", scope=GLOBAL, name="foo.md")
+    if fixture_name == "wrong-directory-and-stem":
+        # wrong on both counts at once: scope must win (precedence 4 before 5)
+        return write_memory(root, id="bar", scope=PROJECT, directory_scope=GLOBAL,
+                            name="foo.md")
     if fixture_name == "unreadable":
         if os.geteuid() == 0:
             pytest.skip("root ignores file permissions")
@@ -86,6 +96,7 @@ def test_bad_name_stays_listed_and_is_unaddressable(tmp_path):
     ("fixture_name", "expected_kind"),
     [
         ("unparsable", "unparsable"),
+        ("not-utf8", "unparsable"),
         ("bad-scope", "scope-directory-mismatch"),
         ("wrong-directory", "scope-directory-mismatch"),
         ("wrong-stem", "id-stem-mismatch"),
@@ -141,3 +152,15 @@ def test_files_outside_the_entry_layout_are_ignored(tmp_path):
     report = FilesystemStoreInspector(tmp_path).inspect()
     assert [item.memory.id for item in report.entries] == ["kept"]
     assert report.findings == ()
+
+
+def test_scope_mismatch_outranks_stem_mismatch(tmp_path, monkeypatch):
+    # both checks fail on one file: the store must report the physical
+    # contradiction (a project memory sitting under global/) exactly once, not
+    # the id-stem mismatch that a swapped precedence would surface instead
+    path = build_pathological_file(tmp_path, "wrong-directory-and-stem", monkeypatch)
+    report = FilesystemStoreInspector(tmp_path).inspect()
+    assert [(f.kind, f.location_hint) for f in report.findings] == [
+        ("scope-directory-mismatch", path.relative_to(tmp_path).as_posix())
+    ]
+    assert report.entries == ()
