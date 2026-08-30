@@ -323,8 +323,9 @@ def test_same_scope_collision_echoes_the_existing_memory(memory_repository):
     memory_repository.create(first, CTX)
     with pytest.raises(NameTaken) as err:
         memory_repository.create(_m(body="v2", type="user", id="n"), CTX)
+    # fields only: the client-visible wording is the transport's to write
+    assert err.value.memory_id == "n"
     assert err.value.existing == first
-    assert "already exists" in str(err.value)
 
 
 def test_global_create_refused_when_a_foreign_project_holds_the_name(memory_repository, root):
@@ -339,8 +340,8 @@ def test_global_create_refused_when_a_foreign_project_holds_the_name(memory_repo
 
     with pytest.raises(NameTaken) as err:
         memory_repository.create(_m(body="v2", type="user", id="n"), CTX)
+    assert err.value.memory_id == "n"
     assert err.value.existing is None
-    assert "used elsewhere in the store" in str(err.value)
     assert "secret plan" not in str(err.value)
     assert path.read_bytes() == before
     assert list(root.glob("global/entries/*.md")) == []

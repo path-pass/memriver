@@ -20,9 +20,9 @@ def store_lock(root: Path) -> Iterator[None]:
     fcntl is POSIX-only: no Windows support yet.
 
     Any OSError from the lock lifecycle itself -- creating the root,
-    opening the lock file, or (un)locking it -- surfaces as StorageFailure
-    with a stable, path-free message; the original exception is kept as
-    `__cause__`. Callers must never see a raw platform exception here.
+    opening the lock file, or (un)locking it -- surfaces as the fieldless
+    StorageFailure; the original exception is kept as `__cause__` for logs
+    and goes no further. Callers must never see a raw platform exception here.
     """
     try:
         root.mkdir(parents=True, exist_ok=True)
@@ -33,4 +33,4 @@ def store_lock(root: Path) -> Iterator[None]:
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
     except OSError as err:
-        raise StorageFailure("could not access the store lock") from err
+        raise StorageFailure from err

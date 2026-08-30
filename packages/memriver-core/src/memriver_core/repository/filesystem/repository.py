@@ -96,22 +96,15 @@ class FileMemoryRepository:
                 try:
                     old = self._read(memory.id, check_scopes)
                 except Exception:  # noqa: BLE001
-                    raise UnreadableMemory(
-                        f"name {memory.id!r} is taken by a file that is not "
-                        "a readable entry") from None
+                    raise UnreadableMemory(memory.id) from None
             if old is not None:
                 if memory.scope.project_id is None and old.scope != memory.scope:
                     # the collision lives in another scope (a project, reached
                     # only because a global write searches the whole store);
                     # its content/type must not leak across that boundary, so
-                    # the refusal stays generic
-                    raise NameTaken(
-                        f"name {memory.id!r} is already used elsewhere in the "
-                        "store; choose another name", existing=None)
-                raise NameTaken(
-                    f"name {memory.id!r} already exists; memory_update it, or "
-                    "choose a more precise name if this is a different fact",
-                    existing=old)
+                    # `existing` stays None and the caller gets no echo
+                    raise NameTaken(memory.id, existing=None)
+                raise NameTaken(memory.id, existing=old)
             self._write(memory)
 
     def get(self, memory_id: str, ctx: AccessContext) -> Memory:
@@ -141,7 +134,7 @@ class FileMemoryRepository:
             try:
                 self._find(memory_id, scopes).unlink()
             except OSError as err:
-                raise StorageFailure("could not delete memory") from err
+                raise StorageFailure from err
 
     def iter_visible(self, ctx: AccessContext) -> Iterator[Memory]:
         dirs = [self.root / _scope_dir(s) / "entries" for s in ctx.visible_scopes()]
@@ -225,7 +218,7 @@ class FileMemoryRepository:
         try:
             self._atomic_write(path, encode(memory))
         except OSError as err:
-            raise StorageFailure("could not write memory") from err
+            raise StorageFailure from err
 
     def _occupied(self, memory_id: str, scopes: list[Scope] | None) -> bool:
         """Whether any file sits at this name -- decodable or not.
@@ -263,7 +256,7 @@ class FileMemoryRepository:
         try:
             text = path.read_text(encoding="utf-8")
         except OSError as err:
-            raise StorageFailure("could not read memory") from err
+            raise StorageFailure from err
         try:
             memory = decode(text)
         except UnparsableStoredScope:

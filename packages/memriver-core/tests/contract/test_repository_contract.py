@@ -69,8 +69,9 @@ def test_create_and_get_in_the_current_project_scope(memory_repository):
 
 
 def test_get_missing_raises_memory_not_found(memory_repository):
-    with pytest.raises(MemoryNotFound):
+    with pytest.raises(MemoryNotFound) as err:
         memory_repository.get("nope", CTX)
+    assert err.value.memory_id == "nope"
 
 
 def test_update_body_rewrites_in_place(memory_repository):
@@ -162,12 +163,18 @@ def test_create_of_a_global_memory_is_unaffected(memory_repository):
 
 
 # --- collisions ---
+#
+# The three outcomes are told apart by TYPE and FIELDS, never by wording: the
+# client-visible copy is the transport's (see memriver's error-mapping tests),
+# so a backend that phrases its own messages differently -- or not at all --
+# still satisfies this contract and still produces identical MCP responses.
 
 def test_same_scope_collision_raises_name_taken_with_the_existing_memory(memory_repository):
     first = _m(body="v1", id="n", description="original cue")
     memory_repository.create(first, CTX)
     with pytest.raises(NameTaken) as err:
         memory_repository.create(_m(body="v2", id="n"), CTX)
+    assert err.value.memory_id == "n"
     assert err.value.existing == first
 
 
@@ -176,6 +183,9 @@ def test_global_write_refused_when_another_project_holds_the_name(memory_reposit
                 OTHER_CTX)
     with pytest.raises(NameTaken) as err:
         memory_repository.create(_m(body="v2", id="n"), CTX)
+    assert err.value.memory_id == "n"
+    # existing=None is the cross-scope refusal: the field carries no trace of
+    # the memory holding the name, so no transport can echo one
     assert err.value.existing is None
     assert "foreign secret plan" not in str(err.value)
     # the foreign memory is untouched and no global memory was created
@@ -186,8 +196,9 @@ def test_global_write_refused_when_another_project_holds_the_name(memory_reposit
 def test_collision_with_an_undecodable_item_raises_unreadable_memory(
         memory_repository, occupy_unreadably):
     occupy_unreadably("notes")
-    with pytest.raises(UnreadableMemory):
+    with pytest.raises(UnreadableMemory) as err:
         memory_repository.create(_m(body="v1", id="notes"), CTX)
+    assert err.value.memory_id == "notes"
 
 
 # --- search ---

@@ -33,6 +33,7 @@ def test_all_taxonomy_members_subclass_the_base(cls):
 
 def test_name_taken_defaults_existing_to_none():
     err = NameTaken("x")
+    assert err.memory_id == "x"
     assert err.existing is None
 
 
@@ -45,3 +46,15 @@ def test_name_taken_existing_set():
     m = Memory.new(body="b", type="project", scope=Scope.global_(), source={})
     err = NameTaken("x", existing=m)
     assert err.existing is m
+
+
+@pytest.mark.parametrize("cls", [MemoryNotFound, UnreadableMemory, NameTaken])
+def test_storage_boundary_errors_carry_the_memory_id_as_a_field(cls):
+    assert cls("some-name").memory_id == "some-name"
+
+
+def test_storage_failure_accepts_no_adapter_detail():
+    # fieldless by construction: an adapter cannot attach a path, an errno or
+    # a driver message that a transport might then echo to a client
+    with pytest.raises(TypeError):
+        StorageFailure("could not open /home/alice/store/.lock")  # type: ignore[call-arg]
