@@ -11,7 +11,10 @@ original snapshots and validates again. No directory is created, no backup is
 written, no file is touched anywhere in that phase -- a planning failure is a
 raised ``PlanningError``, never a pretend change.
 
-Applying is a transaction. Each changed target is backed up to a sibling
+Applying is a transaction. Each target is re-read and compared to its planning
+snapshot immediately before it is written, so a config that another agent
+changed while the user was answering prompts aborts the run instead of being
+overwritten from a stale render. Each changed target is backed up to a sibling
 ``<target>.memriver-backup-<UTC timestamp>`` created exclusively, then replaced
 through a same-directory temporary file. That backup **is** the pre-image
 (spec 10, DEFERRED-1): if any replacement fails, the run walks its write list
@@ -49,6 +52,7 @@ from .editors import (
     Snapshot,
     Target,
     apply_edit,
+    display_path,
     hook_array_identity_merge,
     hook_group,
     hook_identity,
@@ -74,6 +78,7 @@ __all__ = [
     "Snapshot",
     "Target",
     "apply_edit",
+    "display_path",
     "hook_array_identity_merge",
     "hook_group",
     "hook_identity",
@@ -297,10 +302,25 @@ def _write_backup(target: Target, original_mode: int, stamp: str) -> Path:
     return backup
 
 
-def _write_target(target: Target, text: str, root: Path | None, stamp: str,
+def _write_target(snapshot: Snapshot, text: str, root: Path | None, stamp: str,
+                  home: Path,
                   replace_file: Callable[[Path, Path], None]) -> _Write:
-    _refuse_symlinks(target, root)  # re-checked: planning was a moment ago
-    original_mode = _mode_of(target.path) if target.path.exists() else None
+    """Re-read the target, refuse it if it moved since planning, then replace it.
+
+    Planning read this file before the prompts, and ``text`` was rendered from
+    what it read. Another agent editing the same config in that window would be
+    silently overwritten -- and the backup would be no help, since restoring it
+    also undoes the memriver edits the user just accepted. Re-reading through
+    ``_read_snapshot`` re-runs the symlink refusal on the way, so the target is
+    compared and re-checked in one step.
+    """
+    target = snapshot.target
+    if _read_snapshot(target, root) != snapshot:
+        raise PlanningError(
+            f"{display_path(target.path, home)}: file changed since planning; "
+            "nothing further was written -- re-run memriver install"
+        )
+    original_mode = snapshot.mode
     target.path.parent.mkdir(parents=True, exist_ok=True)
     backup = (
         _write_backup(target, original_mode, stamp) if original_mode is not None
@@ -407,11 +427,12 @@ def run_install(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
 
     roots = {True: home, False: plan.project_root}
     pending = [
-        (plan.targets[path], text, roots[plan.targets[path].user_level])
+        (plan.snapshots[path], text, roots[plan.targets[path].user_level])
         for path, text in texts.items()
         if text != (plan.snapshots[path].text or "")
     ]
-    return _apply(pending, harnesses, stdout=stdout, replace_file=replace_file)
+    return _apply(pending, harnesses, home=home, stdout=stdout,
+                  replace_file=replace_file)
 
 
 def _confirm(changes: Sequence[_PlannedChange], *, yes: bool,
@@ -432,14 +453,15 @@ def _confirm(changes: Sequence[_PlannedChange], *, yes: bool,
     return tuple(accepted)
 
 
-def _apply(pending: Sequence[tuple[Target, str, Path | None]],
-           harnesses: Sequence[str], *, stdout: TextIO,
+def _apply(pending: Sequence[tuple[Snapshot, str, Path | None]],
+           harnesses: Sequence[str], *, home: Path, stdout: TextIO,
            replace_file: Callable[[Path, Path], None]) -> int:
     stamp = _utc_timestamp()
     writes: list[_Write] = []
     try:
-        for target, text, root in pending:
-            writes.append(_write_target(target, text, root, stamp, replace_file))
+        for snapshot, text, root in pending:
+            writes.append(
+                _write_target(snapshot, text, root, stamp, home, replace_file))
     except BaseException as error:  # a Ctrl-C between replacements rolls back too
         stdout.write(f"\nmemriver install failed: {error}\n")
         stdout.write("".join(

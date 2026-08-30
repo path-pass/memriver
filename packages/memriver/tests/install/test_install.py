@@ -355,6 +355,93 @@ def test_the_native_memory_takeover_does_not_call_it_a_memriver_entry(home, proj
     assert TAKEOVER_NOTICE not in result.stdout
 
 
+def mutate_at_last_prompt(path: Path, mutate) -> tuple[callable, list]:
+    """An ``input_fn`` that accepts everything and, once the last change has
+    been confirmed, lets another process rewrite ``path`` -- exactly the window
+    between the planning snapshot and the first write."""
+    prompts: list[str] = []
+
+    def answer(prompt: str) -> str:
+        prompts.append(prompt)
+        if len(prompts) == 4:  # the last claude-code confirmation
+            mutate(path)
+        return "y"
+
+    return answer, prompts
+
+
+def test_a_target_rewritten_between_planning_and_apply_aborts_the_run(home,
+                                                                     project,
+                                                                     tmp_path):
+    """Another agent rewriting ~/.claude/settings.json while the user answers
+    prompts must not be overwritten from a snapshot taken before it wrote."""
+    config = write(home / ".claude.json", json.dumps({"mcpServers": {}}))
+    settings = home / ".claude" / "settings.json"
+    write(settings, json.dumps({"hooks": {}}))
+    before_config = config.read_bytes()
+    concurrent = json.dumps({"hooks": {}, "addedByAnotherAgent": True})
+
+    answer, prompts = mutate_at_last_prompt(
+        settings, lambda path: path.write_text(concurrent, encoding="utf-8"))
+    result = install(["claude-code"], home=home, cwd=project, yes=False,
+                     input_fn=answer)
+
+    assert len(prompts) == 4
+    assert result.exit_code == 1
+    assert "file changed since planning" in result.stdout
+    abort = next(line for line in result.stdout.splitlines()
+                 if "file changed since planning" in line)
+    # the abort line abbreviates like the prompts do; the rollback report below
+    # it still prints the absolute backup paths the user needs
+    assert abort.endswith("~/.claude/settings.json: file changed since planning; "
+                          "nothing further was written -- re-run memriver install")
+    # the concurrent write survives untouched, and the target written before it
+    # is rolled back from this run's backup
+    assert settings.read_text() == concurrent
+    assert config.read_bytes() == before_config
+    assert [p.name.split(".memriver-backup-")[0] for p in backups(tmp_path)] == [
+        ".claude.json"]
+
+
+def test_a_target_created_between_planning_and_apply_aborts_the_run(home, project,
+                                                                    tmp_path):
+    """Planning saw no file; by apply time one exists. Writing would destroy it."""
+    settings = home / ".claude" / "settings.json"
+    concurrent = json.dumps({"hooks": {}})
+
+    answer, prompts = mutate_at_last_prompt(
+        settings, lambda path: write(path, concurrent))
+    result = install(["claude-code"], home=home, cwd=project, yes=False,
+                     input_fn=answer)
+
+    assert len(prompts) == 4
+    assert result.exit_code == 1
+    assert "file changed since planning" in result.stdout
+    assert settings.read_text() == concurrent
+    # ~/.claude.json was created by this run and is removed again on rollback
+    assert not (home / ".claude.json").exists()
+    assert backups(tmp_path) == []
+
+
+def test_a_permission_change_between_planning_and_apply_aborts_the_run(home,
+                                                                       project):
+    """The mode is part of what planning read: a target whose permissions moved
+    under us is not the file the plan was made against."""
+    write(home / ".claude.json", json.dumps({"mcpServers": {}}))
+    settings = write(home / ".claude" / "settings.json", json.dumps({"hooks": {}}),
+                     mode=0o600)
+
+    answer, prompts = mutate_at_last_prompt(settings,
+                                            lambda path: path.chmod(0o644))
+    result = install(["claude-code"], home=home, cwd=project, yes=False,
+                     input_fn=answer)
+
+    assert len(prompts) == 4
+    assert result.exit_code == 1
+    assert "file changed since planning" in result.stdout
+    assert mode_of(settings) == 0o644
+
+
 def test_declining_the_native_memory_change_keeps_the_accepted_ones(home, project):
     result = install(["claude-code"], home=home, cwd=project, yes=False,
                      replies=["y", "y", "y", "n"])

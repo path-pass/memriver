@@ -444,10 +444,10 @@ def operation_label(operation: EditOperation, home: Path) -> str:
     confirmation from the next.
     """
     harness = operation.id.split(":", 1)[0]
-    return f"{harness}: {operation.label} -> {_display_path(operation.target.path, home)}"
+    return f"{harness}: {operation.label} -> {display_path(operation.target.path, home)}"
 
 
-def _display_path(path: Path, home: Path) -> str:
+def display_path(path: Path, home: Path) -> str:
     """Home-relative targets render as ``~/...``; everything else stays absolute.
 
     Summaries get pasted into issues and transcripts, and a real home directory
