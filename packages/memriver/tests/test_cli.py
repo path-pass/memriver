@@ -74,38 +74,38 @@ def _write_over_stdio(root, cwd, extra_args: list[str], content: str) -> dict:
 
 
 def _git_repo(tmp_path, name: str):
-    repo = tmp_path / name
-    (repo / ".git").mkdir(parents=True)
-    return repo
+    git_repo = tmp_path / name
+    (git_repo / ".git").mkdir(parents=True)
+    return git_repo
 
 
-def _entry_files(root, repo):
-    return sorted((root / "projects" / project_slug(repo) / "entries").glob("*.md"))
+def _entry_files(root, git_repo):
+    return sorted((root / "projects" / project_slug(git_repo) / "entries").glob("*.md"))
 
 
 def test_project_scope_follows_project_dir_not_cwd(tmp_path):
     """--project-dir decides project attribution even when cwd is elsewhere."""
     root = tmp_path / "mem"
-    repo = _git_repo(tmp_path, "target-repo")
+    git_repo = _git_repo(tmp_path, "target-repo")
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
 
     response = _write_over_stdio(root, cwd=elsewhere,
-                                 extra_args=["--project-dir", str(repo)],
+                                 extra_args=["--project-dir", str(git_repo)],
                                  content="stored for the target repo")
     assert response["result"]["isError"] is False
-    assert len(_entry_files(root, repo)) == 1
+    assert len(_entry_files(root, git_repo)) == 1
 
 
 def test_project_scope_defaults_to_working_directory(tmp_path):
     """Without --project-dir the MCP client's working directory decides the scope."""
     root = tmp_path / "mem"
-    repo = _git_repo(tmp_path, "cwd-repo")
+    git_repo = _git_repo(tmp_path, "cwd-repo")
 
-    response = _write_over_stdio(root, cwd=repo, extra_args=[],
+    response = _write_over_stdio(root, cwd=git_repo, extra_args=[],
                                  content="stored for the cwd repo")
     assert response["result"]["isError"] is False
-    assert len(_entry_files(root, repo)) == 1
+    assert len(_entry_files(root, git_repo)) == 1
 
 
 def test_config_file_in_root_is_honoured_end_to_end(tmp_path):
@@ -113,13 +113,13 @@ def test_config_file_in_root_is_honoured_end_to_end(tmp_path):
     root = tmp_path / "mem"
     root.mkdir()
     (root / "config.toml").write_text("max_body_chars = 10\n", encoding="utf-8")
-    repo = _git_repo(tmp_path, "configured-repo")
+    git_repo = _git_repo(tmp_path, "configured-repo")
 
-    response = _write_over_stdio(root, cwd=repo, extra_args=[],
+    response = _write_over_stdio(root, cwd=git_repo, extra_args=[],
                                  content="x" * 11)
     assert response["result"]["isError"] is False  # tools report, never raise
     assert "too large" in json.dumps(response["result"])
-    assert not _entry_files(root, repo)
+    assert not _entry_files(root, git_repo)
 
 
 def test_bad_env_value_reports_readably(tmp_path):

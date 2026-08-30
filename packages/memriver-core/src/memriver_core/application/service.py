@@ -31,12 +31,12 @@ _HARNESS_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 
 
 class MemoryService:
-    def __init__(self, repository: MemoryRepository, policy: ContentPolicy, *,
+    def __init__(self, memory_repository: MemoryRepository, content_policy: ContentPolicy, *,
                  max_body_chars: int, metadata_max_chars: int,
                  search_limit_default: int, search_limit_max: int,
                  index_budget_lines: int) -> None:
-        self._repository = repository
-        self._policy = policy
+        self._memory_repository = memory_repository
+        self._content_policy = content_policy
         self._max_body_chars = max_body_chars
         # metadata keeps its own budget so that lowering the configured body
         # limit does not silently tighten harness/name/description acceptance
@@ -52,35 +52,35 @@ class MemoryService:
                                   "(allowed: letters, digits, ., _, -, max 64 chars)")
         # the harness identifier is already capped at 64 chars by the shape
         # check above, so the configured body budget does not apply to it
-        self._policy.check(harness, self._metadata_max_chars)
-        self._policy.check(content, self._max_body_chars)
+        self._content_policy.check(harness, self._metadata_max_chars)
+        self._content_policy.check(content, self._max_body_chars)
         # description is persisted verbatim too, and only checked when
         # non-empty since it is optional and the policy refuses ""
         if description.strip():
-            self._policy.check(description, self._metadata_max_chars)
+            self._content_policy.check(description, self._metadata_max_chars)
         # 'name' becomes the stored id verbatim once sanitize_name
         # lowercases/strips it -- that transform does not scrub secret-shaped
         # content, so the policy must run on the raw proposal first, same as
         # content/harness/description
         if name.strip():
-            self._policy.check(name, self._metadata_max_chars)
+            self._content_policy.check(name, self._metadata_max_chars)
         resolved = self._resolve_scope(scope, ctx)
         memory = Memory.new(body=content, type=type, scope=resolved, sync=sync,
                             id=sanitize_name(name), description=description,
                             source={"harness": harness, "method": "agent"})
-        self._repository.create(memory, ctx)
+        self._memory_repository.create(memory, ctx)
         return memory
 
     def read(self, memory_id: str, ctx: AccessContext) -> Memory:
-        return self._repository.get(memory_id, ctx)
+        return self._memory_repository.get(memory_id, ctx)
 
     def search(self, query: str, ctx: AccessContext,
                limit: int | None = None) -> list[SearchHit]:
         limit = self._search_limit_default if limit is None else limit
         # the repository answers exactly what it is asked for; clamping the
         # agent-supplied limit is the application's job
-        return self._repository.search(query, ctx,
-                                       max(1, min(limit, self._search_limit_max)))
+        return self._memory_repository.search(
+            query, ctx, max(1, min(limit, self._search_limit_max)))
 
     def review_queue(self, ctx: AccessContext, limit: int,
                      max_limit: int = 10) -> list[Memory]:
@@ -93,13 +93,13 @@ class MemoryService:
         # Oldest-first selection therefore cycles through the whole store over
         # successive reviews instead of jamming on evergreen memories.
         limit = max(1, min(limit, max_limit))
-        entries = sorted(self._repository.iter_visible(ctx),
+        entries = sorted(self._memory_repository.iter_visible(ctx),
                          key=lambda m: (m.updated, m.id))
         return entries[:limit]
 
     def index(self, ctx: AccessContext) -> str:
         listing = IndexListing(entries=tuple(
-            sorted(self._repository.iter_visible(ctx),
+            sorted(self._memory_repository.iter_visible(ctx),
                    key=lambda m: (m.updated, m.id), reverse=True)))
         if not listing.entries:
             return "(no memories yet)"
@@ -116,15 +116,15 @@ class MemoryService:
 
     def update(self, memory_id: str, content: str, ctx: AccessContext,
                description: str | None = None) -> Memory:
-        self._policy.check(content, self._max_body_chars)
+        self._content_policy.check(content, self._max_body_chars)
         if description is not None and description.strip():
-            self._policy.check(description, self._metadata_max_chars)
+            self._content_policy.check(description, self._metadata_max_chars)
         # scoped lookup: an id leaked from another project cannot resolve
-        return self._repository.update_body(memory_id, content, ctx,
-                                            description=description)
+        return self._memory_repository.update_body(
+            memory_id, content, ctx, description=description)
 
     def delete(self, memory_id: str, ctx: AccessContext) -> None:
-        self._repository.delete(memory_id, ctx)
+        self._memory_repository.delete(memory_id, ctx)
 
     def _resolve_scope(self, raw: str, ctx: AccessContext) -> Scope:
         if raw == "project":

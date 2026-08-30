@@ -13,11 +13,11 @@ from .repository.filesystem import FileMemoryRepository
 def build_service(settings: Settings, *, root: Path | None = None) -> MemoryService:
     # an explicit root is authoritative: callers that already resolved it (the
     # CLI, the tests) must not have it replaced by the environment or settings
-    repository = FileMemoryRepository(settings.root if root is None else root)
-    policy = SecretScanner()
+    memory_repository = FileMemoryRepository(settings.root if root is None else root)
+    content_policy = SecretScanner()
     return MemoryService(
-        repository,
-        policy,
+        memory_repository,
+        content_policy,
         max_body_chars=settings.max_body_chars,
         # metadata keeps the default budget, so a tightened body limit does
         # not silently change harness/name/description acceptance

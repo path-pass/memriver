@@ -21,12 +21,12 @@ def test_create_holds_the_lock_across_check_then_write(tmp_path):
     # winner. Instrument the whole critical section: _occupied opens it and
     # _atomic_write closes it, so a peer entering _occupied while another
     # thread is still writing means the lock does not span the sequence.
-    repo = FileMemoryRepository(tmp_path)
+    memory_repository = FileMemoryRepository(tmp_path)
     active = 0
     max_active = 0
     counter_lock = threading.Lock()
-    real_occupied = repo._occupied
-    real_write = repo._atomic_write
+    real_occupied = memory_repository._occupied
+    real_write = memory_repository._atomic_write
 
     def observed_occupied(memory_id, scopes):
         nonlocal active, max_active
@@ -44,16 +44,16 @@ def test_create_holds_the_lock_across_check_then_write(tmp_path):
             with counter_lock:
                 active -= 1
 
-    repo._occupied = observed_occupied
-    repo._atomic_write = observed_write
+    memory_repository._occupied = observed_occupied
+    memory_repository._atomic_write = observed_write
     barrier = threading.Barrier(2)
     errors: list[Exception] = []
 
     def attempt(name: str) -> None:
         try:
             barrier.wait(timeout=5)
-            repo.create(Memory.new(body=name, type="user", scope=Scope.global_(),
-                                   source={}, id=name), CTX)
+            memory_repository.create(Memory.new(
+                body=name, type="user", scope=Scope.global_(), source={}, id=name), CTX)
         except Exception as err:  # noqa: BLE001
             errors.append(err)
 
@@ -76,13 +76,13 @@ def test_update_body_serializes_concurrent_writers(tmp_path):
     # concurrent entries into _atomic_write instead -- with the store-wide
     # flock held for the whole read-modify-write, only one thread can ever
     # be inside it at a time.
-    repo = FileMemoryRepository(tmp_path)
-    repo.create(Memory.new(body="base", type="user", scope=Scope.global_(),
-                           source={}, id="n"), CTX)
+    memory_repository = FileMemoryRepository(tmp_path)
+    memory_repository.create(Memory.new(
+        body="base", type="user", scope=Scope.global_(), source={}, id="n"), CTX)
     active = 0
     max_active = 0
     counter_lock = threading.Lock()
-    real_write = repo._atomic_write
+    real_write = memory_repository._atomic_write
 
     def observed_write(path, text):
         nonlocal active, max_active
@@ -96,14 +96,14 @@ def test_update_body_serializes_concurrent_writers(tmp_path):
             with counter_lock:
                 active -= 1
 
-    repo._atomic_write = observed_write
+    memory_repository._atomic_write = observed_write
     barrier = threading.Barrier(2)
     errors: list[Exception] = []
 
     def attempt(marker: str) -> None:
         try:
             barrier.wait(timeout=5)
-            repo.update_body("n", marker, CTX)
+            memory_repository.update_body("n", marker, CTX)
         except Exception as err:  # noqa: BLE001
             errors.append(err)
 
@@ -116,4 +116,4 @@ def test_update_body_serializes_concurrent_writers(tmp_path):
 
     assert errors == []
     assert max_active == 1  # flock serialized the two critical sections
-    assert repo.get("n", CTX).body in {"a", "b"}
+    assert memory_repository.get("n", CTX).body in {"a", "b"}

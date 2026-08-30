@@ -12,9 +12,9 @@ from memriver_core.config import DEFAULT_MAX_BODY_CHARS, Settings
 class Recorder:
     """Stands in for MemoryService, keeping what bootstrap injected."""
 
-    def __init__(self, repository, policy, **limits):
-        self.repository = repository
-        self.policy = policy
+    def __init__(self, memory_repository, content_policy, **limits):
+        self.memory_repository = memory_repository
+        self.content_policy = content_policy
         self.limits = limits
 
 

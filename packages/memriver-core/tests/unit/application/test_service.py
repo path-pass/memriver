@@ -29,7 +29,7 @@ CTX = AccessContext(project_id=PID)
 GLOBAL_ONLY = AccessContext(project_id=None)
 
 
-class FakePolicy:
+class FakeContentPolicy:
     """Records every (text, max_chars) call and enforces only the budget."""
 
     def __init__(self) -> None:
@@ -43,7 +43,7 @@ class FakePolicy:
             raise ContentRejected(f"content too large ({len(text)} > {max_chars} chars)")
 
 
-class FakeRepository:
+class FakeMemoryRepository:
     def __init__(self, memories: list[Memory] | None = None) -> None:
         self.memories = list(memories or [])
         self.created: list[Memory] = []
@@ -95,13 +95,13 @@ def memory(memory_id: str, *, updated: str = "2026-01-01T00:00:00Z", body: str =
                   description=description, body=body)
 
 
-def build(repository=None, policy=None, **overrides) -> MemoryService:
+def build(memory_repository=None, content_policy=None, **overrides) -> MemoryService:
     limits = {"max_body_chars": 8000, "metadata_max_chars": 8000,
               "search_limit_default": 5, "search_limit_max": 50,
               "index_budget_lines": 100}
     limits.update(overrides)
-    return MemoryService(repository or FakeRepository(), policy or FakePolicy(),
-                         **limits)
+    return MemoryService(memory_repository or FakeMemoryRepository(),
+                         content_policy or FakeContentPolicy(), **limits)
 
 
 def write(service, ctx=CTX, **overrides):
@@ -115,27 +115,27 @@ def write(service, ctx=CTX, **overrides):
 # --- create: policy calls ---
 
 def test_policy_call_order_and_arguments():
-    policy, repo = FakePolicy(), FakeRepository()
-    service = build(repo, policy, max_body_chars=100)
+    content_policy, memory_repository = FakeContentPolicy(), FakeMemoryRepository()
+    service = build(memory_repository, content_policy, max_body_chars=100)
     write(service, content="body text", name="My Name", description="a cue")
-    assert policy.calls == [("claude-code", 8000), ("body text", 100),
+    assert content_policy.calls == [("claude-code", 8000), ("body text", 100),
                             ("a cue", 8000), ("My Name", 8000)]
 
 
 def test_empty_description_and_name_are_not_gated():
-    policy = FakePolicy()
-    write(build(policy=policy), description="   ", name="  ")
-    assert policy.calls == [("claude-code", 8000), ("a durable fact", 8000)]
+    content_policy = FakeContentPolicy()
+    write(build(content_policy=content_policy), description="   ", name="  ")
+    assert content_policy.calls == [("claude-code", 8000), ("a durable fact", 8000)]
 
 
 def test_metadata_budget_is_independent_of_the_body_budget():
     # a tightened body limit must not tighten metadata acceptance
-    policy, repo = FakePolicy(), FakeRepository()
-    service = build(repo, policy, max_body_chars=10, metadata_max_chars=8000)
+    content_policy, memory_repository = FakeContentPolicy(), FakeMemoryRepository()
+    service = build(memory_repository, content_policy, max_body_chars=10, metadata_max_chars=8000)
     write(service, content="short", description="d" * 20, name="n" * 20)
-    assert policy.calls == [("claude-code", 8000), ("short", 10),
+    assert content_policy.calls == [("claude-code", 8000), ("short", 10),
                             ("d" * 20, 8000), ("n" * 20, 8000)]
-    assert len(repo.created) == 1
+    assert len(memory_repository.created) == 1
 
 
 def test_content_is_gated_with_the_configured_body_budget():
@@ -144,71 +144,71 @@ def test_content_is_gated_with_the_configured_body_budget():
 
 
 def test_rejected_content_never_reaches_the_repository():
-    repo = FakeRepository()
+    memory_repository = FakeMemoryRepository()
     with pytest.raises(ContentRejected):
-        write(build(repo, max_body_chars=10), content="x" * 11)
-    assert repo.created == []
+        write(build(memory_repository, max_body_chars=10), content="x" * 11)
+    assert memory_repository.created == []
 
 
 # --- create: harness shape ---
 
 @pytest.mark.parametrize("harness", ["bad harness", "", "a" * 65, "ghp/x"])
 def test_invalid_harness_shape_is_refused_before_any_policy_call(harness):
-    policy, repo = FakePolicy(), FakeRepository()
+    content_policy, memory_repository = FakeContentPolicy(), FakeMemoryRepository()
     with pytest.raises(ContentRejected) as err:
-        write(build(repo, policy), harness=harness)
+        write(build(memory_repository, content_policy), harness=harness)
     assert str(err.value) == ("invalid harness identifier "
                               "(allowed: letters, digits, ., _, -, max 64 chars)")
-    assert policy.calls == [] and repo.created == []
+    assert content_policy.calls == [] and memory_repository.created == []
 
 
 def test_harness_shape_accepts_the_documented_charset():
-    policy = FakePolicy()
-    write(build(policy=policy), harness="Claude_Code-1.0")
-    assert policy.calls[0] == ("Claude_Code-1.0", 8000)
+    content_policy = FakeContentPolicy()
+    write(build(content_policy=content_policy), harness="Claude_Code-1.0")
+    assert content_policy.calls[0] == ("Claude_Code-1.0", 8000)
 
 
 # --- create: scope resolution ---
 
 def test_global_scope_resolves_to_the_global_scope_value():
-    repo = FakeRepository()
-    write(build(repo), scope="global")
-    assert repo.created[0].scope == Scope.global_()
+    memory_repository = FakeMemoryRepository()
+    write(build(memory_repository), scope="global")
+    assert memory_repository.created[0].scope == Scope.global_()
 
 
 def test_project_scope_uses_the_context_project():
-    repo = FakeRepository()
-    write(build(repo), scope="project")
-    assert repo.created[0].scope == Scope.project(PID)
+    memory_repository = FakeMemoryRepository()
+    write(build(memory_repository), scope="project")
+    assert memory_repository.created[0].scope == Scope.project(PID)
 
 
 def test_explicit_current_project_scope_is_allowed():
-    repo = FakeRepository()
-    write(build(repo), scope=f"project:{PID}")
-    assert repo.created[0].scope == Scope.project(PID)
+    memory_repository = FakeMemoryRepository()
+    write(build(memory_repository), scope=f"project:{PID}")
+    assert memory_repository.created[0].scope == Scope.project(PID)
 
 
 def test_project_scope_without_a_project_is_unavailable_and_path_free():
-    repo = FakeRepository()
+    memory_repository = FakeMemoryRepository()
     with pytest.raises(ProjectUnavailable) as err:
-        write(build(repo), ctx=GLOBAL_ONLY, scope="project")
+        write(build(memory_repository), ctx=GLOBAL_ONLY, scope="project")
     assert "/" not in str(err.value)  # the transport owns the path text
-    assert repo.created == []
+    assert memory_repository.created == []
 
 
 def test_global_scope_still_works_without_a_project():
-    repo = FakeRepository()
-    write(build(repo), ctx=GLOBAL_ONLY, scope="global")
-    assert repo.created[0].scope == Scope.global_()
+    memory_repository = FakeMemoryRepository()
+    write(build(memory_repository), ctx=GLOBAL_ONLY, scope="global")
+    assert memory_repository.created[0].scope == Scope.global_()
 
 
 def test_foreign_project_scope_is_refused():
-    repo = FakeRepository()
+    memory_repository = FakeMemoryRepository()
     with pytest.raises(InvalidScope) as err:
-        write(build(repo), scope="project:other-000000")
+        write(build(memory_repository), scope="project:other-000000")
     assert str(err.value) == ("scope 'project:other-000000' is outside the current "
                               "project; use 'project' or 'global'")
-    assert repo.created == []
+    assert memory_repository.created == []
 
 
 def test_any_project_scope_is_refused_when_the_context_has_no_project():
@@ -232,16 +232,16 @@ def test_scope_outside_the_grammar_keeps_the_invalid_scope_message():
 # --- create: naming and collisions ---
 
 def test_name_proposal_is_sanitized_into_the_id():
-    repo = FakeRepository()
-    write(build(repo), name="Mise Runtime_Mgmt!")
-    assert repo.created[0].id == "mise-runtime-mgmt"
+    memory_repository = FakeMemoryRepository()
+    write(build(memory_repository), name="Mise Runtime_Mgmt!")
+    assert memory_repository.created[0].id == "mise-runtime-mgmt"
 
 
 @pytest.mark.parametrize("name", ["", "記憶"])
 def test_unsalvageable_name_falls_back_to_a_ulid(name):
-    repo = FakeRepository()
-    write(build(repo), name=name)
-    new_id = repo.created[0].id
+    memory_repository = FakeMemoryRepository()
+    write(build(memory_repository), name=name)
+    new_id = memory_repository.created[0].id
     assert len(new_id) == 26 and ID_RE.fullmatch(new_id)
 
 
@@ -252,87 +252,87 @@ def test_created_memory_is_returned_and_carries_its_source():
 
 
 def test_name_collision_from_the_repository_propagates():
-    repo = FakeRepository()
+    memory_repository = FakeMemoryRepository()
     existing = memory("taken")
-    repo.create_error = NameTaken("name 'taken' already exists", existing=existing)
+    memory_repository.create_error = NameTaken("name 'taken' already exists", existing=existing)
     with pytest.raises(NameTaken) as err:
-        write(build(repo), name="taken")
+        write(build(memory_repository), name="taken")
     assert err.value.existing is existing
 
 
 # --- read / update / delete ---
 
 def test_read_delegates_to_the_repository():
-    repo = FakeRepository([memory("known")])
-    assert build(repo).read("known", CTX).id == "known"
+    memory_repository = FakeMemoryRepository([memory("known")])
+    assert build(memory_repository).read("known", CTX).id == "known"
 
 
 def test_read_propagates_not_found():
     with pytest.raises(MemoryNotFound):
-        build(FakeRepository()).read("nope", CTX)
+        build(FakeMemoryRepository()).read("nope", CTX)
 
 
 def test_update_gates_body_then_description():
-    policy, repo = FakePolicy(), FakeRepository()
-    service = build(repo, policy, max_body_chars=100)
+    content_policy, memory_repository = FakeContentPolicy(), FakeMemoryRepository()
+    service = build(memory_repository, content_policy, max_body_chars=100)
     service.update("known", "new body", CTX, description="new cue")
-    assert policy.calls == [("new body", 100), ("new cue", 8000)]
-    assert repo.calls == [("update_body", "known", "new body", "new cue")]
+    assert content_policy.calls == [("new body", 100), ("new cue", 8000)]
+    assert memory_repository.calls == [("update_body", "known", "new body", "new cue")]
 
 
 @pytest.mark.parametrize("description", [None, "", "   "])
 def test_update_skips_an_absent_or_empty_description(description):
-    policy, repo = FakePolicy(), FakeRepository()
-    build(repo, policy).update("known", "new body", CTX, description=description)
-    assert policy.calls == [("new body", 8000)]
-    assert repo.calls == [("update_body", "known", "new body", description)]
+    content_policy, memory_repository = FakeContentPolicy(), FakeMemoryRepository()
+    build(memory_repository, content_policy).update("known", "new body", CTX, description=description)
+    assert content_policy.calls == [("new body", 8000)]
+    assert memory_repository.calls == [("update_body", "known", "new body", description)]
 
 
 def test_update_rejects_an_oversized_body_before_touching_storage():
-    repo = FakeRepository()
+    memory_repository = FakeMemoryRepository()
     with pytest.raises(ContentRejected):
-        build(repo, max_body_chars=10).update("known", "x" * 11, CTX)
-    assert repo.calls == []
+        build(memory_repository, max_body_chars=10).update("known", "x" * 11, CTX)
+    assert memory_repository.calls == []
 
 
 def test_delete_delegates_to_the_repository():
-    repo = FakeRepository()
-    build(repo).delete("known", CTX)
-    assert repo.calls == [("delete", "known", CTX)]
+    memory_repository = FakeMemoryRepository()
+    build(memory_repository).delete("known", CTX)
+    assert memory_repository.calls == [("delete", "known", CTX)]
 
 
 # --- search ---
 
 def test_search_uses_the_configured_default_limit():
-    repo = FakeRepository()
-    build(repo, search_limit_default=5).search("q", CTX)
-    assert repo.calls == [("search", "q", CTX, 5)]
+    memory_repository = FakeMemoryRepository()
+    build(memory_repository, search_limit_default=5).search("q", CTX)
+    assert memory_repository.calls == [("search", "q", CTX, 5)]
 
 
 def test_search_passes_a_limit_inside_the_range_through():
-    repo = FakeRepository()
-    build(repo).search("q", CTX, limit=7)
-    assert repo.calls[0][3] == 7
+    memory_repository = FakeMemoryRepository()
+    build(memory_repository).search("q", CTX, limit=7)
+    assert memory_repository.calls[0][3] == 7
 
 
 @pytest.mark.parametrize("limit", [0, -1])
 def test_search_clamps_the_limit_up_to_one(limit):
-    repo = FakeRepository()
-    build(repo).search("q", CTX, limit=limit)
-    assert repo.calls[0][3] == 1
+    memory_repository = FakeMemoryRepository()
+    build(memory_repository).search("q", CTX, limit=limit)
+    assert memory_repository.calls[0][3] == 1
 
 
 def test_search_clamps_the_limit_down_to_the_maximum():
-    repo = FakeRepository()
-    build(repo, search_limit_max=50).search("q", CTX, limit=10 ** 9)
-    assert repo.calls[0][3] == 50
+    memory_repository = FakeMemoryRepository()
+    build(memory_repository, search_limit_max=50).search("q", CTX, limit=10 ** 9)
+    assert memory_repository.calls[0][3] == 50
 
 
 def test_search_returns_the_repository_hits():
-    repo = FakeRepository()
-    repo.search_result = [SearchHit(id="a", scope=Scope.global_(), type="user",
+    memory_repository = FakeMemoryRepository()
+    memory_repository.search_result = [SearchHit(id="a", scope=Scope.global_(), type="user",
                                     snippet="s")]
-    assert build(repo).search("q", CTX) == repo.search_result
+    assert build(memory_repository).search("q", CTX) == memory_repository.search_result
 
 
 # --- review_queue ---
@@ -348,41 +348,41 @@ def test_review_queue_batch_cap_is_a_signature_literal():
 
 
 def test_review_queue_returns_the_least_recently_confirmed_first():
-    repo = FakeRepository([memory("entry-2", updated="2026-08-01T00:00:00Z"),
+    memory_repository = FakeMemoryRepository([memory("entry-2", updated="2026-08-01T00:00:00Z"),
                            memory("entry-0", updated="2026-01-01T00:00:00Z"),
                            memory("entry-1", updated="2026-06-01T00:00:00Z")])
-    assert [m.id for m in build(repo).review_queue(CTX, 3)] == [
+    assert [m.id for m in build(memory_repository).review_queue(CTX, 3)] == [
         "entry-0", "entry-1", "entry-2"]
 
 
 def test_review_queue_breaks_ties_by_id():
-    repo = FakeRepository([memory(i) for i in ["b", "a", "c"]])
-    assert [m.id for m in build(repo).review_queue(CTX, 3)] == ["a", "b", "c"]
+    memory_repository = FakeMemoryRepository([memory(i) for i in ["b", "a", "c"]])
+    assert [m.id for m in build(memory_repository).review_queue(CTX, 3)] == ["a", "b", "c"]
 
 
 def test_review_queue_clamps_the_limit_up_from_zero():
-    repo = FakeRepository([memory("entry-0", updated="2026-01-01T00:00:00Z"),
+    memory_repository = FakeMemoryRepository([memory("entry-0", updated="2026-01-01T00:00:00Z"),
                            memory("entry-1", updated="2026-06-01T00:00:00Z")])
-    hits = build(repo).review_queue(CTX, 0)
+    hits = build(memory_repository).review_queue(CTX, 0)
     assert [m.id for m in hits] == ["entry-0"]
 
 
 def test_review_queue_clamps_the_limit_down_to_the_batch_cap():
-    repo = FakeRepository([memory(f"entry-{i:02d}", updated=f"2026-01-{i + 1:02d}"
+    memory_repository = FakeMemoryRepository([memory(f"entry-{i:02d}", updated=f"2026-01-{i + 1:02d}"
                                   "T00:00:00Z") for i in range(15)])
-    assert len(build(repo).review_queue(CTX, 10 ** 9)) == 10
+    assert len(build(memory_repository).review_queue(CTX, 10 ** 9)) == 10
 
 
 def test_review_queue_of_an_empty_store_is_empty():
-    assert build(FakeRepository()).review_queue(CTX, 5) == []
+    assert build(FakeMemoryRepository()).review_queue(CTX, 5) == []
 
 
 # --- index ---
 
 def test_index_lines_and_budget():
-    repo = FakeRepository([memory(f"entry-{i}", updated=f"2026-01-0{i + 1}T00:00:00Z",
+    memory_repository = FakeMemoryRepository([memory(f"entry-{i}", updated=f"2026-01-0{i + 1}T00:00:00Z",
                                   body=f"记忆条目内容 {i}") for i in range(5)])
-    lines = build(repo, index_budget_lines=3).index(CTX).splitlines()
+    lines = build(memory_repository, index_budget_lines=3).index(CTX).splitlines()
     assert len(lines) == 4  # 3 entries + 1 omitted-notice line
     assert lines[0].startswith("- [project] ")
     assert "2 more entries omitted; use memory_search" in lines[-1]
@@ -390,60 +390,60 @@ def test_index_lines_and_budget():
 
 
 def test_index_of_an_empty_store():
-    assert "no memories yet" in build(FakeRepository()).index(CTX)
+    assert "no memories yet" in build(FakeMemoryRepository()).index(CTX)
 
 
 def test_index_tolerates_an_empty_body():
     # entry files are hand-editable, so an empty body can reach the store
     # without passing through the write gate; it must not break the index
-    repo = FakeRepository([memory("hand-edited", body="")])
-    assert "hand-edited" in build(repo).index(CTX)
+    memory_repository = FakeMemoryRepository([memory("hand-edited", body="")])
+    assert "hand-edited" in build(memory_repository).index(CTX)
 
 
 def test_index_orders_newest_first_with_ulid_tiebreak():
-    repo = FakeRepository([
+    memory_repository = FakeMemoryRepository([
         memory("01" + "A" * 24, updated="2026-08-01T00:00:00Z", body="older entry"),
         memory("01" + "B" * 24, updated="2026-08-01T00:00:00Z",
                body="tied but larger id"),
         memory("01" + "C" * 24, updated="2026-08-02T00:00:00Z", body="newest entry"),
     ])
-    lines = build(repo).index(CTX).splitlines()
+    lines = build(memory_repository).index(CTX).splitlines()
     assert "newest entry" in lines[0]
     assert "tied but larger id" in lines[1]  # ULID tiebreak within a timestamp tie
     assert "older entry" in lines[2]
 
 
 def test_index_line_leads_with_name():
-    repo = FakeRepository([memory("mise-runtimes", type="user",
+    memory_repository = FakeMemoryRepository([memory("mise-runtimes", type="user",
                                   body="runtimes are managed by mise")])
-    out = build(repo).index(CTX)
+    out = build(memory_repository).index(CTX)
     assert out.splitlines()[0].startswith("- [user] mise-runtimes: runtimes")
 
 
 def test_index_line_ends_with_the_updated_date():
-    repo = FakeRepository([memory("mise-runtimes", updated="2026-08-02T11:22:33Z")])
-    assert build(repo).index(CTX).splitlines()[0].endswith(" (2026-08-02)")
+    memory_repository = FakeMemoryRepository([memory("mise-runtimes", updated="2026-08-02T11:22:33Z")])
+    assert build(memory_repository).index(CTX).splitlines()[0].endswith(" (2026-08-02)")
 
 
 def test_index_prefers_description_over_body_first_line():
-    repo = FakeRepository([memory("mise-runtimes", type="user",
+    memory_repository = FakeMemoryRepository([memory("mise-runtimes", type="user",
                                   body="the full body text",
                                   description="mise manages every runtime")])
-    line = build(repo).index(CTX).splitlines()[0]
+    line = build(memory_repository).index(CTX).splitlines()[0]
     assert "mise manages every runtime" in line
     assert "the full body text" not in line
 
 
 def test_index_falls_back_to_the_body_line_when_description_is_empty():
-    repo = FakeRepository([memory("mise-runtimes", type="user",
+    memory_repository = FakeMemoryRepository([memory("mise-runtimes", type="user",
                                   body="runtimes are managed by mise\nsecond line")])
-    line = build(repo).index(CTX).splitlines()[0]
+    line = build(memory_repository).index(CTX).splitlines()[0]
     assert "runtimes are managed by mise" in line
     assert "second line" not in line
 
 
 def test_index_truncates_the_cue_to_60_chars():
-    repo = FakeRepository([memory("n", type="user", body="b", description="d" * 100)])
-    line = build(repo).index(CTX).splitlines()[0]
+    memory_repository = FakeMemoryRepository([memory("n", type="user", body="b", description="d" * 100)])
+    line = build(memory_repository).index(CTX).splitlines()[0]
     assert "d" * 60 in line
     assert "d" * 61 not in line
