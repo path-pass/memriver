@@ -335,46 +335,46 @@ def test_search_returns_the_repository_hits():
     assert build(memory_repository).search("q", CTX) == memory_repository.search_result
 
 
-# --- review_queue ---
+# --- dream ---
 
-def test_review_queue_limit_is_required():
-    limit = inspect.signature(MemoryService.review_queue).parameters["limit"]
+def test_dream_limit_is_required():
+    limit = inspect.signature(MemoryService.dream).parameters["limit"]
     assert limit.default is inspect.Parameter.empty
 
 
-def test_review_queue_batch_cap_is_a_signature_literal():
-    cap = inspect.signature(MemoryService.review_queue).parameters["max_limit"]
+def test_dream_batch_cap_is_a_signature_literal():
+    cap = inspect.signature(MemoryService.dream).parameters["max_limit"]
     assert cap.default == 10  # fixed internal guard, not config-backed
 
 
-def test_review_queue_returns_the_least_recently_confirmed_first():
+def test_dream_returns_the_least_recently_confirmed_first():
     memory_repository = FakeMemoryRepository([memory("entry-2", updated="2026-08-01T00:00:00Z"),
                            memory("entry-0", updated="2026-01-01T00:00:00Z"),
                            memory("entry-1", updated="2026-06-01T00:00:00Z")])
-    assert [m.id for m in build(memory_repository).review_queue(CTX, 3)] == [
+    assert [m.id for m in build(memory_repository).dream(CTX, 3)] == [
         "entry-0", "entry-1", "entry-2"]
 
 
-def test_review_queue_breaks_ties_by_id():
+def test_dream_breaks_ties_by_id():
     memory_repository = FakeMemoryRepository([memory(i) for i in ["b", "a", "c"]])
-    assert [m.id for m in build(memory_repository).review_queue(CTX, 3)] == ["a", "b", "c"]
+    assert [m.id for m in build(memory_repository).dream(CTX, 3)] == ["a", "b", "c"]
 
 
-def test_review_queue_clamps_the_limit_up_from_zero():
+def test_dream_clamps_the_limit_up_from_zero():
     memory_repository = FakeMemoryRepository([memory("entry-0", updated="2026-01-01T00:00:00Z"),
                            memory("entry-1", updated="2026-06-01T00:00:00Z")])
-    hits = build(memory_repository).review_queue(CTX, 0)
+    hits = build(memory_repository).dream(CTX, 0)
     assert [m.id for m in hits] == ["entry-0"]
 
 
-def test_review_queue_clamps_the_limit_down_to_the_batch_cap():
+def test_dream_clamps_the_limit_down_to_the_batch_cap():
     memory_repository = FakeMemoryRepository([memory(f"entry-{i:02d}", updated=f"2026-01-{i + 1:02d}"
                                   "T00:00:00Z") for i in range(15)])
-    assert len(build(memory_repository).review_queue(CTX, 10 ** 9)) == 10
+    assert len(build(memory_repository).dream(CTX, 10 ** 9)) == 10
 
 
-def test_review_queue_of_an_empty_store_is_empty():
-    assert build(FakeMemoryRepository()).review_queue(CTX, 5) == []
+def test_dream_of_an_empty_store_is_empty():
+    assert build(FakeMemoryRepository()).dream(CTX, 5) == []
 
 
 # --- index ---

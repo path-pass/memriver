@@ -173,6 +173,6 @@ def build_server(root: Path, project_dir: Path,
             {"id": m.id, "type": m.type, "scope": m.scope.to_storage(),
              "description": m.description, "body": m.body,
              "created": m.created, "updated": m.updated, "trust": m.trust}
-            for m in service.review_queue(ctx, limit=limit)]}
+            for m in service.dream(ctx, limit=limit)]}
 
     return mcp

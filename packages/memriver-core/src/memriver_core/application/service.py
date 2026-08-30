@@ -82,8 +82,8 @@ class MemoryService:
         return self._memory_repository.search(
             query, ctx, max(1, min(limit, self._search_limit_max)))
 
-    def review_queue(self, ctx: AccessContext, limit: int,
-                     max_limit: int = 10) -> list[Memory]:
+    def dream(self, ctx: AccessContext, limit: int,
+              max_limit: int = 10) -> list[Memory]:
         # max_limit is a fixed internal guard, not a user-configurable default --
         # no Settings field backs it, so it lives here as the signature literal.
         #

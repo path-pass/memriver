@@ -45,9 +45,9 @@ def _seed_healthy(root) -> Memory:
 
 @pytest.fixture
 def project(tmp_path):
-    repo = tmp_path / "demo"
-    (repo / ".git").mkdir(parents=True)
-    return repo
+    git_repo = tmp_path / "demo"
+    (git_repo / ".git").mkdir(parents=True)
+    return git_repo
 
 
 @pytest.fixture

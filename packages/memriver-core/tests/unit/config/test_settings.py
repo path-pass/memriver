@@ -23,7 +23,7 @@ def test_defaults_wired_to_single_source():
     # it backs. The consumer half of the old assertion -- that these values
     # actually reach the behaviour -- is now injection rather than signature
     # defaults, and is asserted in tests/unit/test_bootstrap.py; the one
-    # remaining signature literal (review_queue's batch cap) is asserted in
+    # remaining signature literal (dream's batch cap) is asserted in
     # tests/unit/application/test_service.py.
     assert (DEFAULT_MAX_BODY_CHARS == 8000
             == Settings.model_fields["max_body_chars"].default)
