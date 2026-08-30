@@ -1,41 +1,14 @@
-import inspect
+"""load_settings precedence: CLI override > env > <root>/config.toml > defaults.
+
+Split out of the former tests/test_config.py; the Settings model and defaults
+catalog cases live next door in test_settings.py.
+"""
+
 from pathlib import Path
 
-import pytest
-from memriver_core import gate, render, search
-from memriver_core.config import (
-    DEFAULT_BUDGET_LINES,
-    DEFAULT_MAX_BODY_CHARS,
-    DEFAULT_SEARCH_LIMIT,
-    DEFAULT_SEARCH_LIMIT_MAX,
-    Settings,
-    load_settings,
-)
-from pydantic import ValidationError
+from memriver_core.config import load_settings
 
 CONFIG = "config.toml"
-
-
-def test_defaults_wired_to_single_source():
-    # catches drift between config.py's catalog and (a) the Settings field
-    # defaults it backs and (b) the function signature defaults sourced from it
-    assert (DEFAULT_MAX_BODY_CHARS == 8000
-            == Settings.model_fields["max_body_chars"].default)
-    assert (DEFAULT_SEARCH_LIMIT_MAX == 50
-            == Settings.model_fields["search_limit_max"].default)
-    assert (DEFAULT_SEARCH_LIMIT == 5
-            == Settings.model_fields["search_limit_default"].default)
-    assert (DEFAULT_BUDGET_LINES == 100
-            == Settings.model_fields["index_budget_lines"].default)
-
-    assert (inspect.signature(gate.check_content).parameters["max_chars"].default
-            == DEFAULT_MAX_BODY_CHARS)
-    assert (inspect.signature(search.search_entries).parameters["max_limit"].default
-            == DEFAULT_SEARCH_LIMIT_MAX)
-    assert (inspect.signature(render.render_index).parameters["budget_lines"].default
-            == DEFAULT_BUDGET_LINES)
-    assert (inspect.signature(search.review_queue).parameters["max_limit"].default
-            == 10)  # fixed internal guard: a signature literal, not config-backed
 
 
 def _root(tmp_path, text: str | None = None) -> Path:
@@ -115,12 +88,6 @@ def test_missing_config_file_is_fine(tmp_path):
     assert load_settings(root_override=tmp_path / "nowhere").max_body_chars == 8000
 
 
-def test_settings_are_constructible_directly():
-    # build_server takes a Settings instance; env/file layers must not be needed
-    s = Settings(root=Path("/tmp/x"), max_body_chars=10)
-    assert s.max_body_chars == 10 and s.search_limit_default == 5
-
-
 def test_invalid_value_in_config_file_falls_back_to_defaults(tmp_path, caplog):
     # a typo'd value must never stop the server from starting
     root = _root(tmp_path, 'max_body_chars = "abc"\n')
@@ -145,14 +112,6 @@ def test_boolean_in_config_file_is_rejected_not_coerced(tmp_path, caplog):
         s = load_settings(root_override=root)
     assert s.search_limit_max == 50
     assert CONFIG in caplog.text
-
-
-@pytest.mark.parametrize("field", ["max_body_chars", "search_limit_default",
-                                   "search_limit_max", "index_budget_lines"])
-@pytest.mark.parametrize("value", [0, -1])
-def test_non_positive_values_are_rejected(field, value):
-    with pytest.raises(ValidationError):
-        Settings(**{field: value})
 
 
 def test_valid_config_file_still_wins_after_the_guard(tmp_path):
