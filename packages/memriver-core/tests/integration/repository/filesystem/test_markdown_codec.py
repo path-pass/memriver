@@ -1,5 +1,10 @@
+import pytest
 from memriver_core.models import Memory, ProjectId, Scope
-from memriver_core.repository.filesystem.markdown_codec import decode, encode
+from memriver_core.repository.filesystem.markdown_codec import (
+    UnparsableStoredScope,
+    decode,
+    encode,
+)
 
 SOURCE = {"harness": "claude-code", "session": "s1", "method": "agent"}
 
@@ -30,6 +35,26 @@ def test_scope_is_decoded_back_into_a_value_object():
     assert decode(encode(_m())).scope == Scope.global_()
     project = Scope.project(ProjectId("demo-abc123"))
     assert decode(encode(_m(scope=project))).scope == project
+
+
+@pytest.mark.parametrize("raw", ["nonsense", '""', '"project:"', "123"])
+def test_ungrammatical_stored_scope_is_reported_as_a_scope_failure(raw):
+    # readers must be able to tell this apart from an undecodable file: such a
+    # file reads as absent (scope mismatch), never as "unreadable"
+    text = encode(_m()).replace("scope: global", f"scope: {raw}")
+    with pytest.raises(UnparsableStoredScope):
+        decode(text)
+
+
+@pytest.mark.parametrize("text", [
+    "---\nid: [unclosed\n---\nbody\n",          # broken YAML
+    "just some hand-written notes\n",           # no frontmatter at all
+    "---\nid: n\ntype: user\n---\nbody\n",      # frontmatter keys missing
+])
+def test_other_broken_files_stay_plain_decode_failures(text):
+    with pytest.raises(Exception) as excinfo:
+        decode(text)
+    assert not isinstance(excinfo.value, UnparsableStoredScope)
 
 
 def test_unknown_type_reads_as_project():

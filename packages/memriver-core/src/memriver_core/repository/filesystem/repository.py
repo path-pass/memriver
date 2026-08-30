@@ -24,7 +24,7 @@ from memriver_core.models import (
 )
 
 from .locking import store_lock
-from .markdown_codec import decode, encode
+from .markdown_codec import UnparsableStoredScope, decode, encode
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +141,11 @@ class FileMemoryRepository:
                 # next to memories: one broken file must never break a traversal
                 try:
                     m = decode(f.read_text(encoding="utf-8"))
+                except UnparsableStoredScope:
+                    # a stored scope outside the grammar cannot match any
+                    # directory, so it is a scope mismatch like the check below
+                    logger.warning("skipping entry with mismatched scope: %s", f)
+                    continue
                 except Exception:  # noqa: BLE001
                     logger.warning("skipping unreadable entry file: %s", f)
                     continue
@@ -248,6 +253,13 @@ class FileMemoryRepository:
             raise StorageFailure("could not read memory") from err
         try:
             memory = decode(text)
+        except UnparsableStoredScope:
+            # a stored scope outside the grammar cannot equal the scope of the
+            # directory the file sits in, so it fails the directory-is-truth
+            # check below by construction: the same MemoryNotFound, not an
+            # UnreadableMemory that would answer "unreadable entry file"
+            logger.warning("refusing entry with mismatched scope: %s", path)
+            raise MemoryNotFound(memory_id) from None
         except Exception as err:
             raise UnreadableMemory(memory_id) from err
         # _find resolves an id across every project directory, so the file's own

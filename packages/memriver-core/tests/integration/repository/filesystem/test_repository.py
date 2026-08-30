@@ -144,6 +144,38 @@ def test_get_refuses_memory_whose_frontmatter_id_contradicts_its_filename(repo, 
     assert path.read_text(encoding="utf-8") == encode(mine)
 
 
+def test_get_refuses_a_file_whose_stored_scope_does_not_parse_as_absent(repo, root):
+    # an ungrammatical scope string cannot equal any directory's scope, so it
+    # is the same scope mismatch as above -- not found, not "unreadable"
+    path = _write_raw(root, "n.md",
+                      encode(_m(body="hand-edited", id="n")).replace(
+                          "scope: global", "scope: nonsense"))
+    with pytest.raises(MemoryNotFound):
+        repo.get("n", CTX)
+    assert "nonsense" in path.read_text(encoding="utf-8")
+
+
+def test_iter_visible_skips_a_file_whose_stored_scope_does_not_parse(repo, root):
+    mine = _m(body="mine stays visible")
+    repo.create(mine, CTX)
+    _write_raw(root, "n.md",
+               encode(_m(body="hand-edited", id="n")).replace(
+                   "scope: global", "scope: nonsense"))
+    assert {m.id for m in repo.iter_visible(CTX)} == {mine.id}
+
+
+def test_create_refuses_when_name_taken_by_an_unparsable_scope_file(repo, root):
+    # the name is taken by a file get reports as absent; the collision check
+    # must still refuse it rather than clobbering a hand-edited file
+    path = _write_raw(root, "n.md",
+                      encode(_m(body="hand-edited", id="n")).replace(
+                          "scope: global", "scope: nonsense"))
+    before = path.read_bytes()
+    with pytest.raises(UnreadableMemory):
+        repo.create(_m(body="v1", type="user", id="n"), CTX)
+    assert path.read_bytes() == before
+
+
 def test_get_refuses_an_undecodable_file_as_unreadable(repo, root):
     _write_raw(root, "notes.md", "just some hand-written notes\n")
     with pytest.raises(UnreadableMemory):

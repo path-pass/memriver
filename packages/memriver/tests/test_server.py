@@ -696,6 +696,39 @@ async def test_unreadable_entry_maps_per_operation(tmp_path, project):
             "error": "name 'notes' is taken by a file that is not a readable entry"}
 
 
+@pytest.mark.parametrize("raw", ["nonsense", '""'])
+async def test_unparsable_stored_scope_maps_per_operation(tmp_path, project, raw):
+    # a hand-edited `scope:` outside the storage grammar cannot match the
+    # directory the file sits in, so every tool answers as it does for any
+    # other scope mismatch: the entry is absent, and its file stays untouched
+    root = tmp_path / "mem"
+    m = Memory.new(body="hand-edited scope", type="project", scope=GLOBAL,
+                   source=SOURCE, id="n")
+    _write_raw(root, "n.md", encode(m).replace("scope: global", f"scope: {raw}"))
+    path = root / "global" / "entries" / "n.md"
+    before = path.read_bytes()
+
+    server = build_server(root=root, project_dir=project)
+    async with Client(server) as c:
+        assert (await c.call_tool("memory_read", {"entry_id": "n"})).data == {
+            "error": "no such entry: n"}
+        assert (await c.call_tool("memory_update", {
+            "entry_id": "n", "content": "replacement"})).data == {
+            "error": "no such entry: n"}
+        assert (await c.call_tool("memory_delete", {"entry_id": "n"})).data == {
+            "error": "no such entry: n"}
+        # the name is still taken: the write must not replace the file
+        assert (await c.call_tool("memory_write", {
+            "content": "v1", "type": "user", "name": "n",
+            "scope": "global"})).data == {
+            "error": "name 'n' is taken by a file that is not a readable entry"}
+        # and it stays out of the index and search
+        assert "hand-edited" not in (await c.call_tool("memory_index", {})).data
+        assert (await c.call_tool("memory_search", {"query": "hand-edited"})).data == []
+
+    assert path.read_bytes() == before
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
 async def test_storage_failure_maps_per_operation(tmp_path, project):
     root = tmp_path / "mem"
