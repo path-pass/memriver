@@ -1,6 +1,5 @@
-from memriver_core.config import MAX_REVIEW_BATCH
 from memriver_core.entry import Entry
-from memriver_core.review import review_queue
+from memriver_core.review import MAX_REVIEW_BATCH, review_queue
 from memriver_core.store import MemoryStore
 
 

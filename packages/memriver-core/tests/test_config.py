@@ -1,12 +1,13 @@
+import inspect
 from pathlib import Path
 
 import pytest
+from memriver_core import gate, render, review, search
 from memriver_core.config import (
     DEFAULT_BUDGET_LINES,
+    DEFAULT_MAX_BODY_CHARS,
     DEFAULT_SEARCH_LIMIT,
-    MAX_BODY_CHARS,
-    MAX_REVIEW_BATCH,
-    MAX_SEARCH_LIMIT,
+    DEFAULT_SEARCH_LIMIT_MAX,
     Settings,
     load_settings,
 )
@@ -15,15 +16,26 @@ from pydantic import ValidationError
 CONFIG = "config.toml"
 
 
-def test_default_constants_are_the_single_source_of_truth():
-    # catches future drift between the catalog and the Settings field defaults
-    assert MAX_BODY_CHARS == 8000 == Settings.model_fields["max_body_chars"].default
-    assert MAX_SEARCH_LIMIT == 50 == Settings.model_fields["search_limit_max"].default
+def test_defaults_wired_to_single_source():
+    # catches drift between config.py's catalog and (a) the Settings field
+    # defaults it backs and (b) the function signature defaults sourced from it
+    assert (DEFAULT_MAX_BODY_CHARS == 8000
+            == Settings.model_fields["max_body_chars"].default)
+    assert (DEFAULT_SEARCH_LIMIT_MAX == 50
+            == Settings.model_fields["search_limit_max"].default)
     assert (DEFAULT_SEARCH_LIMIT == 5
             == Settings.model_fields["search_limit_default"].default)
     assert (DEFAULT_BUDGET_LINES == 100
             == Settings.model_fields["index_budget_lines"].default)
-    assert MAX_REVIEW_BATCH == 10  # not a Settings field; used as a plain default
+
+    assert (inspect.signature(gate.check_content).parameters["max_chars"].default
+            == DEFAULT_MAX_BODY_CHARS)
+    assert (inspect.signature(search.search_entries).parameters["max_limit"].default
+            == DEFAULT_SEARCH_LIMIT_MAX)
+    assert (inspect.signature(render.render_index).parameters["budget_lines"].default
+            == DEFAULT_BUDGET_LINES)
+    assert (inspect.signature(review.review_queue).parameters["max_limit"].default
+            == review.MAX_REVIEW_BATCH)  # fixed internal guard, not config-backed
 
 
 def _root(tmp_path, text: str | None = None) -> Path:

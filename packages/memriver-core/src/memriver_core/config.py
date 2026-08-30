@@ -20,14 +20,13 @@ log = logging.getLogger(__name__)
 CONFIG_FILENAME = "config.toml"
 ENV_PREFIX = "MEMRIVER_"
 
-# Canonical catalog of default-value constants for the whole package. Every
-# other module imports its default from here rather than defining its own, so
-# there is exactly one place to look for "what does this knob default to".
-MAX_BODY_CHARS = 8000
-MAX_SEARCH_LIMIT = 50
+# Canonical home of every user-configurable behavior default (each backed by
+# a Settings field below). Interface defaults that aren't user-configurable
+# (e.g. memory_dream's limit=3) live at their own function signatures instead.
+DEFAULT_MAX_BODY_CHARS = 8000
+DEFAULT_SEARCH_LIMIT_MAX = 50
 DEFAULT_SEARCH_LIMIT = 5
 DEFAULT_BUDGET_LINES = 100
-MAX_REVIEW_BATCH = 10
 
 
 class Settings(BaseSettings):
@@ -45,9 +44,9 @@ class Settings(BaseSettings):
     # every knob is a count or a budget: zero and negative values are never
     # meaningful, and gt=0 turns them into a startup error instead of a server
     # that silently answers nothing
-    max_body_chars: int = Field(MAX_BODY_CHARS, gt=0)
+    max_body_chars: int = Field(DEFAULT_MAX_BODY_CHARS, gt=0)
     search_limit_default: int = Field(DEFAULT_SEARCH_LIMIT, gt=0)
-    search_limit_max: int = Field(MAX_SEARCH_LIMIT, gt=0)
+    search_limit_max: int = Field(DEFAULT_SEARCH_LIMIT_MAX, gt=0)
     index_budget_lines: int = Field(DEFAULT_BUDGET_LINES, gt=0)
 
     @field_validator("max_body_chars", "search_limit_default", "search_limit_max",

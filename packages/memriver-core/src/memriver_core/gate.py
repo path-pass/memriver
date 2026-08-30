@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from importlib.abc import Traversable
 
-from .config import MAX_BODY_CHARS
+from .config import DEFAULT_MAX_BODY_CHARS
 
 _log = logging.getLogger(__name__)
 
@@ -100,7 +100,7 @@ class GateError(ValueError):
     pass
 
 
-def check_content(body: str, max_chars: int = MAX_BODY_CHARS) -> None:
+def check_content(body: str, max_chars: int = DEFAULT_MAX_BODY_CHARS) -> None:
     """Reject content that is empty, oversized, or looks like a credential.
 
     `max_chars` is a plain parameter with its default sourced from

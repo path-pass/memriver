@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .config import MAX_SEARCH_LIMIT
+from .config import DEFAULT_SEARCH_LIMIT_MAX
 from .store import MemoryStore
 
 _SNIPPET_CHARS = 60
@@ -26,7 +26,7 @@ class SearchHit:
 
 
 def search_entries(store: MemoryStore, query: str, scopes: list[str],
-                   limit: int, max_limit: int = MAX_SEARCH_LIMIT) -> list[SearchHit]:
+                   limit: int, max_limit: int = DEFAULT_SEARCH_LIMIT_MAX) -> list[SearchHit]:
     limit = max(1, min(limit, max_limit))
     needle = query.replace("\x00", "").lower()
     if not needle:

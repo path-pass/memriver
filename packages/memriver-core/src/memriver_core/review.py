@@ -9,8 +9,11 @@ instead of jamming on evergreen entries.
 
 from __future__ import annotations
 
-from .config import MAX_REVIEW_BATCH
 from .store import MemoryStore
+
+# Fixed internal guard, not a user-configurable default -- no Settings field
+# backs it, so it stays local rather than joining config.py's catalog.
+MAX_REVIEW_BATCH = 10
 
 
 def review_queue(store: MemoryStore, scopes: list[str],
