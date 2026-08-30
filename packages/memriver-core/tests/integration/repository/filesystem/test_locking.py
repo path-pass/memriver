@@ -15,6 +15,60 @@ def test_store_lock_creates_the_root_and_its_lock_file(tmp_path):
     assert (root / ".lock").exists()
 
 
+def test_create_holds_the_lock_across_check_then_write(tmp_path):
+    # create's collision check and its write must sit inside one lock, or two
+    # writers both see the name free and the loser silently overwrites the
+    # winner. Instrument the whole critical section: _occupied opens it and
+    # _atomic_write closes it, so a peer entering _occupied while another
+    # thread is still writing means the lock does not span the sequence.
+    repo = FileMemoryRepository(tmp_path)
+    active = 0
+    max_active = 0
+    counter_lock = threading.Lock()
+    real_occupied = repo._occupied
+    real_write = repo._atomic_write
+
+    def observed_occupied(memory_id, scopes):
+        nonlocal active, max_active
+        with counter_lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.02)  # widen the window so an unserialized peer overlaps
+        return real_occupied(memory_id, scopes)
+
+    def observed_write(path, text):
+        nonlocal active
+        try:
+            real_write(path, text)
+        finally:
+            with counter_lock:
+                active -= 1
+
+    repo._occupied = observed_occupied
+    repo._atomic_write = observed_write
+    barrier = threading.Barrier(2)
+    errors: list[Exception] = []
+
+    def attempt(name: str) -> None:
+        try:
+            barrier.wait(timeout=5)
+            repo.create(Memory.new(body=name, type="user", scope=Scope.global_(),
+                                   source={}, id=name), CTX)
+        except Exception as err:  # noqa: BLE001
+            errors.append(err)
+
+    threads = [threading.Thread(target=attempt, args=(n,)) for n in ("a", "b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+        assert not t.is_alive()
+
+    assert errors == []
+    assert max_active == 1  # flock serialized check-then-write, not just write
+    assert {p.stem for p in (tmp_path / "global" / "entries").glob("*.md")} == {"a", "b"}
+
+
 def test_update_body_serializes_concurrent_writers(tmp_path):
     # instrument the critical section directly: end-state assertions alone
     # can't discriminate a missing lock, because _atomic_write's mkstemp +
