@@ -254,9 +254,11 @@ def test_created_memory_is_returned_and_carries_its_source():
 def test_name_collision_from_the_repository_propagates():
     memory_repository = FakeMemoryRepository()
     existing = memory("taken")
-    memory_repository.create_error = NameTaken("name 'taken' already exists", existing=existing)
+    memory_repository.create_error = NameTaken("taken", existing=existing)
     with pytest.raises(NameTaken) as err:
         write(build(memory_repository), name="taken")
+    # the service passes the error through untouched: fields and all
+    assert err.value.memory_id == "taken"
     assert err.value.existing is existing
 
 

@@ -22,12 +22,19 @@ class MemoryRepository(Protocol):
     - ``create(memory, ctx)`` owns the atomic name reservation. A project
       write checks the caller's visible scopes; a global write checks the
       whole store; readable same-scope collisions raise
-      ``NameTaken(existing=m)``; cross-scope collisions raise
-      ``NameTaken(existing=None)``; occupied but unreadable storage raises
-      ``UnreadableMemory``.
-    - ``get``/``update_body``/``delete`` raise ``MemoryNotFound``,
-      ``UnreadableMemory``, or ``StorageFailure``. No method accepts
-      ``ctx=None``, and the ordinary API has no implicit "all projects" query.
+      ``NameTaken(memory_id, existing=m)``; cross-scope collisions raise
+      ``NameTaken(memory_id, existing=None)``; occupied but unreadable storage
+      raises ``UnreadableMemory(memory_id)``.
+    - ``get``/``update_body``/``delete`` raise ``MemoryNotFound(memory_id)``,
+      ``UnreadableMemory(memory_id)``, or ``StorageFailure()``. No method
+      accepts ``ctx=None``, and the ordinary API has no implicit "all
+      projects" query.
+    - An implementation supplies these errors' *fields* and none of their
+      words: client-visible copy is composed by the transport from the
+      operation plus the fields (see ``memriver_core.application.errors``).
+      A backend that phrases a message of its own changes nothing a client
+      sees -- which is what keeps a backend swap invisible, and keeps SQL,
+      driver, and path detail from reaching one.
     - ``iter_visible`` is explicitly scoped. A future administrative
       all-store operation requires a separately named method/use case.
     - ``search`` is a repository query, not a separate index abstraction. The

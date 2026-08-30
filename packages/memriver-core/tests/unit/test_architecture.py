@@ -11,6 +11,7 @@ A failure here means the dependency is wrong, not that the rule is wrong.
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
 
 import memriver_core
@@ -30,30 +31,33 @@ def _module_name(path: Path) -> str:
 SOURCES = {_module_name(p): p for p in sorted(SRC.rglob("*.py"))}
 
 
-def _parse(module: str) -> ast.Module:
-    return ast.parse(SOURCES[module].read_text(encoding="utf-8"))
-
-
 def _package_of(module: str) -> str:
     """The package a relative import in ``module`` is resolved against."""
     # a module maps to its parent package; a package (__init__) maps to itself
     return module if SOURCES[module].name == "__init__.py" else module.rpartition(".")[0]
 
 
-def _imported_modules(module: str) -> set[str]:
-    """Every module target imported by ``module``, relative imports resolved.
+def _imports_from_source(source: str, anchor_package: str) -> set[str]:
+    """Normalize every import target in ``source``, relative imports resolved.
 
-    ``from x.y import z`` yields both ``x.y`` and ``x.y.z``: the name may be a
-    submodule, and a rule about ``x.y.z`` must catch it either way.
+    This is the single helper every rule below evaluates against, covering
+    both ``ast.Import`` and ``ast.ImportFrom`` (aliases included). ``from x.y
+    import z`` yields both ``x.y`` and ``x.y.z``: the name may be a submodule,
+    and a rule about ``x.y.z`` must catch it either way. Because it treats
+    both import forms identically, ``import x.y as z``, ``from x import y``,
+    ``from . import y`` and ``from .y import z as w`` are all equivalent for
+    rule-checking: none of them can hide the module actually being reached.
+    Takes raw text and an anchor package rather than a module name so it can
+    also be exercised directly against synthetic sources in tests.
     """
     targets: set[str] = set()
-    for node in ast.walk(_parse(module)):
+    for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Import):
             targets.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
             base = node.module or ""
             if node.level:
-                anchor = _package_of(module).split(".")
+                anchor = anchor_package.split(".")
                 anchor = anchor[: len(anchor) - node.level + 1]
                 base = ".".join([*anchor, base]) if base else ".".join(anchor)
             targets.add(base)
@@ -61,10 +65,17 @@ def _imported_modules(module: str) -> set[str]:
     return targets
 
 
+def _imported_modules(module: str) -> set[str]:
+    """Every module target imported by ``module`` (see ``_imports_from_source``)."""
+    source = SOURCES[module].read_text(encoding="utf-8")
+    return _imports_from_source(source, _package_of(module))
+
+
 def _imported_names(module: str) -> set[str]:
     """Every symbol bound by a ``from ... import name`` in ``module``."""
+    source = SOURCES[module].read_text(encoding="utf-8")
     return {alias.name
-            for node in ast.walk(_parse(module))
+            for node in ast.walk(ast.parse(source))
             if isinstance(node, ast.ImportFrom)
             for alias in node.names}
 
@@ -124,10 +135,71 @@ def test_forbidden_import_edge(subject, forbidden):
         assert not offenders, f"{module} must not import {forbidden}: {offenders}"
 
 
+# --- allowlists for the strict layers ----------------------------------------
+
+# FORBIDDEN above is a blacklist: it only stops imports someone thought to
+# name. For the innermost layers, a brand-new third-party dependency should
+# fail loudly even when nobody remembered to blacklist it, so these layers are
+# also allowlisted: anything that isn't stdlib and isn't named here fails,
+# no matter what it is. This only adds strength — every FORBIDDEN row above
+# still runs unchanged.
+STDLIB = set(sys.stdlib_module_names)
+
+ALLOWED_NON_STDLIB = {
+    # models: stdlib + the pure ulid value generator + intra-models only
+    "memriver_core.models": {"ulid", "memriver_core.models"},
+    # application: stdlib + models + the two protocols + intra-application
+    "memriver_core.application": {
+        "memriver_core.models",
+        "memriver_core.repository.protocol",
+        "memriver_core.content_policy.protocol",
+        "memriver_core.application",
+    },
+    # repository.protocol: stdlib + models, per spec section 3
+    "memriver_core.repository.protocol": {
+        "memriver_core.models",
+        "memriver_core.repository.protocol",
+    },
+    # content_policy.protocol: stdlib only today (spec section 3) — keep it
+    # that tight rather than pre-granting models it doesn't use yet.
+    "memriver_core.content_policy.protocol": set(),
+}
+
+
+@pytest.mark.parametrize("layer", sorted(ALLOWED_NON_STDLIB))
+def test_strict_layer_allowlist(layer):
+    allowed = ALLOWED_NON_STDLIB[layer]
+    modules = _modules_under(layer)
+    assert modules, f"no production module under {layer}"
+    for module in modules:
+        for target in _imported_modules(module):
+            root = target.split(".", 1)[0]
+            if root in STDLIB or any(_under(target, entry) for entry in allowed):
+                continue
+            pytest.fail(
+                f"{module} imports {target}, which is neither stdlib nor in "
+                f"the {layer} allowlist {sorted(allowed)}"
+            )
+
+
 # --- composition-root rules -------------------------------------------------
+
+# Concrete adapters may only be assembled in bootstrap.py. Reaching one via
+# `import memriver_core.repository.filesystem as fs; fs.FileMemoryRepository()`
+# must be caught exactly like `from memriver_core.repository.filesystem import
+# FileMemoryRepository` — so, in addition to the from-import symbol check
+# below, this also checks the normalized module-target set: importing the
+# adapter's module at all, under any alias, from an unauthorized module is
+# itself the violation.
+CONCRETE_ADAPTER_MODULES = {
+    "FileMemoryRepository": "memriver_core.repository.filesystem",
+    "SecretScanner": "memriver_core.content_policy.secret_scanner",
+}
+
 
 @pytest.mark.parametrize("adapter", ["FileMemoryRepository", "SecretScanner"])
 def test_only_bootstrap_names_a_concrete_adapter(adapter):
+    concrete_module = CONCRETE_ADAPTER_MODULES[adapter]
     for module in SOURCES:
         if module == "memriver_core.bootstrap":
             continue
@@ -139,6 +211,11 @@ def test_only_bootstrap_names_a_concrete_adapter(adapter):
             continue
         assert adapter not in _imported_names(module), \
             f"{module} imports {adapter}; only bootstrap.py may assemble adapters"
+        offenders = [t for t in _imported_modules(module) if _under(t, concrete_module)]
+        assert not offenders, (
+            f"{module} imports the {concrete_module} module ({offenders}); "
+            f"only bootstrap.py may assemble adapters, even via a module alias"
+        )
 
 
 @pytest.mark.parametrize("symbol", ["Settings", "load_settings"])
@@ -148,6 +225,68 @@ def test_only_config_and_bootstrap_import_settings(symbol):
             continue
         assert symbol not in _imported_names(module), \
             f"{module} imports {symbol}; configuration stays in config/ and bootstrap"
+        offenders = [t for t in _imported_modules(module) if _under(t, "memriver_core.config")]
+        assert not offenders, (
+            f"{module} imports the memriver_core.config module ({offenders}); "
+            f"configuration stays in config/ and bootstrap, even via a module alias"
+        )
+
+
+# --- synthetic-source self-tests for the normalization helper ---------------
+#
+# These compile tiny synthetic modules (no files on disk) to prove the walker
+# itself treats every import spelling as equivalent — the exact bypasses I-3
+# named: a plain module import with an alias, a `from pkg import mod` module
+# import, a `from pkg.mod import Name` symbol import, and a relative `from .
+# import mod`. A clean module must not trip any of them.
+
+@pytest.mark.parametrize(
+    ("source", "anchor_package"),
+    [
+        # plain `import pkg.mod as alias`
+        ("import memriver_core.repository.filesystem as fs\n", "memriver_core.bootstrap"),
+        # `from pkg import mod` — reaches a module, not a name
+        ("from memriver_core.repository import filesystem\n", "memriver_core.bootstrap"),
+        # `from pkg.mod import Name`
+        ("from memriver_core.repository.filesystem import FileMemoryRepository\n",
+         "memriver_core.bootstrap"),
+        # `from pkg.mod import Name as alias`
+        ("from memriver_core.repository.filesystem import FileMemoryRepository as fmr\n",
+         "memriver_core.bootstrap"),
+        # relative `from . import mod`
+        ("from . import filesystem\n", "memriver_core.repository"),
+        # relative `from .mod import Name as alias`
+        ("from .filesystem import FileMemoryRepository as w\n", "memriver_core.repository"),
+    ],
+)
+def test_imports_from_source_catches_every_bypass_form(source, anchor_package):
+    targets = _imports_from_source(source, anchor_package)
+    assert any(_under(t, "memriver_core.repository.filesystem") for t in targets), (
+        f"normalization missed a reference to memriver_core.repository.filesystem "
+        f"in {source!r}: got {targets}"
+    )
+
+
+def test_imports_from_source_catches_config_module_alias_bypass():
+    # the other bypass I-3 named: `import memriver_core.config as cfg; cfg.Settings(...)`
+    targets = _imports_from_source(
+        "import memriver_core.config as cfg\n", "memriver_core.application"
+    )
+    assert any(_under(t, "memriver_core.config") for t in targets)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import os\n",
+        "from memriver_core.models import Memory\n",
+        "from __future__ import annotations\n",
+    ],
+)
+def test_imports_from_source_clean_module_passes(source):
+    targets = _imports_from_source(source, "memriver_core.bootstrap")
+    assert not any(_under(t, "memriver_core.repository.filesystem") for t in targets)
+    assert not any(_under(t, "memriver_core.config") for t in targets)
 
 
 # --- git discovery belongs to the umbrella package --------------------------

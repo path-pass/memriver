@@ -40,27 +40,42 @@ Operation = Literal["read", "write", "update", "delete"]
 def _map_error(operation: Operation, err: Exception, *,
                entry_id: str | None = None,
                project_dir: Path | None = None) -> dict:
-    """Application error -> the tool's error dict. Tools never raise."""
+    """Application error -> the tool's error dict. Tools never raise.
+
+    Every string a client sees for a storage-boundary error is written here,
+    from (operation, error type, structured fields). The repository supplies
+    the data and none of the words, so a second backend raising the same
+    error with the same fields produces the same response byte for byte --
+    and cannot leak a path, an errno, or a driver message into one.
+    """
     if operation == "write":
         if isinstance(err, NameTaken):
             if err.existing is None:
                 # the collision lives in another scope; its content and type
                 # must not leak across that boundary, so nothing is echoed
-                return {"error": str(err)}
+                return {"error": f"name {err.memory_id!r} is already used "
+                                 "elsewhere in the store; choose another name"}
             old = err.existing
-            return {"error": str(err),
+            return {"error": f"name {err.memory_id!r} already exists; "
+                             "memory_update it, or choose a more precise name "
+                             "if this is a different fact",
                     "existing": {"id": old.id, "type": old.type,
                                  "scope": old.scope.to_storage(),
                                  "updated": old.updated,
                                  "snippet": old.body[:120],
                                  "description": old.description}}
+        if isinstance(err, UnreadableMemory):
+            # the name is occupied by something the backend cannot decode:
+            # the write is refused without describing what sits there
+            return {"error": f"name {err.memory_id!r} is taken by a file that "
+                             "is not a readable entry"}
         if isinstance(err, ProjectUnavailable):
             # the core is path-free on purpose: project_dir belongs to the
             # transport, which is what resolved it in the first place
             return {"error": f"not inside a git project: {project_dir}"}
-        if isinstance(err, ContentRejected | InvalidScope | UnreadableMemory
-                      | ValueError):
-            # these messages are already client-safe (they never echo the
+        if isinstance(err, ContentRejected | InvalidScope | ValueError):
+            # policy/scope copy is authored in the core, where the wording is
+            # the rule itself, and is already client-safe (it never echoes the
             # rejected value); ValueError still reaches here from the model
             # constructors, exactly as it did before the core split
             return {"error": str(err)}
