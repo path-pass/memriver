@@ -1,3 +1,4 @@
+import memriver_core
 import pytest
 from memriver_core.application.errors import (
     ContentRejected,
@@ -58,3 +59,11 @@ def test_storage_failure_accepts_no_adapter_detail():
     # a driver message that a transport might then echo to a client
     with pytest.raises(TypeError):
         StorageFailure("could not open /home/alice/store/.lock")  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("cls", SUBCLASSES, ids=[c.__name__ for c in SUBCLASSES])
+def test_the_root_facade_re_exports_the_same_class(cls):
+    # transports import the taxonomy from `memriver_core`, never from
+    # `memriver_core.application.errors`; the facade must hand back the very
+    # same class object so `except` clauses keep matching across both spellings
+    assert getattr(memriver_core, cls.__name__) is cls
