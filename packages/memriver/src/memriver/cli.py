@@ -42,6 +42,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     serve = commands.add_parser(
         "serve", help="run the MCP server over stdio (the default command)")
+    # the bare form rewrites `memriver --root R --version` to `serve --root R
+    # --version`, so serve has to answer for --version too
+    serve.add_argument("--version", action="version", version=__version__)
     _add_store_options(serve, project_dir_default=Path.cwd(),
                        project_dir_help="project whose 'project' memory scope is "
                                         "used (default: the current working "

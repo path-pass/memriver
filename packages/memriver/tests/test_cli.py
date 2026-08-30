@@ -9,7 +9,8 @@ import time
 from dataclasses import dataclass
 
 import pytest
-from memriver import cli
+from memriver import cli, hooks
+from memriver.hooks import HookResult
 from memriver.project_context import project_slug
 from memriver.protocol_text import STOP_NUDGE
 
@@ -21,8 +22,10 @@ def _run_cli(*args: str) -> subprocess.CompletedProcess:
                           capture_output=True, text=True, check=False)
 
 
-def test_version_flag():
-    out = _run_cli("--version")
+@pytest.mark.parametrize("args", [["--version"], ["--root", "X", "--version"]])
+def test_version_flag_survives_the_legacy_store_options(args):
+    """`--version` reports and exits even alongside the bare-form store options."""
+    out = _run_cli(*args)
     assert out.returncode == 0 and "0.1.0" in out.stdout
 
 
@@ -212,3 +215,48 @@ def test_explicit_serve_starts_the_same_stdio_server(tmp_path):
                                  content="served explicitly", command="serve")
     assert response["result"]["isError"] is False
     assert len(_entry_files(root, repo)) == 1
+
+
+def test_hook_without_project_dir_keeps_the_payload_cwd_fallback_reachable(monkeypatch):
+    """No --project-dir means None, not cwd: only then can the harness payload
+    decide the project, which is the whole point of hooks._resolve_dir."""
+    captured: dict = {}
+
+    def fake_run_hook(event, harness, payload_text, **kwargs):
+        captured.update(kwargs)
+        return HookResult()
+
+    monkeypatch.setattr(hooks, "run_hook", fake_run_hook)
+    result = invoke_main(["hook", "session-start", "--harness", "claude-code"],
+                         stdin="{}")
+    assert captured["project_dir"] is None
+    assert result.exit_code == 0
+
+
+# a hook fires at every session start and every turn end; importing the MCP
+# server stack there would tax the harness for a module it never calls
+_LEAK_CHECK = """
+leaked = sorted(m for m in sys.modules
+                if m.startswith(("fastmcp", "mcp", "memriver.server")))
+assert not leaked, leaked
+"""
+
+
+def _python_c(script: str, stdin: str = "") -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, "-c", script], input=stdin,
+                          capture_output=True, text=True, check=False)
+
+
+def test_importing_the_cli_does_not_import_the_server_stack():
+    out = _python_c("import sys, memriver.cli\n" + _LEAK_CHECK)
+    assert out.returncode == 0, out.stderr
+
+
+def test_running_a_hook_does_not_import_the_server_stack():
+    out = _python_c("import sys\n"
+                    "from memriver.cli import main\n"
+                    "assert main(['hook', 'stop', '--harness', 'codex']) == 0\n"
+                    + _LEAK_CHECK,
+                    stdin='{"stop_hook_active": false}')
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout)["decision"] == "block"
