@@ -200,6 +200,26 @@ def test_hook_identity_merge_creates_missing_event_array():
     assert json.loads(result.rendered) == {"hooks": {"SessionStart": [expected]}}
 
 
+def test_hook_identity_merge_rejects_an_unlexable_memriver_command():
+    broken = command_group('uvx memriver hook session-start --harness "codex')
+    with pytest.raises(PlanningError) as raised:
+        hook_array_identity_merge(
+            hooks_json([foreign_group("a"), broken]),
+            "SessionStart", SESSION_START_IDENTITY, command_group(NEW_COMMAND),
+        )
+    assert "hooks.SessionStart" in str(raised.value)
+    assert "codex" not in str(raised.value)
+
+
+def test_hook_identity_merge_still_ignores_an_unlexable_foreign_command():
+    foreign = command_group('/opt/audit/run --label "unclosed')
+    expected = command_group(NEW_COMMAND)
+    result = hook_array_identity_merge(
+        hooks_json([foreign]), "SessionStart", SESSION_START_IDENTITY, expected,
+    )
+    assert json.loads(result.rendered)["hooks"]["SessionStart"] == [foreign, expected]
+
+
 def test_hook_identity_merge_rejects_a_non_array_event():
     with pytest.raises(PlanningError):
         hook_array_identity_merge(
@@ -224,6 +244,30 @@ def test_toml_roundtrip_handles_a_scalar_leaf():
                             False)
     assert tomlkit.parse(result.rendered)["features"]["memories"] is False
     assert result.changed and result.takeover
+
+
+@pytest.mark.parametrize("source", ["mcp_servers = {}\n", "mcp_servers = {a = 1}\n"])
+def test_toml_roundtrip_refuses_an_inline_table_parent(source):
+    with pytest.raises(PlanningError) as raised:
+        toml_roundtrip(source, ("mcp_servers", "memriver"), MEMRIVER_MCP)
+    assert "mcp_servers" in str(raised.value)
+    assert "a = 1" not in str(raised.value)
+
+
+def test_toml_roundtrip_replaces_an_inline_table_leaf():
+    source = '[mcp_servers]\nmemriver = {command = "old"}\n'
+    result = toml_roundtrip(source, ("mcp_servers", "memriver"), MEMRIVER_MCP)
+    assert result.changed and result.takeover
+    parsed = tomlkit.parse(result.rendered)
+    assert parsed["mcp_servers"]["memriver"].unwrap() == MEMRIVER_MCP
+    assert result.rendered.count("memriver") == 2  # the table header and the arg
+
+
+def test_toml_roundtrip_leaves_a_matching_inline_table_leaf_alone():
+    source = '[mcp_servers]\nmemriver = {command = "uvx", args = ["memriver"]}\n'
+    result = toml_roundtrip(source, ("mcp_servers", "memriver"), MEMRIVER_MCP)
+    assert result.rendered == source
+    assert not result.changed and not result.takeover
 
 
 def test_toml_roundtrip_rejects_broken_toml_and_scalar_intermediates():
@@ -368,3 +412,37 @@ def test_apply_edit_rejects_operations_missing_kind_specific_fields():
         )
     with pytest.raises(PlanningError):
         apply_edit(operation("marker-block", 42), "")
+
+
+@pytest.mark.parametrize(
+    "expected",
+    [
+        {"type": "command", "command": NEW_COMMAND},          # a bare handler
+        {"matcher": "*", "hooks": []},                         # no handler at all
+        command_group("/opt/audit/run --quiet"),               # not memriver's command
+        {"matcher": "*", "hooks": [
+            {"type": "command", "command": NEW_COMMAND},
+            {"type": "command", "command": "/opt/audit/run"},
+        ]},                                                    # a mixed group
+    ],
+)
+def test_apply_edit_rejects_a_hook_group_it_could_not_find_again(expected):
+    op = operation(
+        "hook-array", expected,
+        key_path=("hooks", "SessionStart"), identity=SESSION_START_IDENTITY,
+    )
+    with pytest.raises(PlanningError):
+        apply_edit(op, "{}")
+
+
+@pytest.mark.parametrize(
+    "key_path", [("SessionStart",), ("plugins", "hooks", "SessionStart"),
+                 ("plugins", "SessionStart")],
+)
+def test_apply_edit_rejects_a_hook_key_path_the_editor_would_not_touch(key_path):
+    op = operation(
+        "hook-array", command_group(NEW_COMMAND),
+        key_path=key_path, identity=SESSION_START_IDENTITY,
+    )
+    with pytest.raises(PlanningError):
+        apply_edit(op, "{}")

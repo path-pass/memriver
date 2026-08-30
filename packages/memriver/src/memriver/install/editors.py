@@ -30,6 +30,7 @@ from typing import Any, Literal
 
 import tomlkit
 from tomlkit.exceptions import ParseError
+from tomlkit.items import InlineTable
 
 EditorKind = Literal["json-object", "hook-array", "toml-table", "marker-block"]
 
@@ -105,6 +106,27 @@ def apply_edit(operation: EditOperation, text: str) -> EditResult:
                 f"operation {operation.id} is a hook-array edit and needs the command "
                 "identity that finds memriver's entry"
             )
+        # The editor always edits hooks.<event>; the summary renders key_path.
+        # Pinning the shape here keeps the two from describing different places.
+        if len(operation.key_path) != 2 or operation.key_path[0] != "hooks":
+            raise PlanningError(
+                f"operation {operation.id} is a hook-array edit and needs the key path "
+                f"('hooks', <event>), not {_dotted(operation.key_path)}"
+            )
+        handlers = (
+            operation.expected.get("hooks")
+            if isinstance(operation.expected, dict) else None
+        )
+        if (
+            not isinstance(handlers, list)
+            or not handlers
+            or _matching_handlers(operation.expected, operation.identity) != handlers
+        ):
+            raise PlanningError(
+                f"operation {operation.id} must expect a matcher group whose every "
+                f"handler runs {' '.join(operation.identity)}; a group memriver "
+                "cannot find again would be appended on every install"
+            )
         return hook_array_identity_merge(
             text, operation.key_path[-1], operation.identity, operation.expected,
         )
@@ -167,6 +189,13 @@ def hook_array_identity_merge(
     if not isinstance(groups, list):
         raise PlanningError(f"hooks.{event} is not a JSON array")
 
+    for group in groups:
+        for handler in _handlers(group):
+            if _is_unlexable_memriver_command(handler.get("command"), identity):
+                raise PlanningError(
+                    f"a command in hooks.{event} looks like memriver's but is not a "
+                    "parseable shell command; fix or remove it and run install again"
+                )
     matched = [
         i for i, group in enumerate(groups) if _matching_handlers(group, identity)
     ]
@@ -192,23 +221,45 @@ def hook_array_identity_merge(
     return EditResult(rendered=_render_json(document), changed=True, takeover=True)
 
 
-def _matching_handlers(group: object, identity: tuple[str, ...]) -> list[object]:
+def _handlers(group: object) -> list[dict[str, Any]]:
     if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
         return []
+    return [handler for handler in group["hooks"] if isinstance(handler, dict)]
+
+
+def _matching_handlers(group: object, identity: tuple[str, ...]) -> list[object]:
     return [
-        handler for handler in group["hooks"]
-        if isinstance(handler, dict) and _has_identity(handler.get("command"), identity)
+        handler for handler in _handlers(group)
+        if _has_identity(handler.get("command"), identity)
     ]
 
 
-def _has_identity(command: object, identity: tuple[str, ...]) -> bool:
+def _words(command: object) -> tuple[str, ...] | None:
+    """The shell words of a command, or None when it cannot be lexed."""
     if not isinstance(command, str):
-        return False
+        return None
     try:
-        words = tuple(shlex.split(command))
+        return tuple(shlex.split(command))
     except ValueError:
-        return False
-    return words[: len(identity)] == identity
+        return None
+
+
+def _has_identity(command: object, identity: tuple[str, ...]) -> bool:
+    words = _words(command)
+    return words is not None and words[: len(identity)] == identity
+
+
+def _is_unlexable_memriver_command(command: object, identity: tuple[str, ...]) -> bool:
+    """A command memriver would own, broken badly enough that identity can't be read.
+
+    Treating it as foreign would append a second memriver group on every run,
+    so it is an ambiguous existing configuration instead.
+    """
+    return (
+        isinstance(command, str)
+        and _words(command) is None
+        and " ".join(identity[:2]) in command
+    )
 
 
 # --- toml-table ------------------------------------------------------------
@@ -234,12 +285,29 @@ def toml_roundtrip(
                 f"{_dotted(key_path[: depth + 1])} is not a TOML table; "
                 "memriver will not overwrite it"
             )
+        if isinstance(child, InlineTable):
+            # TOML forbids a table inside an inline table, and rewriting the
+            # user's inline structure is not memriver's call.
+            raise PlanningError(
+                f"{_dotted(key_path[: depth + 1])} is an inline table and cannot "
+                "hold memriver's table; convert it to a regular table and run "
+                "install again"
+            )
         parent = child
     leaf = key_path[-1]
     present = leaf in parent
     if present and _plain(parent[leaf]) == expected:
         return EditResult(rendered=source, changed=False, takeover=False)
-    parent[leaf] = _toml_value(expected)
+    # An inline table at the leaf *is* replaceable: it is memriver's own node,
+    # it compares semantically like any other, and tomlkit rewrites it as a
+    # standard table. Only inline parents (above) are refused.
+    try:
+        parent[leaf] = _toml_value(expected)
+    except ValueError as error:  # tomlkit refused the shape of the existing node
+        raise PlanningError(
+            f"{_dotted(key_path)} cannot be replaced in this file; move it to a "
+            "regular table and run install again"
+        ) from error
     return EditResult(rendered=_render_toml(document), changed=True, takeover=present)
 
 
