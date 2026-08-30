@@ -97,6 +97,11 @@ NL_SEPARATOR_BLOCKED = [
     ("token is ghp_abcdef1234567890", "ghp_abcdef1234567890"),
     # 15 chars: under the all-letter floor, caught because it carries digits
     ("password is P@ssw0rd!23456", "P@ssw0rd!23456"),
+    # quoted multiword passphrases: the spaces are inside the value, so the
+    # bare-value floor never sees the whole thing
+    ('The password is "correct horse battery staple"',
+     "correct horse battery staple"),
+    ("passphrase is 'orange banana cat keyboard'", "orange banana cat keyboard"),
 ]
 
 
@@ -119,6 +124,12 @@ def test_natural_language_separator_blocked(text, marker):
     # condition keeps these out
     "password is automatically rotated by vault",
     "the token is inaccessible from CI",
+    # the only quoted form left at the low end: the value floor of 6 keeps
+    # placeholders passing. A quoted POINTER ('is "in 1Password"') is
+    # deliberately NOT among these -- a quoted value states exact characters,
+    # and nothing in the shape tells a quoted pointer from a quoted passphrase
+    'the password is "n/a"',
+    "the token is 'TBD'",
 ])
 def test_pointer_prose_still_passes(text):
     # the whole point of the store is holding pointers to secrets; accepting

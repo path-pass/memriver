@@ -71,6 +71,19 @@ regex = '\bsk-[A-Za-z0-9_-]{20,}'
 # and rejecting the phrasing memriver's own error message recommends would be
 # the worse failure. Lookaheads (rather than a second value group) leave the
 # ':'/'=' branch and all three value shapes exactly as they were.
+# Those two lookaheads measure ONE non-space run, so a quoted multiword
+# passphrase ('password is "correct horse battery staple"') died at the first
+# space inside the value even though the value shapes support quoted strings.
+# Hence the third separator branch: after ' is ', an opening quote is enough on
+# its own, and the value shapes then take the whole quoted string at the usual
+# floor of 6. The quote IS the signal -- config and prose alike quote a value to
+# say "these exact characters", and a pointer is not written that way: people
+# write 'password is in 1Password', not 'password is "in 1Password"'. The cost
+# is that the quoted branch has no pointer form left: quoted prose after a
+# credential label ('the password policy is "documented in the runbook"') is
+# rejected, since nothing in the shape distinguishes it from a quoted
+# passphrase. Dropping the quotes is the workaround, and the rejection never
+# echoes what it read.
 # The value has three branches because real passwords carry punctuation: a
 # single restricted character class stopped at the first '@' or '!' and counted
 # too few characters, so 'PASSWORD="P@ssw0rd!234567"' passed. Each quote style
@@ -93,4 +106,4 @@ regex = '\bsk-[A-Za-z0-9_-]{20,}'
 [[rules]]
 id = "memriver-credential-assignment"
 description = "credential assigned to a key/secret/token/password/passphrase/credential name"
-regex = '''(?i)(api[ _-]?key|secret|token|password|passwd|passphrase|credentials?)(?:[ _-][A-Za-z0-9]+)*(?:\s*[:=]\s*|\s+is\s+(?=\S{12})(?=\S{16}|\S*[0-9]))(?:"[^"]{6,}"|'[^']{6,}'|\S{6,})'''
+regex = '''(?i)(api[ _-]?key|secret|token|password|passwd|passphrase|credentials?)(?:[ _-][A-Za-z0-9]+)*(?:\s*[:=]\s*|\s+is\s+(?=["'])|\s+is\s+(?=\S{12})(?=\S{16}|\S*[0-9]))(?:"[^"]{6,}"|'[^']{6,}'|\S{6,})'''
