@@ -11,13 +11,11 @@ from __future__ import annotations
 
 from .store import MemoryStore
 
-# Fixed internal guard, not a user-configurable default -- no Settings field
-# backs it, so it stays local rather than joining config.py's catalog.
-MAX_REVIEW_BATCH = 10
-
 
 def review_queue(store: MemoryStore, scopes: list[str],
-                 limit: int, max_limit: int = MAX_REVIEW_BATCH) -> list:
+                 limit: int, max_limit: int = 10) -> list:
+    # max_limit is a fixed internal guard, not a user-configurable default --
+    # no Settings field backs it, so it lives here as the signature literal
     limit = max(1, min(limit, max_limit))
     entries = sorted(store.iter_entries(scopes=scopes),
                      key=lambda e: (e.updated, e.id))

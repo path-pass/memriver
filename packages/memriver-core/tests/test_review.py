@@ -1,6 +1,11 @@
+import inspect
+
 from memriver_core.entry import Entry
-from memriver_core.review import MAX_REVIEW_BATCH, review_queue
+from memriver_core.review import review_queue
 from memriver_core.store import MemoryStore
+
+# the fixed guard is a signature literal by design; read it back for the tests
+_MAX_BATCH = inspect.signature(review_queue).parameters["max_limit"].default
 
 
 def _seed(tmp_path, scope="global"):
@@ -42,13 +47,13 @@ def test_limit_clamped_up_from_zero(tmp_path):
 
 def test_limit_clamped_down_to_max(tmp_path):
     store = MemoryStore(tmp_path)
-    for i in range(MAX_REVIEW_BATCH + 5):
+    for i in range(_MAX_BATCH + 5):
         e = Entry.new(body=f"fact {i}", type="project", scope="global",
                      source={}, id=f"entry-{i:02d}")
         e.updated = f"2026-01-{i + 1:02d}T00:00:00Z"
         store.write(e)
     hits = review_queue(store, scopes=["global"], limit=10 ** 9)
-    assert len(hits) == MAX_REVIEW_BATCH
+    assert len(hits) == _MAX_BATCH
 
 
 def test_scope_filtering(tmp_path):

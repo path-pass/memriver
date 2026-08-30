@@ -35,7 +35,7 @@ def test_defaults_wired_to_single_source():
     assert (inspect.signature(render.render_index).parameters["budget_lines"].default
             == DEFAULT_BUDGET_LINES)
     assert (inspect.signature(review.review_queue).parameters["max_limit"].default
-            == review.MAX_REVIEW_BATCH)  # fixed internal guard, not config-backed
+            == 10)  # fixed internal guard: a signature literal, not config-backed
 
 
 def _root(tmp_path, text: str | None = None) -> Path:
