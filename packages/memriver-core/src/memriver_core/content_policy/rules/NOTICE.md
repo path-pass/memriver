@@ -20,7 +20,7 @@ uv run python tools/sync_gitleaks_rules.py
 ```
 
 That downloads the upstream file and replaces `gitleaks.toml` wholesale — the
-only part of this project allowed to touch the network. `gate.py` then loads it
+only part of this project allowed to touch the network. `secret_scanner.py` then loads it
 at import and compiles each rule's regex; **rules that do not compile under the
 running interpreter are skipped at load time** (logged at DEBUG with the rule
 id) rather than failing the import. The patterns are written for Go's RE2, so a
