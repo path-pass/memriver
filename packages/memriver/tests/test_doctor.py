@@ -113,6 +113,24 @@ def test_inaccessible_store_is_path_free_exit_two(monkeypatch, tmp_path):
     assert result.stderr == "memriver doctor: memory store is inaccessible\n"
 
 
+@pytest.mark.parametrize("json_output", [False, True])
+def test_an_invalid_env_setting_is_the_same_path_free_exit_two(monkeypatch, tmp_path,
+                                                               json_output):
+    """`load_settings` is the one call doctor makes before the store is opened,
+    and the env layer's ValidationError is deliberately not swallowed there: it
+    echoes the offending value and, as a traceback, absolute source paths.
+    Neither may reach a terminal, and a doctor that never read the store must
+    not report findings (exit 1) either."""
+    monkeypatch.setenv("MEMRIVER_MAX_BODY_CHARS", "not-a-number")
+    install_fake_diagnostics_service(monkeypatch, "healthy", 0)
+    result = invoke_doctor(root=tmp_path, json_output=json_output)
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert result.stderr == "memriver doctor: memory store is inaccessible\n"
+    assert "not-a-number" not in result.stderr
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
 def test_inaccessible_root_leaks_no_logging_line_to_real_stderr(tmp_path, capsys):
     """CLI-boundary regression against a REAL store, not the fake service:

@@ -232,6 +232,38 @@ def test_bad_env_value_reports_readably(tmp_path):
     assert "MEMRIVER_" in out.stderr and "max_body_chars" in out.stderr
 
 
+def test_bad_env_value_leaves_doctor_a_path_free_exit_two(tmp_path):
+    """The same bad env var that `serve` fails loudly on is, for doctor, a
+    store it could not read: exit 2 and the one fixed line, never a traceback
+    carrying source paths and the rejected value."""
+    env = {**os.environ, "MEMRIVER_MAX_BODY_CHARS": "not-a-number"}
+    out = subprocess.run([sys.executable, "-m", "memriver.cli", "doctor",
+                          "--root", str(tmp_path / "mem")],
+                         capture_output=True, text=True, env=env, timeout=30,
+                         check=False)
+    assert out.returncode == 2
+    assert out.stdout == ""
+    assert out.stderr == "memriver doctor: memory store is inaccessible\n"
+    assert "not-a-number" not in out.stderr
+
+
+@pytest.mark.parametrize(("event", "stderr"), [
+    ("session-start", "memriver hook: invalid input\n"),
+    ("stop", ""),
+])
+def test_undecodable_stdin_never_fails_the_hook(tmp_path, event, stderr):
+    """`run_hook` never raises, but the stdin read happens before it is called:
+    bytes that are not UTF-8 are malformed input, not a harness failure."""
+    out = subprocess.run([sys.executable, "-m", "memriver.cli", "hook", event,
+                          "--harness", "claude-code",
+                          "--root", str(tmp_path / "mem")],
+                         input=b'\xff\xfe{"source":"startup"}',
+                         capture_output=True, timeout=30, check=False)
+    assert out.returncode == 0
+    assert out.stdout == b""
+    assert out.stderr.decode() == stderr
+
+
 def test_explicit_serve_starts_the_same_stdio_server(tmp_path):
     """`memriver serve` is an alias, not a second server."""
     root = tmp_path / "mem"

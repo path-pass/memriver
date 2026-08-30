@@ -129,7 +129,14 @@ def _serve(args: argparse.Namespace) -> int:
 def _hook(args: argparse.Namespace) -> int:
     from .hooks import run_hook
 
-    result = run_hook(args.event, args.harness, sys.stdin.read(),
+    try:
+        payload_text = sys.stdin.read()
+    except (UnicodeDecodeError, OSError):
+        # run_hook never raises, but the read happens before it: bytes that are
+        # not UTF-8 are malformed input, and a hook that tracebacks over them
+        # fails the session it exists to help
+        payload_text = ""
+    result = run_hook(args.event, args.harness, payload_text,
                       root=args.root, project_dir=args.project_dir, cwd=Path.cwd())
     # only what the hook composed: anything else on stdout is read by the
     # harness as a malformed hook response
