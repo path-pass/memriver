@@ -23,7 +23,7 @@ document is marked pass unless it was actually exercised and its output is quote
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Full workspace suite | `uv run pytest -q` | **671 passed** in 5.94s, 0 failed, 0 skipped |
+| Full workspace suite | `uv run pytest -q` | **674 passed** in 6.12s, 0 failed, 0 skipped |
 | Lint, this phase's packages | `uv run ruff check packages` | **All checks passed** (exit 0) |
 | Lint, whole workspace | `uv run ruff check .` | exit 1 — **5 pre-existing findings**, all in `tools/sync_gitleaks_rules.py` (1 × EXE001, 4 × RUF100). That file is untouched by this phase (`git diff --name-only main..HEAD` lists no `tools/` path), so the findings are out of scope and were not fixed here. |
 
@@ -31,9 +31,9 @@ Focused groups, each run in its own pytest process to prove no reliance on test 
 
 | Group | Command | Result |
 | --- | --- | --- |
-| Index single-line normalization | `uv run pytest packages/memriver-core/tests/unit/application/test_service.py -k "flattens"` | 2 passed, 54 deselected |
+| Index single-line normalization | `uv run pytest packages/memriver-core/tests/unit/application/test_service.py -k "flattens"` | 3 passed, 54 deselected |
 | Inspector + diagnostics | `uv run pytest packages/memriver-core/tests/integration/repository/filesystem/test_inspector.py packages/memriver-core/tests/unit/application/test_diagnostics.py` | 37 passed |
-| Hooks + install + doctor | `uv run pytest packages/memriver/tests/test_hooks.py packages/memriver/tests/install packages/memriver/tests/test_doctor.py` | 149 passed |
+| Hooks + install + doctor | `uv run pytest packages/memriver/tests/test_hooks.py packages/memriver/tests/install packages/memriver/tests/test_doctor.py` | 151 passed |
 | CLI + architecture | `uv run pytest packages/memriver/tests/test_cli.py packages/memriver/tests/test_architecture.py` | 26 passed |
 
 ## 3. Packaging
@@ -244,7 +244,7 @@ recorded in §2.
 | 14 | Uninitialized / empty / healthy / degraded / inaccessible have distinct output and exit behaviour | `packages/memriver/tests/test_doctor.py::test_doctor_state_exit_contract`, `::test_inaccessible_store_is_path_free_exit_two`, `::test_json_output_matches_the_stable_shape`, `::test_healthy_human_output_has_no_findings_section`; `packages/memriver-core/tests/unit/application/test_diagnostics.py::test_state_is_derived_without_backend_guessing`; `packages/memriver-core/tests/integration/repository/filesystem/test_inspector.py::test_missing_root_is_uninitialized`, `::test_existing_empty_root_is_initialized`; §4 step D (uninitialized) and §5 (healthy) |
 | 15 | `--version`, bare serve, explicit serve and every new subcommand keep the specified grammar | `packages/memriver/tests/test_cli.py::test_version_flag_survives_the_legacy_store_options`, `::test_legacy_and_explicit_serve_parse_to_the_same_handler`, `::test_explicit_serve_starts_the_same_stdio_server`, `::test_top_level_help_lists_the_serve_hook_and_install_commands`, `::test_install_parses_its_selector_and_confirmation_flags`, `::test_install_rejects_combining_harness_and_all`, `::test_doctor_rejects_a_non_positive_stale_days_without_a_traceback` |
 | 16 | Reinstall is semantically idempotent, byte-idempotent for managed marker regions where the format permits | `packages/memriver/tests/install/test_editors.py::test_json_object_merge_is_idempotent`, `::test_toml_roundtrip_is_idempotent`, `::test_hook_identity_merge_is_idempotent`, `::test_marker_block_is_idempotent`; `packages/memriver/tests/install/test_install.py::test_a_reinstall_that_changes_nothing_reports_it_and_prompts_for_nothing`; §4 step C (both files byte-identical across runs) |
-| 17 | Fresh full suite, ruff, wheel/package, malformed-config zero-write, rollback and real-harness evidence all pass | Automated half **PASS**: §2 (671 passed; `ruff check packages` clean), §3 (both wheels), `packages/memriver/tests/install/test_install.py::test_planning_failure_writes_absolutely_nothing[malformed_json]` and `[malformed_toml]`, `::test_failure_restores_earlier_targets_and_removes_created_ones`, §4 steps A–E. Real-harness half: §6/§7 — **PENDING** |
+| 17 | Fresh full suite, ruff, wheel/package, malformed-config zero-write, rollback and real-harness evidence all pass | Automated half **PASS**: §2 (674 passed; `ruff check packages` clean), §3 (both wheels), `packages/memriver/tests/install/test_install.py::test_planning_failure_writes_absolutely_nothing[malformed_json]` and `[malformed_toml]`, `::test_failure_restores_earlier_targets_and_removes_created_ones`, §4 steps A–E. Real-harness half: §6/§7 — **PENDING** |
 
 **Blocked on PENDING live evidence: criteria 1 (harness-side acceptance only), 10, and 17
 (real-harness half only).** Criteria 2–9 and 11–16 are satisfied by the automated evidence

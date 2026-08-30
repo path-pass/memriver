@@ -435,7 +435,29 @@ def _positions(text: str, marker: str) -> list[int]:
 # --- change summary --------------------------------------------------------
 
 
-def render_change_summary(operation: EditOperation, result: EditResult) -> str:
+def operation_label(operation: EditOperation, home: Path) -> str:
+    """``<harness>: <what changes> -> <where>``, the one line that identifies it.
+
+    An install run over several harnesses repeats the same wording -- four
+    changes "register memriver MCP server" -- so the harness (the prefix every
+    operation id already carries) and the file being written are what tell one
+    confirmation from the next.
+    """
+    harness = operation.id.split(":", 1)[0]
+    return f"{harness}: {operation.label} -> {_display_path(operation.target.path, home)}"
+
+
+def _display_path(path: Path, home: Path) -> str:
+    """Home-relative targets render as ``~/...``; everything else stays absolute.
+
+    Summaries get pasted into issues and transcripts, and a real home directory
+    names its user.
+    """
+    return f"~/{path.relative_to(home)}" if path.is_relative_to(home) else str(path)
+
+
+def render_change_summary(operation: EditOperation, result: EditResult,
+                          home: Path) -> str:
     """Render the label, the managed region, and the NEW fragment -- nothing else.
 
     The pre-existing fragment is never passed in, so it can never leak into
@@ -446,7 +468,7 @@ def render_change_summary(operation: EditOperation, result: EditResult) -> str:
         if operation.kind == "marker-block"
         else _dotted(operation.key_path)
     )
-    lines = [operation.label, region, _fragment(operation)]
+    lines = [operation_label(operation, home), region, _fragment(operation)]
     if result.takeover:
         lines.append(HARNESS_SETTING_TAKEOVER_NOTICE if operation.harness_owned
                      else TAKEOVER_NOTICE)

@@ -301,8 +301,27 @@ def test_each_change_gets_its_own_labelled_confirmation(home, project):
 
     assert len(result.answers.prompts) == 4
     joined = " ".join(result.answers.prompts)
-    assert "register memriver MCP server" in joined
+    assert "claude-code: register memriver MCP server -> ~/.claude.json" in joined
     assert "disable built-in auto memory" in joined
+
+
+def test_every_confirmation_names_its_harness_and_its_target(home, project):
+    """`--all` asks four times to "register memriver MCP server"; without the
+    harness and the file each prompt writes, the four are indistinguishable."""
+    result = install(ALL_HARNESSES, home=home, cwd=project, yes=False,
+                     replies=["n"] * 12)
+
+    prompts = result.answers.prompts
+    mcp = [p for p in prompts if "register memriver MCP server" in p]
+    assert len(mcp) == 4
+    assert len(set(mcp)) == 4
+    for harness in ALL_HARNESSES:
+        assert any(p.startswith(f"apply: {harness}: ") for p in prompts)
+    for prompt in prompts:
+        assert " -> " in prompt
+    assert any("-> ~/.claude.json?" in p for p in mcp)
+    # a user-level path is shown home-relative, never as somebody's real home
+    assert not any(str(home) in p for p in prompts)
 
 
 def test_a_takeover_is_labelled_and_confirmed_without_showing_the_old_value(home,

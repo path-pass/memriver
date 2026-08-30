@@ -26,11 +26,13 @@ from memriver.install import (
     hook_identity,
     json_object_merge,
     marker_block,
+    operation_label,
     render_change_summary,
     toml_roundtrip,
 )
 from memriver.protocol_text import PROTOCOL_BLOCK
 
+HOME = Path("/tmp")  # where the operation() target below lives
 MEMRIVER_MCP = {"command": "uvx", "args": ["memriver"]}
 SESSION_START_IDENTITY = ("uvx", "memriver", "hook", "session-start")
 NEW_COMMAND = "uvx memriver hook session-start --harness claude-code"
@@ -354,11 +356,23 @@ def test_marker_block_is_idempotent():
 # --- Step 2: change summary ------------------------------------------------
 
 
+def test_the_label_names_the_harness_and_the_target_it_writes():
+    """With --all, four changes share the words "register memriver MCP server"
+    and differ only by harness and file; a confirmation that shows neither is
+    unanswerable. A home-relative path is abbreviated, never spelled out."""
+    op = operation("json-object", MEMRIVER_MCP, key_path=("mcpServers", "memriver"))
+
+    assert operation_label(op, HOME) == (
+        "claude-code: register memriver MCP server -> ~/does-not-matter.json")
+    assert operation_label(op, Path("/elsewhere")) == (
+        "claude-code: register memriver MCP server -> /tmp/does-not-matter.json")
+
+
 def test_change_summary_shows_label_key_path_and_new_fragment():
     op = operation("json-object", MEMRIVER_MCP, key_path=("mcpServers", "memriver"))
     result = json_object_merge('{"token":"secret"}', op.key_path, op.expected)
-    summary = render_change_summary(op, result)
-    assert op.label in summary
+    summary = render_change_summary(op, result, HOME)
+    assert summary.startswith(operation_label(op, HOME) + "\n")
     assert "mcpServers.memriver" in summary
     assert '"command": "uvx"' in summary
     assert "secret" not in summary
@@ -374,7 +388,7 @@ def test_change_summary_shows_the_new_hook_commands_and_takeover_line():
         command_group("uvx memriver hook session-start --harness old-secret-value"),
     ])
     result = hook_array_identity_merge(source, "SessionStart", op.identity, expected)
-    summary = render_change_summary(op, result)
+    summary = render_change_summary(op, result, HOME)
     assert result.takeover
     assert "hooks.SessionStart" in summary
     assert NEW_COMMAND in summary
@@ -392,7 +406,7 @@ def test_change_summary_names_the_harness_for_a_key_memriver_does_not_own():
                    key_path=("env", "CLAUDE_CODE_DISABLE_AUTO_MEMORY"))
     result = json_object_merge('{"env":{"CLAUDE_CODE_DISABLE_AUTO_MEMORY":"0"}}',
                                op.key_path, op.expected)
-    summary = render_change_summary(op, result)
+    summary = render_change_summary(op, result, HOME)
     assert result.takeover
     assert summary.rstrip("\n").endswith(
         "existing harness setting differs and will be replaced (old value not shown)"
@@ -403,7 +417,7 @@ def test_change_summary_names_the_harness_for_a_key_memriver_does_not_own():
 def test_change_summary_of_a_fresh_change_has_no_takeover_line():
     op = operation("toml-table", MEMRIVER_MCP, key_path=("mcp_servers", "memriver"))
     result = toml_roundtrip("", op.key_path, op.expected)
-    summary = render_change_summary(op, result)
+    summary = render_change_summary(op, result, HOME)
     assert "[mcp_servers.memriver]" in summary
     assert 'command = "uvx"' in summary
     assert "old value not shown" not in summary
@@ -413,7 +427,7 @@ def test_change_summary_of_a_marker_block_names_the_region():
     op = operation("marker-block", f"<!-- memriver:begin -->\n{PROTOCOL_BLOCK}\n"
                                    "<!-- memriver:end -->")
     summary = render_change_summary(op, EditResult(rendered="", changed=True,
-                                                   takeover=False))
+                                                   takeover=False), HOME)
     assert "<!-- memriver:begin -->" in summary
     assert "memriver shared memory" in summary
 

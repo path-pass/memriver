@@ -55,6 +55,7 @@ from .editors import (
     json_object_merge,
     marker_block,
     mcp_server_payload,
+    operation_label,
     render_change_summary,
     toml_roundtrip,
     validate_document,
@@ -79,6 +80,7 @@ __all__ = [
     "json_object_merge",
     "marker_block",
     "mcp_server_payload",
+    "operation_label",
     "render_change_summary",
     "run_install",
     "toml_roundtrip",
@@ -240,7 +242,8 @@ def _plan(harnesses: Sequence[str], home: Path, cwd: Path,
         operations.extend(HARNESSES[name].operations(harness_snapshots, env))
     _, results = _rendered(operations, snapshots)
     changes = tuple(
-        _PlannedChange(operation, render_change_summary(operation, results[operation.id]))
+        _PlannedChange(operation,
+                       render_change_summary(operation, results[operation.id], home))
         for operation in operations if results[operation.id].changed
     )
     return _Plan(project_root, targets, snapshots, tuple(operations), changes)
@@ -384,7 +387,7 @@ def run_install(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
         return 0
 
     try:
-        accepted = _confirm(plan.changes, yes=yes, input_fn=input_fn)
+        accepted = _confirm(plan.changes, yes=yes, input_fn=input_fn, home=home)
     except EOFError:
         stdout.write(
             "\nmemriver install: stdin is not interactive and no answer can be "
@@ -412,13 +415,18 @@ def run_install(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
 
 
 def _confirm(changes: Sequence[_PlannedChange], *, yes: bool,
-             input_fn: Callable[[str], str]) -> tuple[EditOperation, ...]:
-    """One labelled confirmation per change; ``--yes`` accepts them all."""
+             input_fn: Callable[[str], str],
+             home: Path) -> tuple[EditOperation, ...]:
+    """One labelled confirmation per change; ``--yes`` accepts them all.
+
+    The label names the harness and the file, because ``--all`` asks the same
+    question four times over four different targets.
+    """
     if yes:
         return tuple(change.operation for change in changes)
     accepted = []
     for change in changes:
-        answer = input_fn(f"apply: {change.operation.label}? [y/N] ")
+        answer = input_fn(f"apply: {operation_label(change.operation, home)}? [y/N] ")
         if answer.strip().lower() in ("y", "yes"):
             accepted.append(change.operation)
     return tuple(accepted)
