@@ -29,8 +29,6 @@ if TYPE_CHECKING:
 # error echoes the rejected value.
 _HARNESS_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 
-_SNIPPET_CHARS = 60
-
 
 class MemoryService:
     def __init__(self, repository: MemoryRepository, policy: ContentPolicy, *,
@@ -110,7 +108,7 @@ class MemoryService:
             # stored memories are hand-editable, so an empty body must not
             # break the index
             cue = m.description or (m.body.splitlines() or [""])[0]
-            lines.append(f"- [{m.type}] {m.id}: {cue[:_SNIPPET_CHARS]} ({m.updated[:10]})")
+            lines.append(f"- [{m.type}] {m.id}: {cue[:60]} ({m.updated[:10]})")
         omitted = len(listing.entries) - self._index_budget_lines
         if omitted > 0:
             lines.append(f"… ({omitted} more entries omitted; use memory_search)")
