@@ -1,13 +1,20 @@
+import os
+from pathlib import Path
+
 import pytest
 from fastmcp import Client
+from memriver.project_context import project_slug
 from memriver.server import build_server
 from memriver_core.config import Settings
-from memriver_core.entry import Entry
-from memriver_core.scope import project_slug
-from memriver_core.store import MemoryStore
+from memriver_core.models import AccessContext, Memory, ProjectId, Scope
+from memriver_core.repository.filesystem import FileMemoryRepository
+from memriver_core.repository.filesystem.markdown_codec import encode
 
 # a valid ULID shape, used for a hand-written (hand-edited) entry file
 BAD_YAML_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+
+SOURCE = {"harness": "test", "method": "agent"}
+GLOBAL = Scope.global_()
 
 
 def _write_raw(root, name: str, text: str) -> None:
@@ -16,11 +23,24 @@ def _write_raw(root, name: str, text: str) -> None:
     (d / name).write_text(text, encoding="utf-8")
 
 
-def _seed_healthy(root) -> Entry:
-    e = Entry.new(body="uv manages this workspace", type="project", scope="global",
-                  source={"harness": "test", "method": "agent"})
-    MemoryStore(root).write(e)
-    return e
+def _path(root, memory: Memory) -> Path:
+    scope_dir = ("global" if memory.scope.project_id is None
+                 else f"projects/{memory.scope.project_id}")
+    return root / scope_dir / "entries" / f"{memory.id}.md"
+
+
+def _seed(root, memory: Memory) -> Path:
+    """Put a memory on disk through the repository, as the server would."""
+    FileMemoryRepository(root).create(
+        memory, AccessContext(project_id=memory.scope.project_id))
+    return _path(root, memory)
+
+
+def _seed_healthy(root) -> Memory:
+    m = Memory.new(body="uv manages this workspace", type="project",
+                   scope=Scope.global_(), source=SOURCE)
+    _seed(root, m)
+    return m
 
 
 @pytest.fixture
@@ -149,10 +169,10 @@ async def test_global_write_refused_when_a_project_holds_the_name(tmp_path, proj
     # project already owns must still be refused, and must not echo that
     # project's content or type back to the caller
     root = tmp_path / "mem"
-    foreign = Entry.new(body="foreign project secret plan", type="project",
-                        scope="project:other-000000", id="n",
-                        source={"harness": "test", "method": "agent"})
-    path = MemoryStore(root).write(foreign)
+    foreign = Memory.new(body="foreign project secret plan", type="project",
+                         scope=Scope.project(ProjectId("other-000000")), id="n",
+                         source=SOURCE)
+    path = _seed(root, foreign)
     before = path.read_bytes()
 
     server = build_server(root=root, project_dir=project)
@@ -219,10 +239,11 @@ async def test_write_refuses_when_name_taken_by_scope_mismatched_file(tmp_path, 
     # built only on read() would conclude the name is free and let
     # store.write atomically replace a file the user may have hand-edited
     root = tmp_path / "mem"
-    mismatched = Entry.new(body="hand-edited, wrong scope for its directory",
-                           type="user", scope="project:elsewhere-000000", id="n",
-                           source={"harness": "test", "method": "agent"})
-    _write_raw(root, "n.md", mismatched.to_markdown())
+    mismatched = Memory.new(body="hand-edited, wrong scope for its directory",
+                            type="user",
+                            scope=Scope.project(ProjectId("elsewhere-000000")),
+                            id="n", source=SOURCE)
+    _write_raw(root, "n.md", encode(mismatched))
     path = root / "global" / "entries" / "n.md"
     before = path.read_bytes()
 
@@ -241,12 +262,12 @@ async def test_write_refuses_when_name_taken_by_id_mismatched_file(tmp_path, pro
     # still refuse the name rather than concluding it is free and letting
     # store.write create a second file (bar.md) while foo.md is untouched
     root = tmp_path / "mem"
-    mismatched = Entry.new(body="hand-edited, id no longer matches filename",
-                           type="user", scope="global", id="foo",
-                           source={"harness": "test", "method": "agent"})
-    path = MemoryStore(root).write(mismatched)
+    mismatched = Memory.new(body="hand-edited, id no longer matches filename",
+                            type="user", scope=Scope.global_(), id="foo",
+                            source=SOURCE)
+    path = _seed(root, mismatched)
     mismatched.id = "bar"
-    path.write_text(mismatched.to_markdown(), encoding="utf-8")
+    path.write_text(encode(mismatched), encoding="utf-8")
     before = path.read_bytes()
 
     server = build_server(root=root, project_dir=project)
@@ -350,14 +371,14 @@ async def test_unnamed_write_falls_back_to_ulid(server):
         assert len(out["id"]) == 26
 
 
-def _seed_foreign(root) -> Entry:
-    # store.read() globs every projects/* directory, so an id leaked from another
-    # project must still be refused by the tools of the current project
-    e = Entry.new(body="foreign project secret plan", type="project",
-                  scope="project:other-000000",
-                  source={"harness": "test", "method": "agent"})
-    MemoryStore(root).write(e)
-    return e
+def _seed_foreign(root) -> Memory:
+    # the repository resolves an id across every projects/* directory, so an id
+    # leaked from another project must still be refused by the current project's
+    # tools
+    m = Memory.new(body="foreign project secret plan", type="project",
+                   scope=Scope.project(ProjectId("other-000000")), source=SOURCE)
+    _seed(root, m)
+    return m
 
 
 async def test_read_outside_scope_is_refused(tmp_path, project):
@@ -405,14 +426,13 @@ async def test_delete_outside_scope_is_refused(tmp_path, project):
 def _seed_misplaced(root):
     # a hand-edited file that stays under another project's directory but claims
     # the global scope: the frontmatter alone must not carry it across the
-    # physical boundary that store.read() resolves ids through
-    e = Entry.new(body="foreign project secret plan", type="project",
-                  scope="project:other-000000",
-                  source={"harness": "test", "method": "agent"})
-    path = MemoryStore(root).write(e)
-    e.scope = "global"
-    path.write_text(e.to_markdown(), encoding="utf-8")
-    return e, path
+    # physical boundary the repository resolves ids through
+    m = Memory.new(body="foreign project secret plan", type="project",
+                   scope=Scope.project(ProjectId("other-000000")), source=SOURCE)
+    path = _seed(root, m)
+    m.scope = Scope.global_()
+    path.write_text(encode(m), encoding="utf-8")
+    return m, path
 
 
 async def test_read_of_misplaced_entry_is_refused(tmp_path, project):
@@ -562,13 +582,13 @@ async def test_search_limit_stays_a_plain_integer_in_the_tool_schema(server):
         assert limit.get("type") == "integer" or {"type": "integer"} in limit.get("anyOf", [])
 
 
-def _seed_with_updated(root, entry_id, updated, scope="global"):
-    e = Entry.new(body=f"body of {entry_id}", type="project", scope=scope,
-                  source={"harness": "test", "method": "agent"}, id=entry_id,
-                  description=f"description of {entry_id}")
-    e.updated = updated
-    MemoryStore(root).write(e)
-    return e
+def _seed_with_updated(root, entry_id, updated, scope=GLOBAL):
+    m = Memory.new(body=f"body of {entry_id}", type="project", scope=scope,
+                   source=SOURCE, id=entry_id,
+                   description=f"description of {entry_id}")
+    m.updated = updated
+    _seed(root, m)
+    return m
 
 
 async def test_dream_returns_oldest_entry_first_with_full_content(tmp_path, project):
@@ -591,7 +611,7 @@ async def test_dream_never_surfaces_entries_outside_current_project_scopes(
     root = tmp_path / "mem"
     _seed_with_updated(root, "global-entry", "2026-06-01T00:00:00Z")
     _seed_with_updated(root, "foreign-entry", "2026-01-01T00:00:00Z",
-                       scope="project:other-000000")
+                       scope=Scope.project(ProjectId("other-000000")))
 
     server = build_server(root=root, project_dir=project)
     async with Client(server) as c:
@@ -618,3 +638,89 @@ async def test_dream_confirm_is_touch_rotates_the_queue(tmp_path, project):
 
         second = (await c.call_tool("memory_dream", {"limit": 1})).data
         assert second["entries"][0]["id"] == "b"
+
+
+async def test_explicit_root_wins_over_the_settings_root(tmp_path, project):
+    # callers that already resolved the root (the CLI, the tests) must not have
+    # it replaced by whatever the settings layer resolved
+    explicit = tmp_path / "explicit"
+    other = tmp_path / "other"
+    server = build_server(root=explicit, project_dir=project,
+                          settings=Settings(root=other))
+    async with Client(server) as c:
+        r = (await c.call_tool("memory_write", {
+            "content": "v1", "type": "user", "name": "n", "scope": "global"})).data
+        assert "id" in r
+
+    assert [p.name for p in explicit.glob("**/entries/*.md")] == ["n.md"]
+    assert not other.exists()
+
+
+async def test_project_write_outside_a_git_project_reports_the_path(tmp_path):
+    outside = tmp_path / "nowhere"
+    outside.mkdir()
+    server = build_server(root=tmp_path / "mem", project_dir=outside)
+    async with Client(server) as c:
+        r = (await c.call_tool("memory_write", {
+            "content": "v1", "type": "project", "scope": "project"})).data
+        assert r == {"error": f"not inside a git project: {outside}"}
+
+
+async def test_unknown_id_shape_reads_as_not_found(server):
+    # ids that cannot be a filename never reach the filesystem; they answer
+    # like any other absent name rather than leaking a ValueError
+    async with Client(server) as c:
+        for tool, args in (("memory_read", {}), ("memory_update", {"content": "x"}),
+                           ("memory_delete", {})):
+            r = (await c.call_tool(tool, {"entry_id": "Bad Name", **args})).data
+            assert r == {"error": "no such entry: Bad Name"}, tool
+
+
+async def test_unreadable_entry_maps_per_operation(tmp_path, project):
+    root = tmp_path / "mem"
+    _write_raw(root, f"{BAD_YAML_ID}.md", "---\nid: [unclosed\n---\nbody\n")
+    _write_raw(root, "notes.md", "just some hand-written notes\n")
+
+    server = build_server(root=root, project_dir=project)
+    async with Client(server) as c:
+        assert (await c.call_tool("memory_read", {"entry_id": BAD_YAML_ID})).data == {
+            "error": f"unreadable entry file: {BAD_YAML_ID}"}
+        assert (await c.call_tool("memory_update", {
+            "entry_id": BAD_YAML_ID, "content": "replacement"})).data == {
+            "error": f"unreadable entry file: {BAD_YAML_ID}"}
+        assert (await c.call_tool("memory_delete", {"entry_id": "notes"})).data == {
+            "error": "could not delete entry: notes"}
+        assert (await c.call_tool("memory_write", {
+            "content": "v1", "type": "user", "name": "notes",
+            "scope": "global"})).data == {
+            "error": "name 'notes' is taken by a file that is not a readable entry"}
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+async def test_storage_failure_maps_per_operation(tmp_path, project):
+    root = tmp_path / "mem"
+    _seed_with_updated(root, "n", "2026-01-01T00:00:00Z")
+    entries = root / "global" / "entries"
+    path = entries / "n.md"
+
+    server = build_server(root=root, project_dir=project)
+    async with Client(server) as c:
+        path.chmod(0o000)  # the file itself cannot be read
+        try:
+            assert (await c.call_tool("memory_read", {"entry_id": "n"})).data == {
+                "error": "unreadable entry file: n"}
+            assert (await c.call_tool("memory_update", {
+                "entry_id": "n", "content": "v2"})).data == {
+                "error": "unreadable entry file: n"}
+        finally:
+            path.chmod(0o644)
+
+        entries.chmod(0o500)  # the directory cannot be written to
+        try:
+            assert (await c.call_tool("memory_write", {
+                "content": "v1", "type": "user", "name": "fresh",
+                "scope": "global"})).data == {"error": "could not write entry"}
+            assert (await c.call_tool("memory_delete", {"entry_id": "n"})).data == {
+                "error": "could not delete entry: n"}
+        finally:
+            entries.chmod(0o755)

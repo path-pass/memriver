@@ -5,7 +5,7 @@ import subprocess
 import sys
 import time
 
-from memriver_core.scope import project_slug
+from memriver.project_context import project_slug
 
 PROTOCOL_VERSION = "2025-06-18"
 
