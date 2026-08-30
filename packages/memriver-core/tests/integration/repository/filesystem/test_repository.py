@@ -1,4 +1,5 @@
 import inspect
+import os
 from pathlib import Path
 
 import pytest
@@ -386,3 +387,72 @@ def test_delete_failure_raises_an_opaque_storage_failure(memory_repository, root
     with pytest.raises(StorageFailure) as err:
         memory_repository.delete("n", CTX)
     _assert_opaque(err.value, root)
+
+
+# --- lock lifecycle failures (I-1) ---
+#
+# store_lock's own mkdir/open/flock happen before any repository-level
+# try/except: a raw OSError there must not escape create/update_body/delete
+# any more than one from _read/_write/unlink does.
+
+def test_root_is_a_regular_file_raises_opaque_storage_failure(tmp_path):
+    # store_lock's root.mkdir(exist_ok=True) raises FileExistsError when the
+    # root path is already occupied by a plain file, not a directory
+    root = tmp_path / "blocked"
+    root.write_text("not a directory", encoding="utf-8")
+    memory_repository = FileMemoryRepository(root)
+
+    with pytest.raises(StorageFailure) as err:
+        memory_repository.create(_m(id="n"), CTX)
+    _assert_opaque(err.value, root)
+
+    with pytest.raises(StorageFailure) as err:
+        memory_repository.update_body("n", "v2", CTX)
+    _assert_opaque(err.value, root)
+
+    with pytest.raises(StorageFailure) as err:
+        memory_repository.delete("n", CTX)
+    _assert_opaque(err.value, root)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+def test_unreadable_root_raises_opaque_storage_failure(memory_repository, root):
+    # root exists but cannot be entered: store_lock's open(root / ".lock")
+    # fails with PermissionError before create/update_body/delete ever reach
+    # their own try/except
+    memory_repository.create(_m(id="n"), CTX)
+    root.chmod(0o000)
+    try:
+        with pytest.raises(StorageFailure) as err:
+            memory_repository.create(_m(id="m"), CTX)
+        _assert_opaque(err.value, root)
+
+        with pytest.raises(StorageFailure) as err:
+            memory_repository.update_body("n", "v2", CTX)
+        _assert_opaque(err.value, root)
+
+        with pytest.raises(StorageFailure) as err:
+            memory_repository.delete("n", CTX)
+        _assert_opaque(err.value, root)
+    finally:
+        root.chmod(0o755)
+
+
+def test_flock_failure_raises_opaque_storage_failure(memory_repository, root, monkeypatch):
+    import fcntl
+
+    def boom(*args, **kwargs):
+        raise OSError(9, "Bad file descriptor")
+
+    monkeypatch.setattr(fcntl, "flock", boom)
+    with pytest.raises(StorageFailure) as err:
+        memory_repository.create(_m(id="n"), CTX)
+    _assert_opaque(err.value, root)
+
+
+def test_lock_lifecycle_failure_does_not_mask_domain_errors(memory_repository):
+    # negative control: a plain lock (no injected OSError) still lets a real
+    # collision raise NameTaken, not StorageFailure
+    memory_repository.create(_m(body="v1", type="user", id="n"), CTX)
+    with pytest.raises(NameTaken):
+        memory_repository.create(_m(body="v2", type="user", id="n"), CTX)
