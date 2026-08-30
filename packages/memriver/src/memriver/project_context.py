@@ -14,7 +14,8 @@ from pathlib import Path
 from memriver_core.models import AccessContext, ProjectId
 
 
-def _git_root(start: Path) -> Path | None:
+def find_git_root(start: Path) -> Path | None:
+    """The nearest ``.git`` root at or above ``start``, or ``None`` outside a repo."""
     cur = start.resolve()
     for p in [cur, *cur.parents]:
         if (p / ".git").exists():
@@ -23,7 +24,7 @@ def _git_root(start: Path) -> Path | None:
 
 
 def project_slug(project_dir: Path) -> str | None:
-    root = _git_root(project_dir)
+    root = find_git_root(project_dir)
     if root is None:
         return None
     name = re.sub(r"[^a-z0-9]+", "-", root.name.lower()).strip("-") or "project"
