@@ -29,6 +29,17 @@ if TYPE_CHECKING:
 # error echoes the rejected value.
 _HARNESS_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 
+# entries are hand-editable and now injected into agent context automatically
+# (rather than agent-pulled), so a hand-edited or malicious multiline
+# description/body must not smuggle embedded instructions or newlines into
+# the index; this collapses control characters and Unicode line separators
+# to spaces before the cue is truncated.
+_INDEX_UNSAFE_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+
+def _single_line_cue(value: str) -> str:
+    return " ".join(_INDEX_UNSAFE_RE.sub(" ", value).split())
+
 
 class MemoryService:
     def __init__(self, memory_repository: MemoryRepository, content_policy: ContentPolicy, *,
@@ -107,7 +118,8 @@ class MemoryService:
         for m in listing.entries[:self._index_budget_lines]:
             # stored memories are hand-editable, so an empty body must not
             # break the index
-            cue = m.description or (m.body.splitlines() or [""])[0]
+            raw_cue = m.description or (m.body.splitlines() or [""])[0]
+            cue = _single_line_cue(raw_cue)
             lines.append(f"- [{m.type}] {m.id}: {cue[:60]} ({m.updated[:10]})")
         omitted = len(listing.entries) - self._index_budget_lines
         if omitted > 0:
