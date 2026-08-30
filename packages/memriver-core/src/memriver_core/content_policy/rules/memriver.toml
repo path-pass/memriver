@@ -1,0 +1,80 @@
+# memriver's own floor rules, in the gitleaks [[rules]] schema so one engine
+# loads both files. They are layered before the vendored gitleaks set and are
+# deliberately entropy-free: these are deterministic floors that must block
+# every time they match, including the low-entropy placeholder credentials that
+# turn up in notes and examples. What survives here is only what the vendored
+# set genuinely misses -- upstream pins each provider rule to one exact length
+# or infix, and a truncated or misremembered credential is still a credential.
+#
+# Keywords are omitted on purpose too: five regexes over an 8000-char body cost
+# nothing, and a prefilter here would only add a way to silently stop matching.
+
+title = "memriver floor rules"
+
+[policy]
+# Entropy gates exist to suppress false positives on LOOSE patterns.
+# Provider-specific rules have distinctive prefixes; enforce them by shape
+# alone so a low-entropy token cannot slip past a deliberately strict gate.
+# A rule that proves noisy in practice gets its id appended here (data-only fix).
+honor_entropy_only_for = ["generic-api-key"]
+
+# AWS access key ids and the gh[pousr]_ token family used to have floor rules
+# here. With entropy off, the vendored aws-access-token and github-pat /
+# github-oauth / github-app-token / github-refresh-token rules cover the same
+# shapes, so the duplicates are gone.
+
+[[rules]]
+id = "memriver-github-fine-grained-pat"
+# upstream's github-fine-grained-pat demands exactly 82 body chars; a truncated
+# or line-wrapped PAT in a note is still a leak
+description = "GitHub fine-grained personal access token"
+regex = 'github_pat_[A-Za-z0-9_]{20,}'
+
+[[rules]]
+id = "memriver-private-key-header"
+# no vendored rule matches a PEM header on its own, only whole key blocks
+description = "PEM private key block header"
+regex = '-----BEGIN[A-Z ]*PRIVATE KEY-----'
+
+[[rules]]
+id = "memriver-slack-token"
+# upstream's xox[bp] rules demand two numeric segments of 10-13 digits
+description = "Slack bot / app / user / refresh token"
+regex = 'xox[baprs]-[A-Za-z0-9-]{10,}'
+
+[[rules]]
+id = "memriver-openai-api-key"
+# upstream's openai-api-key demands the literal 'T3BlbkFJ' infix, which the
+# sk-proj- keys people paste into notes do not always still carry
+description = "OpenAI API key"
+regex = '\bsk-[A-Za-z0-9_-]{20,}'
+
+# quotes are optional: env files, shell exports and log lines carry none.
+# No word boundary around the keyword: '_' is a word character, so the usual
+# env var names (OPENAI_API_KEY, AWS_SECRET_ACCESS_KEY) have none before the
+# keyword nor after it, and the trailing name parts have to be consumed too.
+# The required '[:=]' is what keeps prose out: 'the token lives in 1Password'
+# and 'see the API key rotation notes' have no ':' or '=' after the key name.
+# The value has three branches because real passwords carry punctuation: a
+# single restricted character class stopped at the first '@' or '!' and counted
+# too few characters, so 'PASSWORD="P@ssw0rd!234567"' passed. Each quote style
+# needs its own branch, since one class shared by both stops at the *opposite*
+# quote inside the value and the unquoted branch then stops at the first space
+# -- 'PASSWORD="it's a very long secret phrase"' slipped through both. Each
+# quoted branch now runs to its own closing quote; the unquoted branch takes any
+# run of non-whitespace, which still keeps a sentence after ':' out.
+# 'credentials?' (not just 'credential') is needed because 's' is not one of
+# the '[ _-]' separator chars: without the '?' quantifier, 'CREDENTIALS:'
+# would leave a stray 's' between the keyword and the required '\s*[:=]' and
+# never match at all.
+# The value minimum is 6, not the vendored rules' usual ~12+: the LABEL
+# already identifies the value as a credential, so a short-but-real secret
+# ('Tr0ub4dor!', 'abc123!xyz', 8-char passphrases) must not slide under a
+# length bar borrowed from unlabeled entropy-gated rules. 6 was picked by
+# probing, not guessed: it still lets a bare empty value ('password=') and a
+# 3-char placeholder ('password=***') pass, so the rule stays prose- and
+# placeholder-friendly at the low end while catching real short secrets.
+[[rules]]
+id = "memriver-credential-assignment"
+description = "credential assigned to a key/secret/token/password/passphrase/credential name"
+regex = '''(?i)(api[ _-]?key|secret|token|password|passwd|passphrase|credentials?)(?:[ _-][A-Za-z0-9]+)*\s*[:=]\s*(?:"[^"]{6,}"|'[^']{6,}'|\S{6,})'''

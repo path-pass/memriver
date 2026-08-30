@@ -22,7 +22,8 @@ import urllib.request
 SOURCE_URL = ("https://raw.githubusercontent.com/gitleaks/gitleaks/"
               "{ref}/config/gitleaks.toml")
 OUTPUT = (pathlib.Path(__file__).resolve().parent.parent / "packages"
-          / "memriver-core" / "src" / "memriver_core" / "rules" / "gitleaks.toml")
+          / "memriver-core" / "src" / "memriver_core" / "content_policy" / "rules"
+          / "gitleaks.toml")
 
 
 def main() -> None:
