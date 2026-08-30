@@ -466,11 +466,13 @@ def test_index_flattens_control_characters_and_unicode_line_separators():
 
 
 def test_index_flattens_body_fallback_before_truncating():
-    body = "a" * 53 + "\x00ESCAPE"
+    # a run of separators wide enough that collapsing them shortens the
+    # string: normalize-then-slice keeps ESCAPE inside the 60-char budget;
+    # slice-then-normalize truncates it away before collapsing ever runs
+    body = "a" * 50 + "\x00" * 20 + "ESCAPE"
     result = build(FakeMemoryRepository([
         memory("body-cue", body=body),
     ])).index(CTX)
 
-    assert result.count("\n") == 0
     assert "ESCAPE" in result
-    assert len(result.split(": ", 1)[1].split(" (", 1)[0]) == 60
+    assert "a" * 50 + " ESCAPE" in result  # exactly one space after collapsing
