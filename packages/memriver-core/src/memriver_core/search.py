@@ -11,9 +11,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .config import MAX_SEARCH_LIMIT
 from .store import MemoryStore
 
-MAX_SEARCH_LIMIT = 50
 _SNIPPET_CHARS = 60
 
 

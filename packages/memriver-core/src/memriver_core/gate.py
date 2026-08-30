@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from importlib.abc import Traversable
 
-MAX_BODY_CHARS = 8000
+from .config import MAX_BODY_CHARS
 
 _log = logging.getLogger(__name__)
 
@@ -103,8 +103,8 @@ class GateError(ValueError):
 def check_content(body: str, max_chars: int = MAX_BODY_CHARS) -> None:
     """Reject content that is empty, oversized, or looks like a credential.
 
-    `max_chars` is a plain parameter so callers can configure the budget without
-    core growing a settings dependency; omitting it keeps the historical 8000.
+    `max_chars` is a plain parameter with its default sourced from
+    memriver_core.config, so callers can override the budget per call.
     """
     if not body.strip():
         raise GateError("content is empty; nothing to store")

@@ -9,9 +9,8 @@ instead of jamming on evergreen entries.
 
 from __future__ import annotations
 
+from .config import MAX_REVIEW_BATCH
 from .store import MemoryStore
-
-MAX_REVIEW_BATCH = 10
 
 
 def review_queue(store: MemoryStore, scopes: list[str],

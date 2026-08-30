@@ -13,17 +13,21 @@ from pathlib import Path
 from pydantic import Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from .gate import MAX_BODY_CHARS
-from .render import DEFAULT_BUDGET_LINES
 from .scope import storage_root
-from .search import MAX_SEARCH_LIMIT
 
 log = logging.getLogger(__name__)
 
 CONFIG_FILENAME = "config.toml"
 ENV_PREFIX = "MEMRIVER_"
 
+# Canonical catalog of default-value constants for the whole package. Every
+# other module imports its default from here rather than defining its own, so
+# there is exactly one place to look for "what does this knob default to".
+MAX_BODY_CHARS = 8000
+MAX_SEARCH_LIMIT = 50
 DEFAULT_SEARCH_LIMIT = 5
+DEFAULT_BUDGET_LINES = 100
+MAX_REVIEW_BATCH = 10
 
 
 class Settings(BaseSettings):

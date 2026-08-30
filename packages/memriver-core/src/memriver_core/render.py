@@ -1,8 +1,7 @@
 from __future__ import annotations
 
+from .config import DEFAULT_BUDGET_LINES
 from .store import MemoryStore
-
-DEFAULT_BUDGET_LINES = 100
 
 
 def render_index(store: MemoryStore, scopes: list[str],

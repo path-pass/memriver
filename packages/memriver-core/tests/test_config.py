@@ -1,10 +1,29 @@
 from pathlib import Path
 
 import pytest
-from memriver_core.config import Settings, load_settings
+from memriver_core.config import (
+    DEFAULT_BUDGET_LINES,
+    DEFAULT_SEARCH_LIMIT,
+    MAX_BODY_CHARS,
+    MAX_REVIEW_BATCH,
+    MAX_SEARCH_LIMIT,
+    Settings,
+    load_settings,
+)
 from pydantic import ValidationError
 
 CONFIG = "config.toml"
+
+
+def test_default_constants_are_the_single_source_of_truth():
+    # catches future drift between the catalog and the Settings field defaults
+    assert MAX_BODY_CHARS == 8000 == Settings.model_fields["max_body_chars"].default
+    assert MAX_SEARCH_LIMIT == 50 == Settings.model_fields["search_limit_max"].default
+    assert (DEFAULT_SEARCH_LIMIT == 5
+            == Settings.model_fields["search_limit_default"].default)
+    assert (DEFAULT_BUDGET_LINES == 100
+            == Settings.model_fields["index_budget_lines"].default)
+    assert MAX_REVIEW_BATCH == 10  # not a Settings field; used as a plain default
 
 
 def _root(tmp_path, text: str | None = None) -> Path:
