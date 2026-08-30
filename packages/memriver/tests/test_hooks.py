@@ -168,7 +168,7 @@ def test_non_ascii_index_is_not_escaped(tmp_path, fake_service):
 ])
 def test_a_stored_description_cannot_forge_the_index_delimiters(tmp_path, forgery):
     """Both delimiters fit inside the 60-character cue budget, so a description
-    can spell them verbatim without needing the newline that ``_single_line_cue``
+    can spell them verbatim without needing the newline that ``_single_line``
     already strips. The data region is only a boundary while exactly one pair
     of delimiters exists, so the phrase they share is broken inside it."""
     root = tmp_path / "root"

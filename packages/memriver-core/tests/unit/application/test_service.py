@@ -465,6 +465,17 @@ def test_index_flattens_control_characters_and_unicode_line_separators():
     ]
 
 
+def test_index_flattens_every_interpolated_field_not_only_the_cue():
+    """Entries are hand-editable files, so the id (the filename) and the
+    `updated` value carry the same risk as the description: either can hold a
+    newline that would split one entry into two index lines."""
+    result = build(FakeMemoryRepository([
+        memory("dan\u2028ger\x00ous", updated="20\n26-01-01T00:00:00Z"),
+    ])).index(CTX)
+
+    assert result.splitlines() == ["- [project] dan ger ous: b (20 26-01-0)"]
+
+
 def test_index_flattens_body_fallback_before_truncating():
     # a run of separators wide enough that collapsing them shortens the
     # string: normalize-then-slice keeps ESCAPE inside the 60-char budget;
