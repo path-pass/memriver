@@ -73,7 +73,26 @@ def _build_parser() -> argparse.ArgumentParser:
     install.add_argument("--dry-run", action="store_true",
                          help="show the plan and write nothing")
     install.set_defaults(handler=_install)
+
+    doctor = commands.add_parser(
+        "doctor", help="check the memory store for problems")
+    doctor.add_argument("--root", type=Path, default=None,
+                        help="storage root to check (default: $MEMRIVER_ROOT or "
+                             "~/agent-memory)")
+    doctor.add_argument("--json", action="store_true",
+                        help="emit a machine-readable JSON report")
+    doctor.add_argument("--stale-days", type=_positive_int, default=90,
+                        help="days since a memory was last updated before it is "
+                             "flagged stale (default: 90)")
+    doctor.set_defaults(handler=_doctor)
     return parser
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError(f"{value!r} must be a positive integer")
+    return parsed
 
 
 def _normalize_legacy_serve(argv: list[str]) -> list[str]:
@@ -130,6 +149,14 @@ def _install(args: argparse.Namespace) -> int:
     return run_install(harnesses, yes=args.yes, dry_run=args.dry_run,
                        home=Path.home(), cwd=Path.cwd(), env=os.environ,
                        input_fn=input, stdout=sys.stdout, replace_file=os.replace)
+
+
+def _doctor(args: argparse.Namespace) -> int:
+    from .doctor import run_doctor
+
+    return run_doctor(root=args.root, json_output=args.json,
+                      stale_days=args.stale_days,
+                      stdout=sys.stdout, stderr=sys.stderr)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

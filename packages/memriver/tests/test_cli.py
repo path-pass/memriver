@@ -33,7 +33,13 @@ def test_top_level_help_lists_the_serve_hook_and_install_commands():
     out = _run_cli("--help")
     assert out.returncode == 0
     assert "serve" in out.stdout and "hook" in out.stdout
-    assert "install" in out.stdout
+    assert "install" in out.stdout and "doctor" in out.stdout
+
+
+def test_doctor_rejects_a_non_positive_stale_days_without_a_traceback(tmp_path):
+    out = _run_cli("doctor", "--root", str(tmp_path), "--stale-days", "0")
+    assert out.returncode == 2
+    assert "Traceback" not in out.stderr
 
 
 def test_serve_help_documents_project_dir_default():
