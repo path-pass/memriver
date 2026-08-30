@@ -46,6 +46,12 @@ BLOCKED = [
     ("CREDENTIALS: correcthorsebattery", "correcthorsebattery"),
     # case-insensitivity for the new keywords, matching the existing rule's (?i)
     ("passphrase: correcthorsebattery", "correcthorsebattery"),
+    # the value branches' ~12-char minimum let explicitly labeled short
+    # credentials through; the label alone already identifies these as
+    # secrets, so the minimum was lowered (probed floor: 6)
+    ("PASSWORD=Tr0ub4dor!", "Tr0ub4dor!"),
+    ("TOKEN=abc123!xyz", "abc123!xyz"),
+    ("passphrase=hunter22", "hunter22"),
 ]
 
 @pytest.mark.parametrize("text,marker", BLOCKED)
@@ -75,6 +81,18 @@ def test_credential_prose_without_assignment_passes():
     # keyword) must not trip the extended alternation -- proves the fix widened
     # the keyword list, not the shape the rule matches
     check_content("rotate the credential monthly")
+
+
+@pytest.mark.parametrize("text", [
+    "the password field is required",  # prose, no assignment shape at all
+    "password=",  # empty value
+    "password=***",  # 3-char placeholder, below the 6-char floor
+    "port=8080",  # non-credential label
+])
+def test_short_value_negative_controls_pass(text):
+    # lowering the value-length floor to catch short real secrets must not
+    # make the rule prose- or placeholder-hostile at the low end
+    check_content(text)
 
 
 def test_max_chars_is_tunable():

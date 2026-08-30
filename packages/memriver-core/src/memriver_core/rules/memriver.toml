@@ -67,7 +67,14 @@ regex = '\bsk-[A-Za-z0-9_-]{20,}'
 # the '[ _-]' separator chars: without the '?' quantifier, 'CREDENTIALS:'
 # would leave a stray 's' between the keyword and the required '\s*[:=]' and
 # never match at all.
+# The value minimum is 6, not the vendored rules' usual ~12+: the LABEL
+# already identifies the value as a credential, so a short-but-real secret
+# ('Tr0ub4dor!', 'abc123!xyz', 8-char passphrases) must not slide under a
+# length bar borrowed from unlabeled entropy-gated rules. 6 was picked by
+# probing, not guessed: it still lets a bare empty value ('password=') and a
+# 3-char placeholder ('password=***') pass, so the rule stays prose- and
+# placeholder-friendly at the low end while catching real short secrets.
 [[rules]]
 id = "memriver-credential-assignment"
 description = "credential assigned to a key/secret/token/password/passphrase/credential name"
-regex = '''(?i)(api[ _-]?key|secret|token|password|passwd|passphrase|credentials?)(?:[ _-][A-Za-z0-9]+)*\s*[:=]\s*(?:"[^"]{12,}"|'[^']{12,}'|\S{12,})'''
+regex = '''(?i)(api[ _-]?key|secret|token|password|passwd|passphrase|credentials?)(?:[ _-][A-Za-z0-9]+)*\s*[:=]\s*(?:"[^"]{6,}"|'[^']{6,}'|\S{6,})'''
