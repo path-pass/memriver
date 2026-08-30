@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -110,6 +111,27 @@ def test_inaccessible_store_is_path_free_exit_two(monkeypatch, tmp_path):
     assert str(tmp_path) not in result.stderr
     assert result.stdout == ""
     assert result.stderr == "memriver doctor: memory store is inaccessible\n"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+def test_inaccessible_root_leaks_no_logging_line_to_real_stderr(tmp_path, capsys):
+    """CLI-boundary regression against a REAL store, not the fake service:
+    memriver_core's own stdlib logging (e.g. an unreadable config.toml) must
+    not slip onto the real process stderr alongside doctor's one promised
+    path-free line -- logging.lastResort writes straight to sys.stderr,
+    bypassing the `stderr` IO parameter entirely."""
+    root = tmp_path / "store"
+    root.mkdir()
+    root.chmod(0o000)
+    try:
+        result = invoke_doctor(root=root)
+    finally:
+        root.chmod(0o700)
+
+    assert result.exit_code == 2
+    assert result.stderr == "memriver doctor: memory store is inaccessible\n"
+    assert str(root) not in result.stderr
+    assert capsys.readouterr().err == ""
 
 
 _EXPECTED_JSON = {

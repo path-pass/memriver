@@ -15,7 +15,9 @@ diverges. Composition of the text itself is shared, because that is ours.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -133,15 +135,38 @@ def _resolve_dir(payload: dict[str, Any], project_dir: Path | None,
     return Path(payload_cwd) if isinstance(payload_cwd, str) else Path(cwd)
 
 
+@contextlib.contextmanager
+def _quiet_core_logging():
+    """Suppress memriver_core's own stdlib logging for one call.
+
+    memriver_core logs diagnostic warnings (an unreadable config.toml, a
+    skipped entry) through stdlib logging, which -- unconfigured, as it is
+    here -- writes straight to the real process stderr via
+    `logging.lastResort`, bypassing this hook's own `HookResult.stderr`
+    entirely. STORE_UNAVAILABLE promises exactly one path-free stderr line;
+    scoping the suppression to this call (and to the memriver_core logger
+    only) keeps that promise without silencing logging globally or touching
+    `serve`'s own diagnostics.
+    """
+    core_logger = logging.getLogger("memriver_core")
+    previous_level = core_logger.level
+    core_logger.setLevel(logging.CRITICAL + 1)
+    try:
+        yield
+    finally:
+        core_logger.setLevel(previous_level)
+
+
 def _read_index(root: Path | None, project_dir: Path) -> str:
     # imported here, not at module scope: Stop fires at the end of every turn
     # and must not pay for loading the settings/service stack it never uses
     from memriver_core.bootstrap import build_service
     from memriver_core.config import load_settings
 
-    settings = load_settings(root_override=root)
-    return build_service(settings, root=settings.root).index(
-        build_context(project_dir))
+    with _quiet_core_logging():
+        settings = load_settings(root_override=root)
+        return build_service(settings, root=settings.root).index(
+            build_context(project_dir))
 
 
 def _compose(index: str, source: object) -> str:

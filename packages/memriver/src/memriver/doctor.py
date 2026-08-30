@@ -9,6 +9,8 @@ spec S10).
 
 from __future__ import annotations
 
+import contextlib
+import logging
 from typing import IO, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -63,6 +65,28 @@ def _render_human(report: DiagnosticsReport, stdout: IO[str]) -> None:
             stdout.write(f"    suggestion: {finding.suggestion}\n")
 
 
+@contextlib.contextmanager
+def _quiet_core_logging():
+    """Suppress memriver_core's own stdlib logging for one call.
+
+    memriver_core logs diagnostic warnings (an unreadable config.toml, a
+    skipped entry) through stdlib logging, which -- unconfigured, as it is
+    here -- writes straight to the real process stderr via
+    `logging.lastResort`, bypassing this function's own `stderr` parameter
+    entirely. Doctor promises exactly one path-free stderr line on failure;
+    scoping the suppression to this call (and to the memriver_core logger
+    only) keeps that promise without silencing logging globally or touching
+    `serve`'s own diagnostics.
+    """
+    core_logger = logging.getLogger("memriver_core")
+    previous_level = core_logger.level
+    core_logger.setLevel(logging.CRITICAL + 1)
+    try:
+        yield
+    finally:
+        core_logger.setLevel(previous_level)
+
+
 def run_doctor(*, root: Path | None, json_output: bool, stale_days: int,
               stdout: IO[str], stderr: IO[str]) -> int:
     # imported here, not at module scope, to match the rest of the umbrella's
@@ -72,9 +96,10 @@ def run_doctor(*, root: Path | None, json_output: bool, stale_days: int,
     from memriver_core.config import load_settings
 
     try:
-        settings = load_settings(root_override=root)
-        report = build_diagnostics_service(
-            settings, root=settings.root).run(stale_days=stale_days)
+        with _quiet_core_logging():
+            settings = load_settings(root_override=root)
+            report = build_diagnostics_service(
+                settings, root=settings.root).run(stale_days=stale_days)
     except StorageFailure:
         stderr.write(_INACCESSIBLE_MESSAGE + "\n")
         return 2

@@ -285,7 +285,7 @@ def test_partial_corruption_shows_the_healthy_entries(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root can read an unreadable store")
-def test_an_unreadable_root_never_fails_the_session(tmp_path):
+def test_an_unreadable_root_never_fails_the_session(tmp_path, capsys):
     root = tmp_path / "root"
     root.mkdir()
     root.chmod(0o000)
@@ -294,6 +294,11 @@ def test_an_unreadable_root_never_fails_the_session(tmp_path):
     finally:
         root.chmod(0o700)
     assert result == HookResult(stderr="memriver hook: memory store is unavailable\n")
+    # CLI-boundary regression: memriver_core's own stdlib logging (e.g. an
+    # unreadable config.toml) must not slip onto the real process stderr
+    # alongside this one promised line -- logging.lastResort writes straight
+    # to sys.stderr, bypassing HookResult.stderr entirely.
+    assert capsys.readouterr().err == ""
 
 
 # --- stop ----------------------------------------------------------------
