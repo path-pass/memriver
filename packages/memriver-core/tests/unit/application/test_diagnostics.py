@@ -119,6 +119,28 @@ def test_invalid_updated_produces_finding_and_does_not_abort():
     assert result.state == "degraded"
 
 
+def test_naive_updated_is_invalid_not_a_crash():
+    naive = inspected("naive-one", updated="2026-01-01T00:00:00")
+    report = StoreReport(True, (naive,), ())
+    result = DiagnosticsService(FakeInspector(report)).run(now=FIXED_NOW)
+    invalid = [f for f in result.findings if f.kind == "invalid-updated"]
+    assert len(invalid) == 1
+    assert result.state == "degraded"
+
+
+def test_backend_findings_precede_policy_findings():
+    old = inspected("old-one", updated="2025-01-01T00:00:00Z")
+    report = StoreReport(True, (old,), (store_finding("unparsable"),))
+    result = DiagnosticsService(FakeInspector(report)).run(now=FIXED_NOW, stale_days=90)
+    assert result.findings[0].kind == "unparsable"
+    assert result.findings[1].kind == "stale"
+
+
+def test_now_none_uses_current_time_and_does_not_raise():
+    result = DiagnosticsService(FakeInspector(StoreReport(True, (inspected("a"),), ()))).run()
+    assert result.state == "healthy"
+
+
 def test_near_duplicate_bodies_are_flagged():
     a = inspected("dup-a", body="The Quick Brown Fox Jumps Over The Lazy Dog")
     b = inspected("dup-b", body="the   quick brown FOX jumps over the lazy dog")
@@ -146,6 +168,28 @@ def test_duplicate_pair_order_is_deterministic_by_scope_then_id():
     dupes = [f for f in result.findings if f.kind == "near-duplicate"]
     assert len(dupes) == 1
     assert dupes[0].memory_ids == ("aaa", "zzz")
+
+
+def test_duplicate_pair_order_uses_scope_before_id():
+    # id order and scope order disagree on purpose: "zzz" < "aaa" is false,
+    # but "global" < "project:proj-one" is true, so only the scope key can
+    # produce (zzz, aaa) here.
+    g = inspected("zzz", scope=GLOBAL, body="alpha beta gamma delta epsilon")
+    p = inspected("aaa", scope=Scope.project(PID), body="alpha beta gamma delta epsilon")
+    report = StoreReport(True, (p, g), ())
+    result = DiagnosticsService(FakeInspector(report)).run(now=FIXED_NOW, jaccard_threshold=0.6)
+    dupes = [f for f in result.findings if f.kind == "near-duplicate"]
+    assert len(dupes) == 1
+    assert dupes[0].memory_ids == ("zzz", "aaa")
+    assert dupes[0].scopes == (GLOBAL, Scope.project(PID))
+
+
+def test_mixed_empty_and_nonempty_trigram_pair_yields_no_finding():
+    a = inspected("short", body="ab")
+    b = inspected("long", body="alpha beta gamma delta epsilon")
+    report = StoreReport(True, (a, b), ())
+    result = DiagnosticsService(FakeInspector(report)).run(now=FIXED_NOW)
+    assert not [f for f in result.findings if f.kind == "near-duplicate"]
 
 
 def test_global_plus_project_same_id_is_shadowing():
