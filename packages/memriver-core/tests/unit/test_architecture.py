@@ -203,11 +203,13 @@ def test_only_bootstrap_names_a_concrete_adapter(adapter):
     for module in SOURCES:
         if module == "memriver_core.bootstrap":
             continue
-        # the adapter's own module and its package __init__ export it; naming it
-        # anywhere else in production sources would be a second assembly point
-        if module in ("memriver_core.repository.filesystem",
-                      "memriver_core.repository.filesystem.repository",
-                      "memriver_core.content_policy.secret_scanner"):
+        # the adapter's own package exports it and its modules import each
+        # other freely (the codec, the layout helpers, the inspector); naming
+        # it anywhere else in production sources would be a second assembly
+        # point. The exemption is the package, not a list of sibling modules,
+        # so adding a module inside the adapter never weakens this rule by
+        # tempting someone to widen the list.
+        if _under(module, concrete_module):
             continue
         assert adapter not in _imported_names(module), \
             f"{module} imports {adapter}; only bootstrap.py may assemble adapters"
