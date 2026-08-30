@@ -10,6 +10,7 @@ edit, and anything the editor cannot classify with certainty raises
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,8 @@ from memriver.install import (
     Target,
     apply_edit,
     hook_array_identity_merge,
+    hook_group,
+    hook_identity,
     json_object_merge,
     marker_block,
     render_change_summary,
@@ -79,6 +82,16 @@ def operation(kind: str, expected: object, **fields) -> EditOperation:
         expected=expected,
         **fields,
     )
+
+
+def test_the_installed_hook_command_starts_with_the_identity_that_finds_it():
+    """The command written into a harness config and the identity that finds
+    that entry again on reinstall are one source: spelled apart, a rename to
+    either drifts into a second appended hook group."""
+    identity = hook_identity("session-start")
+    assert identity == ("uvx", "memriver", "hook", "session-start")
+    command = hook_group("session-start", "claude-code")["hooks"][0]["command"]
+    assert tuple(shlex.split(command))[: len(identity)] == identity
 
 
 # --- Step 1: the four editor contracts -------------------------------------
@@ -369,6 +382,22 @@ def test_change_summary_shows_the_new_hook_commands_and_takeover_line():
         "existing memriver entry differs and will be replaced (old value not shown)"
     )
     assert "old-secret-value" not in summary
+
+
+def test_change_summary_names_the_harness_for_a_key_memriver_does_not_own():
+    """``env.CLAUDE_CODE_DISABLE_AUTO_MEMORY`` and ``features.memories`` are the
+    harness's own settings that memriver turns off, so the takeover line must
+    not call the old value a memriver entry."""
+    op = operation("json-object", "1", optional=True, harness_owned=True,
+                   key_path=("env", "CLAUDE_CODE_DISABLE_AUTO_MEMORY"))
+    result = json_object_merge('{"env":{"CLAUDE_CODE_DISABLE_AUTO_MEMORY":"0"}}',
+                               op.key_path, op.expected)
+    summary = render_change_summary(op, result)
+    assert result.takeover
+    assert summary.rstrip("\n").endswith(
+        "existing harness setting differs and will be replaced (old value not shown)"
+    )
+    assert "existing memriver entry" not in summary
 
 
 def test_change_summary_of_a_fresh_change_has_no_takeover_line():

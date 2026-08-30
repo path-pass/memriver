@@ -42,6 +42,11 @@ MARKER_END = "<!-- memriver:end -->"
 TAKEOVER_NOTICE = (
     "existing memriver entry differs and will be replaced (old value not shown)"
 )
+# The native-memory toggles are the harness's own settings that memriver turns
+# off, not memriver entries; the notice says which of the two it is replacing.
+HARNESS_SETTING_TAKEOVER_NOTICE = (
+    "existing harness setting differs and will be replaced (old value not shown)"
+)
 
 
 class PlanningError(Exception):
@@ -53,12 +58,22 @@ def mcp_server_payload() -> dict:
     return {"command": "uvx", "args": ["memriver"]}
 
 
+def hook_identity(verb: str) -> tuple[str, ...]:
+    """The leading command words that find memriver's own hook entry again.
+
+    The installed command and the identity a reinstall matches it by are the
+    same words; spelled apart, a rename to either would stop finding the entry
+    and append a second one on every run.
+    """
+    return ("uvx", "memriver", "hook", verb)
+
+
 def hook_group(verb: str, harness: str) -> dict:
     """A single-handler hook group invoking ``memriver hook <verb> --harness <harness>``."""
     return {
         "hooks": [{
             "type": "command",
-            "command": f"uvx memriver hook {verb} --harness {harness}",
+            "command": f"{' '.join(hook_identity(verb))} --harness {harness}",
         }],
     }
 
@@ -87,6 +102,10 @@ class EditOperation:
     key_path: tuple[str, ...] = ()
     identity: tuple[str, ...] = ()
     optional: bool = False
+    # the key belongs to the harness, not to memriver: only the takeover
+    # wording differs, and it is kept apart from `optional` because "the user
+    # may decline this" and "memriver does not own this key" are two facts
+    harness_owned: bool = False
 
 
 @dataclass(frozen=True)
@@ -429,7 +448,8 @@ def render_change_summary(operation: EditOperation, result: EditResult) -> str:
     )
     lines = [operation.label, region, _fragment(operation)]
     if result.takeover:
-        lines.append(TAKEOVER_NOTICE)
+        lines.append(HARNESS_SETTING_TAKEOVER_NOTICE if operation.harness_owned
+                     else TAKEOVER_NOTICE)
     return "\n".join(lines) + "\n"
 
 

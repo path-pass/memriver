@@ -29,7 +29,13 @@ from pathlib import Path
 
 import pytest
 import tomlkit
-from memriver.install import TAKEOVER_NOTICE, claude_code, cursor, run_install
+from memriver.install import (
+    HARNESS_SETTING_TAKEOVER_NOTICE,
+    TAKEOVER_NOTICE,
+    claude_code,
+    cursor,
+    run_install,
+)
 
 CODEX_TRUST_TEXT = (
     "Run /hooks in Codex, review the memriver hook definitions, and trust them.\n"
@@ -313,6 +319,21 @@ def test_a_takeover_is_labelled_and_confirmed_without_showing_the_old_value(home
     assert TAKEOVER_NOTICE in result.stdout
     assert SECRET not in result.stdout
     assert json.loads((home / ".claude.json").read_text())["apiKey"] == SECRET
+
+
+def test_the_native_memory_takeover_does_not_call_it_a_memriver_entry(home, project):
+    """spec 5.3 wants this one prompt clearly labelled, and
+    ``env.CLAUDE_CODE_DISABLE_AUTO_MEMORY`` is Claude Code's setting, not a
+    memriver entry -- the only takeover in this run must say so."""
+    write(home / ".claude" / "settings.json",
+          json.dumps({"env": {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "0"}}))
+
+    result = install(["claude-code"], home=home, cwd=project, yes=False,
+                     replies=["y", "y", "y", "y"])
+
+    assert result.exit_code == 0
+    assert HARNESS_SETTING_TAKEOVER_NOTICE in result.stdout
+    assert TAKEOVER_NOTICE not in result.stdout
 
 
 def test_declining_the_native_memory_change_keeps_the_accepted_ones(home, project):

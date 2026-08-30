@@ -18,6 +18,7 @@ from memriver.install.editors import (
     Snapshot,
     Target,
     hook_group,
+    hook_identity,
     mcp_server_payload,
 )
 
@@ -66,7 +67,7 @@ def operations(
             kind="hook-array",
             expected=hook_group("session-start", HARNESS),
             key_path=("hooks", "SessionStart"),
-            identity=("uvx", "memriver", "hook", "session-start"),
+            identity=hook_identity("session-start"),
         ),
         EditOperation(
             id="codex:hooks-stop",
@@ -75,7 +76,7 @@ def operations(
             kind="hook-array",
             expected=hook_group("stop", HARNESS),
             key_path=("hooks", "Stop"),
-            identity=("uvx", "memriver", "hook", "stop"),
+            identity=hook_identity("stop"),
         ),
     ]
     if _memories_enabled(config.text):
@@ -87,6 +88,7 @@ def operations(
             expected=False,
             key_path=("features", "memories"),
             optional=True,
+            harness_owned=True,
         ))
     return tuple(ops)
 

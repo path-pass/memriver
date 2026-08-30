@@ -38,6 +38,7 @@ from typing import TextIO
 
 from . import claude_code, codex, cursor, kiro
 from .editors import (
+    HARNESS_SETTING_TAKEOVER_NOTICE,
     MARKER_BEGIN,
     MARKER_END,
     TAKEOVER_NOTICE,
@@ -50,6 +51,7 @@ from .editors import (
     apply_edit,
     hook_array_identity_merge,
     hook_group,
+    hook_identity,
     json_object_merge,
     marker_block,
     mcp_server_payload,
@@ -60,6 +62,7 @@ from .editors import (
 
 __all__ = [
     "HARNESSES",
+    "HARNESS_SETTING_TAKEOVER_NOTICE",
     "MARKER_BEGIN",
     "MARKER_END",
     "TAKEOVER_NOTICE",
@@ -72,6 +75,7 @@ __all__ = [
     "apply_edit",
     "hook_array_identity_merge",
     "hook_group",
+    "hook_identity",
     "json_object_merge",
     "marker_block",
     "mcp_server_payload",

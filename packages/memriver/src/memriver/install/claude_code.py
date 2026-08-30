@@ -18,6 +18,7 @@ from memriver.install.editors import (
     Snapshot,
     Target,
     hook_group,
+    hook_identity,
     mcp_server_payload,
 )
 
@@ -64,7 +65,7 @@ def operations(
             kind="hook-array",
             expected=hook_group("session-start", HARNESS),
             key_path=("hooks", "SessionStart"),
-            identity=("uvx", "memriver", "hook", "session-start"),
+            identity=hook_identity("session-start"),
         ),
         EditOperation(
             id="claude-code:hooks-stop",
@@ -73,7 +74,7 @@ def operations(
             kind="hook-array",
             expected=hook_group("stop", HARNESS),
             key_path=("hooks", "Stop"),
-            identity=("uvx", "memriver", "hook", "stop"),
+            identity=hook_identity("stop"),
         ),
     ]
     if _offer_disabling_auto_memory(settings.text, env):
@@ -85,6 +86,7 @@ def operations(
             expected="1",
             key_path=("env", "CLAUDE_CODE_DISABLE_AUTO_MEMORY"),
             optional=True,
+            harness_owned=True,
         ))
     return tuple(ops)
 
