@@ -144,7 +144,7 @@ Stop, both harnesses, exit 0 and empty stderr throughout:
 
 | Payload | claude-code stdout | codex stdout |
 | --- | --- | --- |
-| `stop_hook_active: false` | `{"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": "[memriver] Before finishing: …"}}` | `{"decision": "block", "reason": "[memriver] Before finishing: …"}` |
+| `stop_hook_active: false` | `{"decision": "block", "reason": "[memriver] Before finishing: …"}` | `{"decision": "block", "reason": "[memriver] Before finishing: …"}` |
 | `stop_hook_active: true` | empty | empty |
 
 Doctor over the populated store: `memriver doctor --json` → `{"state": "healthy",
@@ -228,7 +228,7 @@ recorded in §2.
 
 | # | Criterion (abbreviated) | Evidence |
 | --- | --- | --- |
-| 1 | SessionStart/compact use independently tested per-harness schemas; Stop yields at most one continuation | `packages/memriver/tests/test_hooks.py::test_session_start_envelopes_are_independently_pinned`, `::test_first_stop_uses_different_harness_schemas`, `::test_stop_only_continues_for_literal_false`, `::test_compact_source_uses_the_compact_prefix_and_rescue_suffix`; §5 CLI smoke. Harness-side acceptance: §6/§7 — **PENDING** |
+| 1 | SessionStart/compact use independently tested per-harness schemas; Stop yields at most one continuation | `packages/memriver/tests/test_hooks.py::test_session_start_envelopes_are_independently_pinned`, `::test_each_harness_stop_envelope_is_independently_pinned`, `::test_stop_only_continues_for_literal_false`, `::test_compact_source_uses_the_compact_prefix_and_rescue_suffix`; §5 CLI smoke. Harness-side acceptance: §6/§7 — **PENDING** |
 | 2 | Hook failure: no continuation, ≤1 safe path-free stderr line, exit 0 | `packages/memriver/tests/test_hooks.py::test_an_unusable_store_is_one_path_free_stderr_line`, `::test_unusable_session_input_is_a_silent_invalid_input_line`, `::test_an_unreadable_root_never_fails_the_session`, `::test_an_unknown_harness_never_raises_out_of_run_hook` |
 | 3 | A multiline/control-character cue cannot escape its index data line | `packages/memriver-core/tests/unit/application/test_service.py::test_index_flattens_control_characters_and_unicode_line_separators`, `::test_index_flattens_body_fallback_before_truncating` |
 | 4 | Session hooks never run administrative inspection or expose another project | `packages/memriver/tests/test_hooks.py::test_stop_never_touches_the_store`, `::test_partial_corruption_shows_the_healthy_entries`, `::test_a_directory_outside_any_git_repo_is_global_only`, `::test_project_dir_option_beats_payload_cwd_and_fallback`; `packages/memriver/tests/test_architecture.py::test_umbrella_never_names_the_concrete_inspector_or_diagnostics_service` |

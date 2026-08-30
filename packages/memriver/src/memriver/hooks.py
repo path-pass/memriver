@@ -7,10 +7,10 @@ stdout, degrades the session it was meant to help. Every path here returns
 exit code 0, and a broken store costs the user one stderr line, never a
 message the agent can read as instructions.
 
-*Per-harness envelopes stay separate.* ``encode_claude_session_start`` and
-``encode_codex_session_start`` currently build the same object, and are still
-two functions: the schemas are owned by two vendors, and Stop already
-diverges. Composition of the text itself is shared, because that is ours.
+*Per-harness envelopes stay separate.* Every event keeps one encoder per
+harness even where both currently build the same object: the schemas are owned
+by two vendors and have diverged before. Composition of the text itself is
+shared, because that is ours.
 """
 
 from __future__ import annotations
@@ -62,8 +62,13 @@ def encode_codex_session_start(text: str) -> dict[str, Any]:
 
 
 def encode_claude_stop(text: str) -> dict[str, Any]:
-    return {"hookSpecificOutput": {"hookEventName": "Stop",
-                                   "additionalContext": text}}
+    # the documented decision-control form for Stop: `block` keeps the session
+    # going and `reason` is what the agent reads (the exit-code-2 semantics in
+    # JSON). `hookSpecificOutput.additionalContext` is documented for
+    # SessionStart but not for Stop, and a Stop hook that emits it is ignored
+    # -- the nudge never reaches the agent. Verified 2026-08-31 against
+    # code.claude.com/docs/en/hooks.
+    return {"decision": "block", "reason": text}
 
 
 def encode_codex_stop(text: str) -> dict[str, Any]:

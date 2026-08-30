@@ -109,17 +109,14 @@ def test_session_start_envelopes_are_independently_pinned():
     assert encode_codex_session_start("context") == expected
 
 
-def test_first_stop_uses_different_harness_schemas():
-    assert encode_claude_stop(STOP_NUDGE) == {
-        "hookSpecificOutput": {
-            "hookEventName": "Stop",
-            "additionalContext": STOP_NUDGE,
-        }
-    }
-    assert encode_codex_stop(STOP_NUDGE) == {
-        "decision": "block",
-        "reason": STOP_NUDGE,
-    }
+def test_each_harness_stop_envelope_is_independently_pinned():
+    """Both harnesses take the documented decision-control form: a Stop hook
+    that wants the agent to keep going says so with ``block`` plus the reason
+    the agent then reads. The two encoders stay separate anyway -- the schemas
+    are vendor-owned and have diverged before."""
+    blocked = {"decision": "block", "reason": STOP_NUDGE}
+    assert encode_claude_stop(STOP_NUDGE) == blocked
+    assert encode_codex_stop(STOP_NUDGE) == blocked
 
 
 # --- session-start composition -------------------------------------------
