@@ -86,6 +86,12 @@ def test_memory_owns_typed_scope():
 
 
 def test_sanitize_name_behavior_preserved():
+    assert sanitize_name("mise-runtime-management") == "mise-runtime-management"
     assert sanitize_name("Mise Runtime_Mgmt!") == "mise-runtime-mgmt"
-    assert sanitize_name("记忆") is None
+    assert sanitize_name("--weird--") == "weird"
     assert len(sanitize_name("a" * 200)) == 64
+
+
+@pytest.mark.parametrize("name", ["", "!!!", "记忆", "記憶"])
+def test_sanitize_name_unsalvageable(name):
+    assert sanitize_name(name) is None

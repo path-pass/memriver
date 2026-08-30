@@ -4,11 +4,9 @@ Split out of the former tests/test_config.py; the load_settings precedence
 cases live next door in test_loader.py.
 """
 
-import inspect
 from pathlib import Path
 
 import pytest
-from memriver_core import gate, render, search
 from memriver_core.config import (
     DEFAULT_BUDGET_LINES,
     DEFAULT_MAX_BODY_CHARS,
@@ -21,8 +19,12 @@ from pydantic import ValidationError
 
 
 def test_defaults_wired_to_single_source():
-    # catches drift between the config catalog and (a) the Settings field
-    # defaults it backs and (b) the function signature defaults sourced from it
+    # catches drift between the config catalog and the Settings field defaults
+    # it backs. The consumer half of the old assertion -- that these values
+    # actually reach the behaviour -- is now injection rather than signature
+    # defaults, and is asserted in tests/unit/test_bootstrap.py; the one
+    # remaining signature literal (review_queue's batch cap) is asserted in
+    # tests/unit/application/test_service.py.
     assert (DEFAULT_MAX_BODY_CHARS == 8000
             == Settings.model_fields["max_body_chars"].default)
     assert (DEFAULT_SEARCH_LIMIT_MAX == 50
@@ -31,15 +33,6 @@ def test_defaults_wired_to_single_source():
             == Settings.model_fields["search_limit_default"].default)
     assert (DEFAULT_BUDGET_LINES == 100
             == Settings.model_fields["index_budget_lines"].default)
-
-    assert (inspect.signature(gate.check_content).parameters["max_chars"].default
-            == DEFAULT_MAX_BODY_CHARS)
-    assert (inspect.signature(search.search_entries).parameters["max_limit"].default
-            == DEFAULT_SEARCH_LIMIT_MAX)
-    assert (inspect.signature(render.render_index).parameters["budget_lines"].default
-            == DEFAULT_BUDGET_LINES)
-    assert (inspect.signature(search.review_queue).parameters["max_limit"].default
-            == 10)  # fixed internal guard: a signature literal, not config-backed
 
 
 def test_settings_are_constructible_directly():

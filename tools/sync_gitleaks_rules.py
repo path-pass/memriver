@@ -6,12 +6,13 @@ network. Run it by hand when the upstream ruleset should be refreshed:
 
     uv run python tools/sync_gitleaks_rules.py [--ref master]
 
-It overwrites packages/memriver-core/src/memriver_core/rules/gitleaks.toml with
-the upstream file, verbatim and uncommented, so the copy can be diffed against
-upstream. The file is committed; the runtime stays offline and loads it with
-tomllib at import. Compiling the patterns is gate.py's job -- rules that Python's
-`re` rejects are skipped there, per interpreter -- so this script only reports
-the counts as a sanity check on the download.
+It overwrites
+packages/memriver-core/src/memriver_core/content_policy/rules/gitleaks.toml
+with the upstream file, verbatim and uncommented, so the copy can be diffed
+against upstream. The file is committed; the runtime stays offline and loads it
+with tomllib at import. Compiling the patterns is the secret scanner's job --
+rules that Python's `re` rejects are skipped there, per interpreter -- so this
+script only reports the counts as a sanity check on the download.
 """
 from __future__ import annotations
 
@@ -38,21 +39,22 @@ def main() -> None:
     with urllib.request.urlopen(url, timeout=30) as resp:  # noqa: S310 - fixed https URL
         data = resp.read()
 
-    # Parse BEFORE overwriting, never after: gate.py's import-time tomllib.loads
-    # is deliberately unguarded, so a truncated or non-TOML 200 written to disk
-    # would break `import memriver_core.gate` outright -- and with it every
-    # write. A failed sync must leave the previous good ruleset in place.
+    # Parse BEFORE overwriting, never after: the secret scanner's import-time
+    # tomllib.loads is deliberately unguarded, so a truncated or non-TOML 200
+    # written to disk would break `import memriver_core.content_policy
+    # .secret_scanner` outright -- and with it every write. A failed sync must
+    # leave the previous good ruleset in place.
     raw = tomllib.loads(data.decode("utf-8"))["rules"]
     OUTPUT.write_bytes(data)
 
     # imported after the write so the counts describe what was just vendored
-    from memriver_core.gate import _RULES  # noqa: PLC0415
+    from memriver_core.content_policy.secret_scanner import _RULES  # noqa: PLC0415
 
     loaded = {rule_id for rule_id, *_ in _RULES}
     print(f"wrote {OUTPUT}: {len(raw)} upstream rules, "
           f"{sum(r['id'] in loaded for r in raw)} usable on Python "
           f"{sys.version_info.major}.{sys.version_info.minor}")
-    print("remember to update the Fetched date in rules/NOTICE.md")
+    print(f"remember to update the Fetched date in {OUTPUT.with_name('NOTICE.md')}")
 
 
 if __name__ == "__main__":
