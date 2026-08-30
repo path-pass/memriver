@@ -85,6 +85,9 @@ FORBIDDEN = [
     ("memriver_core.models", "memriver_core.repository"),
     ("memriver_core.models", "memriver_core.content_policy"),
     ("memriver_core.models", "memriver_core.config"),
+    ("memriver_core.models", "pydantic"),
+    ("memriver_core.models", "frontmatter"),
+    ("memriver_core.models", "fcntl"),
     # the application talks to protocols, never to adapters, config, or I/O
     ("memriver_core.application", "memriver_core.repository.filesystem"),
     ("memriver_core.application", "memriver_core.content_policy.secret_scanner"),
