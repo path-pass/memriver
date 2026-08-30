@@ -48,6 +48,21 @@ class PlanningError(Exception):
     """A file cannot be edited safely; the whole plan aborts, nothing is written."""
 
 
+def mcp_server_payload() -> dict:
+    """The memriver MCP server registration, identical across every harness."""
+    return {"command": "uvx", "args": ["memriver"]}
+
+
+def hook_group(verb: str, harness: str) -> dict:
+    """A single-handler hook group invoking ``memriver hook <verb> --harness <harness>``."""
+    return {
+        "hooks": [{
+            "type": "command",
+            "command": f"uvx memriver hook {verb} --harness {harness}",
+        }],
+    }
+
+
 @dataclass(frozen=True)
 class Target:
     path: Path

@@ -12,11 +12,16 @@ import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 
-from memriver.install.editors import EditOperation, PlanningError, Snapshot, Target
+from memriver.install.editors import (
+    EditOperation,
+    PlanningError,
+    Snapshot,
+    Target,
+    hook_group,
+    mcp_server_payload,
+)
 
 HARNESS = "codex"
-
-_MCP_PAYLOAD = {"command": "uvx", "args": ["memriver"]}
 
 
 def targets(home: Path, project_root: Path | None) -> tuple[Target, Target]:
@@ -51,7 +56,7 @@ def operations(
             target=config.target,
             label="register memriver MCP server",
             kind="toml-table",
-            expected=_MCP_PAYLOAD,
+            expected=mcp_server_payload(),
             key_path=("mcp_servers", "memriver"),
         ),
         EditOperation(
@@ -59,7 +64,7 @@ def operations(
             target=hooks.target,
             label="install the session-start hook",
             kind="hook-array",
-            expected=_hook_expected("session-start"),
+            expected=hook_group("session-start", HARNESS),
             key_path=("hooks", "SessionStart"),
             identity=("uvx", "memriver", "hook", "session-start"),
         ),
@@ -68,7 +73,7 @@ def operations(
             target=hooks.target,
             label="install the stop hook",
             kind="hook-array",
-            expected=_hook_expected("stop"),
+            expected=hook_group("stop", HARNESS),
             key_path=("hooks", "Stop"),
             identity=("uvx", "memriver", "hook", "stop"),
         ),
@@ -84,15 +89,6 @@ def operations(
             optional=True,
         ))
     return tuple(ops)
-
-
-def _hook_expected(verb: str) -> dict:
-    return {
-        "hooks": [{
-            "type": "command",
-            "command": f"uvx memriver hook {verb} --harness {HARNESS}",
-        }],
-    }
 
 
 def _memories_enabled(config_text: str | None) -> bool:

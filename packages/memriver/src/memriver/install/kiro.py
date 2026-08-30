@@ -14,10 +14,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from pathlib import Path
 
-from memriver.install.editors import EditOperation, PlanningError, Snapshot, Target
+from memriver.install.editors import (
+    EditOperation,
+    PlanningError,
+    Snapshot,
+    Target,
+    mcp_server_payload,
+)
 from memriver.protocol_text import PROTOCOL_BLOCK
-
-_MCP_PAYLOAD = {"command": "uvx", "args": ["memriver"]}
 
 
 def targets(home: Path, project_root: Path | None) -> tuple[Target, Target]:
@@ -56,7 +60,7 @@ def operations(
             target=mcp.target,
             label="register memriver MCP server",
             kind="json-object",
-            expected=_MCP_PAYLOAD,
+            expected=mcp_server_payload(),
             key_path=("mcpServers", "memriver"),
         ),
         EditOperation(
