@@ -14,6 +14,11 @@ class MemoryRepository(Protocol):
     - ``create``, ``update_body``, and ``delete`` are atomic. Locking,
       transactions, compare-and-swap, and retries are implementation details
       and are not exposed.
+    - ``create(memory, ctx)`` writes only where ``ctx`` can see: a
+      project-scoped memory whose scope is not in ``ctx.visible_scopes()``
+      raises ``InvalidScope`` and stores nothing, so the scope that routes the
+      write and the scopes that are searched for a collision cannot disagree.
+      Global-scoped memories are writable from every context.
     - ``create(memory, ctx)`` owns the atomic name reservation. A project
       write checks the caller's visible scopes; a global write checks the
       whole store; readable same-scope collisions raise

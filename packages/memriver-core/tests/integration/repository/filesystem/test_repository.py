@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 from memriver_core.application.errors import (
+    InvalidScope,
     MemoryNotFound,
     NameTaken,
     StorageFailure,
@@ -75,9 +76,18 @@ def test_project_scope_gets_its_own_directory(repo, root):
 
 
 def test_invalid_project_slug_rejected(repo, root):
-    # slugs reach the adapter as untrusted input; path traversal must be rejected
+    # slugs reach the adapter as untrusted input; path traversal must be
+    # rejected. The context carries the same evil slug here, so the scope
+    # binding check lets it through and the path builder is the one that
+    # has to refuse it.
+    evil = Scope.project(ProjectId("../evil"))
     with pytest.raises(ValueError):
-        repo.create(_m(scope=Scope.project(ProjectId("../evil"))), CTX)
+        repo.create(_m(scope=evil), AccessContext(project_id=ProjectId("../evil")))
+    assert list(root.glob("**/*.md")) == []
+    # from an ordinary context the scope is not writable at all, so the
+    # traversal never even reaches path construction
+    with pytest.raises(InvalidScope):
+        repo.create(_m(scope=evil), CTX)
     assert list(root.glob("**/*.md")) == []
 
 

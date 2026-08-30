@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from memriver_core.application.errors import (
+    InvalidScope,
     MemoryNotFound,
     NameTaken,
     StorageFailure,
@@ -65,6 +66,18 @@ class FileMemoryRepository:
     # --- port ---
 
     def create(self, memory: Memory, ctx: AccessContext) -> None:
+        # the collision check below searches the caller's scopes, but _write
+        # routes by memory.scope: let the two disagree and a foreign project's
+        # entry is replaced without ever being looked at. Bind them here, so
+        # the guarantee is the adapter's own and does not depend on every
+        # caller having checked first. Global stays writable from anywhere --
+        # it is in every context's visible scopes.
+        if (memory.scope.project_id is not None
+                and memory.scope not in ctx.visible_scopes()):
+            # names the scope, never the memory: the refusal must not echo
+            # content across the boundary it is enforcing
+            raise InvalidScope(f"scope {memory.scope.to_storage()!r} is not "
+                               "writable from this context")
         with store_lock(self.root):
             # check-then-write must hold the lock, or two writers race to
             # the same name and the loser silently overwrites the winner.

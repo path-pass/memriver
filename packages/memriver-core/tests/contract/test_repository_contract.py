@@ -8,6 +8,7 @@ collision outcome can be exercised.
 
 import pytest
 from memriver_core.application.errors import (
+    InvalidScope,
     MemoryNotFound,
     NameTaken,
     UnreadableMemory,
@@ -132,6 +133,32 @@ def test_a_project_may_reuse_a_name_another_project_owns(repo):
     repo.create(_m(body="b", scope=Scope.project(MINE), id="shared-name"), CTX)
     assert repo.get("shared-name", CTX).body == "b"
     assert repo.get("shared-name", OTHER_CTX).body == "a"
+
+
+def test_create_refuses_a_project_scope_outside_the_context(repo):
+    # the collision check searches the caller's scopes, but the write routes by
+    # the memory's own scope: without a binding check the two disagree and a
+    # foreign project's entry is replaced without ever being looked at
+    repo.create(_m(body="foreign secret plan", scope=Scope.project(OTHER), id="n"),
+                OTHER_CTX)
+    with pytest.raises(InvalidScope) as err:
+        repo.create(_m(body="v2", scope=Scope.project(OTHER), id="n"), CTX)
+    assert "foreign secret plan" not in str(err.value)
+    assert repo.get("n", OTHER_CTX).body == "foreign secret plan"
+
+
+def test_create_outside_the_context_writes_nothing_even_without_a_collision(repo):
+    with pytest.raises(InvalidScope):
+        repo.create(_m(body="planted", scope=Scope.project(OTHER), id="fresh"), CTX)
+    assert [m.id for m in repo.iter_visible(OTHER_CTX)] == []
+
+
+def test_create_of_a_global_memory_is_unaffected(repo):
+    # every context sees the global scope, so global writes keep working from
+    # a project context and from a project-less one alike
+    repo.create(_m(id="g"), CTX)
+    repo.create(_m(id="g2"), GLOBAL_ONLY)
+    assert {m.id for m in repo.iter_visible(GLOBAL_ONLY)} == {"g", "g2"}
 
 
 # --- collisions ---
