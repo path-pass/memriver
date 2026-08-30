@@ -1,10 +1,15 @@
 """The MemoryRepository contract every backend must satisfy.
 
-Nothing here knows how a repository stores anything. To run the suite against
-another backend (SQLite, say), swap the two fixtures at the top: one builds the
-repository, the other plants an undecodable item at a name so the third
-collision outcome can be exercised.
+Nothing here knows how a repository stores anything. Every registered backend
+runs this whole suite: to add one (SQLite, say), write a `BackendHarness` and
+put a single entry in `BACKENDS` below -- no test in this file changes, and the
+new backend is held to the same behaviour from that one line on.
 """
+
+import threading
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 from memriver_core.application.errors import (
@@ -15,6 +20,7 @@ from memriver_core.application.errors import (
 )
 from memriver_core.models import AccessContext, Memory, ProjectId, Scope
 from memriver_core.repository.filesystem import FileMemoryRepository
+from memriver_core.repository.protocol import MemoryRepository
 
 SOURCE = {"harness": "test", "session": "s", "method": "agent"}
 
@@ -28,25 +34,56 @@ GLOBAL_ONLY = AccessContext(project_id=None)
 OTHER_CTX = AccessContext(project_id=OTHER)
 
 
-@pytest.fixture
-def memory_repository_factory(tmp_path):
-    """Backend-swap seam: build a fresh repository over shared storage."""
-    return lambda: FileMemoryRepository(tmp_path / "store")
+@dataclass(frozen=True)
+class BackendHarness:
+    """Everything a backend must supply to be held to this contract.
+
+    `make_repository` called twice with the SAME storage_dir must return two
+    INDEPENDENT repository instances over the same underlying storage -- that
+    is the seam the concurrency contract races against, standing in for two
+    processes sharing one store.
+
+    `occupy_unreadably` plants something undecodable at a global name, so the
+    third collision outcome can be exercised without this file knowing what
+    "undecodable" means for the backend.
+    """
+
+    make_repository: Callable[[Path], MemoryRepository]
+    occupy_unreadably: Callable[[Path, str], None]
+
+
+def _plant_unreadable_file(storage_dir: Path, memory_id: str) -> None:
+    d = storage_dir / "global" / "entries"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{memory_id}.md").write_text("hand-written notes\n", encoding="utf-8")
+
+
+BACKENDS: dict[str, BackendHarness] = {
+    "filesystem": BackendHarness(
+        make_repository=FileMemoryRepository,
+        occupy_unreadably=_plant_unreadable_file,
+    ),
+}
+
+
+@pytest.fixture(params=sorted(BACKENDS))
+def backend(request) -> BackendHarness:
+    return BACKENDS[request.param]
 
 
 @pytest.fixture
-def occupy_unreadably(tmp_path):
-    """Backend-swap seam: occupy a global name with something undecodable."""
-    def plant(memory_id: str) -> None:
-        d = tmp_path / "store" / "global" / "entries"
-        d.mkdir(parents=True, exist_ok=True)
-        (d / f"{memory_id}.md").write_text("hand-written notes\n", encoding="utf-8")
-    return plant
+def storage_dir(tmp_path) -> Path:
+    return tmp_path / "store"
 
 
 @pytest.fixture
-def memory_repository(memory_repository_factory):
-    return memory_repository_factory()
+def occupy_unreadably(backend, storage_dir):
+    return lambda memory_id: backend.occupy_unreadably(storage_dir, memory_id)
+
+
+@pytest.fixture
+def memory_repository(backend, storage_dir) -> MemoryRepository:
+    return backend.make_repository(storage_dir)
 
 
 def _m(body="内容", type="project", scope=GLOBAL, id=None, description=""):
@@ -199,6 +236,77 @@ def test_collision_with_an_undecodable_item_raises_unreadable_memory(
     with pytest.raises(UnreadableMemory) as err:
         memory_repository.create(_m(body="v1", id="notes"), CTX)
     assert err.value.memory_id == "notes"
+
+
+# --- concurrency ---
+#
+# Only create carries a concurrency clause. The port gives create the atomic
+# name reservation, and a check-then-insert backend passes every serial test
+# above while producing two winners here. update_body and delete reserve
+# nothing: their documented outcome under a race is last-writer-wins over an
+# existing name, which no observable end state can tell apart from a
+# serialized implementation -- both leave one whole memory or none. A clause
+# there would only assert what a plain atomic replace already gives, so it is
+# deferred until the port promises something stronger (ordering, or a
+# compare-and-swap on updated). The filesystem lock spanning those two
+# read-modify-writes is verified in the filesystem integration tests instead.
+
+_RACE_ROUNDS = 20
+
+
+def _race_create(backend, storage_dir, memory_id):
+    """Two independent repositories create one id at once; report both outcomes."""
+    candidates = {name: _m(body=f"body from {name}", id=memory_id)
+                  for name in ("a", "b")}
+    repositories = {name: backend.make_repository(storage_dir)
+                    for name in ("a", "b")}
+    barrier = threading.Barrier(2)
+    outcomes: dict[str, Exception | None] = {}
+
+    def attempt(name: str) -> None:
+        barrier.wait(timeout=5)  # release both threads into create together
+        try:
+            repositories[name].create(candidates[name], CTX)
+            outcomes[name] = None
+        except Exception as err:  # noqa: BLE001
+            outcomes[name] = err
+
+    threads = [threading.Thread(target=attempt, args=(n,)) for n in ("a", "b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+        assert not t.is_alive()
+    return candidates, outcomes
+
+
+def test_concurrent_create_of_one_id_yields_exactly_one_winner(backend, storage_dir):
+    # two independent repository instances over one store, standing in for two
+    # processes. A backend that checks the name free and then inserts lets both
+    # through: two winners, or a half-written entry the read below cannot parse
+    for round_no in range(_RACE_ROUNDS):
+        memory_id = f"race-{round_no}"
+        candidates, outcomes = _race_create(backend, storage_dir, memory_id)
+
+        assert set(outcomes) == {"a", "b"}  # both attempts reached create
+        winners = [n for n, outcome in outcomes.items() if outcome is None]
+        assert len(winners) == 1, f"round {round_no}: {outcomes}"
+        winner = winners[0]
+        loser = "b" if winner == "a" else "a"
+
+        conflict = outcomes[loser]
+        assert isinstance(conflict, NameTaken), f"round {round_no}: {conflict!r}"
+        assert conflict.memory_id == memory_id
+
+        # the store holds exactly the winner's memory: whole, parseable, and
+        # with none of the loser's content mixed into it
+        stored = backend.make_repository(storage_dir).get(memory_id, CTX)
+        assert stored == candidates[winner]
+        # `existing` may be None -- the loser can lose before the winner's
+        # write lands -- but when it is set it is the winner's memory, never a
+        # partial or losing one
+        if conflict.existing is not None:
+            assert conflict.existing == stored
 
 
 # --- search ---
