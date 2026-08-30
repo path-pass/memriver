@@ -152,6 +152,7 @@ ALLOWED_NON_STDLIB = {
     "memriver_core.application": {
         "memriver_core.models",
         "memriver_core.repository.protocol",
+        "memriver_core.repository.inspection_protocol",
         "memriver_core.content_policy.protocol",
         "memriver_core.application",
     },
