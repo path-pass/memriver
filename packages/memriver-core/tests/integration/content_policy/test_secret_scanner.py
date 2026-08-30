@@ -86,6 +86,46 @@ def test_secrets_blocked(text, marker):
         _SCANNER.check(text, BODY_LIMIT)
     assert marker not in str(ei.value)
 
+# Prose states credentials as often as config assigns them: 'the password is
+# <secret>' is an assignment in every way that matters, and it used to pass
+# because the rule demanded a literal ':' or '='.
+NL_SEPARATOR_BLOCKED = [
+    ("The password is correcthorsebattery", "correcthorsebattery"),
+    ("API key is abcdefghijklmnop", "abcdefghijklmnop"),
+    # 16 body chars, so the vendored github-pat rule (which wants exactly 36)
+    # does not cover it -- this is the floor rule's catch
+    ("token is ghp_abcdef1234567890", "ghp_abcdef1234567890"),
+    # 15 chars: under the all-letter floor, caught because it carries digits
+    ("password is P@ssw0rd!23456", "P@ssw0rd!23456"),
+]
+
+
+@pytest.mark.parametrize("text,marker", NL_SEPARATOR_BLOCKED)
+def test_natural_language_separator_blocked(text, marker):
+    with pytest.raises(ContentRejected) as ei:
+        _SCANNER.check(text, BODY_LIMIT)
+    assert marker not in str(ei.value)
+
+
+@pytest.mark.parametrize("text", [
+    # the phrasing memriver's own rejection message recommends
+    "the password is in 1Password",
+    "password is stored in the vault",
+    "the api key is rotated monthly",
+    "the token is kept in the team secret manager",
+    "the passphrase is documented in the runbook",
+    "the credentials are managed by terraform",
+    # long enough to clear the 12-char floor, so only the digit/16-char
+    # condition keeps these out
+    "password is automatically rotated by vault",
+    "the token is inaccessible from CI",
+])
+def test_pointer_prose_still_passes(text):
+    # the whole point of the store is holding pointers to secrets; accepting
+    # 'is' as a separator must not make the rule reject them
+    _SCANNER.check(text, BODY_LIMIT)
+
+
 @pytest.mark.parametrize("text", ["", "   ", "\n\t \n"])
 def test_empty_content_blocked(text):
     # an empty body would store a useless entry and break index rendering

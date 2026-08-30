@@ -53,8 +53,24 @@ regex = '\bsk-[A-Za-z0-9_-]{20,}'
 # No word boundary around the keyword: '_' is a word character, so the usual
 # env var names (OPENAI_API_KEY, AWS_SECRET_ACCESS_KEY) have none before the
 # keyword nor after it, and the trailing name parts have to be consumed too.
-# The required '[:=]' is what keeps prose out: 'the token lives in 1Password'
-# and 'see the API key rotation notes' have no ':' or '=' after the key name.
+# A separator is what keeps prose out: 'the token lives in 1Password' and 'see
+# the API key rotation notes' have no separator after the key name. ':'/'=' is
+# how config states a credential; ' is ' is how prose states one ('the password
+# is correcthorsebattery'), and prose is most of what a memory body holds.
+# The ' is ' branch needs a stricter value than the 6-char floor, because the
+# store exists to hold POINTERS to secrets and every pointer is phrased the same
+# way: 'password is in 1Password', 'is stored in the vault', 'is rotated
+# monthly'. Two lookaheads on the value, in place of an unbounded list of prose
+# words to keep chasing: at least 12 non-space chars, which clears the short
+# pointer words -- in(2), kept(4), stored(6), rotated(7), 1Password(9),
+# documented(10), provisioned(11) -- and then either a digit or 16 chars, which
+# clears the long ones that survive 12: confidential(12), inaccessible(12),
+# automatically(13), indistinguishable is rarer than any secret. A prose word
+# long enough AND digit-bearing is not a word. The cost is a 12-15 char
+# all-letter secret stated in prose; the ':'/'=' branch still catches it at 6,
+# and rejecting the phrasing memriver's own error message recommends would be
+# the worse failure. Lookaheads (rather than a second value group) leave the
+# ':'/'=' branch and all three value shapes exactly as they were.
 # The value has three branches because real passwords carry punctuation: a
 # single restricted character class stopped at the first '@' or '!' and counted
 # too few characters, so 'PASSWORD="P@ssw0rd!234567"' passed. Each quote style
@@ -77,4 +93,4 @@ regex = '\bsk-[A-Za-z0-9_-]{20,}'
 [[rules]]
 id = "memriver-credential-assignment"
 description = "credential assigned to a key/secret/token/password/passphrase/credential name"
-regex = '''(?i)(api[ _-]?key|secret|token|password|passwd|passphrase|credentials?)(?:[ _-][A-Za-z0-9]+)*\s*[:=]\s*(?:"[^"]{6,}"|'[^']{6,}'|\S{6,})'''
+regex = '''(?i)(api[ _-]?key|secret|token|password|passwd|passphrase|credentials?)(?:[ _-][A-Za-z0-9]+)*(?:\s*[:=]\s*|\s+is\s+(?=\S{12})(?=\S{16}|\S*[0-9]))(?:"[^"]{6,}"|'[^']{6,}'|\S{6,})'''
