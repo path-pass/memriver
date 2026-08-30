@@ -229,6 +229,15 @@ def test_an_unusable_store_is_one_path_free_stderr_line(failing, tmp_path,
     assert "secret" not in result.stderr
 
 
+def test_an_unknown_harness_never_raises_out_of_run_hook(tmp_path):
+    """argparse choices make this unreachable from the CLI; never-raise is still
+    the library contract, so an unknown harness costs one stderr line, not a
+    KeyError escaping into the session."""
+    result = run_hook("session-start", "nope", json.dumps({"cwd": str(tmp_path)}),
+                      root=tmp_path / "root", project_dir=None, cwd=tmp_path)
+    assert result == HookResult(stderr="memriver hook: memory store is unavailable\n")
+
+
 # --- store state ---------------------------------------------------------
 
 

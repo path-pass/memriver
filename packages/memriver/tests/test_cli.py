@@ -1,27 +1,95 @@
+import contextlib
+import io
 import json
 import os
 import select
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 
+import pytest
+from memriver import cli
 from memriver.project_context import project_slug
+from memriver.protocol_text import STOP_NUDGE
 
 PROTOCOL_VERSION = "2025-06-18"
 
 
+def _run_cli(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, "-m", "memriver.cli", *args],
+                          capture_output=True, text=True, check=False)
+
+
 def test_version_flag():
-    out = subprocess.run([sys.executable, "-m", "memriver.cli", "--version"],
-                         capture_output=True, text=True, check=False)
+    out = _run_cli("--version")
     assert out.returncode == 0 and "0.1.0" in out.stdout
 
 
-def test_help_documents_project_dir_default():
-    out = subprocess.run([sys.executable, "-m", "memriver.cli", "--help"],
-                         capture_output=True, text=True, check=False)
+def test_top_level_help_lists_the_serve_and_hook_commands():
+    out = _run_cli("--help")
+    assert out.returncode == 0
+    assert "serve" in out.stdout and "hook" in out.stdout
+
+
+def test_serve_help_documents_project_dir_default():
+    out = _run_cli("serve", "--help")
     assert out.returncode == 0
     assert "--project-dir" in out.stdout
     assert "current working directory" in " ".join(out.stdout.split())
+
+
+@dataclass(frozen=True)
+class CliRun:
+    stdout: str
+    stderr: str
+    exit_code: int
+
+
+def invoke_main(argv: list[str], stdin: str) -> CliRun:
+    """Run main() in-process over captured streams, the way a harness pipes it."""
+    out, err = io.StringIO(), io.StringIO()
+    original_stdin = sys.stdin
+    sys.stdin = io.StringIO(stdin)
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            exit_code = cli.main(argv)
+    finally:
+        sys.stdin = original_stdin
+    return CliRun(out.getvalue(), err.getvalue(), exit_code)
+
+
+def capture_dispatch(argv: list[str], monkeypatch):
+    """Parse argv through main() with every handler stubbed; return the args."""
+    seen: list = []
+
+    def record(args) -> int:
+        seen.append(args)
+        return 0
+
+    monkeypatch.setattr(cli, "_serve", record)
+    monkeypatch.setattr(cli, "_hook", record)
+    assert cli.main(list(argv)) == 0
+    return seen[0]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--root", "ROOT", "--project-dir", "PROJECT"],
+        ["serve", "--root", "ROOT", "--project-dir", "PROJECT"],
+    ],
+)
+def test_legacy_and_explicit_serve_parse_to_the_same_handler(argv, monkeypatch):
+    assert capture_dispatch(argv, monkeypatch).command == "serve"
+
+
+def test_hook_subcommand_writes_only_hook_result_streams(monkeypatch):
+    result = invoke_main(["hook", "stop", "--harness", "codex"],
+                         stdin='{"stop_hook_active": false}')
+    assert json.loads(result.stdout) == {"decision": "block", "reason": STOP_NUDGE}
+    assert result.stderr == ""
+    assert result.exit_code == 0
 
 
 def _send(proc, message: dict) -> None:
@@ -48,10 +116,12 @@ def _await_response(proc, message_id: int, timeout: float = 30.0) -> dict:
             return message
 
 
-def _write_over_stdio(root, cwd, extra_args: list[str], content: str) -> dict:
+def _write_over_stdio(root, cwd, extra_args: list[str], content: str,
+                      command: str | None = None) -> dict:
     """Run the CLI as a real stdio MCP server and call memory_write once."""
     proc = subprocess.Popen(
-        [sys.executable, "-m", "memriver.cli", "--root", str(root), *extra_args],
+        [sys.executable, "-m", "memriver.cli", *([command] if command else []),
+         "--root", str(root), *extra_args],
         cwd=str(cwd), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL, text=True, bufsize=1)
     try:
@@ -131,3 +201,14 @@ def test_bad_env_value_reports_readably(tmp_path):
     assert out.returncode != 0
     assert "Traceback" not in out.stderr
     assert "MEMRIVER_" in out.stderr and "max_body_chars" in out.stderr
+
+
+def test_explicit_serve_starts_the_same_stdio_server(tmp_path):
+    """`memriver serve` is an alias, not a second server."""
+    root = tmp_path / "mem"
+    repo = _git_repo(tmp_path, "explicit-serve")
+
+    response = _write_over_stdio(root, cwd=repo, extra_args=[],
+                                 content="served explicitly", command="serve")
+    assert response["result"]["isError"] is False
+    assert len(_entry_files(root, repo)) == 1

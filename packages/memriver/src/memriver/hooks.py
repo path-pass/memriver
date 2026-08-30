@@ -114,13 +114,14 @@ def _session_start(harness: Harness, payload_text: str, *, root: Path | None,
     if not isinstance(payload, dict):
         return HookResult(stderr=INVALID_INPUT)
     try:
+        encode = _SESSION_START_ENCODERS[harness]
         index = _read_index(root, _resolve_dir(payload, project_dir, cwd))
     except Exception:  # noqa: BLE001 - the reason belongs in `memriver doctor`
         # path-free on purpose: this line can reach a shared terminal, and a
         # store path is the one thing here worth not printing
         return HookResult(stderr=STORE_UNAVAILABLE)
     text = _compose(index, payload.get("source"))
-    return HookResult(stdout=_emit(_SESSION_START_ENCODERS[harness](text)))
+    return HookResult(stdout=_emit(encode(text)))
 
 
 def _resolve_dir(payload: dict[str, Any], project_dir: Path | None,

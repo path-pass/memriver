@@ -1,27 +1,78 @@
+"""Command dispatch for the `memriver` executable.
+
+The bare invocation is load-bearing: every MCP client config in the wild spells
+the server as `memriver` or `memriver --root R --project-dir D`, with no
+subcommand. Those forms are rewritten to `serve` before parsing, so the
+explicit grammar can grow commands without breaking a single existing config.
+
+Handlers import their dependencies lazily. `serve` must not pay for the hook
+stack, and -- the expensive direction -- a hook fires on every session start
+and every turn end, and must never pay for importing the MCP server.
+"""
+
 from __future__ import annotations
 
 import argparse
+import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 from . import __version__
 
+# the only tokens that can legally open the bare compatibility form
+_LEGACY_SERVE_FLAGS = ("--root", "--project-dir")
 
-def main() -> None:
-    parser = argparse.ArgumentParser(prog="memriver",
-                                     description="Shared memory MCP server for coding agents")
-    parser.add_argument("--version", action="store_true")
+
+def _add_store_options(parser: argparse.ArgumentParser, *,
+                       project_dir_default: Path | None,
+                       project_dir_help: str) -> None:
     parser.add_argument("--root", type=Path, default=None,
                         help="storage root, which also holds the optional "
                              "config.toml (default: $MEMRIVER_ROOT or ~/agent-memory)")
-    parser.add_argument("--project-dir", type=Path, default=Path.cwd(),
-                        help="project whose 'project' memory scope is used "
-                             "(default: the current working directory)")
-    args = parser.parse_args()
+    parser.add_argument("--project-dir", type=Path, default=project_dir_default,
+                        help=project_dir_help)
 
-    if args.version:
-        print(__version__)
-        return
 
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="memriver",
+        description="Shared memory MCP server for coding agents")
+    parser.add_argument("--version", action="version", version=__version__)
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    serve = commands.add_parser(
+        "serve", help="run the MCP server over stdio (the default command)")
+    _add_store_options(serve, project_dir_default=Path.cwd(),
+                       project_dir_help="project whose 'project' memory scope is "
+                                        "used (default: the current working "
+                                        "directory)")
+    serve.set_defaults(handler=_serve)
+
+    hook = commands.add_parser("hook", help="run a harness hook over stdin/stdout")
+    hook.add_argument("event", choices=["session-start", "stop"])
+    hook.add_argument("--harness", choices=["claude-code", "codex"], required=True)
+    _add_store_options(hook, project_dir_default=None,
+                       project_dir_help="project whose 'project' memory scope is "
+                                        "used (default: the directory the harness "
+                                        "reports, else the current working directory)")
+    hook.set_defaults(handler=_hook)
+    return parser
+
+
+def _normalize_legacy_serve(argv: list[str]) -> list[str]:
+    """Rewrite the pre-subcommand invocation forms to an explicit `serve`.
+
+    `--version`, `-h`/`--help` and any explicit command are left alone, and an
+    unknown first positional stays a parser error rather than being served.
+    """
+    if not argv:
+        return ["serve"]
+    if argv[0].partition("=")[0] in _LEGACY_SERVE_FLAGS:
+        return ["serve", *argv]
+    return argv
+
+
+def _serve(args: argparse.Namespace) -> int:
     from memriver_core.config import load_settings
     from pydantic import ValidationError
 
@@ -36,7 +87,26 @@ def main() -> None:
         raise SystemExit(f"memriver: invalid MEMRIVER_* environment setting\n{err}")
     build_server(root=settings.root, project_dir=args.project_dir,
                  settings=settings).run()  # stdio
+    return 0
+
+
+def _hook(args: argparse.Namespace) -> int:
+    from .hooks import run_hook
+
+    result = run_hook(args.event, args.harness, sys.stdin.read(),
+                      root=args.root, project_dir=args.project_dir, cwd=Path.cwd())
+    # only what the hook composed: anything else on stdout is read by the
+    # harness as a malformed hook response
+    sys.stdout.write(result.stdout)
+    sys.stderr.write(result.stderr)
+    return result.exit_code
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    args = _build_parser().parse_args(_normalize_legacy_serve(raw))
+    return args.handler(args)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
