@@ -1,3 +1,4 @@
+import memriver_core
 import pytest
 from memriver_core.application.errors import (
     ContentRejected,
@@ -20,6 +21,11 @@ SUBCLASSES = [
     ProjectUnavailable,
     StorageFailure,
 ]
+
+# the facade identity check also covers the base class: a transport catching
+# MemoryError itself (a catch-all across the whole taxonomy) must get the
+# same class object memriver_core.application.errors defines.
+TAXONOMY = [MemoryError, *SUBCLASSES]
 
 
 def test_base_does_not_subclass_builtin_key_error():
@@ -58,3 +64,11 @@ def test_storage_failure_accepts_no_adapter_detail():
     # a driver message that a transport might then echo to a client
     with pytest.raises(TypeError):
         StorageFailure("could not open /home/alice/store/.lock")  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("cls", TAXONOMY, ids=[c.__name__ for c in TAXONOMY])
+def test_the_root_facade_re_exports_the_same_class(cls):
+    # transports import the taxonomy from `memriver_core`, never from
+    # `memriver_core.application.errors`; the facade must hand back the very
+    # same class object so `except` clauses keep matching across both spellings
+    assert getattr(memriver_core, cls.__name__) is cls

@@ -8,6 +8,8 @@ license = "Apache-2.0"
 dependencies = [
     "memriver-core",
     "fastmcp>=3.0",
+    "pydantic>=2",
+    "tomlkit",
 ]
 
 [project.scripts]

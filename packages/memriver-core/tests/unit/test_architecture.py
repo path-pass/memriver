@@ -152,6 +152,7 @@ ALLOWED_NON_STDLIB = {
     "memriver_core.application": {
         "memriver_core.models",
         "memriver_core.repository.protocol",
+        "memriver_core.repository.inspection_protocol",
         "memriver_core.content_policy.protocol",
         "memriver_core.application",
     },
@@ -194,28 +195,72 @@ def test_strict_layer_allowlist(layer):
 CONCRETE_ADAPTER_MODULES = {
     "FileMemoryRepository": "memriver_core.repository.filesystem",
     "SecretScanner": "memriver_core.content_policy.secret_scanner",
+    "FilesystemStoreInspector": "memriver_core.repository.filesystem",
+}
+
+# The services bootstrap composes are held to the same rule for the same
+# reason: DiagnosticsService is not an adapter, but a second module naming it
+# would be a second composition point just the same. It gets its own table
+# because the exemption and the failure message differ in kind, not in force.
+COMPOSED_SERVICE_MODULES = {
+    "DiagnosticsService": "memriver_core.application.diagnostics",
 }
 
 
-@pytest.mark.parametrize("adapter", ["FileMemoryRepository", "SecretScanner"])
-def test_only_bootstrap_names_a_concrete_adapter(adapter):
-    concrete_module = CONCRETE_ADAPTER_MODULES[adapter]
+def _assert_only_bootstrap_names(symbol: str, owning_module: str, what: str) -> None:
     for module in SOURCES:
         if module == "memriver_core.bootstrap":
             continue
-        # the adapter's own module and its package __init__ export it; naming it
-        # anywhere else in production sources would be a second assembly point
-        if module in ("memriver_core.repository.filesystem",
-                      "memriver_core.repository.filesystem.repository",
-                      "memriver_core.content_policy.secret_scanner"):
+        # the symbol's own package exports it and its modules import each
+        # other freely (the codec, the layout helpers, the inspector); naming
+        # it anywhere else in production sources would be a second assembly
+        # point. The exemption is the package, not a list of sibling modules,
+        # so adding a module inside it never weakens this rule by tempting
+        # someone to widen the list.
+        if _under(module, owning_module):
             continue
-        assert adapter not in _imported_names(module), \
-            f"{module} imports {adapter}; only bootstrap.py may assemble adapters"
-        offenders = [t for t in _imported_modules(module) if _under(t, concrete_module)]
+        assert symbol not in _imported_names(module), \
+            f"{module} imports {symbol}; only bootstrap.py may assemble {what}"
+        offenders = [t for t in _imported_modules(module) if _under(t, owning_module)]
         assert not offenders, (
-            f"{module} imports the {concrete_module} module ({offenders}); "
-            f"only bootstrap.py may assemble adapters, even via a module alias"
+            f"{module} imports the {owning_module} module ({offenders}); "
+            f"only bootstrap.py may assemble {what}, even via a module alias"
         )
+
+
+@pytest.mark.parametrize("adapter", sorted(CONCRETE_ADAPTER_MODULES))
+def test_only_bootstrap_names_a_concrete_adapter(adapter):
+    _assert_only_bootstrap_names(adapter, CONCRETE_ADAPTER_MODULES[adapter], "adapters")
+
+
+@pytest.mark.parametrize("service", sorted(COMPOSED_SERVICE_MODULES))
+def test_only_bootstrap_names_a_composed_service(service):
+    _assert_only_bootstrap_names(service, COMPOSED_SERVICE_MODULES[service], "services")
+
+
+def test_only_bootstrap_constructs_filesystem_inspector():
+    # the inspector is an adapter like any other, so the rule above already
+    # covers it; this pins the table entry that puts it under that rule.
+    assert CONCRETE_ADAPTER_MODULES["FilesystemStoreInspector"] == (
+        "memriver_core.repository.filesystem"
+    )
+
+
+def test_diagnostics_application_depends_only_on_models_and_inspection_port():
+    imports = _imported_modules("memriver_core.application.diagnostics")
+    core_imports = {name for name in imports if name.startswith("memriver_core.")}
+    allowed = {
+        "memriver_core.models",
+        "memriver_core.repository.inspection_protocol",
+    }
+    offenders = [
+        name for name in core_imports
+        if not any(_under(name, prefix) for prefix in allowed)
+    ]
+    assert not offenders, (
+        f"application/diagnostics may import models and the inspection port only: "
+        f"{offenders}"
+    )
 
 
 @pytest.mark.parametrize("symbol", ["Settings", "load_settings"])

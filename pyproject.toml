@@ -5,7 +5,7 @@ target-version = "py312"
 members = ["packages/*"]
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-asyncio>=0.25"]
+dev = ["pytest>=8", "pytest-asyncio>=0.25", "ruff"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
