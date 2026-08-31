@@ -133,6 +133,10 @@ class _Plan:
     snapshots: dict[Path, Snapshot]
     operations: tuple[EditOperation, ...]
     changes: tuple[_PlannedChange, ...]
+    # read-only completion text from the harness planners: what was inspected
+    # and deliberately left alone. Never a change, never confirmed, never a
+    # reason to write anything.
+    notes: tuple[str, ...]
 
 
 def _document_kind(target: Target) -> EditorKind:
@@ -251,18 +255,24 @@ def _plan(harnesses: Sequence[str], home: Path, cwd: Path,
         for path, target in targets.items()
     }
     operations: list[EditOperation] = []
+    notes: list[str] = []
     for name in harnesses:
         harness_snapshots = tuple(
             snapshots[target.path] for target in per_harness[name]
         )
-        operations.extend(HARNESSES[name].operations(harness_snapshots, env))
+        module = HARNESSES[name]
+        operations.extend(module.operations(harness_snapshots, env))
+        # optional: only a harness with something read-only to report defines it
+        if hasattr(module, "notes"):
+            notes.extend(module.notes(harness_snapshots, env))
     _, results = _rendered(operations, snapshots)
     changes = tuple(
         _PlannedChange(operation,
                        render_change_summary(operation, results[operation.id], home))
         for operation in operations if results[operation.id].changed
     )
-    return _Plan(project_root, targets, snapshots, tuple(operations), changes)
+    return _Plan(project_root, targets, snapshots, tuple(operations), changes,
+                 tuple(notes))
 
 
 # --- the write transaction ----------------------------------------------------
@@ -370,8 +380,15 @@ def _roll_back(writes: Sequence[_Write],
 # --- reporting ----------------------------------------------------------------
 
 
-def _write_codex_trust_note(harnesses: Sequence[str], stdout: TextIO) -> None:
-    """Spec 5.4: every completion path that names Codex names the trust step."""
+def _write_completion_notes(plan: _Plan, harnesses: Sequence[str],
+                            stdout: TextIO) -> None:
+    """The read-only tail of every completion report: notes, then Codex trust.
+
+    Spec 5.3 wants a checked-and-left-alone decision said out loud, and spec
+    5.4 wants the Codex trust step named on every path that names Codex --
+    including the one where nothing was written.
+    """
+    stdout.writelines("\n" + note + "\n" for note in plan.notes)
     if "codex" in harnesses:
         stdout.write("\n" + CODEX_TRUST_NOTE + "\n")
 
@@ -380,7 +397,7 @@ def _restore_command(backup: Path, path: Path) -> str:
     return f"cp -p -- {shlex.quote(str(backup))} {shlex.quote(str(path))}"
 
 
-def _success_report(writes: Sequence[_Write], harnesses: Sequence[str]) -> str:
+def _success_report(writes: Sequence[_Write]) -> str:
     lines = ["", "installed:"]
     for write in writes:
         lines.append(f"  {write.target.path}")
@@ -392,8 +409,6 @@ def _success_report(writes: Sequence[_Write], harnesses: Sequence[str]) -> str:
             lines.append(
                 f"    restore: {_restore_command(write.backup, write.target.path)}"
             )
-    if "codex" in harnesses:
-        lines.extend(["", CODEX_TRUST_NOTE])
     return "\n".join(lines) + "\n"
 
 
@@ -413,17 +428,17 @@ def run_install(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
 
     if not plan.changes:
         stdout.write("memriver install: already up to date, nothing to change.\n")
-        # the trust step is a property of Codex, not of having written
-        # something: an untrusted hook definition does not run, and a
-        # reinstall is exactly what a user who missed the note reaches for
-        _write_codex_trust_note(harnesses, stdout)
+        # notes and the trust step are properties of the harness, not of
+        # having written something: an untrusted hook definition does not run,
+        # and a reinstall is what a user who missed the note reaches for
+        _write_completion_notes(plan, harnesses, stdout)
         return 0
 
     stdout.write("".join("\n" + change.summary for change in plan.changes))
 
     if dry_run:
         stdout.write("\ndry run: nothing was written.\n")
-        _write_codex_trust_note(harnesses, stdout)
+        _write_completion_notes(plan, harnesses, stdout)
         return 0
 
     try:
@@ -451,7 +466,7 @@ def run_install(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
         for path, text in texts.items()
         if text != (plan.snapshots[path].text or "")
     ]
-    return _apply(pending, harnesses, home=home, stdout=stdout,
+    return _apply(pending, plan, harnesses, home=home, stdout=stdout,
                   replace_file=replace_file)
 
 
@@ -473,7 +488,7 @@ def _confirm(changes: Sequence[_PlannedChange], *, yes: bool,
     return tuple(accepted)
 
 
-def _apply(pending: Sequence[tuple[Snapshot, str, Path | None]],
+def _apply(pending: Sequence[tuple[Snapshot, str, Path | None]], plan: _Plan,
            harnesses: Sequence[str], *, home: Path, stdout: TextIO,
            replace_file: Callable[[Path, Path], None]) -> int:
     stamp = _utc_timestamp()
@@ -490,5 +505,6 @@ def _apply(pending: Sequence[tuple[Snapshot, str, Path | None]],
         if not isinstance(error, Exception):
             raise  # KeyboardInterrupt / SystemExit: rolled back, never swallowed
         return 1
-    stdout.write(_success_report(writes, harnesses))
+    stdout.write(_success_report(writes))
+    _write_completion_notes(plan, harnesses, stdout)
     return 0

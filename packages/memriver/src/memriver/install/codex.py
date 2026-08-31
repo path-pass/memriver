@@ -24,6 +24,14 @@ from memriver.install.editors import (
 
 HARNESS = "codex"
 
+# Spec 5.3's other half: unset or already-off means "do nothing **and say
+# so**". Read-only completion text, never a confirmable operation -- there is
+# nothing to write, and a prompt for it would ask the user to accept a no-op.
+NATIVE_MEMORY_OFF_NOTE = (
+    "codex: built-in memories are already off in ~/.codex/config.toml; "
+    "nothing to change there."
+)
+
 
 def targets(home: Path, project_root: Path | None) -> tuple[Target, Target]:
     """``(~/.codex/config.toml, ~/.codex/hooks.json)``; both targets are user-level."""
@@ -91,6 +99,13 @@ def operations(
             harness_owned=True,
         ))
     return tuple(ops)
+
+
+def notes(snapshots: tuple[Snapshot, Snapshot], env: Mapping[str, str]) -> tuple[str, ...]:
+    """Read-only completion text: what was checked and deliberately left alone."""
+    del env
+    config, _ = snapshots
+    return () if _memories_enabled(config.text) else (NATIVE_MEMORY_OFF_NOTE,)
 
 
 def _memories_enabled(config_text: str | None) -> bool:

@@ -36,6 +36,9 @@ from memriver.install import (
     cursor,
     run_install,
 )
+from memriver.install.codex import (
+    NATIVE_MEMORY_OFF_NOTE as CODEX_NATIVE_MEMORY_OFF_NOTE,
+)
 
 CODEX_TRUST_TEXT = (
     "Run /hooks in Codex, review the memriver hook definitions, and trust them.\n"
@@ -563,6 +566,38 @@ def test_a_reinstall_that_changes_nothing_reports_it_and_prompts_for_nothing(hom
     assert "already up to date" in result.stdout
     assert CODEX_TRUST_TEXT not in result.stdout  # no Codex, no Codex note
     assert snapshot_tree(home) == before_tree
+
+
+@pytest.mark.parametrize("config_text", ["", "[features]\nmemories = false\n"])
+def test_codex_native_memory_left_alone_is_reported_not_passed_over(home, project,
+                                                                   config_text):
+    """spec 5.3: unset or off means "do nothing **and say so**".
+
+    Planning simply omits the operation, which is correct -- there is nothing
+    to write -- but silence leaves the user unable to tell a checked
+    non-conflict from a check that never ran. It is a read-only note, never a
+    confirmable operation.
+    """
+    if config_text:
+        write(home / ".codex" / "config.toml", config_text)
+
+    result = install(["codex"], home=home, cwd=project, yes=True)
+
+    assert result.exit_code == 0
+    assert CODEX_NATIVE_MEMORY_OFF_NOTE in result.stdout
+    assert "disable built-in auto memory" not in result.stdout
+
+
+def test_codex_native_memory_that_is_on_is_an_operation_not_a_note(home, project):
+    write(home / ".codex" / "config.toml", "[features]\nmemories = true\n")
+
+    result = install(["codex"], home=home, cwd=project, yes=True)
+
+    assert result.exit_code == 0
+    assert "disable built-in auto memory" in result.stdout
+    assert CODEX_NATIVE_MEMORY_OFF_NOTE not in result.stdout
+    assert tomlkit.parse(
+        (home / ".codex" / "config.toml").read_text())["features"]["memories"] is False
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
