@@ -203,6 +203,13 @@ def symlinked_parent_directory(home: Path, project: Path):
     return ["claude-code"], project
 
 
+def undecodable_target(home: Path, project: Path):
+    # not malformed JSON -- bytes that are not text at all, so the failure is
+    # in the read, before any parser is reached
+    (home / ".claude.json").write_bytes(b"\xff")
+    return ["claude-code"], project
+
+
 def all_outside_a_project(home: Path, project: Path):
     elsewhere = home.parent / "elsewhere"
     elsewhere.mkdir()
@@ -212,6 +219,7 @@ def all_outside_a_project(home: Path, project: Path):
 PREFLIGHT_FAILURES = [
     malformed_json,
     malformed_toml,
+    undecodable_target,
     duplicate_hook_identities,
     broken_markers,
     symlinked_target,
@@ -231,6 +239,45 @@ def test_planning_failure_writes_absolutely_nothing(setup, tmp_path, home, proje
     assert result.exit_code != 0
     assert after_tree == before_tree
     assert list(tmp_path.rglob("*.memriver-backup-*")) == []
+    assert result.replace.calls == []
+
+
+@pytest.mark.parametrize("setup", [undecodable_target], ids=lambda f: f.__name__)
+def test_an_unreadable_target_is_a_planning_failure_not_a_traceback(setup, home,
+                                                                    project):
+    """A read that fails is a planning failure like a parse that fails.
+
+    `exists/is_file/read_text/stat` raise UnicodeDecodeError, PermissionError
+    and other OSError -- none of which the PlanningError-only boundary in
+    run_install catches, so they used to reach the user as a traceback
+    carrying absolute source paths.
+    """
+    harnesses, cwd = setup(home, project)
+
+    result = install(harnesses, home=home, cwd=cwd, yes=True)
+
+    assert result.exit_code != 0
+    assert result.stdout.startswith("memriver install: ")
+    assert "Traceback" not in result.stdout
+    assert "codec" not in result.stdout  # no underlying exception text
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+def test_an_unreadable_target_leaks_neither_traceback_nor_old_values(tmp_path, home,
+                                                                    project):
+    target = write(home / ".claude.json", json.dumps({"apiKey": SECRET}), mode=0o000)
+    before_tree = snapshot_tree(project)
+    try:
+        result = install(["claude-code"], home=home, cwd=project, yes=True)
+    finally:
+        target.chmod(0o600)
+
+    assert result.exit_code != 0
+    assert "Traceback" not in result.stdout
+    assert SECRET not in result.stdout
+    assert "Permission denied" not in result.stdout
+    assert snapshot_tree(project) == before_tree
+    assert backups(tmp_path) == []
     assert result.replace.calls == []
 
 

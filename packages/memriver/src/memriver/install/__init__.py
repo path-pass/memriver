@@ -198,12 +198,23 @@ def _read_snapshot(target: Target, root: Path | None) -> Snapshot:
     """Read text and mode for planning only; a symlinked path is refused."""
     path = target.path
     _refuse_symlinks(target, root)
-    if not path.exists():
-        return Snapshot(target=target, text=None, mode=None)
-    if not path.is_file():
-        raise PlanningError(f"{path} is not a regular file")
-    return Snapshot(target=target, text=path.read_text(encoding="utf-8"),
-                    mode=_mode_of(path))
+    try:
+        if not path.exists():
+            return Snapshot(target=target, text=None, mode=None)
+        if not path.is_file():
+            raise PlanningError(f"{path} is not a regular file")
+        return Snapshot(target=target, text=path.read_text(encoding="utf-8"),
+                        mode=_mode_of(path))
+    except (UnicodeError, OSError) as err:
+        # the whole read is one boundary, not just read_text(): a target that
+        # exists but cannot be decoded, opened or stat'ed is a planning
+        # failure exactly like one that cannot be parsed. The cause is kept
+        # for a debugger; the user gets fixed text, because the underlying
+        # message carries the rejected bytes and an errno string.
+        raise PlanningError(
+            f"{path} could not be read; check that it is UTF-8 text this user "
+            "can read, then run memriver install again"
+        ) from err
 
 
 def _rendered(operations: Iterable[EditOperation],
