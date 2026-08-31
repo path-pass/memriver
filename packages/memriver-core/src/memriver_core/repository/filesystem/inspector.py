@@ -75,8 +75,12 @@ class FilesystemStoreInspector:
         produce byte-identical reports.
         """
         entries_dirs = [self.root / "global" / "entries"]
+        # only directories under `projects/`: an unrelated file may sit there
+        # (the user's own note, a .DS_Store), and ignoring it is not the same
+        # as ignoring a project directory whose `entries` node is broken
         entries_dirs += [child / "entries"
-                         for child in self._children(self.root / "projects")]
+                         for child in self._children(self.root / "projects")
+                         if child.is_dir()]
         found = []
         for entries_dir in entries_dirs:
             scope = _dir_scope(entries_dir)
@@ -88,17 +92,19 @@ class FilesystemStoreInspector:
         return sorted(found, key=lambda candidate: candidate[1])
 
     def _children(self, directory: Path) -> list[Path]:
-        """Immediate children; empty when the directory is simply not there.
+        """Immediate children; empty only when the directory is not there.
 
         A store need not have a `projects/` tree or a `global/entries/` yet,
-        and an unrelated file may sit where a project directory would --
-        neither is a defect. Anything else that stops the walk is a failure to
-        enumerate the store, which the port raises rather than reporting as a
-        finding about one file.
+        so absence is the one answer that is not a defect. A layout node that
+        *exists* but is not a directory is not the same state: the repository
+        raises `StorageFailure` writing into exactly that store, and reporting
+        it as an empty one would hand the user a healthy verdict on a store
+        nothing can be written to. `NotADirectoryError` therefore falls
+        through to the generic failure, like any other enumeration error.
         """
         try:
             return list(directory.iterdir())
-        except (FileNotFoundError, NotADirectoryError):
+        except FileNotFoundError:
             return []
         except OSError as err:
             raise StorageFailure from err

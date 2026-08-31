@@ -152,6 +152,22 @@ def test_inaccessible_root_leaks_no_logging_line_to_real_stderr(tmp_path, capsys
     assert capsys.readouterr().err == ""
 
 
+def test_a_broken_entries_layout_is_inaccessible_not_empty(tmp_path):
+    """CLI-boundary regression against a REAL store: `global/entries` occupied
+    by a regular file is a store nothing can be written to, so doctor must say
+    inaccessible and exit 2 -- not report it as initialized and empty."""
+    root = tmp_path / "store"
+    (root / "global").mkdir(parents=True)
+    (root / "global" / "entries").write_text("not a directory", encoding="utf-8")
+
+    result = invoke_doctor(root=root)
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert result.stderr == "memriver doctor: memory store is inaccessible\n"
+    assert str(root) not in result.stderr
+
+
 _EXPECTED_JSON = {
     "state": "degraded",
     "findings": [{

@@ -121,6 +121,28 @@ def test_unenumerable_root_raises_opaque_storage_failure(tmp_path, monkeypatch):
     assert str(tmp_path) not in str(caught.value)
 
 
+@pytest.mark.parametrize("occupied", [
+    "global/entries",
+    "projects",
+    f"projects/{PROJECT.project_id}/entries",
+])
+def test_a_layout_node_occupied_by_a_file_is_a_failure_not_an_empty_store(
+        tmp_path, occupied):
+    """A regular file where a layout directory belongs is a broken store.
+
+    The repository already treats exactly this shape as a StorageFailure --
+    memory_write against such a root raises immediately. Folding it into the
+    "directory simply absent" answer told the user the store was initialized
+    and empty, and doctor exited 0 on a store nothing can be written to.
+    """
+    path = tmp_path / occupied
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(StorageFailure) as caught:
+        FilesystemStoreInspector(tmp_path).inspect()
+    assert str(tmp_path) not in str(caught.value)
+
+
 def test_root_that_is_a_file_raises_opaque_storage_failure(tmp_path):
     path = tmp_path / "store"
     path.write_text("not a store", encoding="utf-8")
