@@ -16,6 +16,7 @@ import json
 import os
 
 import pytest
+from memriver import hooks
 from memriver.hooks import (
     HookResult,
     encode_claude_session_start,
@@ -238,6 +239,39 @@ def test_unusable_session_input_is_a_silent_invalid_input_line(harness, payload_
     result = run_hook("session-start", harness, payload_text, root=tmp_path / "root",
                       project_dir=None, cwd=tmp_path)
     assert result == HookResult(stderr="memriver hook: invalid input\n")
+
+
+def test_a_decoder_failure_that_is_not_a_json_error_is_still_invalid_input(tmp_path):
+    """The parse boundary is about the decoder, not one exception class.
+
+    100k nested arrays exhaust the recursion limit inside ``json.loads``, which
+    raises ``RecursionError`` -- not ``JSONDecodeError``, not ``TypeError``. A
+    hook that lets that through fails the harness session it exists to help.
+    """
+    payload_text = "[" * 100_000 + "]" * 100_000
+    result = run_hook("session-start", "claude-code", payload_text,
+                      root=tmp_path / "root", project_dir=None, cwd=tmp_path)
+    assert result == HookResult(stderr="memriver hook: invalid input\n")
+
+
+@pytest.mark.parametrize("failing", ["_compose", "_emit"])
+def test_composition_failures_stay_inside_the_fail_open_boundary(failing, tmp_path,
+                                                                 monkeypatch,
+                                                                 fake_service):
+    """Everything after the store read is inside the boundary too.
+
+    Composition and JSON encoding are the last two steps, and neither used to
+    be guarded: an exception there escaped ``run_hook`` outright.
+    """
+    def boom(*args, **kwargs):
+        raise RuntimeError(f"/private/secret/{failing} is on fire")
+
+    fake_service()
+    monkeypatch.setattr(hooks, failing, boom)
+    result = session_start("claude-code", {"cwd": str(tmp_path)},
+                           root=tmp_path / "root")
+    assert result == HookResult(stderr="memriver hook: memory store is unavailable\n")
+    assert "secret" not in result.stderr
 
 
 @pytest.mark.parametrize("failing", ["build", "index"])

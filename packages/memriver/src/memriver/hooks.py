@@ -115,19 +115,27 @@ def _session_start(harness: Harness, payload_text: str, *, root: Path | None,
                    project_dir: Path | None, cwd: Path) -> HookResult:
     try:
         payload = json.loads(payload_text)
-    except (json.JSONDecodeError, TypeError):
+    except Exception:  # noqa: BLE001 - see below
+        # every decoder failure is the same answer, so the boundary is the
+        # decoder rather than a list of its exception classes: deeply nested
+        # input raises RecursionError, and a future stdlib could raise
+        # something else again. `Exception`, never `BaseException`, so a
+        # KeyboardInterrupt still ends the process it interrupted.
         return HookResult(stderr=INVALID_INPUT)
     if not isinstance(payload, dict):
         return HookResult(stderr=INVALID_INPUT)
     try:
         encode = _SESSION_START_ENCODERS[harness]
         index = _read_index(root, _resolve_dir(payload, project_dir, cwd))
+        text = _compose(index, payload.get("source"))
+        return HookResult(stdout=_emit(encode(text)))
     except Exception:  # noqa: BLE001 - the reason belongs in `memriver doctor`
-        # path-free on purpose: this line can reach a shared terminal, and a
-        # store path is the one thing here worth not printing
+        # one boundary around everything after the payload shape check --
+        # encoder lookup, store read, composition and JSON emission alike --
+        # because any of them escaping fails the session this hook exists to
+        # help. path-free on purpose: this line can reach a shared terminal,
+        # and a store path is the one thing here worth not printing.
         return HookResult(stderr=STORE_UNAVAILABLE)
-    text = _compose(index, payload.get("source"))
-    return HookResult(stdout=_emit(encode(text)))
 
 
 def _resolve_dir(payload: dict[str, Any], project_dir: Path | None,
