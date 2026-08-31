@@ -561,6 +561,29 @@ def test_a_reinstall_that_changes_nothing_reports_it_and_prompts_for_nothing(hom
 
     assert result.exit_code == 0
     assert "already up to date" in result.stdout
+    assert CODEX_TRUST_TEXT not in result.stdout  # no Codex, no Codex note
+    assert snapshot_tree(home) == before_tree
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_a_codex_reinstall_that_changes_nothing_still_states_the_trust_step(
+        home, project, dry_run):
+    """The trust step is not a property of writing; it is a property of Codex.
+
+    Codex hooks are unmanaged and must be reviewed through /hooks before they
+    run at all. A user who missed the note the first time reaches for the
+    installer again -- and "already up to date" without the note tells them
+    nothing is left to do, when the step that makes the hooks work is.
+    """
+    install(["codex"], home=home, cwd=project, yes=True)
+    before_tree = snapshot_tree(home)
+
+    result = install(["codex"], home=home, cwd=project, yes=False,
+                     dry_run=dry_run, input_fn=refuse_to_read)
+
+    assert result.exit_code == 0
+    assert "already up to date" in result.stdout
+    assert CODEX_TRUST_TEXT in result.stdout
     assert snapshot_tree(home) == before_tree
 
 

@@ -370,6 +370,12 @@ def _roll_back(writes: Sequence[_Write],
 # --- reporting ----------------------------------------------------------------
 
 
+def _write_codex_trust_note(harnesses: Sequence[str], stdout: TextIO) -> None:
+    """Spec 5.4: every completion path that names Codex names the trust step."""
+    if "codex" in harnesses:
+        stdout.write("\n" + CODEX_TRUST_NOTE + "\n")
+
+
 def _restore_command(backup: Path, path: Path) -> str:
     return f"cp -p -- {shlex.quote(str(backup))} {shlex.quote(str(path))}"
 
@@ -407,14 +413,17 @@ def run_install(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
 
     if not plan.changes:
         stdout.write("memriver install: already up to date, nothing to change.\n")
+        # the trust step is a property of Codex, not of having written
+        # something: an untrusted hook definition does not run, and a
+        # reinstall is exactly what a user who missed the note reaches for
+        _write_codex_trust_note(harnesses, stdout)
         return 0
 
     stdout.write("".join("\n" + change.summary for change in plan.changes))
 
     if dry_run:
         stdout.write("\ndry run: nothing was written.\n")
-        if "codex" in harnesses:
-            stdout.write("\n" + CODEX_TRUST_NOTE + "\n")
+        _write_codex_trust_note(harnesses, stdout)
         return 0
 
     try:
