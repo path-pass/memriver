@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 import pytest
+from memriver_core.application.diagnostics import DiagnosticsService
 from memriver_core.application.errors import StorageFailure
 from memriver_core.models import Memory, ProjectId, Scope, StoreReport
 from memriver_core.repository.filesystem import FilesystemStoreInspector
@@ -90,6 +91,30 @@ def test_bad_name_stays_listed_and_is_unaddressable(tmp_path):
     assert [(f.kind, f.location_hint) for f in report.findings] == [
         ("unaddressable-id", path.relative_to(tmp_path).as_posix())
     ]
+
+
+def test_unaddressable_project_scope_stays_listed_and_degrades_diagnostics(tmp_path):
+    """A directory-derived project scope the real repository's `_scope_dir()`
+    would reject (e.g. an uppercase slug) must not be judged healthy: the
+    entry stays listed, but is reported as a fixed, path-free
+    `unaddressable-scope` finding, and the umbrella diagnostics state reflects
+    it as `degraded`, not `healthy`."""
+    bad_scope = Scope.project(ProjectId("Bad_Project"))
+    path = write_memory(tmp_path, id="foo", scope=bad_scope)
+    inspector = FilesystemStoreInspector(tmp_path)
+
+    report = inspector.inspect()
+    assert [item.memory.id for item in report.entries] == ["foo"]
+    assert [(f.kind, f.location_hint) for f in report.findings] == [
+        ("unaddressable-scope", path.relative_to(tmp_path).as_posix())
+    ]
+    assert str(tmp_path) not in report.findings[0].reason
+
+    diagnostics = DiagnosticsService(inspector).run()
+    assert diagnostics.state == "degraded"
+    scope_finding = next(f for f in diagnostics.findings if f.kind == "unaddressable-scope")
+    assert scope_finding.location_hints == (path.relative_to(tmp_path).as_posix(),)
+    assert not scope_finding.location_hints[0].startswith("/")
 
 
 @pytest.mark.parametrize(

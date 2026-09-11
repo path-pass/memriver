@@ -34,6 +34,7 @@ _BACKEND_SUGGESTIONS = {
     "scope-directory-mismatch": "move the entry to the location matching its stored scope",
     "id-stem-mismatch": "rename the entry so its location matches its stored id",
     "unaddressable-id": "rename the entry to an id the memory API can address",
+    "unaddressable-scope": "move the entry to a project scope the memory API can address",
 }
 _DEFAULT_BACKEND_SUGGESTION = "inspect this entry manually; its finding kind is unrecognized"
 

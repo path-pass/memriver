@@ -24,7 +24,7 @@ from memriver_core.models import (
 )
 
 from .markdown_codec import UnparsableStoredScope, decode
-from .repository import _dir_scope
+from .repository import _dir_scope, _scope_dir
 
 # Fixed, client-safe wording per finding kind. Exception text never reaches a
 # reason: it would carry absolute paths, errno strings and library detail
@@ -36,6 +36,8 @@ _REASONS = {
         "stored scope does not match the directory the entry lives in",
     "id-stem-mismatch": "stored id does not match the entry file name",
     "unaddressable-id": "stored id is not a shape the memory API can address",
+    "unaddressable-scope":
+        "stored scope is not a shape the memory API can address",
 }
 
 
@@ -152,3 +154,17 @@ class FilesystemStoreInspector:
             # before they ever look for the file. Both facts are true, so the
             # entry stays listed AND the gap is reported.
             findings.append(finding("unaddressable-id"))
+        if not self._is_addressable_scope(memory.scope):
+            # same shape of gap, one level up: the directory name decoded into
+            # a scope that agrees with the file's own frontmatter, but the
+            # real repository's `_scope_dir()` would refuse to route a read or
+            # write back to it (e.g. an uppercase project slug). Reuse that
+            # adapter's own validation rather than copying its regex here.
+            findings.append(finding("unaddressable-scope"))
+
+    def _is_addressable_scope(self, scope: Scope) -> bool:
+        try:
+            _scope_dir(scope)
+        except ValueError:
+            return False
+        return True
