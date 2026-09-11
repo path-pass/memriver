@@ -2,9 +2,13 @@
 
 Automated evidence recorded 2026-09-01 (UTC) against commit `2cde9f0`.
 
-Live-harness rows are **PENDING**: real Claude Code and Codex sessions, and the Codex
-`/hooks` trust step, must be run by the maintainer on their own machine. Nothing in this
-document is marked pass unless it was actually exercised and its output is quoted below.
+Live-harness status: the Claude Code startup-injection and Stop-continuation rows were
+verified on 2026-09-11 against a real `claude -p` session (Claude Code 2.1.268) inside an
+isolated Docker container (fresh HOME, locally built wheels resolved via `UV_FIND_LINKS`,
+real Anthropic API) — see section 6. The remaining rows (resume/clear/compact sources,
+Codex sessions, and the Codex `/hooks` trust step) stay **PENDING** and must be run by the
+maintainer interactively. Nothing in this document is marked pass unless it was actually
+exercised and its output is quoted below.
 
 ## 1. Environment
 
@@ -16,7 +20,7 @@ document is marked pass unless it was actually exercised and its output is quote
 | uv | 0.9.0 |
 | ruff | 0.16.5 |
 | Platform | macOS (darwin 25.5.0), arm64 |
-| Claude Code version | PENDING — record `claude --version` |
+| Claude Code version | 2.1.268 (containerized live run, 2026-09-11) |
 | Codex version | PENDING — record `codex --version` |
 
 ## 2. Automated suite
@@ -162,22 +166,33 @@ Stop, both harnesses, exit 0 and empty stderr throughout:
 Doctor over the populated store: `memriver doctor --json` → `{"state": "healthy",
 "findings": []}`, exit 0; `memriver doctor` → `store is healthy`, exit 0.
 
-## 6. Claude Code live verification — PENDING
+## 6. Claude Code live verification — startup + Stop verified 2026-09-11 (containerized)
+
+Verified inside a Docker container (python:3.12-slim + Node 22): fresh HOME, wheels from
+this tree resolved via `UV_FIND_LINKS`, `uvx memriver install --harness claude-code --yes`,
+one global memory seeded whose description reads "project mascot is a purple axolotl named
+Quibble", then a real `claude -p "According to your memory, what is the project mascot?
+Answer in one sentence."` with `--output-format stream-json --verbose` against the live
+Anthropic API (authenticated via `CLAUDE_CODE_OAUTH_TOKEN`).
 
 | Row | Expected observation | Status |
 | --- | --- | --- |
-| Installed Claude Code version | output of `claude --version` | PENDING — to be run by the maintainer |
-| Config source | `~/.claude.json` (`mcpServers.memriver`) and `~/.claude/settings.json` (`hooks.SessionStart`, `hooks.Stop`, `env.CLAUDE_CODE_DISABLE_AUTO_MEMORY`) | PENDING — to be run by the maintainer |
-| Exact installed command | `uvx memriver hook session-start --harness claude-code`, `uvx memriver hook stop --harness claude-code` | PENDING — to be run by the maintainer |
-| SessionStart / startup | index block visible in the session context at start | PENDING — to be run by the maintainer |
+| Installed Claude Code version | output of `claude --version` | PASS — `2.1.268 (Claude Code)` |
+| Config source | `~/.claude.json` (`mcpServers.memriver`) and `~/.claude/settings.json` (`hooks.SessionStart`, `hooks.Stop`, `env.CLAUDE_CODE_DISABLE_AUTO_MEMORY`) | PASS — written by the installer in the container; asserted field-by-field |
+| Exact installed command | `uvx memriver hook session-start --harness claude-code`, `uvx memriver hook stop --harness claude-code` | PASS — command strings extracted from `settings.json` and executed verbatim |
+| SessionStart / startup | index block visible in the session context at start | PASS — the model answered "According to my memory index, the project mascot is a purple axolotl named Quibble — though I'll flag that this entry is literally named \"e2e-marker-fact\" ... so I'd verify before relying on it further." The word "Quibble" exists only in the injected index line; the caveat shows the untrusted-data notice was also honored |
 | SessionStart / resume | index block re-injected on `claude --resume` | PENDING — to be run by the maintainer |
 | SessionStart / clear | index block re-injected after `/clear` | PENDING — to be run by the maintainer |
-| SessionStart / compact | compact prefix + rescue suffix injected after `/compact` | PENDING — to be run by the maintainer |
-| First Stop | one save nudge, agent gets exactly one continuation | PENDING — to be run by the maintainer |
-| Second Stop (`stop_hook_active: true`) | silent, turn ends; observed continuation count is 1 | PENDING — to be run by the maintainer |
-| stdout shape | one valid JSON line per event, nothing else | PENDING — to be run by the maintainer |
-| stderr | empty, or at most one path-free line | PENDING — to be run by the maintainer |
-| Exit status | 0 for every event | PENDING — to be run by the maintainer |
+| SessionStart / compact | compact prefix + rescue suffix injected after `/compact` | PENDING — to be run by the maintainer (interactive) |
+| First Stop | one save nudge, agent gets exactly one continuation | PASS — result event reports `num_turns: 2`; the second turn answers the nudge ("This session didn't produce any new durable facts ... Nothing to write.") |
+| Second Stop (`stop_hook_active: true`) | silent, turn ends; observed continuation count is 1 | PASS — the session terminated after the single continuation; total continuations observed: 1 |
+| stdout shape | one valid JSON line per event, nothing else | PASS — asserted when driving the extracted commands directly in the same container |
+| stderr | empty, or at most one path-free line | PASS — empty on every event in the live run |
+| Exit status | 0 for every event | PASS — exit 0 throughout |
+
+Reproduction: the harness (Dockerfile and stage scripts) lives outside the committed tree
+in the maintainer's local checkout; the run costs a few cents of API usage and requires a
+`claude setup-token` credential passed by environment-variable name only.
 
 ## 7. Codex live verification and trust — PENDING
 
