@@ -62,9 +62,21 @@ def _map_backend_finding(finding: StoreFinding) -> DiagnosticFinding:
     )
 
 
+def _stale_cutoff(now_dt: datetime, stale_days: int) -> datetime:
+    try:
+        return now_dt - timedelta(days=stale_days)
+    except OverflowError:
+        # the cutoff underflows datetime's representable range (either
+        # `timedelta(days=...)` itself overflows, or the subtraction pushes
+        # past `datetime.min`). datetime.min is already earlier than any
+        # representable timestamp, so nothing can be staler than it -- no new
+        # config, no product cap, just the honest bound.
+        return datetime.min.replace(tzinfo=UTC)
+
+
 def _staleness_findings(report: StoreReport, now_dt: datetime,
                         stale_days: int) -> list[DiagnosticFinding]:
-    cutoff = now_dt - timedelta(days=stale_days)
+    cutoff = _stale_cutoff(now_dt, stale_days)
     findings: list[DiagnosticFinding] = []
     for entry in report.entries:
         memory = entry.memory

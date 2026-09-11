@@ -151,6 +151,16 @@ def test_backend_findings_precede_policy_findings():
     assert result.findings[1].kind == "stale"
 
 
+def test_huge_stale_days_on_empty_store_does_not_overflow():
+    # the cutoff (now - stale_days) underflows datetime's representable range
+    # well before an empty, initialized store has any entry to compare it
+    # against; clamping to datetime.min must keep this a plain "empty" run,
+    # not an OverflowError bubbling past the doctor boundary.
+    report = StoreReport(True, (), ())
+    result = DiagnosticsService(FakeInspector(report)).run(now=FIXED_NOW, stale_days=1_000_000)
+    assert result.state == "empty"
+
+
 def test_now_none_uses_current_time_and_does_not_raise():
     result = DiagnosticsService(FakeInspector(StoreReport(True, (inspected("a"),), ()))).run()
     assert result.state == "healthy"

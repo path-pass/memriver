@@ -113,6 +113,19 @@ def test_inaccessible_store_is_path_free_exit_two(monkeypatch, tmp_path):
     assert result.stderr == "memriver doctor: memory store is inaccessible\n"
 
 
+def test_huge_stale_days_against_a_missing_store_stays_uninitialized(tmp_path):
+    """CLI-boundary regression against a REAL store, not the fake service: a
+    `stale_days` cutoff so large it underflows datetime's representable range
+    must not turn a store that was never initialized into a reported
+    'inaccessible' (exit 2) -- it stays 'uninitialized' (exit 0), because the
+    cutoff arithmetic, not the store, was the thing out of range."""
+    result = invoke_doctor(root=tmp_path / "missing", stale_days=1_000_000)
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    assert result.stdout == "store not initialized yet\n"
+
+
 @pytest.mark.parametrize("json_output", [False, True])
 def test_an_invalid_env_setting_is_the_same_path_free_exit_two(monkeypatch, tmp_path,
                                                                json_output):
