@@ -69,7 +69,7 @@ def _staleness_findings(report: StoreReport, now_dt: datetime,
         memory = entry.memory
         try:
             updated_dt = _timestamp(memory.updated)
-        except ValueError:
+        except (ValueError, OverflowError):
             findings.append(DiagnosticFinding(
                 kind="invalid-updated",
                 memory_ids=(memory.id,),

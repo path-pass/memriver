@@ -128,6 +128,21 @@ def test_naive_updated_is_invalid_not_a_crash():
     assert result.state == "degraded"
 
 
+def test_timestamp_conversion_overflow_is_invalid_not_a_crash():
+    # syntactically valid ISO 8601, but astimezone(UTC) overflows datetime's
+    # representable range -- must be reported as one invalid-updated finding,
+    # not raise past the doctor boundary.
+    overflow = inspected("overflow-one", updated="0001-01-01T00:00:00+14:00")
+    report = StoreReport(True, (overflow,), ())
+    inspector = FakeInspector(report)
+    result = DiagnosticsService(inspector).run(now=FIXED_NOW)
+    invalid = [f for f in result.findings if f.kind == "invalid-updated"]
+    assert len(invalid) == 1
+    assert invalid[0].memory_ids == ("overflow-one",)
+    assert result.state == "degraded"
+    assert inspector.calls == 1
+
+
 def test_backend_findings_precede_policy_findings():
     old = inspected("old-one", updated="2025-01-01T00:00:00Z")
     report = StoreReport(True, (old,), (store_finding("unparsable"),))
