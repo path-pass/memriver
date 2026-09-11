@@ -7,3 +7,4 @@ dist/
 .backlog
 .pytest_cache/
 .idea/
+e2e/
