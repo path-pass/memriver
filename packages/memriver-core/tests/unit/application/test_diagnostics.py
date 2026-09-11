@@ -6,6 +6,7 @@ state derivation) without a filesystem.
 from __future__ import annotations
 
 import pytest
+from memriver_core.application import diagnostics
 from memriver_core.application.diagnostics import DiagnosticsService
 from memriver_core.models import (
     InspectedMemory,
@@ -87,7 +88,11 @@ def test_malformed_now_fails_before_inspection():
     ],
 )
 def test_state_is_derived_without_backend_guessing(report, state):
-    assert DiagnosticsService(FakeInspector(report)).run().state == state
+    # a fixed `now` isolates state derivation from staleness policy: the
+    # fixture entries carry `updated=FIXED_NOW`, and without an explicit
+    # `now` the real clock would eventually flag them stale, flipping the
+    # expected "healthy" case here to "degraded".
+    assert DiagnosticsService(FakeInspector(report)).run(now=FIXED_NOW).state == state
 
 
 # --- Step 2: policy tests ----------------------------------------------------
@@ -161,7 +166,12 @@ def test_huge_stale_days_on_empty_store_does_not_overflow():
     assert result.state == "empty"
 
 
-def test_now_none_uses_current_time_and_does_not_raise():
+def test_now_none_uses_current_time_and_does_not_raise(monkeypatch):
+    # exercises the default-clock path (`now=None`) without depending on the
+    # real wall clock's distance from the fixture entries' fixed
+    # `updated=FIXED_NOW`: fixing `_default_now` keeps this test's outcome
+    # independent of when it runs.
+    monkeypatch.setattr(diagnostics, "_default_now", lambda: FIXED_NOW)
     result = DiagnosticsService(FakeInspector(StoreReport(True, (inspected("a"),), ()))).run()
     assert result.state == "healthy"
 
