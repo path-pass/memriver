@@ -24,6 +24,10 @@ from memriver.install.editors import (
 
 HARNESS = "codex"
 
+# named, because `notes()` has to ask whether these two ended up in effect
+SESSION_START_HOOK_ID = "codex:hooks-session-start"
+STOP_HOOK_ID = "codex:hooks-stop"
+
 # Spec 5.3's other half: unset or already-off means "do nothing **and say
 # so**". Read-only completion text, never a confirmable operation -- there is
 # nothing to write, and a prompt for it would ask the user to accept a no-op.
@@ -38,6 +42,19 @@ HOOKS_DISABLED_NOTE = (
     "runs -- including the ones installed here, and trusting them via /hooks "
     "will not change that. Set features.hooks = true (or remove the line) to "
     "let memriver inject your index at session start."
+)
+
+# The same switch, with the definitions it points at missing: consent is per
+# change, so a user can accept the MCP registration and decline both hooks,
+# and a dry run writes nothing at all. Enabling the feature would then turn on
+# a hooks system that holds no memriver definition, so the remediation has to
+# start with installing them.
+HOOKS_DISABLED_WITHOUT_DEFINITIONS_NOTE = (
+    "codex: features.hooks = false in ~/.codex/config.toml, so no Codex hook "
+    "runs, and ~/.codex/hooks.json holds no memriver hook definition either. "
+    "Run memriver install codex again and accept the hook changes, then set "
+    "features.hooks = true (or remove the line) and trust the definitions via "
+    "/hooks to let memriver inject your index at session start."
 )
 
 NATIVE_MEMORY_OFF_NOTE = (
@@ -82,7 +99,7 @@ def operations(
             key_path=("mcp_servers", "memriver"),
         ),
         EditOperation(
-            id="codex:hooks-session-start",
+            id=SESSION_START_HOOK_ID,
             target=hooks.target,
             label="install the session-start hook",
             kind="hook-array",
@@ -91,7 +108,7 @@ def operations(
             identity=hook_identity("session-start"),
         ),
         EditOperation(
-            id="codex:hooks-stop",
+            id=STOP_HOOK_ID,
             target=hooks.target,
             label="install the stop hook",
             kind="hook-array",
@@ -114,12 +131,25 @@ def operations(
     return tuple(ops)
 
 
-def notes(snapshots: tuple[Snapshot, Snapshot], env: Mapping[str, str]) -> tuple[str, ...]:
-    """Read-only completion text: what was checked and deliberately left alone."""
+def notes(snapshots: tuple[Snapshot, Snapshot], env: Mapping[str, str],
+          in_effect: frozenset[str]) -> tuple[str, ...]:
+    """Read-only completion text: what was checked and deliberately left alone.
+
+    ``in_effect`` names the operations that hold once the run is over. The
+    config says whether Codex will run a hook at all; only that set says
+    whether there is a memriver hook there to run, and the two together decide
+    which remediation the note can honestly ask for.
+    """
     del env
     config, _ = snapshots
     features = _features(config.text)
-    lines = [] if features.get("hooks") is not False else [HOOKS_DISABLED_NOTE]
+    lines = []
+    if features.get("hooks") is False:
+        lines.append(
+            HOOKS_DISABLED_NOTE
+            if {SESSION_START_HOOK_ID, STOP_HOOK_ID} <= in_effect
+            else HOOKS_DISABLED_WITHOUT_DEFINITIONS_NOTE
+        )
     if features.get("memories") is not True:
         lines.append(NATIVE_MEMORY_OFF_NOTE)
     return tuple(lines)

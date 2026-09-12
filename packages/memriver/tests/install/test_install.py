@@ -40,6 +40,9 @@ from memriver.install.codex import (
     HOOKS_DISABLED_NOTE as CODEX_HOOKS_DISABLED_NOTE,
 )
 from memriver.install.codex import (
+    HOOKS_DISABLED_WITHOUT_DEFINITIONS_NOTE as CODEX_NO_DEFINITIONS_NOTE,
+)
+from memriver.install.codex import (
     NATIVE_MEMORY_OFF_NOTE as CODEX_NATIVE_MEMORY_OFF_NOTE,
 )
 
@@ -967,6 +970,46 @@ def test_codex_says_so_when_the_hooks_feature_is_switched_off(home, project):
 
     assert result.exit_code == 0
     assert CODEX_HOOKS_DISABLED_NOTE in result.stdout
+
+
+def test_codex_hooks_disabled_note_never_claims_a_declined_hook_was_installed(
+        home, project):
+    """The note was planned from the config alone, but consent is per change:
+    accepting the MCP registration and declining both hooks leaves
+    `~/.codex/hooks.json` without a single memriver definition. Telling that
+    user to enable `features.hooks` and trust the hooks via /hooks is a
+    remediation for hooks nobody installed."""
+    write(home / ".codex" / "config.toml",
+          "[features]\nhooks = false\nmemories = false\n")
+
+    result = install(["codex"], home=home, cwd=project, yes=False,
+                     replies=["y", "n", "n"])
+
+    assert result.exit_code == 0
+    assert not (home / ".codex" / "hooks.json").exists()
+    assert CODEX_HOOKS_DISABLED_NOTE not in result.stdout
+    assert CODEX_NO_DEFINITIONS_NOTE in result.stdout
+
+
+def test_codex_hooks_disabled_note_stands_when_the_definitions_already_exist(
+        home, project):
+    """The other half of the same question: a run that changes no hook leaves
+    the definitions an earlier run wrote, so the feature flag really is the
+    only thing between the user and a working hook."""
+    write(home / ".codex" / "config.toml",
+          "[features]\nhooks = false\nmemories = false\n")
+    write(home / ".codex" / "hooks.json", json.dumps({"hooks": {
+        "SessionStart": [hook_group(
+            "uvx memriver hook session-start --harness codex")],
+        "Stop": [hook_group("uvx memriver hook stop --harness codex")],
+    }}))
+
+    result = install(["codex"], home=home, cwd=project, yes=False,
+                     replies=["n"])
+
+    assert result.exit_code == 0
+    assert CODEX_HOOKS_DISABLED_NOTE in result.stdout
+    assert CODEX_NO_DEFINITIONS_NOTE not in result.stdout
 
 
 def test_installing_all_four_harnesses_writes_every_target(home, project):
