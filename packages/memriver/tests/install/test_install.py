@@ -944,6 +944,31 @@ def test_rollback_leaves_a_directory_whose_path_was_recycled_by_another_actor(
     assert kiro.is_dir()  # holding a stranger's directory, not provably empty
 
 
+def test_rollback_removes_a_created_directory_whose_identity_stat_failed(
+        monkeypatch, home, project):
+    """The identity `lstat` right after `mkdir` is its own fallible filesystem
+    call, distinct from the `mkdir` that already succeeded. If it raises, the
+    directory must not silently drop out of `_make_dirs`'s bookkeeping and
+    leak -- it is still this run's to clean up, verified or not."""
+    settings = home / ".kiro" / "settings"
+    kiro = home / ".kiro"
+    real_lstat = Path.lstat
+
+    def failing_lstat(self, *args, **kwargs):
+        if self == settings and self.exists():
+            raise OSError("injected identity-stat failure")
+        return real_lstat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", failing_lstat)
+
+    result = install(["kiro"], home=home, cwd=project, yes=True,
+                     replace=ReplaceSpy(fail_at={1}))
+
+    assert result.exit_code != 0
+    assert not settings.exists()
+    assert not kiro.exists()
+
+
 def test_an_interrupt_rolls_the_run_back_and_still_propagates(home, project):
     """Ctrl-C between replacements must not leave a half-applied tree behind."""
     claude_json = write(home / ".claude.json", json.dumps({"apiKey": SECRET}),

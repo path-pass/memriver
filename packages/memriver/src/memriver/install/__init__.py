@@ -288,14 +288,27 @@ class _CreatedDir:
     ``mkdir`` creating the directory is the ownership claim (see
     ``_make_dirs``), but the path alone stops proving that claim the moment
     another actor deletes and recreates it: a directory is a path plus an
-    inode, and only the pair says rollback would be removing the same one it
-    made. ``st_dev`` travels with ``st_ino`` because inode numbers are only
-    unique within one filesystem.
+    inode, and the pair narrows -- it does not eliminate -- the chance that
+    rollback removes a directory this run did not make. ``st_dev`` travels
+    with ``st_ino`` because inode numbers are only unique within one
+    filesystem.
+
+    This is best-effort identity verification, not a proof: POSIX has no
+    atomic "mkdir and stat" or "stat and rmdir", so two windows stay open no
+    matter how this is written -- between this ``mkdir`` and the ``lstat``
+    that records identity, and, later, between the cleanup ``lstat`` and its
+    ``rmdir`` (see ``_remove_created_dirs``). Both require another actor to
+    delete and recreate this exact path inside a very short window, and
+    ``rmdir`` only ever removes an empty directory, but neither window can be
+    closed with plain path operations. ``dev``/``ino`` are ``None`` when the
+    post-``mkdir`` ``lstat`` itself failed: the directory is still ours by
+    construction, just unverified, and cleanup falls back to removing it
+    outright rather than dropping it and leaking it.
     """
 
     path: Path
-    dev: int
-    ino: int
+    dev: int | None
+    ino: int | None
 
 
 @dataclass(frozen=True)
@@ -365,7 +378,7 @@ def _write_target(snapshot: Snapshot, text: str, root: Path | None, stamp: str,
             "nothing further was written -- re-run memriver install"
         )
     original_mode = snapshot.mode
-    created_dirs: tuple[Path, ...] = ()
+    created_dirs: tuple[_CreatedDir, ...] = ()
     try:
         created_dirs = _make_dirs(target.path.parent)
         backup = (
@@ -398,10 +411,17 @@ def _make_dirs(directory: Path) -> tuple[_CreatedDir, ...]:
     atomic across levels, so a failure part way up leaves directories behind
     that no return value names. A failure here cleans up its own climb.
 
-    Each record carries the ``(st_dev, st_ino)`` the fresh ``mkdir`` produced,
-    not just the path: rollback re-checks that pair before it removes anything,
-    so a path recycled by another actor in the meantime is never mistaken for
-    the directory this run made.
+    Each record carries the ``(st_dev, st_ino)`` a fresh post-``mkdir``
+    ``lstat`` produced, not just the path: rollback re-checks that pair
+    before it removes anything, which narrows -- but, being plain POSIX path
+    operations with no atomic "mkdir and stat", cannot eliminate -- the
+    chance that a path recycled by another actor in the meantime is mistaken
+    for the directory this run made (see ``_CreatedDir`` and
+    ``_remove_created_dirs``). That ``lstat`` is itself a fallible filesystem
+    call, separate from the ``mkdir`` that already succeeded: its failure
+    must not drop the directory from ``created`` and leak it, so it is
+    recorded with ``dev``/``ino`` left ``None`` -- ours by construction, its
+    identity simply unverified -- rather than treated as a reason to stop.
     """
     created: list[_CreatedDir] = []
     try:
@@ -411,7 +431,11 @@ def _make_dirs(directory: Path) -> tuple[_CreatedDir, ...]:
                 parent.mkdir()
             except FileExistsError:
                 continue
-            info = parent.lstat()
+            try:
+                info = parent.lstat()
+            except OSError:
+                created.insert(0, _CreatedDir(parent, None, None))
+                continue
             created.insert(0, _CreatedDir(parent, info.st_dev, info.st_ino))
     except BaseException:
         _remove_created_dirs(created)
@@ -421,7 +445,8 @@ def _make_dirs(directory: Path) -> tuple[_CreatedDir, ...]:
 
 def _remove_created_dirs(created_dirs: Sequence[_CreatedDir]) -> None:
     """Take back the directories this run made, deepest first, while they hold
-    the same identity ``_make_dirs`` recorded and are still empty.
+    the same identity ``_make_dirs`` recorded (or none was ever verified) and
+    are still empty.
 
     A path missing outright is not proof that an ancestor this run also made
     cannot still be removed -- another actor taking the emptied leaf away
@@ -431,12 +456,28 @@ def _remove_created_dirs(created_dirs: Sequence[_CreatedDir]) -> None:
     deleted and recreated by another actor in the same window -- and neither
     it nor anything above it (now proven non-empty by holding that stranger)
     is this run's to remove, so the climb stops there. Only once identity
-    matches does ``rmdir`` run, and it adds the last guard on its own: a
-    directory holding a backup this run wrote, another harness's file, or a
-    target still to be rolled back refuses removal, which stops the climb the
-    same way.
+    matches, or was never captured (``dev`` is ``None``, best-effort: `mkdir`
+    succeeded but the identity ``lstat`` in ``_make_dirs`` did not), does
+    ``rmdir`` run, and it adds the last guard on its own: a directory holding
+    a backup this run wrote, another harness's file, or a target still to be
+    rolled back refuses removal, which stops the climb the same way.
+
+    This check is best-effort, not a proof of ownership: POSIX has no atomic
+    "stat and rmdir" any more than ``_make_dirs`` has an atomic "mkdir and
+    stat", so a replacement that lands in the instant between this ``lstat``
+    and the ``rmdir`` below is still removed. Both windows require exact,
+    very short concurrent timing to hit, and ``rmdir`` never touches a
+    non-empty directory, but neither one is closed.
     """
     for created in created_dirs:
+        if created.dev is None:
+            try:
+                created.path.rmdir()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return
+            continue
         try:
             info = created.path.lstat()
         except FileNotFoundError:

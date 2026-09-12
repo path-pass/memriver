@@ -183,6 +183,27 @@ def test_json_object_merge_rejects_unusable_documents(source):
         json_object_merge(source, ("mcpServers", "memriver"), MEMRIVER_MCP)
 
 
+def test_json_object_merge_maps_a_too_deeply_nested_document_to_planning_error():
+    """`json.loads` raises `RecursionError`, not `ValueError`, once a
+    syntactically legal document nests past the interpreter's limit -- a
+    distinct exception that needs its own boundary mapping alongside the
+    duplicate-name and non-finite-number guards. 2,000 levels still parses on
+    CPython 3.12 (it only trips the render-side catch once re-serialized);
+    100,000 reliably fails on the parse side itself, which is the branch this
+    pins."""
+    nested = "[" * 100_000 + "]" * 100_000
+    source = '{"foreign": ' + nested + "}"
+
+    with pytest.raises(PlanningError) as raised:
+        json_object_merge(source, ("mcpServers", "memriver"), MEMRIVER_MCP)
+
+    assert str(raised.value) == (
+        "file nests too deeply for memriver to parse; flatten it and run "
+        "install again"
+    )
+    assert isinstance(raised.value.__cause__, RecursionError)
+
+
 def test_json_object_merge_rejects_non_dict_intermediate():
     with pytest.raises(PlanningError):
         json_object_merge(
