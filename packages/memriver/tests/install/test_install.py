@@ -969,6 +969,31 @@ def test_rollback_removes_a_created_directory_whose_identity_stat_failed(
     assert not kiro.exists()
 
 
+def test_a_keyboard_interrupt_between_mkdir_and_lstat_still_gets_rolled_back(
+        monkeypatch, home, project):
+    """A directory is recorded the instant `mkdir` returns, before the
+    identity `lstat` right after it ever runs -- so a `KeyboardInterrupt`
+    landing in that gap (not just an `OSError` from `lstat` itself) still
+    finds the directory already in `created` and rolls it back, instead of
+    leaking it because the interrupt struck before the record existed."""
+    settings = home / ".kiro" / "settings"
+    kiro = home / ".kiro"
+    real_lstat = Path.lstat
+
+    def interrupting_lstat(self, *args, **kwargs):
+        if self == settings and self.exists():
+            raise KeyboardInterrupt()
+        return real_lstat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", interrupting_lstat)
+
+    with pytest.raises(KeyboardInterrupt):
+        install(["kiro"], home=home, cwd=project, yes=True)
+
+    assert not settings.exists()
+    assert not kiro.exists()
+
+
 def test_an_interrupt_rolls_the_run_back_and_still_propagates(home, project):
     """Ctrl-C between replacements must not leave a half-applied tree behind."""
     claude_json = write(home / ".claude.json", json.dumps({"apiKey": SECRET}),

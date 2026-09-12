@@ -406,10 +406,10 @@ def _make_dirs(directory: Path) -> tuple[_CreatedDir, ...]:
     creating the directory *is* the ownership claim. ``FileExistsError`` means
     somebody else owns that level -- a directory that was always there, or one
     another process created while this run was on its way to it -- so it is
-    skipped rather than recorded, and rollback can never remove a directory
-    this run did not make. ``mkdir(parents=True)`` cannot do this: it is not
-    atomic across levels, so a failure part way up leaves directories behind
-    that no return value names. A failure here cleans up its own climb.
+    skipped rather than recorded. ``mkdir(parents=True)`` cannot do this: it
+    is not atomic across levels, so a failure part way up leaves directories
+    behind that no return value names. A failure here cleans up its own
+    climb.
 
     Each record carries the ``(st_dev, st_ino)`` a fresh post-``mkdir``
     ``lstat`` produced, not just the path: rollback re-checks that pair
@@ -417,11 +417,13 @@ def _make_dirs(directory: Path) -> tuple[_CreatedDir, ...]:
     operations with no atomic "mkdir and stat", cannot eliminate -- the
     chance that a path recycled by another actor in the meantime is mistaken
     for the directory this run made (see ``_CreatedDir`` and
-    ``_remove_created_dirs``). That ``lstat`` is itself a fallible filesystem
-    call, separate from the ``mkdir`` that already succeeded: its failure
-    must not drop the directory from ``created`` and leak it, so it is
-    recorded with ``dev``/``ino`` left ``None`` -- ours by construction, its
-    identity simply unverified -- rather than treated as a reason to stop.
+    ``_remove_created_dirs``). A directory is appended to ``created`` the
+    instant ``mkdir`` returns, with ``dev``/``ino`` still ``None``, and only
+    upgraded with the ``lstat`` identity afterwards: ``lstat`` is itself a
+    fallible filesystem call, and so is everything after it up to the next
+    ``mkdir``, so anything that can interrupt this loop -- an ``OSError``, a
+    ``KeyboardInterrupt``, any ``BaseException`` -- must find the directory
+    already in ``created``, never dropped from it while still leaked on disk.
     """
     created: list[_CreatedDir] = []
     try:
@@ -431,12 +433,9 @@ def _make_dirs(directory: Path) -> tuple[_CreatedDir, ...]:
                 parent.mkdir()
             except FileExistsError:
                 continue
-            try:
-                info = parent.lstat()
-            except OSError:
-                created.insert(0, _CreatedDir(parent, None, None))
-                continue
-            created.insert(0, _CreatedDir(parent, info.st_dev, info.st_ino))
+            created.insert(0, _CreatedDir(parent, None, None))
+            info = parent.lstat()
+            created[0] = _CreatedDir(parent, info.st_dev, info.st_ino)
     except BaseException:
         _remove_created_dirs(created)
         raise
