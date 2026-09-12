@@ -11,16 +11,30 @@ from .memory import (
     now,
     sanitize_name,
 )
+from .store_diagnostics import (
+    DiagnosticFinding,
+    DiagnosticsReport,
+    DiagnosticsState,
+    InspectedMemory,
+    StoreFinding,
+    StoreReport,
+)
 
 __all__ = [
     "ID_RE",
     "AccessContext",
+    "DiagnosticFinding",
+    "DiagnosticsReport",
+    "DiagnosticsState",
     "IndexListing",
+    "InspectedMemory",
     "Memory",
     "MemoryType",
     "ProjectId",
     "Scope",
     "SearchHit",
+    "StoreFinding",
+    "StoreReport",
     "Trust",
     "now",
     "sanitize_name",

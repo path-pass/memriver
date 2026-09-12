@@ -4,8 +4,10 @@ Split out of the former tests/test_config.py; the Settings model and defaults
 catalog cases live next door in test_settings.py.
 """
 
+import os
 from pathlib import Path
 
+import pytest
 from memriver_core.config import load_settings
 
 CONFIG = "config.toml"
@@ -82,6 +84,23 @@ def test_unreadable_config_file_warns_and_does_not_crash(tmp_path, caplog):
         s = load_settings(root_override=root)
     assert s.max_body_chars == 8000 and s.root == root
     assert CONFIG in caplog.text
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+def test_unreadable_config_file_never_logs_the_absolute_path(tmp_path, caplog):
+    """R5: a permission-denied config.toml is a plausible real-world case (a
+    locked-down store root), and its OSError text routinely repeats the
+    absolute path -- the warning must name only CONFIG, never `root`."""
+    root = _root(tmp_path, "max_body_chars = 42\n")
+    (root / CONFIG).chmod(0o000)
+    try:
+        with caplog.at_level("WARNING"):
+            s = load_settings(root_override=root)
+    finally:
+        (root / CONFIG).chmod(0o600)
+    assert s.max_body_chars == 8000
+    assert CONFIG in caplog.text
+    assert str(root) not in caplog.text
 
 
 def test_missing_config_file_is_fine(tmp_path):

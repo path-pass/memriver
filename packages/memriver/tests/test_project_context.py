@@ -1,6 +1,6 @@
 import hashlib
 
-from memriver.project_context import _git_root, build_context, project_slug
+from memriver.project_context import build_context, find_git_root, project_slug
 
 
 def test_git_root_walks_up_from_a_subdirectory(tmp_path):
@@ -8,11 +8,11 @@ def test_git_root_walks_up_from_a_subdirectory(tmp_path):
     (git_repo / ".git").mkdir(parents=True)
     sub = git_repo / "src" / "deep"
     sub.mkdir(parents=True)
-    assert _git_root(sub) == git_repo.resolve()
+    assert find_git_root(sub) == git_repo.resolve()
 
 
 def test_git_root_outside_a_repository_is_none(tmp_path):
-    assert _git_root(tmp_path) is None
+    assert find_git_root(tmp_path) is None
 
 
 def test_project_slug_from_git_root(tmp_path):

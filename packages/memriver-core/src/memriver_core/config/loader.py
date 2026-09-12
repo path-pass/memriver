@@ -17,16 +17,23 @@ CONFIG_FILENAME = "config.toml"
 
 
 def _read_config_file(path: Path) -> dict:
-    """Read a flat TOML file of setting keys. Never raises."""
+    """Read a flat TOML file of setting keys. Never raises.
+
+    Every warning below names only ``CONFIG_FILENAME`` (never ``path``, which
+    may be an absolute, permission-denied, or otherwise sensitive location)
+    and never an exception's own text -- an OSError's str() routinely repeats
+    the absolute path, so it is dropped rather than logged. This mirrors the
+    fieldless discipline `StorageFailure` already applies to that boundary.
+    """
     try:
         with path.open("rb") as fh:
             data = tomllib.load(fh)
     except FileNotFoundError:
         return {}
-    except (OSError, tomllib.TOMLDecodeError, ValueError) as err:
+    except (OSError, tomllib.TOMLDecodeError, ValueError):
         # a broken config file must not stop the server from starting: the
         # defaults are always usable, and stderr carries the reason
-        log.warning("ignoring unreadable %s: %s", path, err)
+        log.warning("ignoring unreadable %s", CONFIG_FILENAME)
         return {}
     known = set(Settings.model_fields)
     values = {}
@@ -34,11 +41,11 @@ def _read_config_file(path: Path) -> dict:
         if key == "root":
             # chicken and egg: the root is what located this file
             log.warning("ignoring 'root' in %s: set MEMRIVER_ROOT or --root instead",
-                        path)
+                        CONFIG_FILENAME)
         elif key in known:
             values[key] = value
         else:
-            log.warning("ignoring unknown key %r in %s", key, path)
+            log.warning("ignoring unknown key %r in %s", key, CONFIG_FILENAME)
     return values
 
 
@@ -62,11 +69,13 @@ def load_settings(root_override: Path | None = None) -> Settings:
         return Settings(root=root)
     try:
         return Settings(root=root, **file_values)
-    except ValidationError as err:
+    except ValidationError:
         # a typo'd *value* is as likely as a typo'd key, and neither may stop an
         # agent's memory server from starting. The whole file is dropped rather
         # than the offending key: a partially applied config is harder to reason
-        # about than none at all, and the warning names the file to fix.
-        log.warning("ignoring %s, falling back to environment and defaults: %s",
-                    config_path, err)
+        # about than none at all. The warning names the file to fix, but not
+        # `config_path` (absolute) or the exception text -- ValidationError
+        # echoes back the offending value, which could itself be a path.
+        log.warning("ignoring %s, falling back to environment and defaults",
+                    CONFIG_FILENAME)
         return Settings(root=root)

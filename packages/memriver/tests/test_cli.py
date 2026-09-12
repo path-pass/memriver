@@ -1,27 +1,124 @@
+import contextlib
+import io
 import json
 import os
 import select
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 
+import pytest
+from memriver import cli, hooks
+from memriver.hooks import HookResult
 from memriver.project_context import project_slug
+from memriver.protocol_text import STOP_NUDGE
 
 PROTOCOL_VERSION = "2025-06-18"
 
 
-def test_version_flag():
-    out = subprocess.run([sys.executable, "-m", "memriver.cli", "--version"],
-                         capture_output=True, text=True, check=False)
+def _run_cli(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, "-m", "memriver.cli", *args],
+                          capture_output=True, text=True, check=False)
+
+
+@pytest.mark.parametrize("args", [["--version"], ["--root", "X", "--version"]])
+def test_version_flag_survives_the_legacy_store_options(args):
+    """`--version` reports and exits even alongside the bare-form store options."""
+    out = _run_cli(*args)
     assert out.returncode == 0 and "0.1.0" in out.stdout
 
 
-def test_help_documents_project_dir_default():
-    out = subprocess.run([sys.executable, "-m", "memriver.cli", "--help"],
-                         capture_output=True, text=True, check=False)
+def test_top_level_help_lists_the_serve_hook_and_install_commands():
+    out = _run_cli("--help")
+    assert out.returncode == 0
+    assert "serve" in out.stdout and "hook" in out.stdout
+    assert "install" in out.stdout and "doctor" in out.stdout
+
+
+def test_doctor_rejects_a_non_positive_stale_days_without_a_traceback(tmp_path):
+    out = _run_cli("doctor", "--root", str(tmp_path), "--stale-days", "0")
+    assert out.returncode == 2
+    assert "Traceback" not in out.stderr
+
+
+def test_serve_help_documents_project_dir_default():
+    out = _run_cli("serve", "--help")
     assert out.returncode == 0
     assert "--project-dir" in out.stdout
     assert "current working directory" in " ".join(out.stdout.split())
+
+
+@dataclass(frozen=True)
+class CliRun:
+    stdout: str
+    stderr: str
+    exit_code: int
+
+
+def invoke_main(argv: list[str], stdin: str) -> CliRun:
+    """Run main() in-process over captured streams, the way a harness pipes it."""
+    out, err = io.StringIO(), io.StringIO()
+    original_stdin = sys.stdin
+    sys.stdin = io.StringIO(stdin)
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            exit_code = cli.main(argv)
+    finally:
+        sys.stdin = original_stdin
+    return CliRun(out.getvalue(), err.getvalue(), exit_code)
+
+
+def capture_dispatch(argv: list[str], monkeypatch):
+    """Parse argv through main() with every handler stubbed; return the args."""
+    seen: list = []
+
+    def record(args) -> int:
+        seen.append(args)
+        return 0
+
+    monkeypatch.setattr(cli, "_serve", record)
+    monkeypatch.setattr(cli, "_hook", record)
+    monkeypatch.setattr(cli, "_install", record)
+    assert cli.main(list(argv)) == 0
+    return seen[0]
+
+
+def test_install_parses_its_selector_and_confirmation_flags(monkeypatch):
+    args = capture_dispatch(["install", "--harness", "kiro", "--yes", "--dry-run"],
+                            monkeypatch)
+    assert (args.command, args.harness, args.yes, args.dry_run) == (
+        "install", "kiro", True, True)
+
+
+def test_install_without_a_selector_leaves_the_all_default(monkeypatch):
+    args = capture_dispatch(["install"], monkeypatch)
+    assert args.harness is None and args.yes is False and args.dry_run is False
+
+
+def test_install_rejects_combining_harness_and_all():
+    out = _run_cli("install", "--harness", "codex", "--all")
+    assert out.returncode == 2
+    assert "not allowed with" in out.stderr
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--root", "ROOT", "--project-dir", "PROJECT"],
+        ["serve", "--root", "ROOT", "--project-dir", "PROJECT"],
+    ],
+)
+def test_legacy_and_explicit_serve_parse_to_the_same_handler(argv, monkeypatch):
+    assert capture_dispatch(argv, monkeypatch).command == "serve"
+
+
+def test_hook_subcommand_writes_only_hook_result_streams(monkeypatch):
+    result = invoke_main(["hook", "stop", "--harness", "codex"],
+                         stdin='{"stop_hook_active": false}')
+    assert json.loads(result.stdout) == {"decision": "block", "reason": STOP_NUDGE}
+    assert result.stderr == ""
+    assert result.exit_code == 0
 
 
 def _send(proc, message: dict) -> None:
@@ -48,10 +145,12 @@ def _await_response(proc, message_id: int, timeout: float = 30.0) -> dict:
             return message
 
 
-def _write_over_stdio(root, cwd, extra_args: list[str], content: str) -> dict:
+def _write_over_stdio(root, cwd, extra_args: list[str], content: str,
+                      command: str | None = None) -> dict:
     """Run the CLI as a real stdio MCP server and call memory_write once."""
     proc = subprocess.Popen(
-        [sys.executable, "-m", "memriver.cli", "--root", str(root), *extra_args],
+        [sys.executable, "-m", "memriver.cli", *([command] if command else []),
+         "--root", str(root), *extra_args],
         cwd=str(cwd), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL, text=True, bufsize=1)
     try:
@@ -131,3 +230,101 @@ def test_bad_env_value_reports_readably(tmp_path):
     assert out.returncode != 0
     assert "Traceback" not in out.stderr
     assert "MEMRIVER_" in out.stderr and "max_body_chars" in out.stderr
+
+
+def test_bad_env_value_leaves_doctor_a_path_free_exit_two(tmp_path):
+    """The same bad env var that `serve` fails loudly on is, for doctor, a
+    store it could not read: exit 2 and the one fixed line, never a traceback
+    carrying source paths and the rejected value."""
+    env = {**os.environ, "MEMRIVER_MAX_BODY_CHARS": "not-a-number"}
+    out = subprocess.run([sys.executable, "-m", "memriver.cli", "doctor",
+                          "--root", str(tmp_path / "mem")],
+                         capture_output=True, text=True, env=env, timeout=30,
+                         check=False)
+    assert out.returncode == 2
+    assert out.stdout == ""
+    assert out.stderr == "memriver doctor: memory store is inaccessible\n"
+    assert "not-a-number" not in out.stderr
+
+
+@pytest.mark.parametrize(("event", "stderr"), [
+    ("session-start", "memriver hook: invalid input\n"),
+    ("stop", ""),
+])
+def test_undecodable_stdin_never_fails_the_hook(tmp_path, event, stderr):
+    """`run_hook` never raises, but the stdin read happens before it is called:
+    bytes that are not UTF-8 are malformed input, not a harness failure."""
+    out = subprocess.run([sys.executable, "-m", "memriver.cli", "hook", event,
+                          "--harness", "claude-code",
+                          "--root", str(tmp_path / "mem")],
+                         input=b'\xff\xfe{"source":"startup"}',
+                         capture_output=True, timeout=30, check=False)
+    assert out.returncode == 0
+    assert out.stdout == b""
+    assert out.stderr.decode() == stderr
+
+
+def test_explicit_serve_starts_the_same_stdio_server(tmp_path):
+    """`memriver serve` is an alias, not a second server."""
+    root = tmp_path / "mem"
+    repo = _git_repo(tmp_path, "explicit-serve")
+
+    response = _write_over_stdio(root, cwd=repo, extra_args=[],
+                                 content="served explicitly", command="serve")
+    assert response["result"]["isError"] is False
+    assert len(_entry_files(root, repo)) == 1
+
+
+def test_hook_without_project_dir_keeps_the_payload_cwd_fallback_reachable(monkeypatch):
+    """No --project-dir means None, not cwd: only then can the harness payload
+    decide the project, which is the whole point of hooks._resolve_dir."""
+    captured: dict = {}
+
+    def fake_run_hook(event, harness, payload_text, **kwargs):
+        captured.update(kwargs)
+        return HookResult()
+
+    monkeypatch.setattr(hooks, "run_hook", fake_run_hook)
+    result = invoke_main(["hook", "session-start", "--harness", "claude-code"],
+                         stdin="{}")
+    assert captured["project_dir"] is None
+    assert result.exit_code == 0
+
+
+# a hook fires at every session start and every turn end; importing the MCP
+# server stack there would tax the harness for a module it never calls
+_LEAK_CHECK = """
+leaked = sorted(m for m in sys.modules
+                if m.startswith(("fastmcp", "mcp", "memriver.server")))
+assert not leaked, leaked
+"""
+
+
+def _python_c(script: str, stdin: str = "") -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, "-c", script], input=stdin,
+                          capture_output=True, text=True, check=False)
+
+
+def test_importing_the_cli_does_not_import_the_server_stack():
+    out = _python_c("import sys, memriver.cli\n" + _LEAK_CHECK)
+    assert out.returncode == 0, out.stderr
+
+
+def test_running_a_hook_does_not_import_the_server_stack():
+    out = _python_c("import sys\n"
+                    "from memriver.cli import main\n"
+                    "assert main(['hook', 'stop', '--harness', 'codex']) == 0\n"
+                    + _LEAK_CHECK,
+                    stdin='{"stop_hook_active": false}')
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout)["decision"] == "block"
+
+
+def test_install_harness_choices_match_the_installer(monkeypatch):
+    """cli.py spells the four names itself to stay import-light; this pins them
+    to the installer's own registry so the two can never drift."""
+    from memriver.install import HARNESSES
+
+    out = _run_cli("install", "--help")
+    assert out.returncode == 0
+    assert "{" + ",".join(HARNESSES) + "}" in out.stdout

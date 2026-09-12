@@ -33,10 +33,11 @@ def main() -> None:
                     help="gitleaks git ref to fetch the config from")
     url = SOURCE_URL.format(ref=ap.parse_args().ref)
 
-    import sys  # noqa: PLC0415
-    import tomllib  # noqa: PLC0415
+    import sys
+    import tomllib
 
-    with urllib.request.urlopen(url, timeout=30) as resp:  # noqa: S310 - fixed https URL
+    # a fixed https URL with only the git ref interpolated
+    with urllib.request.urlopen(url, timeout=30) as resp:
         data = resp.read()
 
     # Parse BEFORE overwriting, never after: the secret scanner's import-time
@@ -48,7 +49,7 @@ def main() -> None:
     OUTPUT.write_bytes(data)
 
     # imported after the write so the counts describe what was just vendored
-    from memriver_core.content_policy.secret_scanner import _RULES  # noqa: PLC0415
+    from memriver_core.content_policy.secret_scanner import _RULES
 
     loaded = {rule_id for rule_id, *_ in _RULES}
     print(f"wrote {OUTPUT}: {len(raw)} upstream rules, "

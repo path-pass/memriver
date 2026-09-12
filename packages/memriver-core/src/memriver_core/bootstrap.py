@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .application.diagnostics import DiagnosticsService
 from .application.service import MemoryService
 from .config import DEFAULT_MAX_BODY_CHARS, Settings
 from .content_policy.secret_scanner import SecretScanner
-from .repository.filesystem import FileMemoryRepository
+from .repository.filesystem import FileMemoryRepository, FilesystemStoreInspector
 
 
 def build_service(settings: Settings, *, root: Path | None = None) -> MemoryService:
@@ -26,3 +27,12 @@ def build_service(settings: Settings, *, root: Path | None = None) -> MemoryServ
         search_limit_max=settings.search_limit_max,
         index_budget_lines=settings.index_budget_lines,
     )
+
+
+def build_diagnostics_service(
+    settings: Settings, *, root: Path | None = None,
+) -> DiagnosticsService:
+    # same explicit-root precedence as build_service: a root the caller already
+    # resolved must not be replaced by the environment or settings
+    inspector = FilesystemStoreInspector(settings.root if root is None else root)
+    return DiagnosticsService(inspector)
