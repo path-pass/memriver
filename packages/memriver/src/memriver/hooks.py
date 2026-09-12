@@ -42,18 +42,42 @@ STORE_UNAVAILABLE = "memriver hook: memory store is unavailable\n"
 # what MemoryService.index returns for a store with nothing visible in it
 _EMPTY_INDEX = "(no memories yet)"
 
-# How much injected text each harness actually forwards inline. Past its own
-# limit a harness stops handing the model the payload: Claude Code spills a
-# hook output string longer than 10,000 characters to a file and injects a
-# head/tail preview plus the path, and Codex truncates at a default
-# additionalContextLimit of about 2,500 tokens. Both are fixed vendor protocol
-# limits, like the 60-character cue budget -- not memriver policy, so no
-# setting backs them. Codex's is quoted in tokens; index lines are dense with
-# ids, punctuation and dates, so they are budgeted at three characters per
-# token rather than the four an English-prose average would give.
-INLINE_CONTEXT_CHAR_BUDGET: dict[str, int] = {
-    "claude-code": 10_000,
-    "codex": 2_500 * 3,
+def _utf16_units(text: str) -> int:
+    """JavaScript's ``string.length``: UTF-16 code units, non-BMP counting 2."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _utf8_bytes(text: str) -> int:
+    return len(text.encode("utf-8"))
+
+
+@dataclass(frozen=True)
+class _InlineBudget:
+    """One harness's inline cap, in the unit that harness counts it in."""
+
+    measure: Callable[[str], int]
+    limit: int
+
+
+# How much injected text each harness actually forwards inline, and how each
+# one measures it. Past its own limit a harness stops handing the model the
+# payload: Claude Code spills a hook output whose JavaScript `string.length`
+# exceeds 10,000 to a file and injects a head/tail preview plus the path
+# (claude 2.1.269), and Codex truncates at a default `additionalContextLimit`
+# of 2,500 tokens estimated as `ceil(utf-8 bytes / 4)` (codex v0.154.0) --
+# which is exactly 10,000 bytes, the form used here because a byte count adds
+# up across lines and a rounded token count does not. Both are fixed vendor
+# protocol limits, like the 60-character cue budget: not memriver policy, so
+# no setting backs them. Python's own `len` is a third unit again, and
+# counting in it lets a legal CJK or emoji index overflow both harnesses.
+#
+# memriver deliberately does not write `additionalContextLimit` into the Codex
+# hook group to raise its own ceiling: the shared `hook_group` payload stays
+# identical for both harnesses, and spending more of the user's context window
+# than the vendor's default is their call to make in their own config.
+INLINE_CONTEXT_BUDGET: dict[str, _InlineBudget] = {
+    "claude-code": _InlineBudget(_utf16_units, 10_000),
+    "codex": _InlineBudget(_utf8_bytes, 2_500 * 4),
 }
 
 # core's own wording when its line budget drops entries, reused verbatim so a
@@ -205,29 +229,41 @@ def _already_omitted(line: str) -> int | None:
     return int(digits) if digits.isdigit() else None
 
 
-def _fit(index: str, wrap: Callable[[str], str], budget: int) -> str:
+def _fit(index: str, wrap: Callable[[str], str], budget: _InlineBudget) -> str:
     """Drop whole index lines until the wrapped payload fits ``budget``.
 
     Truncating characters would cut a line in half and leave the fragment
     reading like a complete entry; dropping lines keeps every entry the model
     sees true, and the tail says how many it is not seeing.
+
+    Both metrics count encoded units, so they add up across a concatenation:
+    the wrapper and each line are measured once, and the largest prefix that
+    fits is arithmetic from there. ``index_budget_lines`` has no upper bound
+    and this runs before the first prompt of a session, so re-wrapping and
+    re-measuring a whole candidate payload per dropped line is work the loop
+    does not need to repeat.
     """
+    measure, limit = budget.measure, budget.limit
     text = wrap(index)
-    if len(text) <= budget:
+    if measure(text) <= limit:
         return text
     lines = index.split("\n")
     dropped_by_core = _already_omitted(lines[-1])
     if dropped_by_core is not None:
         lines.pop()  # one continued count, not a second notice below the first
     already = dropped_by_core or 0
-    for kept in range(len(lines) - 1, -1, -1):
-        text = wrap("\n".join(
-            [*lines[:kept], _omitted_line(already + len(lines) - kept)]))
-        if len(text) <= budget:
-            return text
-    # the notices alone exceed the budget: the harness truncates from here,
-    # which is still better than handing it entries it will cut mid-line
-    return text
+    wrapper, separator = measure(wrap("")), measure("\n")
+    kept, body = 0, 0  # `body`: the lines kept so far, with their separators
+    for candidate in range(1, len(lines)):
+        body += measure(lines[candidate - 1]) + separator
+        if (wrapper + body
+                + measure(_omitted_line(already + len(lines) - candidate))) <= limit:
+            kept = candidate
+    # kept == 0 means even the notices alone exceed the budget: the harness
+    # truncates from here, which is still better than handing it entries it
+    # will cut mid-line
+    return wrap("\n".join(
+        [*lines[:kept], _omitted_line(already + len(lines) - kept)]))
 
 
 def _compose(index: str, source: object, harness: Harness) -> str:
@@ -243,4 +279,4 @@ def _compose(index: str, source: object, harness: Harness) -> str:
                 f"{INDEX_END_DELIMITER}{suffix}")
 
     return _fit(_neutralize_delimiters(index), wrap,
-                INLINE_CONTEXT_CHAR_BUDGET[harness])
+                INLINE_CONTEXT_BUDGET[harness])

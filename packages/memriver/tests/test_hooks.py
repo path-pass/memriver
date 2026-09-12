@@ -190,7 +190,13 @@ def test_a_stored_description_cannot_forge_the_index_delimiters(tmp_path, forger
     assert lines[-2].startswith("- [user] aaa-escape: ")
 
 
-def full_index(count: int) -> str:
+# A 60-character cue is the widest one core lets through, in whichever script
+# the user writes: ASCII stays one byte and one UTF-16 unit per character, CJK
+# costs three bytes, and a non-BMP emoji costs four bytes and two UTF-16 units.
+CUES = {"ascii": "cue " * 15, "cjk": "茶" * 60, "emoji": "🍵" * 60}
+
+
+def full_index(count: int, cue: str = CUES["ascii"]) -> str:
     """``count`` index lines at the size core's own limits allow.
 
     A 64-character id and a cue clamped to 60 characters is what
@@ -198,28 +204,50 @@ def full_index(count: int) -> str:
     the default 100-line budget alone builds a payload past both caps.
     """
     return "\n".join(
-        f"- [project] {str(number).zfill(64)}: {'cue ' * 15} (2026-01-01)"
+        f"- [project] {str(number).zfill(64)}: {cue} (2026-01-01)"
         for number in range(count)
     )
 
 
+def utf16_units(text: str) -> int:
+    """What JavaScript's ``string.length`` counts, which is what Claude checks."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def codex_tokens(text: str) -> int:
+    """Codex's own inline estimator: ``ceil(utf-8 bytes / 4)``."""
+    return (len(text.encode("utf-8")) + 3) // 4
+
+
+# each consumer's cap, in the unit that consumer counts -- computed here rather
+# than imported, so the test fails if the module's own arithmetic drifts
+CONSUMER_CAPS = {"claude-code": (utf16_units, 10_000),
+                 "codex": (codex_tokens, 2_500)}
+
+
+@pytest.mark.parametrize("cue", list(CUES), ids=list(CUES))
 @pytest.mark.parametrize("harness", ["claude-code", "codex"])
 @pytest.mark.parametrize("source", ["startup", "compact"])
-def test_a_full_index_is_truncated_to_the_harness_inline_budget(harness, source,
-                                                                tmp_path,
+def test_a_full_index_fits_the_metric_the_harness_itself_counts(harness, source,
+                                                                cue, tmp_path,
                                                                 fake_service):
     """Core's default budget is 100 index lines, and 100 full-width lines are
     already more than either harness injects inline: past the cap Claude Code
     spills the hook output to a file and Codex truncates on its own, so the
     middle of the index silently stops reaching the model. The cap belongs
-    here, where whole lines can be dropped and counted."""
-    fake_service(full_index(100))
+    here, where whole lines can be dropped and counted -- and it only holds if
+    memriver counts what the consumer counts. Python's ``len`` counts neither:
+    an index of legal CJK or emoji cues passes a code-point budget and still
+    overflows a UTF-16 or UTF-8 one."""
+    index = full_index(100, CUES[cue])
+    fake_service(index)
+    measure, cap = CONSUMER_CAPS[harness]
 
     text = additional_context(
         session_start(harness, {"cwd": str(tmp_path), "source": source},
                       root=tmp_path / "root"))
 
-    assert len(text) <= hooks.INLINE_CONTEXT_CHAR_BUDGET[harness]
+    assert measure(text) <= cap
     # the notices and both delimiters survive the truncation intact
     assert text.count(INDEX_BEGIN_DELIMITER) == 1
     assert text.count(INDEX_END_DELIMITER) == 1
@@ -229,8 +257,22 @@ def test_a_full_index_is_truncated_to_the_harness_inline_budget(harness, source,
     # whole lines only, and the tail says exactly how many are missing
     kept = len(body) - 1
     assert 0 < kept < 100
-    assert body[:-1] == full_index(100).split("\n")[:kept]
+    assert body[:-1] == index.split("\n")[:kept]
     assert body[-1] == f"… ({100 - kept} more entries omitted; use memory_search)"
+
+
+def test_an_index_of_thousands_of_lines_is_still_fitted(tmp_path, fake_service):
+    """``index_budget_lines`` has no upper bound and this runs on the
+    session-start path, so the fit is one measured pass over the lines rather
+    than a re-wrap per candidate length."""
+    fake_service(full_index(5_000))
+
+    text = additional_context(
+        session_start("claude-code", {"cwd": str(tmp_path)},
+                      root=tmp_path / "root"))
+
+    assert utf16_units(text) <= 10_000
+    assert text.count("more entries omitted") == 1
 
 
 def test_truncation_adds_to_the_count_core_already_omitted(tmp_path, fake_service):
