@@ -21,7 +21,7 @@ exercised and its output is quoted below.
 | ruff | 0.16.5 |
 | Platform | macOS (darwin 25.5.0), arm64 |
 | Claude Code version | 2.1.268 (containerized live run, 2026-09-11) |
-| Codex version | PENDING — record `codex --version` |
+| Codex version | codex-cli 0.154.0 (containerized live run, 2026-09-12) |
 
 ## 2. Automated suite
 
@@ -194,17 +194,25 @@ Reproduction: the harness (Dockerfile and stage scripts) lives outside the commi
 in the maintainer's local checkout; the run costs a few cents of API usage and requires a
 `claude setup-token` credential passed by environment-variable name only.
 
-## 7. Codex live verification and trust — PENDING
+## 7. Codex live verification and trust — startup injection + trust gate verified 2026-09-12 (containerized)
+
+Verified inside the same Docker harness with the maintainer's Codex credential staged
+into the container (read-only mount, writable mode-600 copy): fresh HOME,
+`uvx memriver install --harness codex --yes`, one seeded marker memory ("the support
+contact is Ombudsman Krakenfeld"), then two real `codex exec --json` runs.
+
 
 | Row | Expected observation | Status |
 | --- | --- | --- |
-| Installed Codex version | output of `codex --version` | PENDING — to be run by the maintainer |
-| Config source | `~/.codex/config.toml` (`mcp_servers.memriver`) and `~/.codex/hooks.json` (`hooks.SessionStart`, `hooks.Stop`) | PENDING — to be run by the maintainer |
-| Exact installed command | `uvx memriver hook session-start --harness codex`, `uvx memriver hook stop --harness codex` | PENDING — to be run by the maintainer |
-| `/hooks` review and trust | trust completed for both memriver hook definitions | PENDING — to be run by the maintainer |
-| SessionStart / startup, resume, clear, compact | index injected on each | PENDING — to be run by the maintainer |
-| First Stop | `{"decision": "block", …}` produces exactly one continuation | PENDING — to be run by the maintainer |
-| Second Stop (`stop_hook_active: true`) | silent, turn ends | PENDING — to be run by the maintainer |
+| Installed Codex version | output of `codex --version` | PASS — `codex-cli 0.154.0` (containerized live run, 2026-09-12) |
+| Config source | `~/.codex/config.toml` (`mcp_servers.memriver`) and `~/.codex/hooks.json` (`hooks.SessionStart`, `hooks.Stop`) | PASS — written by the installer in a fresh container; asserted field-by-field |
+| Exact installed command | `uvx memriver hook session-start --harness codex`, `uvx memriver hook stop --harness codex` | PASS — command strings extracted from `hooks.json` and executed verbatim over stdin/stdout |
+| Untrusted-hook gate | an untrusted non-managed hook is skipped until trusted | PASS — a `codex exec` run WITHOUT trust showed no injection (the marker was absent), matching the documented "skipped until trusted" behavior |
+| `/hooks` review and trust | trust completed for both memriver hook definitions | PENDING — interactive TUI only (no non-interactive grant exists; the containerized run used Codex's own documented automation flag `--dangerously-bypass-hook-trust`, which does not persist trust) |
+| SessionStart / startup | index injected | PASS — with the bypass flag, the real `codex exec` session answered "According to my memory, the support contact is Ombudsman Krakenfeld." — that name exists only in the injected index line |
+| SessionStart / resume, clear, compact | index injected on each | PENDING — interactive-session sources; to be run by the maintainer |
+| First Stop | `{"decision": "block", …}` produces exactly one continuation | INCONCLUSIVE headless — `codex exec` reported one `turn.completed` (no observable continuation turn in exec mode); interactive verification remains PENDING |
+| Second Stop (`stop_hook_active: true`) | silent, turn ends | PENDING — interactive verification (exec-mode observation above cannot distinguish it) |
 | Re-trust after a hook-definition change | edit `~/.codex/hooks.json`, restart Codex, record whether `/hooks` demands re-trust | PENDING — to be run by the maintainer |
 | Restore + re-trust | rerun `memriver install --harness codex`, then trust the restored definition | PENDING — to be run by the maintainer |
 | stdout / stderr / exit status per event | one JSON line or empty; empty stderr; exit 0 | PENDING — to be run by the maintainer |
