@@ -207,10 +207,16 @@ def _read_snapshot(target: Target, root: Path | None) -> Snapshot:
             return Snapshot(target=target, text=None, mode=None)
         if not path.is_file():
             raise PlanningError(f"{path} is not a regular file")
-        return Snapshot(target=target, text=path.read_text(encoding="utf-8"),
+        # decoded from bytes, never `read_text`: text mode translates CRLF and
+        # CR to LF, and a single accepted change then writes the whole
+        # translated file back -- rewriting foreign lines outside the managed
+        # region that no summary showed and no prompt confirmed. The editors
+        # carry the original separators through untouched; the write side is
+        # already binary.
+        return Snapshot(target=target, text=path.read_bytes().decode("utf-8"),
                         mode=_mode_of(path))
     except (UnicodeError, OSError) as err:
-        # the whole read is one boundary, not just read_text(): a target that
+        # the whole read is one boundary, not just the decode: a target that
         # exists but cannot be decoded, opened or stat'ed is a planning
         # failure exactly like one that cannot be parsed. The cause is kept
         # for a debugger; the user gets fixed text, because the underlying

@@ -815,6 +815,23 @@ def test_a_new_target_reports_the_managed_file_to_remove_instead_of_a_backup(hom
     assert "remove .kiro/steering/memriver.md" in result.stdout
 
 
+def test_a_crlf_target_keeps_every_foreign_newline_byte_for_byte(home, project):
+    """Reading a snapshot in universal-newline mode turned every CRLF in the
+    file into an LF, so accepting one managed change rewrote lines the summary
+    never showed. Only the managed region may differ after an install."""
+    agents = project / "AGENTS.md"
+    agents.write_bytes(b"# foreign\r\nkeep\r\n")
+    config = home / ".codex" / "config.toml"
+    config.parent.mkdir(parents=True)
+    config.write_bytes(b'model = "gpt"\r\nforeign = "keep"\r\n')
+
+    result = install(["codex", "cursor"], home=home, cwd=project, yes=True)
+
+    assert result.exit_code == 0
+    assert agents.read_bytes().startswith(b"# foreign\r\nkeep\r\n")
+    assert config.read_bytes().startswith(b'model = "gpt"\r\nforeign = "keep"\r\n')
+
+
 def test_codex_success_states_the_trust_step(home, project):
     result = install(["codex"], home=home, cwd=project, yes=True)
 
