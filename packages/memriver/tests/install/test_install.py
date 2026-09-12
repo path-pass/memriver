@@ -1012,6 +1012,72 @@ def test_codex_hooks_disabled_note_stands_when_the_definitions_already_exist(
     assert CODEX_NO_DEFINITIONS_NOTE not in result.stdout
 
 
+def test_codex_hooks_disabled_note_does_not_claim_completeness_for_one_accepted_hook(
+        home, project):
+    """Confirmation is per hook, so a user can accept SessionStart and decline
+    Stop. The wrong-but-not-silent claim was that hooks.json holds *no*
+    memriver definition at all -- untrue here, it holds exactly one."""
+    write(home / ".codex" / "config.toml",
+          "[features]\nhooks = false\nmemories = false\n")
+
+    result = install(["codex"], home=home, cwd=project, yes=False,
+                     replies=["n", "y", "n"])
+
+    assert result.exit_code == 0
+    hooks = json.loads((home / ".codex" / "hooks.json").read_text())["hooks"]
+    assert "SessionStart" in hooks and "Stop" not in hooks
+    assert CODEX_HOOKS_DISABLED_NOTE not in result.stdout
+    assert CODEX_NO_DEFINITIONS_NOTE in result.stdout
+    assert "holds no memriver hook definition" not in result.stdout
+
+
+def test_codex_hooks_disabled_note_does_not_claim_completeness_for_the_other_hook(
+        home, project):
+    """The other half of the same per-hook confirmation: Stop accepted,
+    SessionStart declined."""
+    write(home / ".codex" / "config.toml",
+          "[features]\nhooks = false\nmemories = false\n")
+
+    result = install(["codex"], home=home, cwd=project, yes=False,
+                     replies=["n", "n", "y"])
+
+    assert result.exit_code == 0
+    hooks = json.loads((home / ".codex" / "hooks.json").read_text())["hooks"]
+    assert "Stop" in hooks and "SessionStart" not in hooks
+    assert CODEX_HOOKS_DISABLED_NOTE not in result.stdout
+    assert CODEX_NO_DEFINITIONS_NOTE in result.stdout
+    assert "holds no memriver hook definition" not in result.stdout
+
+
+def test_codex_hooks_disabled_note_does_not_claim_completeness_when_a_stale_takeover_is_declined(
+        home, project):
+    """A pre-existing memriver Stop definition that no longer matches what
+    this version would install is a takeover, confirmed like any other change.
+    Declining it leaves the stale definition in place -- not absent, and not
+    the complete expected pair either -- so the note may claim neither
+    "installed" nor "no definition at all"."""
+    write(home / ".codex" / "config.toml",
+          "[features]\nhooks = false\nmemories = false\n")
+    write(home / ".codex" / "hooks.json", json.dumps({"hooks": {
+        "SessionStart": [hook_group(
+            "uvx memriver hook session-start --harness codex")],
+        "Stop": [hook_group(
+            "uvx memriver hook stop --harness codex --stale-extra-flag")],
+    }}))
+
+    result = install(["codex"], home=home, cwd=project, yes=False,
+                     replies=["y", "n"])
+
+    assert result.exit_code == 0
+    stop_command = json.loads(
+        (home / ".codex" / "hooks.json").read_text(),
+    )["hooks"]["Stop"][0]["hooks"][0]["command"]
+    assert stop_command.endswith("--stale-extra-flag")  # declined, unchanged
+    assert CODEX_HOOKS_DISABLED_NOTE not in result.stdout
+    assert CODEX_NO_DEFINITIONS_NOTE in result.stdout
+    assert "holds no memriver hook definition" not in result.stdout
+
+
 def test_installing_all_four_harnesses_writes_every_target(home, project):
     result = install(ALL_HARNESSES, home=home, cwd=project, yes=True)
 
