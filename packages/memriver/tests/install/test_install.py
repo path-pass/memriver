@@ -37,6 +37,9 @@ from memriver.install import (
     run_install,
 )
 from memriver.install.codex import (
+    HOOKS_DISABLED_NOTE as CODEX_HOOKS_DISABLED_NOTE,
+)
+from memriver.install.codex import (
     NATIVE_MEMORY_OFF_NOTE as CODEX_NATIVE_MEMORY_OFF_NOTE,
 )
 
@@ -536,6 +539,28 @@ def test_declining_everything_writes_nothing(tmp_path, home, project):
     assert result.replace.calls == []
 
 
+def test_declining_every_codex_change_still_states_trust_and_native_memory(home,
+                                                                           project):
+    """Declining is a normal completion, not a reason to drop the read-only
+    tail. The hooks pre-installed here may still be untrusted, so the user
+    needs the /hooks step; spec 5.3 also owes them the native-memory verdict.
+    Only the MCP registration is left to decline, so `nothing accepted` cannot
+    be read as `nothing was installed, hence nothing to trust`."""
+    write(home / ".codex" / "hooks.json", json.dumps({"hooks": {
+        "SessionStart": [
+            hook_group("uvx memriver hook session-start --harness codex")],
+        "Stop": [hook_group("uvx memriver hook stop --harness codex")],
+    }}))
+
+    result = install(["codex"], home=home, cwd=project, yes=False, replies=["n"])
+
+    assert result.exit_code == 0
+    assert len(result.answers.prompts) == 1
+    assert "nothing accepted; no file was changed." in result.stdout
+    assert CODEX_TRUST_TEXT in result.stdout
+    assert CODEX_NATIVE_MEMORY_OFF_NOTE in result.stdout
+
+
 def test_yes_accepts_every_change_including_native_memory(home, project):
     result = install(["claude-code"], home=home, cwd=project, yes=True)
 
@@ -837,6 +862,21 @@ def test_codex_success_states_the_trust_step(home, project):
 
     assert result.exit_code == 0
     assert CODEX_TRUST_TEXT in result.stdout
+    assert CODEX_HOOKS_DISABLED_NOTE not in result.stdout
+
+
+def test_codex_says_so_when_the_hooks_feature_is_switched_off(home, project):
+    """`features.hooks = false` disables every Codex hook at the feature level,
+    so the definitions this run writes never fire and /hooks cannot re-enable
+    them. Reporting `installed:` and the trust step alone is a silent partial
+    install; memriver says what is off rather than flipping the user's choice."""
+    write(home / ".codex" / "config.toml",
+          "[features]\nhooks = false\nmemories = false\n")
+
+    result = install(["codex"], home=home, cwd=project, yes=True)
+
+    assert result.exit_code == 0
+    assert CODEX_HOOKS_DISABLED_NOTE in result.stdout
 
 
 def test_installing_all_four_harnesses_writes_every_target(home, project):

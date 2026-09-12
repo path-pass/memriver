@@ -27,6 +27,19 @@ HARNESS = "codex"
 # Spec 5.3's other half: unset or already-off means "do nothing **and say
 # so**". Read-only completion text, never a confirmable operation -- there is
 # nothing to write, and a prompt for it would ask the user to accept a no-op.
+# Codex's canonical kill switch for the whole hooks feature. memriver writes
+# hooks.json all the same -- the definitions are correct and start working the
+# moment the flag comes back -- but a run that only printed "installed:" and
+# the /hooks trust step would be selling a silent partial install: trusting a
+# hook cannot re-enable a feature that is switched off. Read-only completion
+# text; flipping a setting the user chose is not memriver's call.
+HOOKS_DISABLED_NOTE = (
+    "codex: features.hooks = false in ~/.codex/config.toml, so no Codex hook "
+    "runs -- including the ones installed here, and trusting them via /hooks "
+    "will not change that. Set features.hooks = true (or remove the line) to "
+    "let memriver inject your index at session start."
+)
+
 NATIVE_MEMORY_OFF_NOTE = (
     "codex: built-in memories are already off in ~/.codex/config.toml; "
     "nothing to change there."
@@ -105,7 +118,11 @@ def notes(snapshots: tuple[Snapshot, Snapshot], env: Mapping[str, str]) -> tuple
     """Read-only completion text: what was checked and deliberately left alone."""
     del env
     config, _ = snapshots
-    return () if _memories_enabled(config.text) else (NATIVE_MEMORY_OFF_NOTE,)
+    features = _features(config.text)
+    lines = [] if features.get("hooks") is not False else [HOOKS_DISABLED_NOTE]
+    if features.get("memories") is not True:
+        lines.append(NATIVE_MEMORY_OFF_NOTE)
+    return tuple(lines)
 
 
 def _memories_enabled(config_text: str | None) -> bool:
@@ -114,6 +131,11 @@ def _memories_enabled(config_text: str | None) -> bool:
     Spec 5.3: unset or already-off means nothing to do; read-only parse, the
     write itself goes through the toml-table editor's scalar support.
     """
+    return _features(config_text).get("memories") is True
+
+
+def _features(config_text: str | None) -> dict:
+    """The ``[features]`` table, or an empty one; a bad config fails planning."""
     try:
         document = tomllib.loads(config_text or "")
     except tomllib.TOMLDecodeError as error:
@@ -121,4 +143,4 @@ def _memories_enabled(config_text: str | None) -> bool:
     features = document.get("features", {})
     if not isinstance(features, dict):
         raise PlanningError("~/.codex/config.toml: features is not a table")
-    return features.get("memories") is True
+    return features

@@ -458,6 +458,10 @@ def run_install(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
 
     if not accepted:
         stdout.write("\nnothing accepted; no file was changed.\n")
+        # same reasoning as the no-change branch above: hooks installed by an
+        # earlier run may still be untrusted, and the native-memory verdict is
+        # owed on every completion path, not only the ones that wrote something
+        _write_completion_notes(plan, harnesses, stdout)
         return 0
 
     try:
