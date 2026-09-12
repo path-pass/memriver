@@ -228,6 +228,14 @@ def duplicate_json_keys(home: Path, project: Path):
     return ["claude-code"], project
 
 
+def oversized_json_integer(home: Path, project: Path):
+    # syntactically legal JSON that the decoder still refuses: CPython's
+    # integer-string conversion limit raises a plain ValueError -- not a
+    # JSONDecodeError -- from inside json.loads
+    write(home / ".claude.json", '{"foreign": ' + "1" * 5000 + "}")
+    return ["claude-code"], project
+
+
 def undecodable_target(home: Path, project: Path):
     # not malformed JSON -- bytes that are not text at all, so the failure is
     # in the read, before any parser is reached
@@ -247,6 +255,7 @@ PREFLIGHT_FAILURES = [
     json_number_outside_the_standard,
     json_nonstandard_constant,
     duplicate_json_keys,
+    oversized_json_integer,
     undecodable_target,
     duplicate_hook_identities,
     broken_markers,
@@ -270,7 +279,8 @@ def test_planning_failure_writes_absolutely_nothing(setup, tmp_path, home, proje
     assert result.replace.calls == []
 
 
-@pytest.mark.parametrize("setup", [undecodable_target], ids=lambda f: f.__name__)
+@pytest.mark.parametrize("setup", [undecodable_target, oversized_json_integer],
+                         ids=lambda f: f.__name__)
 def test_an_unreadable_target_is_a_planning_failure_not_a_traceback(setup, home,
                                                                     project):
     """A read that fails is a planning failure like a parse that fails.

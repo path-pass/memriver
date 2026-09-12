@@ -544,7 +544,14 @@ def _parse_json_object(source: str) -> dict[str, Any]:
         document = json.loads(source, object_pairs_hook=_no_duplicate_names,
                               parse_constant=_reject_constant,
                               parse_float=_finite_number)
-    except json.JSONDecodeError as error:
+    except ValueError as error:
+        # every rejection the decoder itself raises, not only the
+        # JSONDecodeError subclass: a syntactically legal integer past
+        # CPython's integer-string conversion limit raises a plain ValueError
+        # from inside `json.loads`, and outside this boundary it reaches the
+        # user as a traceback. The guards above raise PlanningError, which is
+        # not a ValueError, so their own wording survives this clause. The
+        # decoder's message is position-and-limit text with no path in it.
         raise PlanningError(f"file is not valid JSON: {error}") from error
     if not isinstance(document, dict):
         raise PlanningError("file is not a JSON object")
