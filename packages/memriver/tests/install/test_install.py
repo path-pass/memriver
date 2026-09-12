@@ -859,6 +859,62 @@ def test_rollback_leaves_a_directory_another_actor_created(monkeypatch, home,
     assert snapshot_tree(contested) == {}  # only what this run made came out
 
 
+def test_rollback_climbs_past_a_created_directory_another_actor_removed(home,
+                                                                         project):
+    """`_make_dirs` records a directory by its identity, not just its path, but
+    a *missing* path is not evidence against the parent above it: another
+    actor taking the empty leaf this run made does not stop the leaf's own
+    parent -- also made by this run and now genuinely empty -- from being
+    cleaned up too."""
+    settings = home / ".kiro" / "settings"
+    kiro = home / ".kiro"
+    calls: list[Path] = []
+
+    def replace_file(source: Path, destination: Path) -> None:
+        calls.append(Path(destination))
+        if len(calls) == 1:
+            Path(source).unlink()  # memriver's own in-flight temp file
+            settings.rmdir()  # another actor takes the directory this run made
+            raise OSError("injected replacement failure")
+        os.replace(source, destination)
+
+    result = install(["kiro"], home=home, cwd=project, yes=True,
+                     replace=replace_file)
+
+    assert result.exit_code != 0
+    assert not settings.exists()
+    assert not kiro.exists()  # the missing child does not stop the climb
+
+
+def test_rollback_leaves_a_directory_whose_path_was_recycled_by_another_actor(
+        home, project):
+    """A path recorded as created can still exist at rollback time and yet no
+    longer be the directory this run made: another actor deleted and
+    recreated it with a fresh inode in the same window. `rmdir` proves only
+    that today's occupant is empty, never that it is the one memriver made, so
+    a path whose identity no longer matches -- and everything above it, now
+    provably non-empty -- is left alone."""
+    settings = home / ".kiro" / "settings"
+    kiro = home / ".kiro"
+    calls: list[Path] = []
+
+    def replace_file(source: Path, destination: Path) -> None:
+        calls.append(Path(destination))
+        if len(calls) == 1:
+            Path(source).unlink()  # memriver's own in-flight temp file
+            settings.rmdir()
+            settings.mkdir()  # a different actor's directory, same path
+            raise OSError("injected replacement failure")
+        os.replace(source, destination)
+
+    result = install(["kiro"], home=home, cwd=project, yes=True,
+                     replace=replace_file)
+
+    assert result.exit_code != 0
+    assert settings.is_dir()  # the replacement survives
+    assert kiro.is_dir()  # holding a stranger's directory, not provably empty
+
+
 def test_an_interrupt_rolls_the_run_back_and_still_propagates(home, project):
     """Ctrl-C between replacements must not leave a half-applied tree behind."""
     claude_json = write(home / ".claude.json", json.dumps({"apiKey": SECRET}),

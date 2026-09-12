@@ -282,6 +282,23 @@ def _plan(harnesses: Sequence[str], home: Path, cwd: Path,
 
 
 @dataclass(frozen=True)
+class _CreatedDir:
+    """A directory ``_make_dirs`` created, identified rather than just named.
+
+    ``mkdir`` creating the directory is the ownership claim (see
+    ``_make_dirs``), but the path alone stops proving that claim the moment
+    another actor deletes and recreates it: a directory is a path plus an
+    inode, and only the pair says rollback would be removing the same one it
+    made. ``st_dev`` travels with ``st_ino`` because inode numbers are only
+    unique within one filesystem.
+    """
+
+    path: Path
+    dev: int
+    ino: int
+
+
+@dataclass(frozen=True)
 class _Write:
     """One completed replacement, and everything rollback needs to undo it."""
 
@@ -290,7 +307,7 @@ class _Write:
     original_mode: int | None
     # the parents this write had to create, deepest first, so rollback can put
     # the tree back the way it found it
-    created_dirs: tuple[Path, ...] = ()
+    created_dirs: tuple[_CreatedDir, ...] = ()
 
 
 def _mode_of(path: Path) -> int:
@@ -369,7 +386,7 @@ def _write_target(snapshot: Snapshot, text: str, root: Path | None, stamp: str,
                   created_dirs=created_dirs)
 
 
-def _make_dirs(directory: Path) -> tuple[Path, ...]:
+def _make_dirs(directory: Path) -> tuple[_CreatedDir, ...]:
     """Create ``directory`` and its missing parents; return the ones we made.
 
     One level at a time, shallow to deep, and every ``mkdir`` is exclusive:
@@ -380,8 +397,13 @@ def _make_dirs(directory: Path) -> tuple[Path, ...]:
     this run did not make. ``mkdir(parents=True)`` cannot do this: it is not
     atomic across levels, so a failure part way up leaves directories behind
     that no return value names. A failure here cleans up its own climb.
+
+    Each record carries the ``(st_dev, st_ino)`` the fresh ``mkdir`` produced,
+    not just the path: rollback re-checks that pair before it removes anything,
+    so a path recycled by another actor in the meantime is never mistaken for
+    the directory this run made.
     """
-    created: list[Path] = []
+    created: list[_CreatedDir] = []
     try:
         for parent in reversed([d for d in (directory, *directory.parents)
                                 if not d.exists()]):
@@ -389,26 +411,42 @@ def _make_dirs(directory: Path) -> tuple[Path, ...]:
                 parent.mkdir()
             except FileExistsError:
                 continue
-            created.insert(0, parent)  # deepest first, the order rollback wants
+            info = parent.lstat()
+            created.insert(0, _CreatedDir(parent, info.st_dev, info.st_ino))
     except BaseException:
         _remove_created_dirs(created)
         raise
     return tuple(created)
 
 
-def _remove_created_dirs(created_dirs: Sequence[Path]) -> None:
-    """Take back the parents this run made, deepest first, while they are empty.
+def _remove_created_dirs(created_dirs: Sequence[_CreatedDir]) -> None:
+    """Take back the directories this run made, deepest first, while they hold
+    the same identity ``_make_dirs`` recorded and are still empty.
 
-    Only directories ``_make_dirs`` recorded reach here, so ownership is
-    already settled; ``rmdir`` adds the second half of the guard by refusing a
-    directory holding anything, so a backup this run wrote, another harness's
-    file, or a target still to be rolled back all keep their parent -- and the
-    climb stops there, because a directory above a kept one cannot be empty
-    either.
+    A path missing outright is not proof that an ancestor this run also made
+    cannot still be removed -- another actor taking the emptied leaf away
+    leaves the parent just as removable -- so a ``FileNotFoundError`` keeps
+    the climb going rather than stopping it. A path that still exists but
+    resolves to a different ``(st_dev, st_ino)`` is a different directory --
+    deleted and recreated by another actor in the same window -- and neither
+    it nor anything above it (now proven non-empty by holding that stranger)
+    is this run's to remove, so the climb stops there. Only once identity
+    matches does ``rmdir`` run, and it adds the last guard on its own: a
+    directory holding a backup this run wrote, another harness's file, or a
+    target still to be rolled back refuses removal, which stops the climb the
+    same way.
     """
-    for directory in created_dirs:
+    for created in created_dirs:
         try:
-            directory.rmdir()
+            info = created.path.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return
+        if (info.st_dev, info.st_ino) != (created.dev, created.ino):
+            return
+        try:
+            created.path.rmdir()
         except OSError:
             return
 
