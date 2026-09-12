@@ -291,6 +291,9 @@ class _Write:
     target: Target
     backup: Path | None
     original_mode: int | None
+    # the parents this write had to create, deepest first, so rollback can put
+    # the tree back the way it found it
+    created_dirs: tuple[Path, ...] = ()
 
 
 def _mode_of(path: Path) -> int:
@@ -348,16 +351,46 @@ def _write_target(snapshot: Snapshot, text: str, root: Path | None, stamp: str,
             "nothing further was written -- re-run memriver install"
         )
     original_mode = snapshot.mode
-    target.path.parent.mkdir(parents=True, exist_ok=True)
-    backup = (
-        _write_backup(target, original_mode, stamp) if original_mode is not None
-        else None
+    parent = target.path.parent
+    # recorded before the mkdir, deepest first: after it there is no way left
+    # to tell which of these directories the user already had
+    created_dirs = tuple(
+        directory for directory in (parent, *parent.parents)
+        if not directory.exists()
     )
-    mode = original_mode
-    if mode is None:
-        mode = 0o600 if target.user_level else _umask_mode()
-    _replace_atomically(target.path, text.encode("utf-8"), mode, replace_file)
-    return _Write(target=target, backup=backup, original_mode=original_mode)
+    parent.mkdir(parents=True, exist_ok=True)
+    try:
+        backup = (
+            _write_backup(target, original_mode, stamp) if original_mode is not None
+            else None
+        )
+        mode = original_mode
+        if mode is None:
+            mode = 0o600 if target.user_level else _umask_mode()
+        _replace_atomically(target.path, text.encode("utf-8"), mode, replace_file)
+    except BaseException:
+        # this write never joins the rollback list, so it takes its own
+        # directories back; a backup already written keeps its parent, which is
+        # what `_remove_created_dirs` refusing a non-empty directory does
+        _remove_created_dirs(created_dirs)
+        raise
+    return _Write(target=target, backup=backup, original_mode=original_mode,
+                  created_dirs=created_dirs)
+
+
+def _remove_created_dirs(created_dirs: Sequence[Path]) -> None:
+    """Take back the parents this run made, deepest first, while they are empty.
+
+    ``rmdir`` is the whole guard: it refuses a directory holding anything, so a
+    backup this run wrote, another harness's file, or a target still to be
+    rolled back all keep their parent -- and the climb stops there, because a
+    directory above a kept one cannot be empty either.
+    """
+    for directory in created_dirs:
+        try:
+            directory.rmdir()
+        except OSError:
+            return
 
 
 def _roll_back(writes: Sequence[_Write],
@@ -374,6 +407,7 @@ def _roll_back(writes: Sequence[_Write],
                 _replace_atomically(path, write.backup.read_bytes(),
                                     write.original_mode, replace_file)
                 report.append(f"restored {path} from {write.backup}")
+            _remove_created_dirs(write.created_dirs)
         except Exception as error:  # noqa: BLE001 - every outcome gets reported
             report.append(
                 f"COULD NOT recover {path}"

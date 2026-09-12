@@ -766,6 +766,37 @@ def test_failure_restores_earlier_targets_and_removes_created_ones(home, project
     assert "removed" in result.stdout
 
 
+def test_rollback_removes_the_directories_this_run_created(home, project):
+    """Apply is a transaction, so a failed run leaves the tree it found. The
+    created files were removed but the parents `_write_target` had to make on
+    the way -- ~/.kiro/settings, .kiro/steering -- stayed behind as empty
+    directories nobody asked for."""
+    before_home, before_project = snapshot_tree(home), snapshot_tree(project)
+    # writes are (1) ~/.kiro/settings/mcp.json, (2) .kiro/steering/memriver.md
+    replace = ReplaceSpy(fail_at={2})
+
+    result = install(["kiro"], home=home, cwd=project, yes=True, replace=replace)
+
+    assert result.exit_code != 0
+    assert snapshot_tree(home) == before_home
+    assert snapshot_tree(project) == before_project
+    assert backups(home) == [] and backups(project) == []
+
+
+def test_rollback_keeps_a_directory_that_was_already_there(home, project):
+    """Only what this run created comes out: a parent that already existed, or
+    one still holding somebody else's file, is not memriver's to remove."""
+    write(home / ".kiro" / "settings" / "someone-else.json", "{}")
+    before_home, before_project = snapshot_tree(home), snapshot_tree(project)
+
+    result = install(["kiro"], home=home, cwd=project, yes=True,
+                     replace=ReplaceSpy(fail_at={2}))
+
+    assert result.exit_code != 0
+    assert snapshot_tree(home) == before_home
+    assert snapshot_tree(project) == before_project
+
+
 def test_an_interrupt_rolls_the_run_back_and_still_propagates(home, project):
     """Ctrl-C between replacements must not leave a half-applied tree behind."""
     claude_json = write(home / ".claude.json", json.dumps({"apiKey": SECRET}),
