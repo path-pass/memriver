@@ -553,9 +553,23 @@ def _parse_json_object(source: str) -> dict[str, Any]:
         # not a ValueError, so their own wording survives this clause. The
         # decoder's message is position-and-limit text with no path in it.
         raise PlanningError(f"file is not valid JSON: {error}") from error
+    except RecursionError as error:
+        # `json.loads` recurses once per nesting level, so a syntactically
+        # legal document nested past the interpreter's recursion limit raises
+        # this instead of a ValueError -- not caught above, and otherwise a
+        # traceback past the PlanningError-only boundary. The message names no
+        # path and no depth number, both of which would just repeat what the
+        # traceback would have shown.
+        raise PlanningError(_TOO_DEEPLY_NESTED) from error
     if not isinstance(document, dict):
         raise PlanningError("file is not a JSON object")
     return document
+
+
+_TOO_DEEPLY_NESTED = (
+    "file nests too deeply for memriver to parse; flatten it and run install "
+    "again"
+)
 
 
 def _render_json(document: dict[str, Any]) -> str:
@@ -564,6 +578,8 @@ def _render_json(document: dict[str, Any]) -> str:
                               allow_nan=False) + "\n"
     except ValueError as error:  # the value itself never goes in the message
         raise PlanningError(_NON_STANDARD_NUMBER) from error
+    except RecursionError as error:  # same foreign nesting, the encoding side
+        raise PlanningError(_TOO_DEEPLY_NESTED) from error
     _parse_json_object(rendered)
     return rendered
 

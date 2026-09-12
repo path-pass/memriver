@@ -239,6 +239,15 @@ def oversized_json_integer(home: Path, project: Path):
     return ["claude-code"], project
 
 
+def deeply_nested_json(home: Path, project: Path):
+    # syntactically legal JSON that the decoder still refuses: nesting past
+    # the interpreter's recursion limit raises RecursionError from inside
+    # json.loads -- not a ValueError, so it needs its own boundary mapping
+    nested = "[" * 2000 + "]" * 2000
+    write(home / ".claude.json", '{"foreign": ' + nested + "}")
+    return ["claude-code"], project
+
+
 def undecodable_target(home: Path, project: Path):
     # not malformed JSON -- bytes that are not text at all, so the failure is
     # in the read, before any parser is reached
@@ -259,6 +268,7 @@ PREFLIGHT_FAILURES = [
     json_nonstandard_constant,
     duplicate_json_keys,
     oversized_json_integer,
+    deeply_nested_json,
     undecodable_target,
     duplicate_hook_identities,
     broken_markers,
@@ -282,8 +292,9 @@ def test_planning_failure_writes_absolutely_nothing(setup, tmp_path, home, proje
     assert result.replace.calls == []
 
 
-@pytest.mark.parametrize("setup", [undecodable_target, oversized_json_integer],
-                         ids=lambda f: f.__name__)
+@pytest.mark.parametrize(
+    "setup", [undecodable_target, oversized_json_integer, deeply_nested_json],
+    ids=lambda f: f.__name__)
 def test_an_unreadable_target_is_a_planning_failure_not_a_traceback(setup, home,
                                                                     project):
     """A read that fails is a planning failure like a parse that fails.
@@ -291,7 +302,9 @@ def test_an_unreadable_target_is_a_planning_failure_not_a_traceback(setup, home,
     `exists/is_file/read_text/stat` raise UnicodeDecodeError, PermissionError
     and other OSError -- none of which the PlanningError-only boundary in
     run_install catches, so they used to reach the user as a traceback
-    carrying absolute source paths.
+    carrying absolute source paths. `json.loads` on a syntactically legal but
+    too-deeply-nested document raises RecursionError instead, which is not a
+    ValueError either.
     """
     harnesses, cwd = setup(home, project)
 
@@ -301,6 +314,22 @@ def test_an_unreadable_target_is_a_planning_failure_not_a_traceback(setup, home,
     assert result.stdout.startswith("memriver install: ")
     assert "Traceback" not in result.stdout
     assert "codec" not in result.stdout  # no underlying exception text
+
+
+def test_deeply_nested_json_is_one_line_not_a_recursion_traceback(home, project):
+    harnesses, cwd = deeply_nested_json(home, project)
+    before_tree = snapshot_tree(home)
+
+    result = install(harnesses, home=home, cwd=cwd, yes=True)
+
+    assert result.exit_code == 1
+    assert result.stdout == (
+        "memriver install: file nests too deeply for memriver to parse; "
+        "flatten it and run install again\n"
+    )
+    assert snapshot_tree(home) == before_tree
+    assert backups(home) == []
+    assert result.replace.calls == []
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
