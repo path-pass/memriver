@@ -16,6 +16,7 @@ shared, because that is ours.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -40,6 +41,25 @@ STORE_UNAVAILABLE = "memriver hook: memory store is unavailable\n"
 
 # what MemoryService.index returns for a store with nothing visible in it
 _EMPTY_INDEX = "(no memories yet)"
+
+# How much injected text each harness actually forwards inline. Past its own
+# limit a harness stops handing the model the payload: Claude Code spills a
+# hook output string longer than 10,000 characters to a file and injects a
+# head/tail preview plus the path, and Codex truncates at a default
+# additionalContextLimit of about 2,500 tokens. Both are fixed vendor protocol
+# limits, like the 60-character cue budget -- not memriver policy, so no
+# setting backs them. Codex's is quoted in tokens; index lines are dense with
+# ids, punctuation and dates, so they are budgeted at three characters per
+# token rather than the four an English-prose average would give.
+INLINE_CONTEXT_CHAR_BUDGET: dict[str, int] = {
+    "claude-code": 10_000,
+    "codex": 2_500 * 3,
+}
+
+# core's own wording when its line budget drops entries, reused verbatim so a
+# truncation here reads as one continued count rather than a second notice
+_OMITTED_LINE_PREFIX = "… ("
+_OMITTED_LINE_SUFFIX = " more entries omitted; use memory_search)"
 
 
 @dataclass(frozen=True)
@@ -127,7 +147,7 @@ def _session_start(harness: Harness, payload_text: str, *, root: Path | None,
     try:
         encode = _SESSION_START_ENCODERS[harness]
         index = _read_index(root, _resolve_dir(payload, project_dir, cwd))
-        text = _compose(index, payload.get("source"))
+        text = _compose(index, payload.get("source"), harness)
         return HookResult(stdout=_emit(encode(text)))
     except Exception:  # noqa: BLE001 - the reason belongs in `memriver doctor`
         # one boundary around everything after the payload shape check --
@@ -172,13 +192,55 @@ def _neutralize_delimiters(index: str) -> str:
     return index.replace("memriver index", "memriver-index")
 
 
-def _compose(index: str, source: object) -> str:
+def _omitted_line(count: int) -> str:
+    return f"{_OMITTED_LINE_PREFIX}{count}{_OMITTED_LINE_SUFFIX}"
+
+
+def _already_omitted(line: str) -> int | None:
+    """The count core itself dropped, when its own notice is the last line."""
+    if not (line.startswith(_OMITTED_LINE_PREFIX)
+            and line.endswith(_OMITTED_LINE_SUFFIX)):
+        return None
+    digits = line[len(_OMITTED_LINE_PREFIX):-len(_OMITTED_LINE_SUFFIX)]
+    return int(digits) if digits.isdigit() else None
+
+
+def _fit(index: str, wrap: Callable[[str], str], budget: int) -> str:
+    """Drop whole index lines until the wrapped payload fits ``budget``.
+
+    Truncating characters would cut a line in half and leave the fragment
+    reading like a complete entry; dropping lines keeps every entry the model
+    sees true, and the tail says how many it is not seeing.
+    """
+    text = wrap(index)
+    if len(text) <= budget:
+        return text
+    lines = index.split("\n")
+    dropped_by_core = _already_omitted(lines[-1])
+    if dropped_by_core is not None:
+        lines.pop()  # one continued count, not a second notice below the first
+    already = dropped_by_core or 0
+    for kept in range(len(lines) - 1, -1, -1):
+        text = wrap("\n".join(
+            [*lines[:kept], _omitted_line(already + len(lines) - kept)]))
+        if len(text) <= budget:
+            return text
+    # the notices alone exceed the budget: the harness truncates from here,
+    # which is still better than handing it entries it will cut mid-line
+    return text
+
+
+def _compose(index: str, source: object, harness: Harness) -> str:
     # a store that holds only unreadable entries is indistinguishable from an
     # empty one here, so the copy speaks about visibility, not existence
     if index == _EMPTY_INDEX:
         return EMPTY_VISIBLE
-    delimited = (f"{INDEX_BEGIN_DELIMITER}\n{_neutralize_delimiters(index)}\n"
-                 f"{INDEX_END_DELIMITER}")
-    if source == "compact":
-        return f"{COMPACT_PREFIX}\n{delimited}\n{COMPACT_RESCUE_SUFFIX}"
-    return f"{SESSION_START_PREFIX}\n{delimited}"
+    prefix, suffix = ((COMPACT_PREFIX, "\n" + COMPACT_RESCUE_SUFFIX)
+                      if source == "compact" else (SESSION_START_PREFIX, ""))
+
+    def wrap(body: str) -> str:
+        return (f"{prefix}\n{INDEX_BEGIN_DELIMITER}\n{body}\n"
+                f"{INDEX_END_DELIMITER}{suffix}")
+
+    return _fit(_neutralize_delimiters(index), wrap,
+                INLINE_CONTEXT_CHAR_BUDGET[harness])

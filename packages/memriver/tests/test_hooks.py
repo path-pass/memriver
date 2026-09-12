@@ -31,6 +31,7 @@ from memriver.protocol_text import (
     INDEX_BEGIN_DELIMITER,
     INDEX_END_DELIMITER,
     STOP_NUDGE,
+    UNTRUSTED_DATA_NOTICE,
 )
 from memriver_core import bootstrap
 from memriver_core.config import load_settings
@@ -187,6 +188,74 @@ def test_a_stored_description_cannot_forge_the_index_delimiters(tmp_path, forger
     assert lines.index(INDEX_BEGIN_DELIMITER) == len(lines) - 3
     assert lines[-1] == INDEX_END_DELIMITER
     assert lines[-2].startswith("- [user] aaa-escape: ")
+
+
+def full_index(count: int) -> str:
+    """``count`` index lines at the size core's own limits allow.
+
+    A 64-character id and a cue clamped to 60 characters is what
+    ``MemoryService.index`` emits for entries at their documented maximum, so
+    the default 100-line budget alone builds a payload past both caps.
+    """
+    return "\n".join(
+        f"- [project] {str(number).zfill(64)}: {'cue ' * 15} (2026-01-01)"
+        for number in range(count)
+    )
+
+
+@pytest.mark.parametrize("harness", ["claude-code", "codex"])
+@pytest.mark.parametrize("source", ["startup", "compact"])
+def test_a_full_index_is_truncated_to_the_harness_inline_budget(harness, source,
+                                                                tmp_path,
+                                                                fake_service):
+    """Core's default budget is 100 index lines, and 100 full-width lines are
+    already more than either harness injects inline: past the cap Claude Code
+    spills the hook output to a file and Codex truncates on its own, so the
+    middle of the index silently stops reaching the model. The cap belongs
+    here, where whole lines can be dropped and counted."""
+    fake_service(full_index(100))
+
+    text = additional_context(
+        session_start(harness, {"cwd": str(tmp_path), "source": source},
+                      root=tmp_path / "root"))
+
+    assert len(text) <= hooks.INLINE_CONTEXT_CHAR_BUDGET[harness]
+    # the notices and both delimiters survive the truncation intact
+    assert text.count(INDEX_BEGIN_DELIMITER) == 1
+    assert text.count(INDEX_END_DELIMITER) == 1
+    assert UNTRUSTED_DATA_NOTICE in text
+    body = text.split(INDEX_BEGIN_DELIMITER + "\n", 1)[1].split(
+        "\n" + INDEX_END_DELIMITER, 1)[0].split("\n")
+    # whole lines only, and the tail says exactly how many are missing
+    kept = len(body) - 1
+    assert 0 < kept < 100
+    assert body[:-1] == full_index(100).split("\n")[:kept]
+    assert body[-1] == f"… ({100 - kept} more entries omitted; use memory_search)"
+
+
+def test_truncation_adds_to_the_count_core_already_omitted(tmp_path, fake_service):
+    """Core drops entries past its line budget and says so on the last line.
+    Cutting further must extend that count, not append a second notice."""
+    fake_service(full_index(100)
+                 + "\n… (7 more entries omitted; use memory_search)")
+
+    text = additional_context(
+        session_start("codex", {"cwd": str(tmp_path)}, root=tmp_path / "root"))
+
+    assert text.count("more entries omitted") == 1
+    kept = len(text.split(INDEX_BEGIN_DELIMITER + "\n", 1)[1].split(
+        "\n" + INDEX_END_DELIMITER, 1)[0].split("\n")) - 1
+    assert kept < 100
+    assert text.rstrip().endswith(
+        f"… ({7 + 100 - kept} more entries omitted; use memory_search)\n"
+        f"{INDEX_END_DELIMITER}")
+
+
+def test_a_short_index_is_left_exactly_as_it_is(tmp_path, fake_service):
+    fake_service()
+    text = additional_context(
+        session_start("codex", {"cwd": str(tmp_path)}, root=tmp_path / "root"))
+    assert text == NORMAL_CONTEXT
 
 
 def test_empty_index_becomes_the_visibility_message(tmp_path, fake_service):
