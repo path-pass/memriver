@@ -969,6 +969,60 @@ def test_rollback_removes_a_created_directory_whose_identity_stat_failed(
     assert not kiro.exists()
 
 
+def test_an_ordinary_identity_stat_failure_degrades_and_the_install_still_completes(
+        monkeypatch, home, project):
+    """An `OSError` from the post-`mkdir` identity `lstat` is a degraded but
+    unremarkable outcome, not a reason to give up on the rest of the install:
+    the directory keeps its unverified (`dev`/`ino` still `None`) placeholder
+    record and the run proceeds to completion, unlike a `KeyboardInterrupt` or
+    any other `BaseException`, which is not caught here at all."""
+    settings = home / ".kiro" / "settings"
+    real_lstat = Path.lstat
+
+    def failing_lstat(self, *args, **kwargs):
+        if self == settings and self.exists():
+            raise OSError("injected identity-stat failure")
+        return real_lstat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", failing_lstat)
+
+    result = install(["kiro"], home=home, cwd=project, yes=True)
+
+    assert result.exit_code == 0
+    assert settings.is_dir()
+    assert (settings / "mcp.json").exists()
+    assert (project / ".kiro" / "steering" / "memriver.md").exists()
+
+
+def test_a_later_failure_still_rolls_back_a_directory_with_a_placeholder_record(
+        monkeypatch, home, project):
+    """The placeholder left by a degraded identity `lstat` is not exempt from
+    ordinary transaction rollback: a *different*, later write failing must
+    still unwind the earlier, already-completed write through `_roll_back`,
+    and `_remove_created_dirs` must still take back that write's directory
+    even though its record was never verified."""
+    settings = home / ".kiro" / "settings"
+    kiro = home / ".kiro"
+    real_lstat = Path.lstat
+
+    def failing_lstat(self, *args, **kwargs):
+        if self == settings and self.exists():
+            raise OSError("injected identity-stat failure")
+        return real_lstat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", failing_lstat)
+
+    # writes are (1) ~/.kiro/settings/mcp.json -- completes despite the
+    # degraded identity stat -- then (2) .kiro/steering/memriver.md, which
+    # fails and rolls the whole transaction, including write (1), back
+    result = install(["kiro"], home=home, cwd=project, yes=True,
+                     replace=ReplaceSpy(fail_at={2}))
+
+    assert result.exit_code != 0
+    assert not settings.exists()
+    assert not kiro.exists()
+
+
 def test_a_keyboard_interrupt_between_mkdir_and_lstat_still_gets_rolled_back(
         monkeypatch, home, project):
     """A directory is recorded the instant `mkdir` returns, before the

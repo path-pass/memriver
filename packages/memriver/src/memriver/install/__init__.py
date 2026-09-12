@@ -419,11 +419,15 @@ def _make_dirs(directory: Path) -> tuple[_CreatedDir, ...]:
     for the directory this run made (see ``_CreatedDir`` and
     ``_remove_created_dirs``). A directory is appended to ``created`` the
     instant ``mkdir`` returns, with ``dev``/``ino`` still ``None``, and only
-    upgraded with the ``lstat`` identity afterwards: ``lstat`` is itself a
-    fallible filesystem call, and so is everything after it up to the next
-    ``mkdir``, so anything that can interrupt this loop -- an ``OSError``, a
-    ``KeyboardInterrupt``, any ``BaseException`` -- must find the directory
-    already in ``created``, never dropped from it while still leaked on disk.
+    upgraded with the ``lstat`` identity afterwards -- so the record exists
+    before ``lstat`` is even attempted, and nothing from that point on can
+    drop it while still leaking the directory on disk. ``lstat`` failing with
+    an ordinary ``OSError`` is a degraded but unremarkable outcome, not a
+    reason to give up on the rest of the install: the placeholder stays
+    unverified and the climb continues. Anything else -- a
+    ``KeyboardInterrupt``, any other ``BaseException`` -- is not caught here;
+    it propagates past this loop and straight to the outer handler below,
+    which still finds the directory already recorded.
     """
     created: list[_CreatedDir] = []
     try:
@@ -434,7 +438,10 @@ def _make_dirs(directory: Path) -> tuple[_CreatedDir, ...]:
             except FileExistsError:
                 continue
             created.insert(0, _CreatedDir(parent, None, None))
-            info = parent.lstat()
+            try:
+                info = parent.lstat()
+            except OSError:
+                continue
             created[0] = _CreatedDir(parent, info.st_dev, info.st_ino)
     except BaseException:
         _remove_created_dirs(created)
