@@ -206,6 +206,25 @@ def symlinked_parent_directory(home: Path, project: Path):
     return ["claude-code"], project
 
 
+def json_number_outside_the_standard(home: Path, project: Path):
+    # a legal JSON literal that decodes to float('inf'); re-serializing it
+    # writes the non-standard token `Infinity`, which strict parsers reject
+    write(home / ".claude.json", '{"foreign": 1e400}')
+    return ["claude-code"], project
+
+
+def json_nonstandard_constant(home: Path, project: Path):
+    write(home / ".claude.json", '{"foreign": Infinity}')
+    return ["claude-code"], project
+
+
+def duplicate_json_keys(home: Path, project: Path):
+    # the decoder keeps only the last value, so re-serializing silently drops
+    # a foreign value the user was never shown and never confirmed
+    write(home / ".claude.json", '{"foreign": "first", "foreign": "second"}')
+    return ["claude-code"], project
+
+
 def undecodable_target(home: Path, project: Path):
     # not malformed JSON -- bytes that are not text at all, so the failure is
     # in the read, before any parser is reached
@@ -222,6 +241,9 @@ def all_outside_a_project(home: Path, project: Path):
 PREFLIGHT_FAILURES = [
     malformed_json,
     malformed_toml,
+    json_number_outside_the_standard,
+    json_nonstandard_constant,
+    duplicate_json_keys,
     undecodable_target,
     duplicate_hook_identities,
     broken_markers,

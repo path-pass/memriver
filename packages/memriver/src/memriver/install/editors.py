@@ -22,6 +22,7 @@ so a reinstall rewrites nothing and reformats nothing.
 from __future__ import annotations
 
 import json
+import math
 import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -496,11 +497,53 @@ def _dotted(key_path: tuple[str, ...]) -> str:
     return ".".join(key_path)
 
 
+_NON_STANDARD_NUMBER = (
+    "file holds a number JSON cannot represent (an infinity or a NaN); memriver "
+    "will not rewrite it, because writing it back produces a document strict "
+    "parsers reject. Fix the value and run install again"
+)
+
+
+def _no_duplicate_names(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """``object_pairs_hook`` that refuses what the default decoder would drop.
+
+    ``json.loads`` keeps the last value of a repeated name, so re-serializing
+    would erase a foreign value the summary never showed and the user never
+    confirmed. Ambiguity fails.
+    """
+    seen: dict[str, Any] = {}
+    for name, value in pairs:
+        if name in seen:
+            raise PlanningError(
+                f"file has two JSON members named {name!r}; memriver will not "
+                "rewrite it because re-serializing keeps only the last one. "
+                "Remove the duplicate and run install again"
+            )
+        seen[name] = value
+    return seen
+
+
+def _finite_number(raw: str) -> float:
+    """``parse_float`` guard: ``1e400`` decodes to ``inf`` without complaint."""
+    value = float(raw)
+    if not math.isfinite(value):
+        raise PlanningError(_NON_STANDARD_NUMBER)
+    return value
+
+
+def _reject_constant(name: str) -> object:
+    """``parse_constant`` guard: ``NaN``/``Infinity`` are not JSON [RFC 8259 §6]."""
+    del name  # the offending token is the user's content; the fixed text says enough
+    raise PlanningError(_NON_STANDARD_NUMBER)
+
+
 def _parse_json_object(source: str) -> dict[str, Any]:
     if not source.strip():
         return {}
     try:
-        document = json.loads(source)
+        document = json.loads(source, object_pairs_hook=_no_duplicate_names,
+                              parse_constant=_reject_constant,
+                              parse_float=_finite_number)
     except json.JSONDecodeError as error:
         raise PlanningError(f"file is not valid JSON: {error}") from error
     if not isinstance(document, dict):
@@ -509,7 +552,11 @@ def _parse_json_object(source: str) -> dict[str, Any]:
 
 
 def _render_json(document: dict[str, Any]) -> str:
-    rendered = json.dumps(document, indent=2, ensure_ascii=False) + "\n"
+    try:
+        rendered = json.dumps(document, indent=2, ensure_ascii=False,
+                              allow_nan=False) + "\n"
+    except ValueError as error:  # the value itself never goes in the message
+        raise PlanningError(_NON_STANDARD_NUMBER) from error
     _parse_json_object(rendered)
     return rendered
 
