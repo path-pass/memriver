@@ -807,6 +807,55 @@ def test_rollback_keeps_a_directory_that_was_already_there(home, project):
     assert snapshot_tree(project) == before_project
 
 
+def test_a_directory_creation_that_fails_part_way_leaves_nothing_behind(
+        monkeypatch, home, project):
+    """`mkdir` is not atomic across levels. Making `.kiro/steering` can create
+    `.kiro` and then fail on the level below it, and the directories a run
+    guessed it would create are not the ones it did create: the guess was made
+    before the call, and the call itself ran outside the cleanup boundary, so
+    the half-built tree stayed."""
+    real_mkdir = Path.mkdir
+    before_home, before_project = snapshot_tree(home), snapshot_tree(project)
+
+    def partial_mkdir(self, *args, **kwargs):
+        if self.name == "steering":
+            real_mkdir(self.parent, exist_ok=True)  # the level that did succeed
+            raise OSError("injected mkdir failure below .kiro")
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", partial_mkdir)
+
+    result = install(["kiro"], home=home, cwd=project, yes=True)
+
+    assert result.exit_code != 0
+    assert snapshot_tree(project) == before_project
+    assert snapshot_tree(home) == before_home
+
+
+def test_rollback_leaves_a_directory_another_actor_created(monkeypatch, home,
+                                                           project):
+    """Emptiness is not ownership. Another process creating `~/.kiro` while
+    this run was on its way to the same directory leaves a directory this run
+    did not make; `rmdir` succeeding on it only proves nobody has put a file
+    there yet."""
+    real_mkdir = Path.mkdir
+    contested = home / ".kiro"
+
+    def losing_mkdir(self, *args, **kwargs):
+        if not contested.exists() and contested in (self, *self.parents):
+            real_mkdir(contested)  # the other actor gets there first
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", losing_mkdir)
+
+    result = install(["kiro"], home=home, cwd=project, yes=True,
+                     replace=ReplaceSpy(fail_at={2}))
+
+    assert result.exit_code != 0
+    assert contested.is_dir()
+    assert snapshot_tree(contested) == {}  # only what this run made came out
+
+
 def test_an_interrupt_rolls_the_run_back_and_still_propagates(home, project):
     """Ctrl-C between replacements must not leave a half-applied tree behind."""
     claude_json = write(home / ".claude.json", json.dumps({"apiKey": SECRET}),

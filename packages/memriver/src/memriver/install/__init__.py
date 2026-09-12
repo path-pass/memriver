@@ -351,15 +351,9 @@ def _write_target(snapshot: Snapshot, text: str, root: Path | None, stamp: str,
             "nothing further was written -- re-run memriver install"
         )
     original_mode = snapshot.mode
-    parent = target.path.parent
-    # recorded before the mkdir, deepest first: after it there is no way left
-    # to tell which of these directories the user already had
-    created_dirs = tuple(
-        directory for directory in (parent, *parent.parents)
-        if not directory.exists()
-    )
-    parent.mkdir(parents=True, exist_ok=True)
+    created_dirs: tuple[Path, ...] = ()
     try:
+        created_dirs = _make_dirs(target.path.parent)
         backup = (
             _write_backup(target, original_mode, stamp) if original_mode is not None
             else None
@@ -378,13 +372,42 @@ def _write_target(snapshot: Snapshot, text: str, root: Path | None, stamp: str,
                   created_dirs=created_dirs)
 
 
+def _make_dirs(directory: Path) -> tuple[Path, ...]:
+    """Create ``directory`` and its missing parents; return the ones we made.
+
+    One level at a time, shallow to deep, and every ``mkdir`` is exclusive:
+    creating the directory *is* the ownership claim. ``FileExistsError`` means
+    somebody else owns that level -- a directory that was always there, or one
+    another process created while this run was on its way to it -- so it is
+    skipped rather than recorded, and rollback can never remove a directory
+    this run did not make. ``mkdir(parents=True)`` cannot do this: it is not
+    atomic across levels, so a failure part way up leaves directories behind
+    that no return value names. A failure here cleans up its own climb.
+    """
+    created: list[Path] = []
+    try:
+        for parent in reversed([d for d in (directory, *directory.parents)
+                                if not d.exists()]):
+            try:
+                parent.mkdir()
+            except FileExistsError:
+                continue
+            created.insert(0, parent)  # deepest first, the order rollback wants
+    except BaseException:
+        _remove_created_dirs(created)
+        raise
+    return tuple(created)
+
+
 def _remove_created_dirs(created_dirs: Sequence[Path]) -> None:
     """Take back the parents this run made, deepest first, while they are empty.
 
-    ``rmdir`` is the whole guard: it refuses a directory holding anything, so a
-    backup this run wrote, another harness's file, or a target still to be
-    rolled back all keep their parent -- and the climb stops there, because a
-    directory above a kept one cannot be empty either.
+    Only directories ``_make_dirs`` recorded reach here, so ownership is
+    already settled; ``rmdir`` adds the second half of the guard by refusing a
+    directory holding anything, so a backup this run wrote, another harness's
+    file, or a target still to be rolled back all keep their parent -- and the
+    climb stops there, because a directory above a kept one cannot be empty
+    either.
     """
     for directory in created_dirs:
         try:
