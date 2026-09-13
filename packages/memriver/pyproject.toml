@@ -5,8 +5,19 @@ description = "Shared memory layer for coding agents across harnesses, exposed v
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "path-pass" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
-    "memriver-core",
+    "memriver-core>=0.1.0",
     "fastmcp>=3.0",
     "pydantic>=2",
     "tomlkit",
@@ -17,6 +28,11 @@ memriver = "memriver.cli:main"
 
 [project.optional-dependencies]
 # Filled in Phase 3+: vector = ["memriver-vector"], dream = [...], sync = [...], all = [...]
+
+[project.urls]
+Homepage = "https://github.com/path-pass/memriver"
+Repository = "https://github.com/path-pass/memriver"
+Issues = "https://github.com/path-pass/memriver/issues"
 
 [tool.uv.sources]
 memriver-core = { workspace = true }
