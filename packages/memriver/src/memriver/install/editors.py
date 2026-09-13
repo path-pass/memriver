@@ -557,7 +557,7 @@ def _member_removal_span(source: str, key_path: tuple[str, ...],
     def locate(scan: _JsonScan) -> tuple[int, int]:
         container = _container_at(scan, key_path[:-1])
         item = _named(container, key_path[-1])
-        return _span_without(container, container.items.index(item))
+        return _span_without(scan.source, container, container.items.index(item))
 
     return _located(source, locate, command_name)
 
@@ -566,7 +566,7 @@ def _element_removal_span(source: str, key_path: tuple[str, ...], index: int,
                           command_name: str) -> tuple[int, int]:
     """The bytes to cut so one array element -- and one comma -- disappear."""
     def locate(scan: _JsonScan) -> tuple[int, int]:
-        return _span_without(_container_at(scan, key_path), index)
+        return _span_without(scan.source, _container_at(scan, key_path), index)
 
     return _located(source, locate, command_name)
 
@@ -605,13 +605,17 @@ def _spliced(source: str, span: tuple[int, int], command_name: str) -> str:
     return rendered
 
 
-def _span_without(container: _JsonContainer, index: int) -> tuple[int, int]:
-    """The span covering one item plus exactly one adjacent separator.
+def _span_without(source: str, container: _JsonContainer,
+                  index: int) -> tuple[int, int]:
+    """The span covering one item's own bytes plus exactly one separator.
 
-    A following item's start is the cut's end when there is one, so the removed
-    item's own leading whitespace becomes the next item's; the last item takes
-    the comma and whitespace in front of it instead. The sole item of a
-    container takes the container's whole interior, which leaves ``{}``/``[]``
+    Only the removed item's bytes are cut. Its own leading whitespace is part
+    of it -- indentation that exists to hold it -- and so is the comma that
+    follows it; the whitespace *after* that comma belongs to the next item and
+    is left where the user put it. The last item of a container has no comma of
+    its own, so it takes the separating comma in front of it instead, without
+    the whitespace preceding that comma, which is the previous item's. The sole
+    item takes the container's whole interior, which leaves ``{}``/``[]``
     standing -- emptied, never pruned -- rather than a container holding only
     the indentation of something that is gone.
     """
@@ -621,8 +625,25 @@ def _span_without(container: _JsonContainer, index: int) -> tuple[int, int]:
     if len(items) == 1:
         return container.inner_start, container.inner_end
     if index + 1 < len(items):
-        return items[index].start, items[index + 1].start
-    return items[index - 1].end, items[index].end
+        return _whitespace_before(source, items[index].start), \
+            _comma_after(source, items[index].end) + 1
+    return _comma_after(source, items[index - 1].end), items[index].end
+
+
+def _whitespace_before(source: str, at: int) -> int:
+    """The start of the whitespace run ``at`` is preceded by."""
+    while at > 0 and source[at - 1] in _JSON_WHITESPACE:
+        at -= 1
+    return at
+
+
+def _comma_after(source: str, at: int) -> int:
+    """The index of the separating comma that follows the item ending at ``at``."""
+    while at < len(source) and source[at] in _JSON_WHITESPACE:
+        at += 1
+    if at >= len(source) or source[at] != ",":
+        raise _UnscannableJson(f"no separator after the item ending at {at}")
+    return at
 
 
 def _handlers(group: object) -> list[dict[str, Any]]:

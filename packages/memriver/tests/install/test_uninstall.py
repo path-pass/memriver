@@ -480,12 +480,72 @@ def test_a_json_removal_keeps_every_byte_outside_the_removed_member():
 
 
 def test_a_json_removal_of_a_leading_member_takes_its_comma_with_it():
+    """The comma the removed member owns goes with it; the space that separated
+    it from the next member is that member's own leading whitespace and stays."""
     source = ('{"mcpServers": {"memriver": {"command": "uvx"}, '
               '"other": {"command": "x"}}}')
 
     removed = json_object_remove(source, ("mcpServers", "memriver"))
 
-    assert removed.rendered == '{"mcpServers": {"other": {"command": "x"}}}'
+    assert removed.rendered == '{"mcpServers": { "other": {"command": "x"}}}'
+
+
+def test_a_json_removal_leaves_the_next_members_own_indentation_alone():
+    """The cut ends at the removed member's own comma. Taking the next member's
+    leading whitespace instead would re-indent a foreign member to whatever
+    memriver's entry happened to be indented by -- here, eight spaces to one."""
+    source = '{\r\n "memriver": 1,\r\n        "foreign": 2\r\n}'
+
+    removed = json_object_remove(source, ("memriver",))
+
+    assert removed.rendered == '{\r\n        "foreign": 2\r\n}'
+
+
+def test_a_json_removal_of_a_last_member_keeps_the_whitespace_before_the_comma():
+    """That whitespace sits between the previous member's value and the
+    separating comma: it is the foreign member's formatting, not the removed
+    member's, so the cut starts at the comma itself."""
+    source = '{"foreign": 1   , "memriver": 2}'
+
+    removed = json_object_remove(source, ("memriver",))
+
+    assert removed.rendered == '{"foreign": 1   }'
+
+
+def test_a_hook_removal_leaves_the_next_groups_own_indentation_alone():
+    source = (
+        '{"hooks": {"SessionStart": [\r\n'
+        '  {"hooks": [{"type": "command", "command": "uvx memriver hook '
+        'session-start --harness claude-code"}]},\r\n'
+        '\t\t\t\t{"hooks": [{"type": "command", "command": "/opt/audit/run"}]}\r\n'
+        ']}}'
+    )
+
+    removed = hook_array_identity_remove(source, "SessionStart",
+                                         SESSION_START_IDENTITY)
+
+    assert removed.rendered == (
+        '{"hooks": {"SessionStart": [\r\n'
+        '\t\t\t\t{"hooks": [{"type": "command", "command": "/opt/audit/run"}]}\r\n'
+        ']}}'
+    )
+
+
+def test_a_hook_removal_of_a_last_group_keeps_the_whitespace_before_the_comma():
+    source = (
+        '{"hooks": {"SessionStart": ['
+        '{"hooks": [{"type": "command", "command": "/opt/audit/run"}]}   , '
+        '{"hooks": [{"type": "command", "command": "uvx memriver hook '
+        'session-start --harness claude-code"}]}]}}'
+    )
+
+    removed = hook_array_identity_remove(source, "SessionStart",
+                                         SESSION_START_IDENTITY)
+
+    assert removed.rendered == (
+        '{"hooks": {"SessionStart": ['
+        '{"hooks": [{"type": "command", "command": "/opt/audit/run"}]}   ]}}'
+    )
 
 
 def test_a_json_removal_of_the_last_member_empties_the_container_in_place():
@@ -1272,27 +1332,27 @@ def test_purge_data_refuses_a_regular_file_root(home, project, tmp_path):
     assert root.is_file()  # untouched
 
 
-def test_purge_data_reports_a_partial_removal_when_rmtree_fails(home, project,
-                                                                 tmp_path,
-                                                                 monkeypatch):
+def test_purge_data_reports_a_partial_removal_when_the_walk_fails(home, project,
+                                                                   tmp_path,
+                                                                   monkeypatch):
     """The wording is only accurate if the store really is half gone, so the
     injected failure deletes part of the tree before it raises -- exactly the
     state a real mid-walk ``PermissionError`` leaves behind."""
     import shutil
 
-    delete_tree = shutil.rmtree  # captured before the patch below replaces it
+    delete_tree = shutil.rmtree
     root = tmp_path / "agent-memory"
     (root / "sessions").mkdir(parents=True)
     (root / "sessions" / "one.json").write_text("gone")
     (root / "index.db").write_text("still here")
 
-    def half_removing_rmtree(path, **kwargs):
+    def half_removing_walk(fd):
         delete_tree(root / "sessions")
         error = OSError()
         error.strerror = "Permission denied"
         raise error
 
-    monkeypatch.setattr("memriver.uninstall.shutil.rmtree", half_removing_rmtree)
+    monkeypatch.setattr("memriver.uninstall._empty_directory", half_removing_walk)
 
     result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
                             purge_data=True, env={"MEMRIVER_ROOT": str(root)})
@@ -1359,12 +1419,34 @@ def test_a_scalar_features_container_still_lets_the_codex_removal_report_success
 # --- the purge target is canonicalized, shown, and bounded -------------------
 
 
-def forbid_rmtree(monkeypatch) -> None:
-    """Make any ``rmtree`` call fail the test outright, whatever it is handed."""
-    def refuse(path, **kwargs):
-        raise AssertionError(f"rmtree was called on a protected target: {path}")
+def forbid_any_deletion(monkeypatch) -> None:
+    """Make any deletion walk fail the test outright, whatever it is handed."""
+    def refuse(fd):
+        raise AssertionError("a deletion walk was started on a protected target")
 
-    monkeypatch.setattr("memriver.uninstall.shutil.rmtree", refuse)
+    monkeypatch.setattr("memriver.uninstall._empty_directory", refuse)
+
+
+def swap_during_the_walk(monkeypatch, swap, *, at: int = 1) -> None:
+    """Run ``swap`` just before the ``at``-th directory of the deletion walk is
+    entered, then let the real walk run.
+
+    ``at=1`` is the confirmed root itself -- the moment every name-based check
+    has already passed -- and ``at=2`` is its first subdirectory, which is as
+    mid-walk as an injection gets.
+    """
+    import memriver.uninstall as uninstall_module
+
+    walk = uninstall_module._empty_directory
+    entered: list[int] = []
+
+    def swapping(fd: int) -> None:
+        entered.append(fd)
+        if len(entered) == at:
+            swap()
+        return walk(fd)
+
+    monkeypatch.setattr("memriver.uninstall._empty_directory", swapping)
 
 
 def storage_root_line(stdout: str) -> str:
@@ -1373,12 +1455,12 @@ def storage_root_line(stdout: str) -> str:
 
 
 @pytest.mark.parametrize("spelling", ["/", ".", "..", "cwd", "home"])
-def test_purge_data_refuses_an_overbroad_target_before_it_reaches_rmtree(
+def test_purge_data_refuses_an_overbroad_target_before_it_deletes_anything(
         home, project, monkeypatch, spelling):
     """`/`, the injected home, the current directory and any ancestor of it are
     never a memriver store, however they are spelled: an empty or mistyped
     --root/MEMRIVER_ROOT must not escalate into deleting the whole tree."""
-    forbid_rmtree(monkeypatch)
+    forbid_any_deletion(monkeypatch)
     keep = write(home / "personal.txt", "mine")
     target = {"cwd": project, "home": home}.get(spelling, Path(spelling))
 
@@ -1394,7 +1476,7 @@ def test_purge_data_refuses_an_overbroad_target_before_it_reaches_rmtree(
 
 def test_purge_data_refuses_a_dot_dot_chain_that_canonicalizes_onto_the_home(
         home, project, monkeypatch):
-    forbid_rmtree(monkeypatch)
+    forbid_any_deletion(monkeypatch)
     spelled = home / "agent-memory" / ".." / ".." / home.name
 
     result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
@@ -1407,7 +1489,7 @@ def test_purge_data_refuses_a_dot_dot_chain_that_canonicalizes_onto_the_home(
 
 def test_purge_data_refuses_a_relative_target_resolved_against_the_injected_cwd(
         home, project, monkeypatch):
-    forbid_rmtree(monkeypatch)
+    forbid_any_deletion(monkeypatch)
 
     result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
                             purge_data=True, root=Path("."))
@@ -1421,7 +1503,7 @@ def test_purge_data_shows_the_canonical_target_when_a_parent_is_a_symlink(
         home, project, tmp_path, monkeypatch):
     """A symlinked parent redirects the deletion somewhere the given spelling
     never named; the plan and the report must show where it actually lands."""
-    forbid_rmtree(monkeypatch)
+    forbid_any_deletion(monkeypatch)
     outside = tmp_path / "outside"
     (outside / "store").mkdir(parents=True)
     alias = tmp_path / "alias"
@@ -1443,7 +1525,7 @@ def test_purge_data_refuses_a_symlinked_parent_that_redirects_onto_the_home(
         home, project, tmp_path, monkeypatch):
     """Leaf-only symlink checking passed this: `alias/store` is not itself a
     symlink, yet it canonicalizes onto the home directory."""
-    forbid_rmtree(monkeypatch)
+    forbid_any_deletion(monkeypatch)
     keep = write(home / "personal.txt", "mine")
     alias = tmp_path / "alias"
     alias.symlink_to(home.parent, target_is_directory=True)
@@ -1461,7 +1543,7 @@ def test_purge_data_refuses_a_leaf_swapped_for_a_symlink_during_the_confirmation
     """The confirmation window is long enough for the target to be swapped for
     a link onto the home directory; the object that was confirmed is gone, so
     nothing is deleted."""
-    forbid_rmtree(monkeypatch)
+    forbid_any_deletion(monkeypatch)
     root = tmp_path / "agent-memory"
     root.mkdir()
 
@@ -1508,42 +1590,92 @@ def test_purge_data_refuses_a_replacement_directory_at_the_confirmed_path(
 
 
 def test_purge_data_deletes_the_confirmed_directory_when_a_parent_is_swapped_last(
-        home, project, tmp_path):
-    """A parent component replaced after the final check redirects the *path*,
-    not the directory the deletion is anchored to: the victim tree the swapped
-    parent points at is never walked."""
-    import shutil
-
-    delete_tree = shutil.rmtree  # captured before the patch below replaces it
+        home, project, tmp_path, monkeypatch):
+    """A parent component replaced mid-walk redirects the *path*, not the
+    directories the deletion is anchored to: the victim tree the swapped parent
+    points at is never walked."""
     parent = tmp_path / "parent"
     store = parent / "agent-memory"
-    store.mkdir(parents=True)
-    (store / "data.txt").write_text("memriver's own")
+    (store / "sessions").mkdir(parents=True)
+    (store / "sessions" / "one.json").write_text("memriver's own")
     victim_parent = tmp_path / "victim-parent"
     victim = victim_parent / "agent-memory"
-    victim.mkdir(parents=True)
+    (victim / "sessions").mkdir(parents=True)
     (victim / "precious.txt").write_text("someone else's")
 
-    def swapping_rmtree(path, **kwargs):
-        # the race the path-string check cannot see: between the last check and
-        # the walk, `parent` becomes a link onto a tree memriver never named
+    def swap_the_parent() -> None:
+        # the race the path-string check cannot see: with the walk already
+        # under way, `parent` becomes a link onto a tree memriver never named
         parent.rename(tmp_path / "parent-moved")
         (tmp_path / "parent").symlink_to(victim_parent, target_is_directory=True)
-        return delete_tree(path, **kwargs)
 
-    import memriver.uninstall as uninstall_module
-    original = uninstall_module.shutil.rmtree
-    try:
-        uninstall_module.shutil.rmtree = swapping_rmtree
-        result = full_uninstall(["claude-code"], home=home, cwd=project,
-                                yes=True, purge_data=True,
-                                env={"MEMRIVER_ROOT": str(store)})
-    finally:
-        uninstall_module.shutil.rmtree = original
+    swap_during_the_walk(monkeypatch, swap_the_parent, at=2)
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project,
+                            yes=True, purge_data=True,
+                            env={"MEMRIVER_ROOT": str(store)})
 
     assert (victim / "precious.txt").read_text() == "someone else's"
+    assert (victim / "sessions").is_dir()
     assert not (tmp_path / "parent-moved" / "agent-memory").exists()
     assert result.exit_code == 0
+
+
+def test_purge_data_leaves_a_replacement_swapped_in_after_the_confirmed_open(
+        home, project, tmp_path, monkeypatch):
+    """The last window the path-anchored walk left open: the leaf is renamed
+    away and a fresh directory takes its name once the identity check has
+    already passed. The walk holds a descriptor on the confirmed object, so it
+    empties that -- it never so much as opens the replacement -- and the name is
+    checked once more before the emptied root itself is detached."""
+    root = tmp_path / "agent-memory"
+    (root / "sessions").mkdir(parents=True)
+    (root / "sessions" / "one.json").write_text("the object the user saw")
+    moved = tmp_path / "moved-away"
+
+    def swap_the_leaf() -> None:
+        root.rename(moved)
+        root.mkdir()
+        (root / "replacement.txt").write_text("never confirmed")
+        (root / "keep").mkdir()
+
+    swap_during_the_walk(monkeypatch, swap_the_leaf)
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project,
+                            yes=True, purge_data=True,
+                            env={"MEMRIVER_ROOT": str(root)})
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.stdout
+    # the replacement is intact, byte for byte, and was never entered
+    assert (root / "replacement.txt").read_text() == "never confirmed"
+    assert (root / "keep").is_dir()
+    # the confirmed object is what the walk emptied, and it is left standing
+    assert moved.is_dir() and not any(moved.iterdir())
+    assert "a different object" in result.stdout
+
+
+def test_purge_data_removes_a_nested_tree_through_the_confirmed_directory(
+        home, project, tmp_path):
+    """The ordinary case the fd-anchored walk still has to get right: nested
+    directories, a symlink that is unlinked rather than followed, and a report
+    of success once nothing is left."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "untouched.txt").write_text("not memriver's")
+    root = tmp_path / "agent-memory"
+    (root / "sessions" / "2026" / "09").mkdir(parents=True)
+    (root / "sessions" / "2026" / "09" / "one.json").write_text("{}")
+    (root / "index.db").write_text("db")
+    (root / "elsewhere").symlink_to(outside, target_is_directory=True)
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                            purge_data=True, env={"MEMRIVER_ROOT": str(root)})
+
+    assert result.exit_code == 0
+    assert f"removed {root}" in result.stdout
+    assert not root.exists()
+    assert (outside / "untouched.txt").read_text() == "not memriver's"
 
 
 def test_purge_data_reports_a_symlink_loop_instead_of_raising(home, project,
