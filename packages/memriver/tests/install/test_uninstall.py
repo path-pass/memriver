@@ -1734,6 +1734,96 @@ def test_purge_data_removes_the_canonical_target_not_the_given_spelling(
     assert alias.is_symlink() and outside.is_dir()
 
 
+def swap_on_first_open(monkeypatch, swap) -> None:
+    """Run ``swap`` just before the first ``os.open`` the purge issues, then
+    delegate to the real ``os.open``.
+
+    Config removal on a never-installed home writes nothing, so it opens no
+    descriptors; the first ``os.open`` the run reaches is the purge's own. That
+    is the instant the reviewer's probe fires: canonicalization and every
+    name-based guard are already behind us, and the open is about to re-traverse
+    the path they vetted.
+    """
+    import memriver.uninstall as uninstall_module
+
+    real_open = uninstall_module.os.open
+    fired: list[bool] = []
+
+    def swapping(path, *args, **kwargs):
+        if not fired:
+            fired.append(True)
+            swap()
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(uninstall_module.os, "open", swapping)
+
+
+def test_purge_data_refuses_an_ancestor_swapped_for_a_symlink_before_the_confirmed_open(
+        home, project, tmp_path, monkeypatch):
+    """The reviewer's probe. Every guard runs on the canonical path *string*;
+    the open then re-traverses it. With the immediate parent swapped for a
+    symlink onto someone else's tree in between, a single full-path open follows
+    the swapped ancestor -- O_NOFOLLOW guards only the leaf -- and empties the
+    wrong directory. The component-wise no-follow walk opens each ancestor in
+    turn, so the swapped-in symlink fails closed and nothing is removed."""
+    safe_parent = tmp_path / "safe-parent"
+    store = safe_parent / "store"
+    (store / "sessions").mkdir(parents=True)
+    (store / "sessions" / "one.json").write_text("memriver's own")
+    victim_parent = tmp_path / "victim-parent"
+    victim = victim_parent / "store"
+    victim.mkdir(parents=True)
+    precious = victim / "precious.txt"
+    precious.write_text("someone else's home")
+
+    def swap_the_parent() -> None:
+        safe_parent.rename(tmp_path / "safe-parent-moved")
+        (tmp_path / "safe-parent").symlink_to(victim_parent,
+                                              target_is_directory=True)
+
+    swap_on_first_open(monkeypatch, swap_the_parent)
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                            purge_data=True, root=store)
+
+    assert result.exit_code != 0
+    assert "Traceback" not in result.stdout
+    assert "nothing was removed" in result.stdout
+    assert precious.read_text() == "someone else's home"
+    assert victim.is_dir()
+
+
+def test_purge_data_refuses_a_symlinked_ancestor_anywhere_in_the_target_path(
+        home, project, tmp_path, monkeypatch):
+    """Not only the immediate parent: a symlink swapped in at *any* level above
+    the leaf redirects a full-path open just the same. The walk opens every
+    component with O_NOFOLLOW, so a grandparent turned symlink is refused too."""
+    grand = tmp_path / "grand"
+    store = grand / "mid" / "store"
+    (store / "sessions").mkdir(parents=True)
+    (store / "sessions" / "one.json").write_text("memriver's own")
+    victim_grand = tmp_path / "victim-grand"
+    victim = victim_grand / "mid" / "store"
+    victim.mkdir(parents=True)
+    precious = victim / "precious.txt"
+    precious.write_text("someone else's home")
+
+    def swap_the_grandparent() -> None:
+        grand.rename(tmp_path / "grand-moved")
+        (tmp_path / "grand").symlink_to(victim_grand, target_is_directory=True)
+
+    swap_on_first_open(monkeypatch, swap_the_grandparent)
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                            purge_data=True, root=store)
+
+    assert result.exit_code != 0
+    assert "Traceback" not in result.stdout
+    assert "nothing was removed" in result.stdout
+    assert precious.read_text() == "someone else's home"
+    assert victim.is_dir()
+
+
 def test_clean_uv_cache_invokes_uv_with_the_exact_arguments(home, project,
                                                              monkeypatch):
     calls = []

@@ -126,6 +126,31 @@ def _refuse_purge_target(given: Path, canonical: Path, *, home: Path,
     return None
 
 
+def _open_directory_without_following_symlinks(path: Path) -> int:
+    """Open ``path`` as a directory fd, refusing a symlink at *any* level.
+
+    ``path`` must be absolute and already resolved. ``O_NOFOLLOW`` on a
+    single full-path ``os.open`` refuses only a symlinked *leaf* -- an ancestor
+    component swapped for a symlink between a guard and the open is still
+    followed, redirecting the open onto a different real directory. So the path
+    is walked component by component from the filesystem root, every component
+    opened with ``O_NOFOLLOW``: a symlink anywhere along the way fails closed
+    (``OSError``) rather than redirecting. The caller owns the returned fd.
+    """
+    fd = os.open(path.anchor or "/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for component in path.parts[1:]:
+            next_fd = os.open(component,
+                              os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY,
+                              dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 def _purge_data(*, yes: bool, dry_run: bool, input_fn: Callable[[str], str],
                 stdout: TextIO, env: Mapping[str, str], home: Path, cwd: Path,
                 root_override: Path | None) -> int:
@@ -168,11 +193,11 @@ def _purge_data(*, yes: bool, dry_run: bool, input_fn: Callable[[str], str],
         stdout.write("dry run: the memory store was not removed.\n")
         return 0
     try:
-        confirmed_fd = os.open(canonical,
-                               os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY)
+        confirmed_fd = _open_directory_without_following_symlinks(canonical)
     except OSError as error:
-        # O_NOFOLLOW is what makes a leaf that turned into a symlink between
-        # the guards above and here fail closed rather than resolve onward
+        # the no-follow walk is what makes any component -- leaf or ancestor --
+        # turned into a symlink between the guards above and here fail closed
+        # rather than redirect the open onto a different real directory
         stdout.write(
             f"memriver uninstall: {canonical} could not be opened as a directory "
             f"({error.strerror or error}); nothing was removed.\n"
@@ -225,7 +250,7 @@ def _remove_confirmed_directory(canonical: Path, confirmed: os.stat_result,
     identity immediately beforehand and gives up if the name has changed hands.
     """
     try:
-        parent_fd = os.open(canonical.parent, os.O_RDONLY | os.O_DIRECTORY)
+        parent_fd = _open_directory_without_following_symlinks(canonical.parent)
     except OSError as error:
         stdout.write(
             f"memriver uninstall: {canonical.parent} could not be opened as a "
