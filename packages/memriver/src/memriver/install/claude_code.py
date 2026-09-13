@@ -15,6 +15,7 @@ from pathlib import Path
 from memriver.install.editors import (
     EditOperation,
     PlanningError,
+    RemovalOperation,
     Snapshot,
     Target,
     hook_group,
@@ -25,9 +26,11 @@ from memriver.install.editors import (
 HARNESS = "claude-code"
 
 
-def targets(home: Path, project_root: Path | None) -> tuple[Target, Target]:
+def targets(home: Path, project_root: Path | None,
+            command_name: str = "install") -> tuple[Target, Target]:
     """``(~/.claude.json, ~/.claude/settings.json)``; both targets are user-level."""
     del project_root  # Claude Code has no project-scoped target.
+    del command_name  # neither target can fail to resolve, so nothing names it.
     config = Target(
         path=home / ".claude.json",
         user_level=True,
@@ -89,6 +92,75 @@ def operations(
             harness_owned=True,
         ))
     return tuple(ops)
+
+
+def uninstall_operations(
+    snapshots: tuple[Snapshot, Snapshot], env: Mapping[str, str],
+) -> tuple[RemovalOperation, ...]:
+    """The exact inverse of ``operations()``: the MCP entry and both hooks.
+
+    The native-memory toggle ``operations()`` may add is never undone here --
+    spec 5.3's setting stays exactly where install put it; see ``uninstall_notes``.
+    """
+    del env  # nothing here depends on the environment memriver was run with
+    config, settings = snapshots
+    return (
+        RemovalOperation(
+            id="claude-code:mcp",
+            target=config.target,
+            label="remove memriver MCP server",
+            kind="json-object",
+            key_path=("mcpServers", "memriver"),
+        ),
+        RemovalOperation(
+            id="claude-code:hooks-session-start",
+            target=settings.target,
+            label="remove the session-start hook",
+            kind="hook-array",
+            key_path=("hooks", "SessionStart"),
+            identity=hook_identity("session-start"),
+        ),
+        RemovalOperation(
+            id="claude-code:hooks-stop",
+            target=settings.target,
+            label="remove the stop hook",
+            kind="hook-array",
+            key_path=("hooks", "Stop"),
+            identity=hook_identity("stop"),
+        ),
+    )
+
+
+NATIVE_MEMORY_LEFT_NOTE = (
+    "claude-code: env.CLAUDE_CODE_DISABLE_AUTO_MEMORY is still \"1\" in "
+    "~/.claude/settings.json; memriver uninstall leaves harness settings alone. "
+    "Remove that entry (or set it to \"0\") to let Claude Code's built-in memory "
+    "run again."
+)
+
+
+def uninstall_notes(
+    snapshots: tuple[Snapshot, Snapshot], env: Mapping[str, str],
+) -> tuple[str, ...]:
+    """Read-only completion text: where the native-memory toggle was left.
+
+    This runs after the write transaction has already committed, so every
+    container shape the write phase accepted has to end in a note or in
+    silence -- an ``env`` holding a string rather than an object is a shape
+    memriver cannot read the toggle out of, and an unreadable shape means no
+    claim, not an exception on top of a configuration already removed.
+    """
+    del env
+    _, settings = snapshots
+    try:
+        data = json.loads(settings.text) if settings.text else {}
+    except ValueError:
+        return ()  # malformed input already failed planning before this runs
+    section = data.get("env") if isinstance(data, dict) else None
+    if isinstance(section, dict) and section.get(
+            "CLAUDE_CODE_DISABLE_AUTO_MEMORY") == "1":
+        return (NATIVE_MEMORY_LEFT_NOTE,)
+    return ()
 
 
 def _offer_disabling_auto_memory(

@@ -65,3 +65,17 @@ def test_settings_root_defaults_to_storage_root(monkeypatch, tmp_path):
     # rather than once at import time
     monkeypatch.setenv("MEMRIVER_ROOT", str(tmp_path / "mem"))
     assert Settings().root == tmp_path / "mem"
+
+
+def test_storage_root_prefers_an_injected_env_over_the_process_environment(
+        monkeypatch, tmp_path):
+    monkeypatch.setenv("MEMRIVER_ROOT", str(tmp_path / "real"))
+    injected = {"MEMRIVER_ROOT": str(tmp_path / "injected")}
+    assert storage_root(env=injected) == tmp_path / "injected"
+
+
+def test_storage_root_falls_back_to_an_injected_home_without_an_env_override(
+        monkeypatch, tmp_path):
+    monkeypatch.delenv("MEMRIVER_ROOT", raising=False)
+    assert storage_root(env={}, home=tmp_path / "injected-home") == (
+        tmp_path / "injected-home" / "agent-memory")

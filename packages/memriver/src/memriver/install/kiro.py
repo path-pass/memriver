@@ -17,6 +17,7 @@ from pathlib import Path
 from memriver.install.editors import (
     EditOperation,
     PlanningError,
+    RemovalOperation,
     Snapshot,
     Target,
     mcp_server_payload,
@@ -24,16 +25,20 @@ from memriver.install.editors import (
 from memriver.protocol_text import PROTOCOL_BLOCK
 
 
-def targets(home: Path, project_root: Path | None) -> tuple[Target, Target]:
+def targets(home: Path, project_root: Path | None,
+            command_name: str = "install") -> tuple[Target, Target]:
     """``(~/.kiro/settings/mcp.json, <git-root>/.kiro/steering/memriver.md)``.
 
     Raises ``PlanningError`` before returning anything when ``project_root``
     is ``None`` -- Kiro's steering file has no user-level home.
+    ``command_name`` is the command the user ran, so the refusal tells them
+    where to re-run that one rather than naming the wrong half of the pair.
     """
     if project_root is None:
         raise PlanningError(
             "kiro needs a project (the nearest current-or-ancestor .git root) "
-            "to manage its steering file; run install inside a project or pass one"
+            f"to manage its steering file; run {command_name} inside a project "
+            "or pass one"
         )
     mcp = Target(
         path=home / ".kiro" / "settings" / "mcp.json",
@@ -44,6 +49,10 @@ def targets(home: Path, project_root: Path | None) -> tuple[Target, Target]:
         path=project_root / ".kiro" / "steering" / "memriver.md",
         user_level=False,
         rollback_instruction="remove .kiro/steering/memriver.md",
+        # entirely memriver's own file (nothing else is ever written to it),
+        # unlike cursor's shared AGENTS.md -- emptied by uninstall, it is
+        # deleted outright rather than left as an empty file
+        delete_if_emptied=True,
     )
     return mcp, instructions
 
@@ -69,5 +78,28 @@ def operations(
             label="add the memriver protocol block to the steering file",
             kind="marker-block",
             expected=PROTOCOL_BLOCK,
+        ),
+    )
+
+
+def uninstall_operations(
+    snapshots: tuple[Snapshot, Snapshot], env: Mapping[str, str],
+) -> tuple[RemovalOperation, ...]:
+    """The exact inverse of ``operations()``: the MCP entry and the marker block."""
+    del env  # Kiro has no native-memory conflict to resolve.
+    mcp, instructions = snapshots
+    return (
+        RemovalOperation(
+            id="kiro:mcp",
+            target=mcp.target,
+            label="remove memriver MCP server",
+            kind="json-object",
+            key_path=("mcpServers", "memriver"),
+        ),
+        RemovalOperation(
+            id="kiro:instructions",
+            target=instructions.target,
+            label="remove the memriver protocol block from the steering file",
+            kind="marker-block",
         ),
     )

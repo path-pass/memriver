@@ -14,6 +14,7 @@ from pathlib import Path
 from memriver.install.editors import (
     EditOperation,
     PlanningError,
+    RemovalOperation,
     Snapshot,
     Target,
     mcp_server_payload,
@@ -21,16 +22,20 @@ from memriver.install.editors import (
 from memriver.protocol_text import PROTOCOL_BLOCK
 
 
-def targets(home: Path, project_root: Path | None) -> tuple[Target, Target]:
+def targets(home: Path, project_root: Path | None,
+            command_name: str = "install") -> tuple[Target, Target]:
     """``(~/.cursor/mcp.json, <git-root>/AGENTS.md)``.
 
     Raises ``PlanningError`` before returning anything when ``project_root``
     is ``None`` -- Cursor's instructions file has no user-level home.
+    ``command_name`` is the command the user ran, so the refusal tells them
+    where to re-run that one rather than naming the wrong half of the pair.
     """
     if project_root is None:
         raise PlanningError(
             "cursor needs a project (the nearest current-or-ancestor .git root) "
-            "to manage its AGENTS.md; run install inside a project or pass one"
+            f"to manage its AGENTS.md; run {command_name} inside a project or "
+            "pass one"
         )
     mcp = Target(
         path=home / ".cursor" / "mcp.json",
@@ -66,5 +71,28 @@ def operations(
             label="add the memriver protocol block to AGENTS.md",
             kind="marker-block",
             expected=PROTOCOL_BLOCK,
+        ),
+    )
+
+
+def uninstall_operations(
+    snapshots: tuple[Snapshot, Snapshot], env: Mapping[str, str],
+) -> tuple[RemovalOperation, ...]:
+    """The exact inverse of ``operations()``: the MCP entry and the marker block."""
+    del env  # Cursor has no native-memory conflict to resolve.
+    mcp, instructions = snapshots
+    return (
+        RemovalOperation(
+            id="cursor:mcp",
+            target=mcp.target,
+            label="remove memriver MCP server",
+            kind="json-object",
+            key_path=("mcpServers", "memriver"),
+        ),
+        RemovalOperation(
+            id="cursor:instructions",
+            target=instructions.target,
+            label="remove the memriver protocol block from AGENTS.md",
+            kind="marker-block",
         ),
     )

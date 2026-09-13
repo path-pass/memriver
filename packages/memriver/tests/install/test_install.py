@@ -261,6 +261,12 @@ def all_outside_a_project(home: Path, project: Path):
     return ALL_HARNESSES, elsewhere
 
 
+def kiro_outside_a_project(home: Path, project: Path):
+    elsewhere = home.parent / "elsewhere-kiro"
+    elsewhere.mkdir()
+    return ["kiro"], elsewhere
+
+
 PREFLIGHT_FAILURES = [
     malformed_json,
     malformed_toml,
@@ -290,6 +296,37 @@ def test_planning_failure_writes_absolutely_nothing(setup, tmp_path, home, proje
     assert after_tree == before_tree
     assert list(tmp_path.rglob("*.memriver-backup-*")) == []
     assert result.replace.calls == []
+
+
+INSTALL_REMEDIATIONS = [
+    (broken_markers, "fix the markers and run install again"),
+    (symlinked_target, "(or remove it) and run install again"),
+    (symlinked_parent_directory, "(or remove it) and run install again"),
+    (undecodable_target, "then run memriver install again"),
+    (duplicate_json_keys, "Remove the duplicate and run install again"),
+    (json_number_outside_the_standard, "Fix the value and run install again"),
+    (json_nonstandard_constant, "Fix the value and run install again"),
+    (deeply_nested_json, "flatten it and run install again"),
+    (duplicate_hook_identities, "remove all but one and run install again"),
+    (all_outside_a_project, "run install inside a project or pass one"),
+    (kiro_outside_a_project, "run install inside a project or pass one"),
+]
+
+
+@pytest.mark.parametrize("setup,remediation", INSTALL_REMEDIATIONS,
+                         ids=lambda value: getattr(value, "__name__", ""))
+def test_a_planning_failure_names_install_as_the_command_to_re_run(setup,
+                                                                   remediation,
+                                                                   home, project):
+    """Every one of these messages ends by telling the user what to run next.
+    A bare ``memriver`` is the compatibility ``serve`` path, not a retry, so
+    the sentence has to name the command they actually ran."""
+    harnesses, cwd = setup(home, project)
+
+    result = install(harnesses, home=home, cwd=cwd, yes=True)
+
+    assert result.exit_code == 1
+    assert result.stdout.rstrip("\n").endswith(remediation), result.stdout
 
 
 @pytest.mark.parametrize(
@@ -367,11 +404,11 @@ def test_incompatible_duplicate_target_declarations_are_rejected(tmp_path, home,
                                                                  monkeypatch):
     """The same path claimed as user-level by one harness and project-level by
     another is an unresolvable classification, not a merge."""
-    claude_config, _ = claude_code.targets(home, None)
+    claude_config, _ = claude_code.targets(home, None, "install")
     real_targets = cursor.targets
 
-    def clashing_targets(home_dir, project_root):
-        mcp, instructions = real_targets(home_dir, project_root)
+    def clashing_targets(home_dir, project_root, command_name):
+        mcp, instructions = real_targets(home_dir, project_root, command_name)
         return type(mcp)(path=claude_config.path, user_level=False,
                          rollback_instruction=mcp.rollback_instruction), instructions
 
