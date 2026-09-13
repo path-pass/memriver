@@ -17,7 +17,9 @@ script only reports the counts as a sanity check on the download.
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
+import tempfile
 import urllib.request
 
 SOURCE_URL = ("https://raw.githubusercontent.com/gitleaks/gitleaks/"
@@ -25,6 +27,25 @@ SOURCE_URL = ("https://raw.githubusercontent.com/gitleaks/gitleaks/"
 OUTPUT = (pathlib.Path(__file__).resolve().parent.parent / "packages"
           / "memriver-core" / "src" / "memriver_core" / "content_policy" / "rules"
           / "gitleaks.toml")
+
+
+def _atomic_write_bytes(path: pathlib.Path, data: bytes) -> None:
+    """Write `data` to `path` without ever exposing a truncated file.
+
+    Same pattern as the repository's own `_atomic_write`: write to a temp
+    sibling in the same directory, then `os.replace`. An interruption or
+    ENOSPC mid-write leaves the temp file damaged and `path` untouched,
+    instead of truncating the live rules file the scanner imports at startup.
+    """
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
 
 
 def main() -> None:
@@ -46,7 +67,7 @@ def main() -> None:
     # .secret_scanner` outright -- and with it every write. A failed sync must
     # leave the previous good ruleset in place.
     raw = tomllib.loads(data.decode("utf-8"))["rules"]
-    OUTPUT.write_bytes(data)
+    _atomic_write_bytes(OUTPUT, data)
 
     # imported after the write so the counts describe what was just vendored
     from memriver_core.content_policy.secret_scanner import _RULES

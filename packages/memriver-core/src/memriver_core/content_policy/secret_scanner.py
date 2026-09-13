@@ -87,6 +87,13 @@ def _load_rules(*sources: Traversable) -> list[_Rule]:
 
 _RULES = _load_rules(_RULES_DIR / "memriver.toml", _RULES_DIR / "gitleaks.toml")
 
+# C0 + C1 control characters and the Unicode line/paragraph separators -- the
+# same class the index normalizer collapses (memriver_core.application.
+# service._INDEX_UNSAFE_RE). str.strip() only removes whitespace, so a body of
+# nothing but e.g. "\x01\x02" reads as non-empty and would render as a
+# near-blank index line.
+_CONTROL_CHARS_RE = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
 
 def _shannon_entropy(text: str) -> float:
     """Shannon entropy in bits per character, as gitleaks measures it."""
@@ -109,7 +116,7 @@ class SecretScanner:
         `max_chars` is a required parameter with no default here: the caller
         (the application layer) supplies the configured budget.
         """
-        if not text.strip():
+        if not _CONTROL_CHARS_RE.sub("", text).strip():
             raise ContentRejected("content is empty; nothing to store")
         if len(text) > max_chars:
             raise ContentRejected(
@@ -122,12 +129,16 @@ class SecretScanner:
             # cheaper
             if keywords and not any(k in lowered for k in keywords):
                 continue
-            match = pat.search(text)
-            if match is None:
+            if entropy is None:
+                if pat.search(text) is not None:
+                    raise ContentRejected(_rejection(rule_id))
                 continue
-            if entropy is not None and _shannon_entropy(_secret_of(match, group)) < entropy:
-                continue
-            raise ContentRejected(_rejection(rule_id))
+            # entropy-gated: a rule can have several candidates in one body,
+            # and a low-entropy first one must not shadow a high-entropy
+            # later one from the same rule
+            for match in pat.finditer(text):
+                if _shannon_entropy(_secret_of(match, group)) >= entropy:
+                    raise ContentRejected(_rejection(rule_id))
 
 
 def _secret_of(match: re.Match[str], group: int) -> str:

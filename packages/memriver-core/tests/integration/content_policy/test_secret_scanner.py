@@ -144,6 +144,21 @@ def test_empty_content_blocked(text):
         _SCANNER.check(text, BODY_LIMIT)
 
 
+@pytest.mark.parametrize("text", ["\x01\x02", "\x1b\x1b"])
+def test_control_character_only_content_blocked(text):
+    # str.strip() only removes whitespace: a body of nothing but control
+    # characters used to slip past the empty-content check and render as a
+    # near-blank index line
+    with pytest.raises(ContentRejected):
+        _SCANNER.check(text, BODY_LIMIT)
+
+
+def test_control_character_prefixed_content_passes():
+    # a stray control character alongside real content must not be treated
+    # as empty
+    _SCANNER.check("\x01hello", BODY_LIMIT)
+
+
 def test_oversize_blocked():
     with pytest.raises(ContentRejected):
         _SCANNER.check("x" * 8001, BODY_LIMIT)
@@ -177,6 +192,25 @@ def test_max_chars_is_tunable():
     with pytest.raises(ContentRejected) as ei:
         _SCANNER.check("x" * 20, max_chars=10)
     assert "10" in str(ei.value)
+
+
+def test_max_chars_exact_limit_passes():
+    # a body of exactly the configured limit is not "too large"
+    _SCANNER.check("x" * 20, max_chars=20)
+
+
+def test_max_chars_one_over_limit_rejects():
+    with pytest.raises(ContentRejected):
+        _SCANNER.check("x" * 21, max_chars=20)
+
+
+def test_rejection_message_carries_rule_id_and_pointer_guidance():
+    with pytest.raises(ContentRejected) as ei:
+        _SCANNER.check("password: correcthorsebattery", BODY_LIMIT)
+    message = str(ei.value)
+    assert "(memriver-credential-assignment)" in message
+    assert ("Store a pointer (e.g. 'token is in 1Password item X') instead."
+            in message)
 
 
 # --- from test_gate_vendored.py ---------------------------------------------
@@ -487,3 +521,25 @@ def test_entropy_falls_back_to_whole_match_without_groups(monkeypatch):
     _with_rules(monkeypatch, ("no-groups", r"ZQ-\w+", 1.0, 0))
     with pytest.raises(ContentRejected):
         _SCANNER.check("marker ZQ-aaaaaaaa end", BODY_LIMIT)
+
+
+# --- entropy gate must inspect every candidate, not just the first ---------
+#
+# `pat.search(text)` stops at the first match; when a rule is entropy-gated,
+# a low-entropy first candidate must not shadow a high-entropy second one
+# from the same rule.
+
+def test_entropy_checks_every_candidate_not_just_the_first(monkeypatch):
+    # first 'ZQ-' candidate is low entropy (0.0), second is high (3.0): a
+    # single pat.search() would stop at the first and never reject
+    _with_rules(monkeypatch, ("multi-candidate", r"ZQ-(\w+)", 1.0, 0))
+    with pytest.raises(ContentRejected) as ei:
+        _SCANNER.check("marker ZQ-aaaaaaaa mid ZQ-abcdefgh end", BODY_LIMIT)
+    assert "multi-candidate" in str(ei.value)
+
+
+def test_entropy_all_low_candidates_still_pass(monkeypatch):
+    # both candidates stay below threshold: the rule must not reject on
+    # count alone
+    _with_rules(monkeypatch, ("multi-candidate", r"ZQ-(\w+)", 1.0, 0))
+    _SCANNER.check("marker ZQ-aaaaaaaa mid ZQ-bbbbbbbb end", BODY_LIMIT)
