@@ -1,5 +1,6 @@
 import inspect
 import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -74,6 +75,22 @@ def test_project_scope_gets_its_own_directory(memory_repository, root):
     m = _m(scope=Scope.project(ProjectId("demo-abc123")))
     memory_repository.create(m, AccessContext(project_id=ProjectId("demo-abc123")))
     assert (root / "projects" / "demo-abc123" / "entries" / f"{m.id}.md").exists()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+def test_created_directories_are_private_to_the_owner(memory_repository, root):
+    # memory filenames are semantic now; a world/group-readable directory
+    # lets other local users enumerate them by listing, even without read
+    # access to the file contents themselves
+    m = _m(scope=Scope.project(ProjectId("demo-abc123")))
+    memory_repository.create(m, AccessContext(project_id=ProjectId("demo-abc123")))
+    # the root itself is created by store_lock, the levels below it by
+    # _mkdir_private; both have to lock the directory down
+    assert stat.S_IMODE(root.stat().st_mode) == 0o700
+    made_dirs = [p for p in root.glob("**/*") if p.is_dir()]
+    assert made_dirs, "expected create() to have made at least one directory"
+    for d in made_dirs:
+        assert stat.S_IMODE(d.stat().st_mode) == 0o700, d
 
 
 def test_invalid_project_slug_rejected(memory_repository, root):
@@ -457,3 +474,80 @@ def test_lock_lifecycle_failure_does_not_mask_domain_errors(memory_repository):
     memory_repository.create(_m(body="v1", type="user", id="n"), CTX)
     with pytest.raises(NameTaken):
         memory_repository.create(_m(body="v2", type="user", id="n"), CTX)
+
+
+# --- timestamp normalization / ordering (fix 3+4) ---
+
+def test_project_slug_named_global_is_not_confused_with_the_global_scope(
+        memory_repository, root):
+    # `_dir_scope` checked parent.name == "global" before parent.parent.name
+    # == "projects", so projects/global/entries misjudged itself as the
+    # global scope directory -- a scope mismatch against its own frontmatter,
+    # and the entry vanished from get()/iter_visible(). project_slug always
+    # appends a -<6hex> suffix, so only the core API can hit this directly.
+    project_global = ProjectId("global")
+    ctx = AccessContext(project_id=project_global)
+    m = _m(scope=Scope.project(project_global), id="proj-named-global")
+    memory_repository.create(m, ctx)
+    assert memory_repository.get("proj-named-global", ctx) == m
+    assert m.id in [visible.id for visible in memory_repository.iter_visible(ctx)]
+    assert (root / "projects" / "global" / "entries" / f"{m.id}.md").exists()
+
+
+def test_a_store_root_named_projects_keeps_global_entries_addressable(tmp_path):
+    # `_dir_scope` matched on basenames, so with a root like ~/projects the
+    # global directory read as <root:projects>/global/entries and answered
+    # Scope.project("global") -- every global entry then failed the
+    # directory-is-truth check and disappeared from get()/iter_visible().
+    root = tmp_path / "projects"
+    repository = FileMemoryRepository(root)
+    m = _m(id="global-under-projects-root")
+    repository.create(m, CTX)
+    assert repository.get(m.id, CTX) == m
+    assert [visible.id for visible in repository.iter_visible(CTX)] == [m.id]
+
+
+def test_iter_visible_skips_entries_whose_id_fails_id_re(memory_repository, root, caplog):
+    # iter_visible's stem check let a file like Bad_Name.md into
+    # memory_index/search, while get()/update_body()/delete() already refuse
+    # it via _find's ID_RE guard -- disagreeing about the same file's
+    # existence. This file's own id/stem agree with each other (only ID_RE
+    # rejects the shape), so this exercises a fresh gap, not the id-stem
+    # mismatch case above.
+    _write_raw(root, "Bad_Name.md", encode(_m(id="Bad_Name")))
+    with caplog.at_level("WARNING"):
+        visible_ids = [m.id for m in memory_repository.iter_visible(CTX)]
+    assert "Bad_Name" not in visible_ids
+    assert memory_repository.search("Bad_Name", CTX, 5) == []
+    assert any("Bad_Name" in rec.message for rec in caplog.records)
+
+
+def test_hand_edited_naive_timestamp_sorts_correctly_among_server_written(
+        memory_repository, root):
+    # a hand-edited, unquoted "updated:" timestamp parses as a naive
+    # datetime; without canonicalizing it to the server's UTC "T...ffffffZ"
+    # form, str()'s "YYYY-MM-DD HH:MM:SS" (space, no offset) can sort out of
+    # place against the server's own microsecond-resolution strings
+    old = _m(id="old", body="ordering fact old")
+    old.updated = "2026-01-01T00:00:00.000000Z"
+    memory_repository.create(old, CTX)
+
+    _write_raw(root, "hand.md",
+               "---\n"
+               "id: hand\n"
+               "type: user\n"
+               "scope: global\n"
+               "sync: true\n"
+               "created: 2026-06-01T00:00:00\n"
+               "updated: 2026-06-01T00:00:00\n"
+               "source: {}\n"
+               "trust: agent\n"
+               "description: ''\n"
+               "---\n\nordering fact hand\n")
+
+    new = _m(id="new", body="ordering fact new")
+    new.updated = "2026-08-01T00:00:00.000000Z"
+    memory_repository.create(new, CTX)
+
+    assert [h.id for h in memory_repository.search("ordering fact", CTX, 5)] == [
+        "new", "hand", "old"]

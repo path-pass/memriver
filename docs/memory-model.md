@@ -31,8 +31,8 @@ id: mise-runtime-management
 type: user
 scope: global
 sync: true
-created: 2026-08-29T10:00:00Z
-updated: 2026-08-29T10:00:00Z
+created: 2026-08-29T10:00:00.000000Z
+updated: 2026-08-29T10:00:00.000000Z
 source: {harness: claude-code, method: agent}
 trust: user
 description: mise manages every runtime; check before suggesting installs

@@ -28,7 +28,9 @@ Trust = Literal["user", "agent", "untrusted-derived"]
 
 
 def now() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # microseconds, not seconds: `updated` doubles as the freshness sort key
+    # (search, dream), and a same-second update must still advance it
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 # ids are either server-generated ULIDs (fallback) or sanitized kebab slugs;

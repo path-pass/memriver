@@ -6,6 +6,7 @@ from memriver_core.models import (
     Memory,
     ProjectId,
     Scope,
+    now,
     sanitize_name,
 )
 
@@ -18,6 +19,19 @@ def test_new_generates_ulid_and_timestamps():
     assert m.created == m.updated
     assert m.created.endswith("Z") or "+" in m.created
     assert m.sync is True and m.trust == "agent"
+
+
+def test_now_emits_microseconds_so_consecutive_calls_can_be_ordered():
+    # at second resolution two updates within the same wall second produced
+    # identical strings and freshness ordering could not tell them apart.
+    # The microsecond field is what makes ordering possible; a strict advance
+    # is not asserted because the clock's own tick may be coarser than a call.
+    stamp = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z"
+    first = now()
+    second = now()
+    assert re.fullmatch(stamp, first)
+    assert re.fullmatch(stamp, second)
+    assert second >= first
 
 
 def test_invalid_type_rejected():

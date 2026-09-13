@@ -62,6 +62,17 @@ def test_unknown_type_reads_as_project():
     assert decode(text).type == "project"
 
 
+def test_unknown_type_coercion_is_logged(caplog):
+    # update_body would otherwise persist this coercion (re-encoding the
+    # memory as "project") with no trace of the type it silently dropped
+    m = _m(id="coerced-entry")
+    text = encode(m).replace("type: user", "type: lesson")
+    with caplog.at_level("WARNING"):
+        decode(text)
+    assert any("coerced-entry" in r.message and "lesson" in r.message
+               for r in caplog.records)
+
+
 def test_unknown_keys_ignored_on_read():
     text = encode(_m()).replace("id:", "unknown_key: X\nid:")
     assert not hasattr(decode(text), "unknown_key")
@@ -79,6 +90,64 @@ def test_description_defaults_empty_and_is_always_in_frontmatter():
     m = _m()
     assert m.description == ""
     assert "description:" in encode(m)
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("false", False),
+    ("FALSE", False),
+    ("False", False),
+    ("no", False),
+    ("yes", False),
+    ("junk", False),
+    (True, True),
+    ("true", True),
+    ("TRUE", True),
+    ("True", True),
+])
+def test_sync_is_parsed_strictly(raw, expected):
+    # sync is the privacy boundary: a hand-edited `sync: "false"` (a quoted
+    # string) must never read back as True through bool()'s truthy-string trap
+    text = encode(_m()).replace("sync: true", f"sync: {raw!r}"
+                                if isinstance(raw, str) else f"sync: {raw}")
+    assert decode(text).sync is expected
+
+
+def _raw_entry(created: str) -> str:
+    return ("---\n"
+            "id: n\n"
+            "type: user\n"
+            "scope: global\n"
+            "sync: true\n"
+            f"created: {created}\n"
+            f"updated: {created}\n"
+            "source: {}\n"
+            "trust: agent\n"
+            "description: ''\n"
+            "---\n\nb\n")
+
+
+def test_hand_edited_offset_datetime_timestamp_is_canonicalized():
+    # an unquoted "2026-08-29T10:00:00+02:00" parses as a real datetime via
+    # PyYAML's own resolver; str() on that yields "2026-08-29 08:00:00+00:00"
+    # (space, offset) instead of the server's canonical "T...Z" form
+    memory = decode(_raw_entry("2026-08-29T10:00:00+02:00"))
+    assert memory.created == "2026-08-29T08:00:00.000000Z"
+
+
+def test_hand_edited_naive_datetime_timestamp_is_assumed_utc():
+    memory = decode(_raw_entry("2026-08-29T10:00:00"))
+    assert memory.created == "2026-08-29T10:00:00.000000Z"
+
+
+def test_legacy_second_resolution_string_gains_microseconds():
+    memory = decode(_raw_entry("'2026-08-29T10:00:00Z'"))
+    assert memory.created == "2026-08-29T10:00:00.000000Z"
+
+
+def test_unparseable_timestamp_is_left_untouched():
+    # a bad timestamp must never make the memory unreadable
+    memory = decode(_raw_entry("'not-a-date'"))
+    assert memory.created == "not-a-date"
 
 
 def test_old_files_without_description_parse_as_empty():
