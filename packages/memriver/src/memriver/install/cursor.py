@@ -14,6 +14,7 @@ from pathlib import Path
 from memriver.install.editors import (
     EditOperation,
     PlanningError,
+    RemovalOperation,
     Snapshot,
     Target,
     mcp_server_payload,
@@ -66,5 +67,28 @@ def operations(
             label="add the memriver protocol block to AGENTS.md",
             kind="marker-block",
             expected=PROTOCOL_BLOCK,
+        ),
+    )
+
+
+def uninstall_operations(
+    snapshots: tuple[Snapshot, Snapshot], env: Mapping[str, str],
+) -> tuple[RemovalOperation, ...]:
+    """The exact inverse of ``operations()``: the MCP entry and the marker block."""
+    del env  # Cursor has no native-memory conflict to resolve.
+    mcp, instructions = snapshots
+    return (
+        RemovalOperation(
+            id="cursor:mcp",
+            target=mcp.target,
+            label="remove memriver MCP server",
+            kind="json-object",
+            key_path=("mcpServers", "memriver"),
+        ),
+        RemovalOperation(
+            id="cursor:instructions",
+            target=instructions.target,
+            label="remove the memriver protocol block from AGENTS.md",
+            kind="marker-block",
         ),
     )

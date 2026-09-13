@@ -6,6 +6,7 @@ depending on the MCP umbrella.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 from pydantic import Field, field_validator
@@ -22,9 +23,18 @@ DEFAULT_SEARCH_LIMIT = 5
 DEFAULT_BUDGET_LINES = 100
 
 
-def storage_root() -> Path:
-    env = os.environ.get("MEMRIVER_ROOT")
-    return Path(env) if env else Path.home() / "agent-memory"
+def storage_root(env: Mapping[str, str] | None = None,
+                 home: Path | None = None) -> Path:
+    """The memory storage root: ``$MEMRIVER_ROOT`` or ``<home>/agent-memory``.
+
+    ``env``/``home`` default to the real process environment/home so every
+    existing zero-argument caller (the ``root`` field's ``default_factory``,
+    ``load_settings``) is unaffected; a caller that already has its own
+    injected env/home (``memriver uninstall``, tested against a fake root)
+    passes them through instead of reading the real process state.
+    """
+    value = (os.environ if env is None else env).get("MEMRIVER_ROOT")
+    return Path(value) if value else (home or Path.home()) / "agent-memory"
 
 
 class Settings(BaseSettings):

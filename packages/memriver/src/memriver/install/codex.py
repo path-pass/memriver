@@ -15,6 +15,7 @@ from pathlib import Path
 from memriver.install.editors import (
     EditOperation,
     PlanningError,
+    RemovalOperation,
     Snapshot,
     Target,
     hook_group,
@@ -155,6 +156,65 @@ def notes(snapshots: tuple[Snapshot, Snapshot], env: Mapping[str, str],
     if features.get("memories") is not True:
         lines.append(NATIVE_MEMORY_OFF_NOTE)
     return tuple(lines)
+
+
+def uninstall_operations(
+    snapshots: tuple[Snapshot, Snapshot], env: Mapping[str, str],
+) -> tuple[RemovalOperation, ...]:
+    """The exact inverse of ``operations()``: the MCP table and both hooks.
+
+    ``features.memories`` is never touched here; see ``uninstall_notes``. Spec
+    left a mention of per-hook content-hash entries under ``[hooks.state]``,
+    but neither this module nor ``hooks.json`` ever writes such a table --
+    that state, if Codex keeps one at all, is Codex's own bookkeeping, not
+    something memriver's install put there, so uninstall has nothing to
+    remove there either.
+    """
+    del env  # Codex's native-memory conflict is read from its own config, not env.
+    config, hooks = snapshots
+    return (
+        RemovalOperation(
+            id="codex:mcp",
+            target=config.target,
+            label="remove memriver MCP server",
+            kind="toml-table",
+            key_path=("mcp_servers", "memriver"),
+        ),
+        RemovalOperation(
+            id=SESSION_START_HOOK_ID,
+            target=hooks.target,
+            label="remove the session-start hook",
+            kind="hook-array",
+            key_path=("hooks", "SessionStart"),
+            identity=hook_identity("session-start"),
+        ),
+        RemovalOperation(
+            id=STOP_HOOK_ID,
+            target=hooks.target,
+            label="remove the stop hook",
+            kind="hook-array",
+            key_path=("hooks", "Stop"),
+            identity=hook_identity("stop"),
+        ),
+    )
+
+
+NATIVE_MEMORY_LEFT_NOTE = (
+    "codex: features.memories = false in ~/.codex/config.toml; memriver "
+    "uninstall leaves harness settings alone. Set features.memories = true to "
+    "let Codex's built-in memory run again."
+)
+
+
+def uninstall_notes(
+    snapshots: tuple[Snapshot, Snapshot], env: Mapping[str, str],
+) -> tuple[str, ...]:
+    """Read-only completion text: where the native-memory toggle was left."""
+    del env
+    config, _ = snapshots
+    if _features(config.text).get("memories") is False:
+        return (NATIVE_MEMORY_LEFT_NOTE,)
+    return ()
 
 
 def _memories_enabled(config_text: str | None) -> bool:

@@ -29,6 +29,7 @@ the memory store.
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import tempfile
@@ -37,7 +38,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
-from typing import TextIO
+from typing import Any, TextIO
 
 from . import claude_code, codex, cursor, kiro
 from .editors import (
@@ -49,19 +50,26 @@ from .editors import (
     EditorKind,
     EditResult,
     PlanningError,
+    RemovalOperation,
     Snapshot,
     Target,
     apply_edit,
+    apply_removal,
     display_path,
     hook_array_identity_merge,
+    hook_array_identity_remove,
     hook_group,
     hook_identity,
     json_object_merge,
+    json_object_remove,
     marker_block,
+    marker_block_remove,
     mcp_server_payload,
     operation_label,
     render_change_summary,
+    render_removal_summary,
     toml_roundtrip,
+    toml_table_remove,
     validate_document,
 )
 
@@ -75,20 +83,28 @@ __all__ = [
     "EditResult",
     "EditorKind",
     "PlanningError",
+    "RemovalOperation",
     "Snapshot",
     "Target",
     "apply_edit",
+    "apply_removal",
     "display_path",
     "hook_array_identity_merge",
+    "hook_array_identity_remove",
     "hook_group",
     "hook_identity",
     "json_object_merge",
+    "json_object_remove",
     "marker_block",
+    "marker_block_remove",
     "mcp_server_payload",
     "operation_label",
     "render_change_summary",
+    "render_removal_summary",
+    "run_config_uninstall",
     "run_install",
     "toml_roundtrip",
+    "toml_table_remove",
     "validate_document",
 ]
 
@@ -122,7 +138,7 @@ def _utc_timestamp() -> str:
 
 @dataclass(frozen=True)
 class _PlannedChange:
-    operation: EditOperation
+    operation: EditOperation | RemovalOperation
     summary: str
 
 
@@ -131,7 +147,7 @@ class _Plan:
     project_root: Path | None
     targets: dict[Path, Target]
     snapshots: dict[Path, Snapshot]
-    operations: tuple[EditOperation, ...]
+    operations: tuple[EditOperation | RemovalOperation, ...]
     changes: tuple[_PlannedChange, ...]
     # what each harness planner read, kept for the completion notes: those are
     # composed after the confirmations, because what a run leaves behind is
@@ -195,7 +211,7 @@ def _refuse_symlinks(target: Target, root: Path | None) -> None:
             raise PlanningError(
                 f"{component} is a symlink; memriver will not write through it "
                 f"to {target.path}. Replace it with a regular file or directory "
-                "(or remove it) and run install again"
+                "(or remove it) and run memriver again"
             )
 
 
@@ -224,19 +240,20 @@ def _read_snapshot(target: Target, root: Path | None) -> Snapshot:
         # message carries the rejected bytes and an errno string.
         raise PlanningError(
             f"{path} could not be read; check that it is UTF-8 text this user "
-            "can read, then run memriver install again"
+            "can read, then run memriver again"
         ) from err
 
 
-def _rendered(operations: Iterable[EditOperation],
+def _rendered(operations: Iterable[EditOperation | RemovalOperation],
               snapshots: Mapping[Path, Snapshot],
+              apply_fn: Callable[[Any, str], EditResult],
               ) -> tuple[dict[Path, str], dict[str, EditResult]]:
     """Apply operations to in-memory copies, then validate each whole document."""
     texts = {path: snapshot.text or "" for path, snapshot in snapshots.items()}
     results: dict[str, EditResult] = {}
     for operation in operations:
         path = operation.target.path
-        result = apply_edit(operation, texts[path])
+        result = apply_fn(operation, texts[path])
         texts[path] = result.rendered
         results[operation.id] = result
     for path, text in texts.items():
@@ -245,9 +262,19 @@ def _rendered(operations: Iterable[EditOperation],
     return texts, results
 
 
-def _plan(harnesses: Sequence[str], home: Path, cwd: Path,
-          env: Mapping[str, str]) -> _Plan:
-    """The complete planning pipeline of spec 5.1 -- pure, no filesystem writes."""
+def _plan(harnesses: Sequence[str], home: Path, cwd: Path, env: Mapping[str, str], *,
+          collect_operations: Callable[[str, tuple[Snapshot, ...], Mapping[str, str]],
+                                       Sequence[Any]],
+          apply_fn: Callable[[Any, str], EditResult],
+          summary_fn: Callable[[Any, EditResult, Path], str]) -> _Plan:
+    """The complete planning pipeline of spec 5.1 -- pure, no filesystem writes.
+
+    ``collect_operations``/``apply_fn``/``summary_fn`` are the only install-vs-
+    uninstall differences: which per-harness function builds the operations,
+    which editor runs them, and how a changed one is rendered for confirmation.
+    Everything else -- target classification, snapshotting, validation -- is
+    the same pipeline either direction runs through.
+    """
     unknown = [name for name in harnesses if name not in HARNESSES]
     if unknown:
         raise PlanningError(
@@ -265,17 +292,26 @@ def _plan(harnesses: Sequence[str], home: Path, cwd: Path,
         name: tuple(snapshots[target.path] for target in per_harness[name])
         for name in harnesses
     }
-    operations: list[EditOperation] = []
+    operations: list[Any] = []
     for name in harnesses:
-        operations.extend(HARNESSES[name].operations(harness_snapshots[name], env))
-    _, results = _rendered(operations, snapshots)
+        operations.extend(collect_operations(name, harness_snapshots[name], env))
+    _, results = _rendered(operations, snapshots, apply_fn)
     changes = tuple(
-        _PlannedChange(operation,
-                       render_change_summary(operation, results[operation.id], home))
+        _PlannedChange(operation, summary_fn(operation, results[operation.id], home))
         for operation in operations if results[operation.id].changed
     )
     return _Plan(project_root, targets, snapshots, tuple(operations), changes,
                  harness_snapshots, env)
+
+
+def _install_operations(name: str, snapshots: tuple[Snapshot, ...],
+                        env: Mapping[str, str]) -> Sequence[EditOperation]:
+    return HARNESSES[name].operations(snapshots, env)
+
+
+def _uninstall_operations(name: str, snapshots: tuple[Snapshot, ...],
+                          env: Mapping[str, str]) -> Sequence[RemovalOperation]:
+    return HARNESSES[name].uninstall_operations(snapshots, env)
 
 
 # --- the write transaction ----------------------------------------------------
@@ -360,7 +396,7 @@ def _write_backup(target: Target, original_mode: int, stamp: str) -> Path:
 
 
 def _write_target(snapshot: Snapshot, text: str, root: Path | None, stamp: str,
-                  home: Path,
+                  home: Path, command_name: str,
                   replace_file: Callable[[Path, Path], None]) -> _Write:
     """Re-read the target, refuse it if it moved since planning, then replace it.
 
@@ -369,13 +405,15 @@ def _write_target(snapshot: Snapshot, text: str, root: Path | None, stamp: str,
     silently overwritten -- and the backup would be no help, since restoring it
     also undoes the memriver edits the user just accepted. Re-reading through
     ``_read_snapshot`` re-runs the symlink refusal on the way, so the target is
-    compared and re-checked in one step.
+    compared and re-checked in one step. ``command_name`` names the command
+    whose own apply hit the race, so the remediation text tells the user to
+    re-run the command they actually ran.
     """
     target = snapshot.target
     if _read_snapshot(target, root) != snapshot:
         raise PlanningError(
             f"{display_path(target.path, home)}: file changed since planning; "
-            "nothing further was written -- re-run memriver install"
+            f"nothing further was written -- re-run memriver {command_name}"
         )
     original_mode = snapshot.mode
     created_dirs: tuple[_CreatedDir, ...] = ()
@@ -388,7 +426,15 @@ def _write_target(snapshot: Snapshot, text: str, root: Path | None, stamp: str,
         mode = original_mode
         if mode is None:
             mode = 0o600 if target.user_level else _umask_mode()
-        _replace_atomically(target.path, text.encode("utf-8"), mode, replace_file)
+        if text == "" and target.delete_if_emptied and original_mode is not None:
+            # this target is entirely memriver's own file; a removal that
+            # empties it takes the file with it rather than leaving an empty
+            # one behind (spec P2-6). The backup just written above still
+            # holds the pre-removal bytes, so rollback and the printed
+            # restore command both work exactly as they do for a rewrite.
+            target.path.unlink()
+        else:
+            _replace_atomically(target.path, text.encode("utf-8"), mode, replace_file)
     except BaseException:
         # this write never joins the rollback list, so it takes its own
         # directories back; a backup already written keeps its parent, which is
@@ -562,12 +608,31 @@ def _write_completion_notes(plan: _Plan, harnesses: Sequence[str],
         stdout.write("\n" + CODEX_TRUST_NOTE + "\n")
 
 
+def _write_uninstall_completion_notes(plan: _Plan, harnesses: Sequence[str],
+                                      accepted: Sequence[RemovalOperation],
+                                      stdout: TextIO) -> None:
+    """The read-only tail of an uninstall report: only the native-memory verdict.
+
+    There is no trust step to repeat -- the hooks it names are being removed,
+    not installed -- and no property of the run depends on what was accepted:
+    the native-memory setting is never one of the operations uninstall offers
+    (spec: it is left exactly where install put it), so it is read straight
+    from the planning snapshot regardless of which other changes were taken.
+    """
+    del accepted
+    for name in harnesses:
+        module = HARNESSES[name]
+        if hasattr(module, "uninstall_notes"):
+            stdout.writelines("\n" + note + "\n" for note in module.uninstall_notes(
+                plan.harness_snapshots[name], plan.env))
+
+
 def _restore_command(backup: Path, path: Path) -> str:
     return f"cp -p -- {shlex.quote(str(backup))} {shlex.quote(str(path))}"
 
 
-def _success_report(writes: Sequence[_Write]) -> str:
-    lines = ["", "installed:"]
+def _success_report(writes: Sequence[_Write], command_name: str) -> str:
+    lines = ["", f"{command_name}ed:"]
     for write in writes:
         lines.append(f"  {write.target.path}")
         if write.backup is None:
@@ -590,7 +655,8 @@ def run_install(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
                 replace_file: Callable[[Path, Path], None]) -> int:
     """Plan, confirm, and apply the install; return the process exit code."""
     try:
-        plan = _plan(harnesses, home, cwd, env)
+        plan = _plan(harnesses, home, cwd, env, collect_operations=_install_operations,
+                    apply_fn=apply_edit, summary_fn=render_change_summary)
     except PlanningError as error:
         stdout.write(f"memriver install: {error}\n")
         return 1
@@ -629,7 +695,7 @@ def run_install(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
         return 0
 
     try:
-        texts, _ = _rendered(accepted, plan.snapshots)
+        texts, _ = _rendered(accepted, plan.snapshots, apply_edit)
     except PlanningError as error:
         stdout.write(f"\nmemriver install: {error}\n")
         return 1
@@ -641,12 +707,79 @@ def run_install(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
         if text != (plan.snapshots[path].text or "")
     ]
     return _apply(pending, plan, harnesses, accepted, home=home, stdout=stdout,
-                  replace_file=replace_file)
+                  replace_file=replace_file, write_notes_fn=_write_completion_notes,
+                  command_name="install")
+
+
+def run_config_uninstall(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
+                         home: Path, cwd: Path, env: Mapping[str, str],
+                         input_fn: Callable[[str], str], stdout: TextIO,
+                         replace_file: Callable[[Path, Path], None]) -> int:
+    """Plan, confirm, and apply the config removal; return the process exit code.
+
+    This is install's exact inverse, through the same plan/confirm/apply/
+    backup/rollback machinery -- only which per-harness function builds the
+    operations, which editor runs them, and which completion notes are owed
+    differ. Purging the storage root and clearing the uv cache are not this
+    package's business (see the module docstring): ``memriver.uninstall``'s own
+    ``run_uninstall``, one layer up, calls this first and only proceeds past a
+    nonzero exit here.
+    """
+    try:
+        plan = _plan(harnesses, home, cwd, env,
+                    collect_operations=_uninstall_operations,
+                    apply_fn=apply_removal, summary_fn=render_removal_summary)
+    except PlanningError as error:
+        stdout.write(f"memriver uninstall: {error}\n")
+        return 1
+
+    if not plan.changes:
+        stdout.write("memriver uninstall: already clean, nothing to remove.\n")
+        _write_uninstall_completion_notes(plan, harnesses, (), stdout)
+        return 0
+
+    stdout.write("".join("\n" + change.summary for change in plan.changes))
+
+    if dry_run:
+        stdout.write("\ndry run: nothing was written.\n")
+        _write_uninstall_completion_notes(plan, harnesses, (), stdout)
+        return 0
+
+    try:
+        accepted = _confirm(plan.changes, yes=yes, input_fn=input_fn, home=home)
+    except EOFError:
+        stdout.write(
+            "\nmemriver uninstall: stdin is not interactive and no answer can be "
+            "read; re-run with --yes to accept every change shown above.\n"
+        )
+        return 1
+
+    if not accepted:
+        stdout.write("\nnothing accepted; no file was changed.\n")
+        _write_uninstall_completion_notes(plan, harnesses, (), stdout)
+        return 0
+
+    try:
+        texts, _ = _rendered(accepted, plan.snapshots, apply_removal)
+    except PlanningError as error:
+        stdout.write(f"\nmemriver uninstall: {error}\n")
+        return 1
+
+    roots = {True: home, False: plan.project_root}
+    pending = [
+        (plan.snapshots[path], text, roots[plan.targets[path].user_level])
+        for path, text in texts.items()
+        if text != (plan.snapshots[path].text or "")
+    ]
+    return _apply(pending, plan, harnesses, accepted, home=home, stdout=stdout,
+                  replace_file=replace_file,
+                  write_notes_fn=_write_uninstall_completion_notes,
+                  command_name="uninstall")
 
 
 def _confirm(changes: Sequence[_PlannedChange], *, yes: bool,
              input_fn: Callable[[str], str],
-             home: Path) -> tuple[EditOperation, ...]:
+             home: Path) -> tuple[EditOperation | RemovalOperation, ...]:
     """One labelled confirmation per change; ``--yes`` accepts them all.
 
     The label names the harness and the file, because ``--all`` asks the same
@@ -663,23 +796,82 @@ def _confirm(changes: Sequence[_PlannedChange], *, yes: bool,
 
 
 def _apply(pending: Sequence[tuple[Snapshot, str, Path | None]], plan: _Plan,
-           harnesses: Sequence[str], accepted: Sequence[EditOperation], *,
+           harnesses: Sequence[str],
+           accepted: Sequence[EditOperation | RemovalOperation], *,
            home: Path, stdout: TextIO,
-           replace_file: Callable[[Path, Path], None]) -> int:
+           replace_file: Callable[[Path, Path], None],
+           write_notes_fn: Callable[[_Plan, Sequence[str], Sequence[Any], TextIO], None],
+           command_name: str) -> int:
     stamp = _utc_timestamp()
     writes: list[_Write] = []
     try:
         for snapshot, text, root in pending:
             writes.append(
-                _write_target(snapshot, text, root, stamp, home, replace_file))
+                _write_target(snapshot, text, root, stamp, home, command_name,
+                              replace_file))
     except BaseException as error:  # a Ctrl-C between replacements rolls back too
-        stdout.write(f"\nmemriver install failed: {error}\n")
+        stdout.write(f"\nmemriver {command_name} failed: {error}\n")
         stdout.write("".join(
             f"  {line}\n" for line in _roll_back(writes, replace_file)))
         stdout.write("  backups were kept; no backup is ever deleted.\n")
         if not isinstance(error, Exception):
             raise  # KeyboardInterrupt / SystemExit: rolled back, never swallowed
         return 1
-    stdout.write(_success_report(writes))
-    _write_completion_notes(plan, harnesses, accepted, stdout)
+    stdout.write(_success_report(writes, command_name))
+    if command_name == "uninstall":
+        stdout.write(_left_empty_report(pending, home))
+    write_notes_fn(plan, harnesses, accepted, stdout)
     return 0
+
+
+def _is_effectively_empty(text: str, kind: EditorKind) -> bool:
+    """Whether a removal left ``text`` holding nothing memriver-relevant.
+
+    A shared harness file is never deleted (spec P2-6): when the container
+    install put its entry in ends up holding nothing else, the file itself
+    still exists, just emptied -- this is what the completion report calls
+    out as residue.
+    """
+    if kind == "marker-block":
+        return text == ""
+    if kind == "toml-table":
+        return not text.strip()
+    if not text.strip():
+        return True
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return False  # unparseable text never reaches here in practice
+    return _holds_only_empty_containers(parsed)
+
+
+def _holds_only_empty_containers(value: object) -> bool:
+    """Whether ``value`` is nothing but nested empty dicts/lists.
+
+    ``{"mcpServers": {}}`` is exactly this -- the container install put its
+    entry in, holding nothing else. A single real leaf anywhere (a string, a
+    number, a foreign non-empty list) means the file still carries content
+    that is not memriver's residue to report.
+    """
+    if isinstance(value, dict):
+        return all(_holds_only_empty_containers(v) for v in value.values())
+    if isinstance(value, list):
+        return len(value) == 0
+    return False
+
+
+def _left_empty_report(pending: Sequence[tuple[Snapshot, str, Path | None]],
+                       home: Path) -> str:
+    """One line naming every shared target a removal emptied but did not
+    delete -- a file ``Target.delete_if_emptied`` marks memriver's own
+    (kiro's steering file) is excluded, since that one is deleted outright
+    rather than left behind (see ``_write_target``).
+    """
+    left_empty = [
+        display_path(snapshot.target.path, home) for snapshot, text, _ in pending
+        if not snapshot.target.delete_if_emptied
+        and _is_effectively_empty(text, _document_kind(snapshot.target))
+    ]
+    if not left_empty:
+        return ""
+    return f"\nleft empty (not deleted): {', '.join(left_empty)}\n"

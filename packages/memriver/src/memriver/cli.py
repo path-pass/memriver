@@ -74,6 +74,29 @@ def _build_parser() -> argparse.ArgumentParser:
                          help="show the plan and write nothing")
     install.set_defaults(handler=_install)
 
+    uninstall = commands.add_parser(
+        "uninstall", help="remove a harness's memriver configuration")
+    un_selector = uninstall.add_mutually_exclusive_group()
+    un_selector.add_argument("--harness", choices=["claude-code", "codex", "cursor",
+                                                   "kiro"],
+                             help="uninstall one harness (default: all of them)")
+    un_selector.add_argument("--all", action="store_true",
+                             help="uninstall every supported harness (the default)")
+    uninstall.add_argument("--yes", action="store_true",
+                           help="accept every change shown, without prompting")
+    uninstall.add_argument("--dry-run", action="store_true",
+                           help="show the plan and write nothing")
+    uninstall.add_argument("--purge-data", action="store_true",
+                           help="also delete the memory storage root (default: "
+                                "$MEMRIVER_ROOT or ~/agent-memory)")
+    uninstall.add_argument("--root", type=Path, default=None,
+                           help="storage root to purge with --purge-data "
+                                "(default: $MEMRIVER_ROOT or ~/agent-memory)")
+    uninstall.add_argument("--clean-uv-cache", action="store_true",
+                           help="also run 'uv cache clean' for memriver and "
+                                "memriver-core")
+    uninstall.set_defaults(handler=_uninstall)
+
     doctor = commands.add_parser(
         "doctor", help="check the memory store for problems")
     doctor.add_argument("--root", type=Path, default=None,
@@ -156,6 +179,20 @@ def _install(args: argparse.Namespace) -> int:
     return run_install(harnesses, yes=args.yes, dry_run=args.dry_run,
                        home=Path.home(), cwd=Path.cwd(), env=os.environ,
                        input_fn=input, stdout=sys.stdout, replace_file=os.replace)
+
+
+def _uninstall(args: argparse.Namespace) -> int:
+    import os
+
+    from .install import HARNESSES
+    from .uninstall import run_uninstall
+
+    harnesses = [args.harness] if args.harness else list(HARNESSES)
+    return run_uninstall(harnesses, yes=args.yes, dry_run=args.dry_run,
+                         purge_data=args.purge_data,
+                         clean_uv_cache=args.clean_uv_cache, root=args.root,
+                         home=Path.home(), cwd=Path.cwd(), env=os.environ,
+                         input_fn=input, stdout=sys.stdout, replace_file=os.replace)
 
 
 def _doctor(args: argparse.Namespace) -> int:

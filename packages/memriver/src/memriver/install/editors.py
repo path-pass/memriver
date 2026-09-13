@@ -84,6 +84,12 @@ class Target:
     path: Path
     user_level: bool
     rollback_instruction: str
+    # a file that is entirely memriver's own -- never shared with unrelated
+    # harness settings -- is deleted outright when a removal empties it,
+    # rather than left behind as an empty file (spec P2-6); every other
+    # target is a shared harness file, and an emptied container in it is the
+    # documented residue
+    delete_if_emptied: bool = False
 
 
 @dataclass(frozen=True)
@@ -114,6 +120,53 @@ class EditResult:
     rendered: str
     changed: bool
     takeover: bool
+
+
+@dataclass(frozen=True)
+class RemovalOperation:
+    """The uninstall counterpart to ``EditOperation``.
+
+    There is no ``expected`` value to write -- a removal only needs where to
+    look and how to recognize memriver's own entry there, which for a
+    hook-array is ``identity`` and for everything else is ``key_path`` alone.
+    """
+
+    id: str
+    target: Target
+    label: str
+    kind: EditorKind
+    key_path: tuple[str, ...] = ()
+    identity: tuple[str, ...] = ()
+
+
+def apply_removal(operation: RemovalOperation, text: str) -> EditResult:
+    """Run the remover named by ``operation.kind``, validating its fields first."""
+    if operation.kind == "marker-block":
+        return marker_block_remove(text)
+    if not operation.key_path:
+        raise PlanningError(
+            f"operation {operation.id} is a {operation.kind} removal and needs a "
+            "key path"
+        )
+    if operation.kind == "json-object":
+        return json_object_remove(text, operation.key_path)
+    if operation.kind == "toml-table":
+        return toml_table_remove(text, operation.key_path)
+    if operation.kind == "hook-array":
+        if not operation.identity:
+            raise PlanningError(
+                f"operation {operation.id} is a hook-array removal and needs the "
+                "command identity that finds memriver's entry"
+            )
+        if len(operation.key_path) != 2 or operation.key_path[0] != "hooks":
+            raise PlanningError(
+                f"operation {operation.id} is a hook-array removal and needs the "
+                f"key path ('hooks', <event>), not {_dotted(operation.key_path)}"
+            )
+        return hook_array_identity_remove(
+            text, operation.key_path[-1], operation.identity,
+        )
+    raise PlanningError(f"unknown editor kind {operation.kind!r}")
 
 
 def apply_edit(operation: EditOperation, text: str) -> EditResult:
@@ -197,6 +250,21 @@ def json_object_merge(
     return EditResult(rendered=_render_json(document), changed=True, takeover=present)
 
 
+def json_object_remove(source: str, key_path: tuple[str, ...]) -> EditResult:
+    """Delete one nested key, keeping every parent object -- empty or not.
+
+    The inverse of ``json_object_merge``: an absent key is already clean, not
+    an error. A parent object left empty by this delete (whether install
+    auto-created it or the user had it there already) is never pruned away.
+    """
+    if not key_path:
+        raise PlanningError("a json-object edit needs a key path")
+    document = _parse_json_object(source)
+    if not _delete_leaf(document, key_path):
+        return EditResult(rendered=source, changed=False, takeover=False)
+    return EditResult(rendered=_render_json(document), changed=True, takeover=False)
+
+
 # --- hook-array ------------------------------------------------------------
 
 
@@ -229,7 +297,7 @@ def hook_array_identity_merge(
             if _is_unlexable_memriver_command(handler.get("command"), identity):
                 raise PlanningError(
                     f"a command in hooks.{event} looks like memriver's but is not a "
-                    "parseable shell command; fix or remove it and run install again"
+                    "parseable shell command; fix or remove it and run memriver again"
                 )
     matched = [
         i for i, group in enumerate(groups) if _matching_handlers(group, identity)
@@ -237,7 +305,7 @@ def hook_array_identity_merge(
     if len(matched) > 1:
         raise PlanningError(
             f"hooks.{event} already has {len(matched)} memriver entries; remove all "
-            "but one and run install again"
+            "but one and run memriver again"
         )
     if not matched:
         groups.append(expected)
@@ -248,12 +316,64 @@ def hook_array_identity_merge(
     if len(current["hooks"]) != 1:
         raise PlanningError(
             f"the memriver handler in hooks.{event} shares a group with other "
-            "handlers; move it into its own group and run install again"
+            "handlers; move it into its own group and run memriver again"
         )
     if current == expected:
         return EditResult(rendered=source, changed=False, takeover=False)
     groups[index] = expected
     return EditResult(rendered=_render_json(document), changed=True, takeover=True)
+
+
+def hook_array_identity_remove(
+    source: str, event: str, identity: tuple[str, ...],
+) -> EditResult:
+    """Remove memriver's own group from a hook array shared with others.
+
+    Mirrors ``hook_array_identity_merge``'s matching rules exactly, so
+    uninstall finds precisely the entry a reinstall would find again: zero
+    matches is already clean, more than one is an existing configuration this
+    will not guess at, and a match sharing its group with a foreign handler is
+    left alone rather than deleting handlers memriver never installed.
+    """
+    if not identity:
+        raise PlanningError("a hook-array edit needs a command identity")
+    document = _parse_json_object(source)
+    hooks = document.get("hooks")
+    if not isinstance(hooks, dict) or event not in hooks:
+        return EditResult(rendered=source, changed=False, takeover=False)
+    groups = hooks[event]
+    if not isinstance(groups, list):
+        raise PlanningError(f"hooks.{event} is not a JSON array")
+
+    for group in groups:
+        for handler in _handlers(group):
+            if _is_unlexable_memriver_command(handler.get("command"), identity):
+                raise PlanningError(
+                    f"a command in hooks.{event} looks like memriver's but is not a "
+                    "parseable shell command; fix or remove it and run uninstall again"
+                )
+    matched = [
+        i for i, group in enumerate(groups) if _matching_handlers(group, identity)
+    ]
+    if len(matched) > 1:
+        raise PlanningError(
+            f"hooks.{event} has {len(matched)} memriver entries; remove all but "
+            "one and run uninstall again"
+        )
+    if not matched:
+        return EditResult(rendered=source, changed=False, takeover=False)
+
+    index = matched[0]
+    if len(groups[index]["hooks"]) != 1:
+        raise PlanningError(
+            f"the memriver handler in hooks.{event} shares a group with other "
+            "handlers; move it into its own group and run uninstall again"
+        )
+    # the emptied event array, and "hooks" itself, are never pruned away here
+    # -- P2-3: removal takes back only memriver's own group, leaving whatever
+    # container (the user's own, or one install auto-created) held it
+    del groups[index]
+    return EditResult(rendered=_render_json(document), changed=True, takeover=False)
 
 
 def _handlers(group: object) -> list[dict[str, Any]]:
@@ -341,9 +461,53 @@ def toml_roundtrip(
     except ValueError as error:  # tomlkit refused the shape of the existing node
         raise PlanningError(
             f"{_dotted(key_path)} cannot be replaced in this file; move it to a "
-            "regular table and run install again"
+            "regular table and run memriver again"
         ) from error
     return EditResult(rendered=_render_toml(document), changed=True, takeover=present)
+
+
+def toml_table_remove(source: str, key_path: tuple[str, ...]) -> EditResult:
+    """Delete one table or scalar leaf, keeping every parent table -- empty or not.
+
+    The inverse of ``toml_roundtrip``: an absent key is already clean. A
+    parent table left empty by this delete is never pruned away -- an
+    auto-created super table (no header of its own) then simply renders as
+    nothing, same as before it existed; a table the user wrote by hand (with
+    its own header, or a comment) survives exactly as they wrote it.
+    """
+    if not key_path:
+        raise PlanningError("a toml-table edit needs a key path")
+    try:
+        document = tomlkit.parse(source)
+    except ParseError as error:
+        raise PlanningError(f"file is not valid TOML: {error}") from error
+    if not _delete_leaf(document, key_path):
+        return EditResult(rendered=source, changed=False, takeover=False)
+    rendered = _undo_added_blank_line(source, _render_toml(document))
+    return EditResult(rendered=rendered, changed=True, takeover=False)
+
+
+def _undo_added_blank_line(source: str, rendered: str) -> str:
+    """Collapse, by exactly one newline, a blank line orphaned right at the
+    point this deletion touched -- the one ``toml_roundtrip`` itself would
+    have added before a freshly created top-level table, and the only
+    trailing whitespace a removal is ever entitled to touch. Scoped to that
+    single spot (never the whole document) so a longer run, or one the
+    deletion never touched at all, survives byte-for-byte.
+    """
+    limit = min(len(source), len(rendered))
+    prefix_len = 0
+    while prefix_len < limit and source[prefix_len] == rendered[prefix_len]:
+        prefix_len += 1
+    suffix_len = 0
+    limit -= prefix_len
+    while (suffix_len < limit
+          and source[len(source) - 1 - suffix_len] == rendered[len(rendered) - 1 - suffix_len]):
+        suffix_len += 1
+    prefix = rendered[:prefix_len]
+    if prefix_len + suffix_len == len(rendered) and prefix.endswith("\n\n"):
+        return prefix[:-1] + rendered[prefix_len:]
+    return rendered
 
 
 def _toml_value(value: object) -> Any:
@@ -378,6 +542,30 @@ def marker_block(source: str, body: str) -> EditResult:
     return EditResult(rendered=rendered, changed=True, takeover=start is not None)
 
 
+def marker_block_remove(source: str) -> EditResult:
+    """Remove the whole memriver marker block, markers included.
+
+    The blank-line separator ``marker_block`` adds before a fresh block is
+    undone the same way here, so an install-then-uninstall round trip on a
+    file that already had content returns exactly the original bytes.
+    """
+    start, stop = _marker_span(source)
+    if start is None:
+        return EditResult(rendered=source, changed=False, takeover=False)
+    before_raw = source[:start]
+    before = before_raw.rstrip("\n")
+    after = source[stop:].lstrip("\n")
+    if before and after:
+        rendered = before + "\n\n" + after
+    elif before:
+        # only restore a trailing newline the rstrip above actually took away
+        # -- content that never had one before the block must not gain one
+        rendered = before + ("\n" if before != before_raw else "")
+    else:
+        rendered = after
+    return EditResult(rendered=rendered, changed=True, takeover=False)
+
+
 def _block_text(body: object) -> str:
     if not isinstance(body, str):
         raise PlanningError("a marker-block edit needs its block as text")
@@ -394,14 +582,14 @@ def _marker_span(text: str) -> tuple[int, int] | tuple[None, None]:
     if len(begins) > 1 or len(ends) > 1 or len(begins) != len(ends):
         raise PlanningError(
             f"expected one memriver marker pair, found {len(begins)} begin and "
-            f"{len(ends)} end markers; fix the markers and run install again"
+            f"{len(ends)} end markers; fix the markers and run memriver again"
         )
     if not begins:
         return None, None
     if begins[0] > ends[0]:
         raise PlanningError(
             f"{MARKER_END} appears before {MARKER_BEGIN}; fix the markers and run "
-            "install again"
+            "memriver again"
         )
     return begins[0], ends[0] + len(MARKER_END)
 
@@ -476,6 +664,24 @@ def render_change_summary(operation: EditOperation, result: EditResult,
     return "\n".join(lines) + "\n"
 
 
+def render_removal_summary(operation: RemovalOperation, result: EditResult,
+                           home: Path) -> str:
+    """Render the label and the managed region being removed -- no old value.
+
+    ``result`` is accepted only to keep the same call shape as
+    ``render_change_summary``, so the planning pipeline can render either kind
+    of change through one uniform callback; a removal never takes anything
+    over, so there is nothing in it left to say.
+    """
+    del result
+    region = (
+        f"{MARKER_BEGIN} ... {MARKER_END}"
+        if operation.kind == "marker-block"
+        else _dotted(operation.key_path)
+    )
+    return f"{operation_label(operation, home)}\n{region}\nremoved\n"
+
+
 def _fragment(operation: EditOperation) -> str:
     if operation.kind == "marker-block":
         return _block_text(operation.expected)
@@ -497,10 +703,32 @@ def _dotted(key_path: tuple[str, ...]) -> str:
     return ".".join(key_path)
 
 
+def _delete_leaf(document: Any, key_path: tuple[str, ...]) -> bool:
+    """Delete only ``key_path``'s leaf; every ancestor container is left as-is.
+
+    A container left empty by this delete is never pruned -- whether install
+    auto-created it on the way down (``json_object_merge``, ``toml_roundtrip``)
+    or the user had it there already, removal only ever takes back memriver's
+    own leaf entry. Returns ``False``, changing nothing, when any step of the
+    path is already absent.
+    """
+    chain = [document]
+    for key in key_path[:-1]:
+        parent = chain[-1]
+        if key not in parent or not isinstance(parent[key], Mapping):
+            return False
+        chain.append(parent[key])
+    leaf = key_path[-1]
+    if leaf not in chain[-1]:
+        return False
+    del chain[-1][leaf]
+    return True
+
+
 _NON_STANDARD_NUMBER = (
     "file holds a number JSON cannot represent (an infinity or a NaN); memriver "
     "will not rewrite it, because writing it back produces a document strict "
-    "parsers reject. Fix the value and run install again"
+    "parsers reject. Fix the value and run memriver again"
 )
 
 
@@ -517,7 +745,7 @@ def _no_duplicate_names(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise PlanningError(
                 f"file has two JSON members named {name!r}; memriver will not "
                 "rewrite it because re-serializing keeps only the last one. "
-                "Remove the duplicate and run install again"
+                "Remove the duplicate and run memriver again"
             )
         seen[name] = value
     return seen
