@@ -42,6 +42,23 @@ Storage layout: `~/agent-memory/{global,projects/<slug>}/entries/<name>.md`
 (a kebab-case name proposed by the agent, or a server-generated ULID when no
 usable name is given; override root with `MEMRIVER_ROOT`).
 
+## Installing before the PyPI release
+
+`memriver install` writes hook and MCP entries that invoke `uvx memriver`, and
+each harness resolves that command itself every time it starts. Until memriver
+is on PyPI, point `uvx` at locally built wheels:
+
+```bash
+uv build --all-packages                      # wheels land in ./dist
+export UV_FIND_LINKS="$PWD/dist"             # persist this in your shell profile
+```
+
+`UV_FIND_LINKS` has to be in the profile, not just the current shell: the
+harness starts the hooks and the MCP server in its own environment, and a
+variable exported once is gone by then. After rebuilding the wheels, run
+`uvx --refresh memriver --help` once so `uvx` picks up the new build instead of
+its cached one.
+
 ## Configuration
 
 Settings are read from `--root` / `MEMRIVER_*` environment variables and an

@@ -679,6 +679,32 @@ def test_dry_run_renders_the_plan_and_the_trust_note_but_creates_nothing(tmp_pat
     assert not (home / ".codex").exists()
 
 
+# --- the configured commands have to be resolvable at harness start ----------
+
+
+def test_install_says_so_when_uvx_is_not_on_path(home, project, monkeypatch):
+    """Every hook and MCP entry install writes runs ``uvx memriver``, and the
+    harness resolves that string itself, long after install has exited. A
+    machine with no ``uvx`` on PATH gets a config that looks installed and a
+    harness that silently cannot start it, so the report says so."""
+    monkeypatch.setattr("shutil.which", lambda name: None)
+
+    result = install(["claude-code"], home=home, cwd=project, yes=True)
+
+    assert result.exit_code == 0
+    assert "uvx memriver" in result.stdout
+    assert "not found on PATH" in result.stdout
+
+
+def test_install_is_silent_about_uvx_when_it_is_on_path(home, project, monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: "/somewhere/bin/uvx")
+
+    result = install(["claude-code"], home=home, cwd=project, yes=True)
+
+    assert result.exit_code == 0
+    assert "not found on PATH" not in result.stdout
+
+
 def test_a_reinstall_that_changes_nothing_reports_it_and_prompts_for_nothing(home,
                                                                             project):
     install(["claude-code"], home=home, cwd=project, yes=True)
@@ -959,22 +985,37 @@ def test_rollback_leaves_a_directory_whose_path_was_recycled_by_another_actor(
     recreated it with a fresh inode in the same window. `rmdir` proves only
     that today's occupant is empty, never that it is the one memriver made, so
     a path whose identity no longer matches -- and everything above it, now
-    provably non-empty -- is left alone."""
+    provably non-empty -- is left alone.
+
+    Only a filesystem that hands the recreated directory a *new* inode can
+    exercise that: where the freed inode is handed straight back (ext4 and
+    overlayfs routinely do), the identity matches and the contract says to
+    remove it, so the recycle cannot be staged at all and the test skips."""
     settings = home / ".kiro" / "settings"
     kiro = home / ".kiro"
     calls: list[Path] = []
+    identities: list[tuple[int, int]] = []
 
     def replace_file(source: Path, destination: Path) -> None:
         calls.append(Path(destination))
         if len(calls) == 1:
             Path(source).unlink()  # memriver's own in-flight temp file
+            before = settings.lstat()
             settings.rmdir()
             settings.mkdir()  # a different actor's directory, same path
+            after = settings.lstat()
+            identities.append((before.st_dev, before.st_ino))
+            identities.append((after.st_dev, after.st_ino))
             raise OSError("injected replacement failure")
         os.replace(source, destination)
 
     result = install(["kiro"], home=home, cwd=project, yes=True,
                      replace=replace_file)
+
+    if identities[0] == identities[1]:
+        pytest.skip(
+            "the filesystem reused the inode; identity cannot distinguish the "
+            "recycled directory")
 
     assert result.exit_code != 0
     assert settings.is_dir()  # the replacement survives
