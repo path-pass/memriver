@@ -9,6 +9,7 @@ spec S10).
 
 from __future__ import annotations
 
+import re
 from typing import IO, TYPE_CHECKING
 
 from .core_logging import quiet_core_logging
@@ -26,7 +27,20 @@ _STATE_MESSAGES = {
     "degraded": "store has findings",
 }
 _INACCESSIBLE_MESSAGE = "memriver doctor: memory store is inaccessible"
+# the --json counterpart of _INACCESSIBLE_MESSAGE, without the CLI prefix --
+# this is a value read back by a script, not a line printed to a terminal
+_INACCESSIBLE_JSON_ERROR = "memory store is inaccessible"
 _EXIT_CODES = {"uninitialized": 0, "empty": 0, "healthy": 0, "degraded": 1}
+
+# scopes and location hints are derived from directory and file names in the
+# store, which a user can hand-edit to contain a newline (forging a second
+# finding line) or an ANSI escape (a raw terminal control sequence); the JSON
+# renderer needs no such guard -- json.dumps already escapes both.
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+
+def _visible(value: str) -> str:
+    return _CONTROL_CHARS_RE.sub(" ", value)
 
 
 def _finding_to_dict(finding: DiagnosticFinding) -> dict:
@@ -57,8 +71,8 @@ def _render_human(report: DiagnosticsReport, stdout: IO[str]) -> None:
     for kind in sorted(by_kind):
         stdout.write(f"\n{kind}:\n")
         for finding in by_kind[kind]:
-            scopes = ", ".join(scope.to_storage() for scope in finding.scopes)
-            locations = ", ".join(finding.location_hints)
+            scopes = ", ".join(_visible(scope.to_storage()) for scope in finding.scopes)
+            locations = ", ".join(_visible(hint) for hint in finding.location_hints)
             stdout.write(f"  - scopes: {scopes}\n")
             stdout.write(f"    locations: {locations}\n")
             stdout.write(f"    reason: {finding.reason}\n")
@@ -85,6 +99,10 @@ def run_doctor(*, root: Path | None, json_output: bool, stale_days: int,
         # the reason itself stays out of stderr: a pydantic error echoes the
         # rejected value, a traceback the absolute source paths.
         stderr.write(_INACCESSIBLE_MESSAGE + "\n")
+        if json_output:
+            import json
+
+            stdout.write(json.dumps({"error": _INACCESSIBLE_JSON_ERROR}) + "\n")
         return 2
 
     if json_output:

@@ -39,9 +39,6 @@ HookEvent = Literal["session-start", "stop"]
 INVALID_INPUT = "memriver hook: invalid input\n"
 STORE_UNAVAILABLE = "memriver hook: memory store is unavailable\n"
 
-# what MemoryService.index returns for a store with nothing visible in it
-_EMPTY_INDEX = "(no memories yet)"
-
 def _utf16_units(text: str) -> int:
     """JavaScript's ``string.length``: UTF-16 code units, non-BMP counting 2."""
     return len(text.encode("utf-16-le")) // 2
@@ -267,9 +264,15 @@ def _fit(index: str, wrap: Callable[[str], str], budget: _InlineBudget) -> str:
 
 
 def _compose(index: str, source: object, harness: Harness) -> str:
+    # imported here, not at module scope: this keeps the single-sourced
+    # sentinel without paying for memriver_core.bootstrap's own imports
+    # (repository/content_policy/config, none of them cheap) on the Stop
+    # path, which never reaches this function at all
+    from memriver_core.bootstrap import EMPTY_INDEX
+
     # a store that holds only unreadable entries is indistinguishable from an
     # empty one here, so the copy speaks about visibility, not existence
-    if index == _EMPTY_INDEX:
+    if index == EMPTY_INDEX:
         return EMPTY_VISIBLE
     prefix, suffix = ((COMPACT_PREFIX, "\n" + COMPACT_RESCUE_SUFFIX)
                       if source == "compact" else (SESSION_START_PREFIX, ""))

@@ -35,6 +35,11 @@ _HARNESS_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 # characters and Unicode line separators to spaces before a field is truncated.
 _INDEX_UNSAFE_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 
+# What MemoryService.index returns for a store with nothing visible in it --
+# the single source transports compare against, rather than each keeping its
+# own copy of the literal in sync by hand.
+EMPTY_INDEX = "(no memories yet)"
+
 
 def _single_line(value: str) -> str:
     return " ".join(_INDEX_UNSAFE_RE.sub(" ", value).split())
@@ -112,7 +117,7 @@ class MemoryService:
             sorted(self._memory_repository.iter_visible(ctx),
                    key=lambda m: (m.updated, m.id), reverse=True)))
         if not listing.entries:
-            return "(no memories yet)"
+            return EMPTY_INDEX
         lines = []
         for m in listing.entries[:self._index_budget_lines]:
             # stored memories are hand-editable, so an empty body must not

@@ -742,9 +742,13 @@ async def test_storage_failure_maps_per_operation(tmp_path, project):
         try:
             assert (await c.call_tool("memory_read", {"entry_id": "n"})).data == {
                 "error": "unreadable entry file: n"}
+            # update's read-modify-write can fail on either half; a
+            # StorageFailure is deliberately fieldless, so the transport
+            # cannot tell this read-side failure from a write-side one and
+            # reports the operation, not a diagnosis it cannot make
             assert (await c.call_tool("memory_update", {
                 "entry_id": "n", "content": "v2"})).data == {
-                "error": "unreadable entry file: n"}
+                "error": "could not update entry: n"}
         finally:
             path.chmod(0o644)
 

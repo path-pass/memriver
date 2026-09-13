@@ -307,6 +307,18 @@ def test_empty_index_becomes_the_visibility_message(tmp_path, fake_service):
     assert additional_context(result) == EMPTY_VISIBLE
 
 
+def test_compose_follows_cores_empty_index_sentinel_not_a_duplicated_literal(monkeypatch):
+    """MemoryService.index and this module used to hand-write the same
+    "(no memories yet)" literal independently; a change to one without the
+    other would silently break empty-store detection. Pointing core's own
+    constant at a different marker and checking `_compose` follows it proves
+    hooks reads the single source rather than comparing against its own copy."""
+    from memriver_core import bootstrap
+
+    monkeypatch.setattr(bootstrap, "EMPTY_INDEX", "sentinel-changed-in-core")
+    assert hooks._compose("sentinel-changed-in-core", None, "claude-code") == EMPTY_VISIBLE
+
+
 def test_project_dir_option_beats_payload_cwd_and_fallback(tmp_path, fake_service):
     service = fake_service()
     chosen = git_dir(tmp_path, "chosen")

@@ -13,6 +13,7 @@ and every turn end, and must never pay for importing the MCP server.
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -53,6 +54,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     hook = commands.add_parser("hook", help="run a harness hook over stdin/stdout")
     hook.add_argument("event", choices=["session-start", "stop"])
+    # spelled out here, like install's below: importing hooks.Harness at parse
+    # time would pull memriver_core.models into every invocation, including
+    # install/uninstall/--version. test_hook_harness_choices_match_the_literal
+    # pins these names to hooks.Harness so the two cannot drift.
     hook.add_argument("--harness", choices=["claude-code", "codex"], required=True)
     _add_store_options(hook, project_dir_default=None,
                        project_dir_help="project whose 'project' memory scope is "
@@ -204,6 +209,11 @@ def _doctor(args: argparse.Namespace) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    # under stdio transport, stdout is the JSON-RPC/hook channel and stderr is
+    # the only place a loader warning (an unreadable config.toml, an unknown
+    # key) can surface -- configured once here, before any handler can reach
+    # load_settings, rather than left to logging.lastResort's default target
+    logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
     raw = list(sys.argv[1:] if argv is None else argv)
     args = _build_parser().parse_args(_normalize_legacy_serve(raw))
     return args.handler(args)

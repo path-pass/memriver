@@ -328,3 +328,16 @@ def test_install_harness_choices_match_the_installer(monkeypatch):
     out = _run_cli("install", "--help")
     assert out.returncode == 0
     assert "{" + ",".join(HARNESSES) + "}" in out.stdout
+
+
+def test_hook_harness_choices_match_the_literal():
+    """The hook subcommand's --harness choices are pinned to hooks.Harness the
+    same way install's are pinned to install.HARNESSES, so the two can never
+    silently drift apart."""
+    from typing import get_args
+
+    from memriver.hooks import Harness
+
+    out = _run_cli("hook", "--help")
+    assert out.returncode == 0
+    assert "{" + ",".join(get_args(Harness)) + "}" in out.stdout
