@@ -66,9 +66,11 @@ NATIVE_MEMORY_OFF_NOTE = (
 )
 
 
-def targets(home: Path, project_root: Path | None) -> tuple[Target, Target]:
+def targets(home: Path, project_root: Path | None,
+            command_name: str) -> tuple[Target, Target]:
     """``(~/.codex/config.toml, ~/.codex/hooks.json)``; both targets are user-level."""
     del project_root  # Codex CLI has no project-scoped target.
+    del command_name  # neither target can fail to resolve, so nothing names it.
     config = Target(
         path=home / ".codex" / "config.toml",
         user_level=True,
@@ -145,7 +147,7 @@ def notes(snapshots: tuple[Snapshot, Snapshot], env: Mapping[str, str],
     """
     del env
     config, _ = snapshots
-    features = _features(config.text)
+    features = _readable_features(config.text)
     lines = []
     if features.get("hooks") is False:
         lines.append(
@@ -212,9 +214,25 @@ def uninstall_notes(
     """Read-only completion text: where the native-memory toggle was left."""
     del env
     config, _ = snapshots
-    if _features(config.text).get("memories") is False:
+    if _readable_features(config.text).get("memories") is False:
         return (NATIVE_MEMORY_LEFT_NOTE,)
     return ()
+
+
+def _readable_features(config_text: str | None) -> dict:
+    """``_features`` for the completion notes, which never raise.
+
+    Both note functions run after the write transaction has committed, and
+    uninstall's planning never has to read ``[features]`` at all -- so a shape
+    ``_features`` refuses (invalid TOML, ``features`` holding a scalar) can
+    reach them on a run that succeeded. An unreadable shape says nothing about
+    the toggle, so it yields no note rather than a traceback on top of a
+    configuration already removed.
+    """
+    try:
+        return _features(config_text)
+    except PlanningError:
+        return {}
 
 
 def _memories_enabled(config_text: str | None) -> bool:

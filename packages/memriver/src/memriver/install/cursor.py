@@ -22,16 +22,20 @@ from memriver.install.editors import (
 from memriver.protocol_text import PROTOCOL_BLOCK
 
 
-def targets(home: Path, project_root: Path | None) -> tuple[Target, Target]:
+def targets(home: Path, project_root: Path | None,
+            command_name: str) -> tuple[Target, Target]:
     """``(~/.cursor/mcp.json, <git-root>/AGENTS.md)``.
 
     Raises ``PlanningError`` before returning anything when ``project_root``
     is ``None`` -- Cursor's instructions file has no user-level home.
+    ``command_name`` is the command the user ran, so the refusal tells them
+    where to re-run that one rather than naming the wrong half of the pair.
     """
     if project_root is None:
         raise PlanningError(
             "cursor needs a project (the nearest current-or-ancestor .git root) "
-            "to manage its AGENTS.md; run install inside a project or pass one"
+            f"to manage its AGENTS.md; run {command_name} inside a project or "
+            "pass one"
         )
     mcp = Target(
         path=home / ".cursor" / "mcp.json",

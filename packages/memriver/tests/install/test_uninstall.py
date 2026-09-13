@@ -4,9 +4,20 @@ Three levels are pinned here, mirroring how install itself is tested across
 ``test_editors.py``, ``test_harnesses.py`` and ``test_install.py``.
 
 *The four removers are pure text-in/text-out, like their merge counterparts.*
-An absent entry is already clean, not an error; foreign content and
-formatting survive; anything ambiguous still raises ``PlanningError`` rather
-than guessing.
+An absent entry is already clean, not an error; anything ambiguous still
+raises ``PlanningError`` rather than guessing; and a removal is exactly as
+faithful to the user's bytes as the merge it undoes -- never more lossy.
+What that means differs by format, and each half is pinned below:
+
+- TOML and marker-block files keep their formatting on both sides, so
+  ``remove(merge(source)) == source`` byte for byte, over every EOF state a
+  real file turns up with -- no trailing newline, one, a run of them,
+  trailing spaces, CRLF.
+- JSON files do not: ``json_object_merge`` re-renders the whole document at
+  indent 2 with LF endings, so the user's own escapes, number spellings,
+  indentation and line endings are already gone the moment install accepts a
+  change. Removal reproduces install's own rendering exactly, and a document
+  it changes nothing in is handed back byte-identical.
 
 *Each harness's ``uninstall_operations()`` targets exactly what its
 ``operations()`` writes* -- the MCP entry and the hooks/marker block, never
@@ -34,7 +45,9 @@ from memriver.install import (
     claude_code,
     codex,
     cursor,
+    hook_array_identity_merge,
     hook_array_identity_remove,
+    json_object_merge,
     json_object_remove,
     kiro,
     marker_block,
@@ -423,6 +436,124 @@ def test_apply_removal_dispatches_marker_block_by_kind():
     assert result.rendered == "notes\n"
 
 
+# --- a JSON removal is exactly as faithful as the merge it undoes ------------
+
+# CRLF endings, tab indentation, an escaped character, a number spelling and
+# trailing EOF whitespace -- everything a hand-formatted config carries that a
+# canonical re-render does not reproduce
+FOREIGN_JSON = (
+    '{\r\n\t"escaped": "\\u0061",\r\n\t"number": 1.00,\r\n'
+    '\t"deep": {"list": [1, 2]}\r\n}\r\n \t'
+)
+
+
+def test_a_json_removal_renders_the_same_bytes_the_merge_would_have():
+    """``json_object_merge`` re-renders the whole document -- indent 2, LF, no
+    escapes -- so the user's own JSON formatting is already gone by the time
+    anything can be removed. What uninstall owes is symmetry: exactly install's
+    bytes with memriver's entry taken back out, never a byte more."""
+    merged = json_object_merge(FOREIGN_JSON, ("mcpServers", "memriver"),
+                               {"command": "uvx", "args": ["memriver"]})
+    assert merged.rendered != FOREIGN_JSON  # install is the one that re-renders
+
+    removed = json_object_remove(merged.rendered, ("mcpServers", "memriver"))
+
+    assert removed.rendered == json_object_merge(
+        FOREIGN_JSON, ("mcpServers",), {}).rendered
+
+
+def test_a_hook_removal_renders_the_same_bytes_the_merge_would_have():
+    group = hook_group("uvx memriver hook session-start --harness claude-code")
+    merged = hook_array_identity_merge(FOREIGN_JSON, "SessionStart",
+                                       SESSION_START_IDENTITY, group)
+
+    removed = hook_array_identity_remove(merged.rendered, "SessionStart",
+                                         SESSION_START_IDENTITY)
+
+    assert removed.rendered == json_object_merge(
+        FOREIGN_JSON, ("hooks", "SessionStart"), []).rendered
+
+
+def test_a_json_removal_that_changes_nothing_returns_the_foreign_bytes_intact():
+    """The one byte-level guarantee a JSON target really has: a document with
+    no memriver entry in it is handed back exactly as it was read."""
+    assert json_object_remove(
+        FOREIGN_JSON, ("mcpServers", "memriver")).rendered == FOREIGN_JSON
+    assert hook_array_identity_remove(
+        FOREIGN_JSON, "SessionStart", SESSION_START_IDENTITY).rendered == FOREIGN_JSON
+
+
+def test_a_json_target_keeps_every_byte_before_the_memriver_region(home, project):
+    config = home / ".claude.json"
+    write(config, FOREIGN_JSON)
+    install(["claude-code"], home=home, cwd=project, yes=True)
+    after_install = config.read_bytes()
+
+    result = uninstall(["claude-code"], home=home, cwd=project, yes=True)
+
+    assert result.exit_code == 0
+    assert config.read_bytes().startswith(after_install.split(b'"mcpServers"')[0])
+    assert json.loads(config.read_bytes()) == {
+        **json.loads(after_install), "mcpServers": {},
+    }
+
+
+# --- removal is the byte-exact inverse of the merge, over every EOF state ----
+
+# every trailing shape a real config file turns up with: none, one, two and
+# three newlines, trailing spaces, and the CRLF spellings of the same
+EOF_STATES = ["", "\n", "\n\n", "\n\n\n", "  ", "\r\n", "\r\n\r\n"]
+
+
+@pytest.mark.parametrize("tail", EOF_STATES)
+def test_toml_table_remove_inverts_the_merge_byte_for_byte(tail):
+    from memriver.install import toml_roundtrip
+
+    source = 'model = "gpt"' + tail
+    merged = toml_roundtrip(source, ("mcp_servers", "memriver"),
+                            {"command": "uvx", "args": ["memriver"]})
+    result = toml_table_remove(merged.rendered, ("mcp_servers", "memriver"))
+
+    assert result.rendered == source
+
+
+@pytest.mark.parametrize("tail", EOF_STATES)
+def test_marker_block_remove_inverts_the_merge_byte_for_byte(tail):
+    source = "notes" + tail
+    merged = marker_block(source, PROTOCOL_BLOCK)
+    result = marker_block_remove(merged.rendered)
+
+    assert result.rendered == source
+
+
+@pytest.mark.parametrize("source", ["", "\n", "\n\n"])
+def test_marker_block_remove_inverts_the_merge_on_an_empty_or_blank_file(source):
+    merged = marker_block(source, PROTOCOL_BLOCK)
+    result = marker_block_remove(merged.rendered)
+
+    assert result.rendered == source
+
+
+def test_marker_block_remove_keeps_the_user_blank_runs_around_the_block():
+    """Only the single newline the merge puts on each side of the block is
+    the merge's to take back; every other blank line is the user's."""
+    source = ("# Project\n\n\n\n"
+              "<!-- memriver:begin -->\nstale\n<!-- memriver:end -->"
+              "\n\n\n\ntail\n")
+
+    result = marker_block_remove(source)
+
+    assert result.rendered == "# Project\n\n\n\n\n\ntail\n"
+
+
+def test_toml_table_remove_keeps_a_user_blank_run_above_the_removed_table():
+    source = ('model = "gpt"\n\n\n\n[mcp_servers.memriver]\ncommand = "uvx"\n')
+
+    result = toml_table_remove(source, ("mcp_servers", "memriver"))
+
+    assert result.rendered == 'model = "gpt"\n\n\n'
+
+
 # --- Step 2: each harness's uninstall_operations() targets exactly what
 #     operations() writes -------------------------------------------------
 
@@ -436,7 +567,7 @@ HOME = Path("/home/user")
 
 
 def test_claude_code_uninstall_operations_target_the_mcp_entry_and_both_hooks():
-    config_target, settings_target = claude_code.targets(HOME, None)
+    config_target, settings_target = claude_code.targets(HOME, None, "uninstall")
     ops = claude_code.uninstall_operations(
         (_snapshot(config_target), _snapshot(settings_target)), {},
     )
@@ -449,7 +580,7 @@ def test_claude_code_uninstall_operations_target_the_mcp_entry_and_both_hooks():
 
 
 def test_codex_uninstall_operations_target_the_mcp_table_and_both_hooks():
-    config_target, hooks_target = codex.targets(HOME, None)
+    config_target, hooks_target = codex.targets(HOME, None, "uninstall")
     ops = codex.uninstall_operations(
         (_snapshot(config_target, ""), _snapshot(hooks_target)), {},
     )
@@ -461,7 +592,7 @@ def test_codex_uninstall_operations_target_the_mcp_table_and_both_hooks():
 
 
 def test_cursor_uninstall_operations_target_the_mcp_entry_and_marker_block(tmp_path):
-    mcp_target, instructions_target = cursor.targets(HOME, tmp_path)
+    mcp_target, instructions_target = cursor.targets(HOME, tmp_path, "uninstall")
     ops = cursor.uninstall_operations(
         (_snapshot(mcp_target), _snapshot(instructions_target, "")), {},
     )
@@ -471,7 +602,7 @@ def test_cursor_uninstall_operations_target_the_mcp_entry_and_marker_block(tmp_p
 
 
 def test_kiro_uninstall_operations_target_the_mcp_entry_and_marker_block(tmp_path):
-    mcp_target, instructions_target = kiro.targets(HOME, tmp_path)
+    mcp_target, instructions_target = kiro.targets(HOME, tmp_path, "uninstall")
     ops = kiro.uninstall_operations(
         (_snapshot(mcp_target), _snapshot(instructions_target, "")), {},
     )
@@ -481,7 +612,7 @@ def test_kiro_uninstall_operations_target_the_mcp_entry_and_marker_block(tmp_pat
 
 
 def test_claude_code_uninstall_notes_report_the_untouched_native_memory_setting():
-    config_target, settings_target = claude_code.targets(HOME, None)
+    config_target, settings_target = claude_code.targets(HOME, None, "uninstall")
     notes = claude_code.uninstall_notes(
         (_snapshot(config_target),
          _snapshot(settings_target,
@@ -492,7 +623,7 @@ def test_claude_code_uninstall_notes_report_the_untouched_native_memory_setting(
 
 
 def test_claude_code_uninstall_notes_are_silent_when_nothing_was_toggled():
-    config_target, settings_target = claude_code.targets(HOME, None)
+    config_target, settings_target = claude_code.targets(HOME, None, "uninstall")
     notes = claude_code.uninstall_notes(
         (_snapshot(config_target), _snapshot(settings_target, "{}")), {},
     )
@@ -500,7 +631,7 @@ def test_claude_code_uninstall_notes_are_silent_when_nothing_was_toggled():
 
 
 def test_codex_uninstall_notes_report_the_untouched_native_memory_setting():
-    config_target, hooks_target = codex.targets(HOME, None)
+    config_target, hooks_target = codex.targets(HOME, None, "uninstall")
     notes = codex.uninstall_notes(
         (_snapshot(config_target, "[features]\nmemories = false\n"),
          _snapshot(hooks_target)),
@@ -749,6 +880,30 @@ def test_a_failed_apply_restores_every_touched_target_from_its_backup(home, proj
     assert "backups were kept" in result.stdout
 
 
+def test_an_interrupt_the_instant_the_steering_file_is_unlinked_still_rolls_back(
+        home, project, monkeypatch):
+    """The steering file is deleted outright rather than rewritten. Its
+    rollback record has to exist before the deletion does, or an interrupt
+    landing between the two leaves a file no rollback knows to restore."""
+    install(["kiro"], home=home, cwd=project, yes=True)
+    steering = project / ".kiro" / "steering" / "memriver.md"
+    original = steering.read_bytes()
+    real_unlink = Path.unlink
+
+    def unlink_then_interrupt(self, *args, **kwargs):
+        real_unlink(self, *args, **kwargs)
+        if self == steering:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(Path, "unlink", unlink_then_interrupt)
+
+    with pytest.raises(KeyboardInterrupt):
+        uninstall(["kiro"], home=home, cwd=project, yes=True)
+
+    monkeypatch.undo()
+    assert steering.read_bytes() == original
+
+
 # --- Step 9: CLI wiring --------------------------------------------------------
 
 
@@ -949,6 +1104,189 @@ def test_dry_run_never_purges_even_with_yes(home, project, tmp_path):
     assert root.exists()
 
 
+# --- completion notes never turn a committed removal into a traceback --------
+
+
+def test_a_scalar_env_container_still_lets_the_claude_removal_report_success(
+        home, project):
+    """The notes run after the write transaction has committed. A shape the
+    write phase accepted -- `env` holding a string rather than an object --
+    must produce a conservative note or none, never an exception on top of an
+    already-removed configuration."""
+    write(home / ".claude.json",
+          json.dumps({"mcpServers": {"memriver": {"command": "uvx"}}}))
+    settings = write(home / ".claude" / "settings.json", json.dumps({
+        "env": "foreign-scalar",
+        "hooks": {"SessionStart": [
+            hook_group("uvx memriver hook session-start --harness claude-code")]},
+    }))
+
+    result = uninstall(["claude-code"], home=home, cwd=project, yes=True)
+
+    assert result.exit_code == 0
+    assert "uninstalled:" in result.stdout
+    assert json.loads(settings.read_text())["hooks"]["SessionStart"] == []
+    assert json.loads(settings.read_text())["env"] == "foreign-scalar"
+
+
+def test_a_scalar_features_container_still_lets_the_codex_removal_report_success(
+        home, project):
+    config = write(home / ".codex" / "config.toml",
+                   'features = "foreign-scalar"\n\n'
+                   '[mcp_servers.memriver]\ncommand = "uvx"\n')
+
+    result = uninstall(["codex"], home=home, cwd=project, yes=True)
+
+    assert result.exit_code == 0
+    assert "uninstalled:" in result.stdout
+    assert config.read_text() == 'features = "foreign-scalar"\n'
+
+
+# --- the purge target is canonicalized, shown, and bounded -------------------
+
+
+def forbid_rmtree(monkeypatch) -> None:
+    """Make any ``rmtree`` call fail the test outright, whatever it is handed."""
+    def refuse(path):
+        raise AssertionError(f"rmtree was called on a protected target: {path}")
+
+    monkeypatch.setattr("memriver.uninstall.shutil.rmtree", refuse)
+
+
+def storage_root_line(stdout: str) -> str:
+    return next(line for line in stdout.splitlines()
+                if line.startswith("memory storage root: "))
+
+
+@pytest.mark.parametrize("spelling", ["/", ".", "..", "cwd", "home"])
+def test_purge_data_refuses_an_overbroad_target_before_it_reaches_rmtree(
+        home, project, monkeypatch, spelling):
+    """`/`, the injected home, the current directory and any ancestor of it are
+    never a memriver store, however they are spelled: an empty or mistyped
+    --root/MEMRIVER_ROOT must not escalate into deleting the whole tree."""
+    forbid_rmtree(monkeypatch)
+    keep = write(home / "personal.txt", "mine")
+    target = {"cwd": project, "home": home}.get(spelling, Path(spelling))
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                            purge_data=True, root=target)
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.stdout
+    assert "too broad a target" in result.stdout
+    assert keep.read_text() == "mine"
+    assert home.is_dir() and project.is_dir()
+
+
+def test_purge_data_refuses_a_dot_dot_chain_that_canonicalizes_onto_the_home(
+        home, project, monkeypatch):
+    forbid_rmtree(monkeypatch)
+    spelled = home / "agent-memory" / ".." / ".." / home.name
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                            purge_data=True, root=spelled)
+
+    assert result.exit_code == 1
+    assert storage_root_line(result.stdout) == f"memory storage root: {home}"
+    assert home.is_dir()
+
+
+def test_purge_data_refuses_a_relative_target_resolved_against_the_injected_cwd(
+        home, project, monkeypatch):
+    forbid_rmtree(monkeypatch)
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                            purge_data=True, root=Path("."))
+
+    assert result.exit_code == 1
+    assert storage_root_line(result.stdout) == f"memory storage root: {project}"
+    assert project.is_dir()
+
+
+def test_purge_data_shows_the_canonical_target_when_a_parent_is_a_symlink(
+        home, project, tmp_path, monkeypatch):
+    """A symlinked parent redirects the deletion somewhere the given spelling
+    never named; the plan and the report must show where it actually lands."""
+    forbid_rmtree(monkeypatch)
+    outside = tmp_path / "outside"
+    (outside / "store").mkdir(parents=True)
+    alias = tmp_path / "alias"
+    alias.symlink_to(outside, target_is_directory=True)
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=False,
+                            purge_data=True, replies=["n"],
+                            root=alias / "store")
+
+    assert result.exit_code == 0
+    assert storage_root_line(result.stdout) == (
+        f"memory storage root: {outside / 'store'}")
+    assert result.answers.prompts[-1] == (
+        f"remove the entire memory store at {outside / 'store'}? [y/N] ")
+    assert (outside / "store").is_dir()
+
+
+def test_purge_data_refuses_a_symlinked_parent_that_redirects_onto_the_home(
+        home, project, tmp_path, monkeypatch):
+    """Leaf-only symlink checking passed this: `alias/store` is not itself a
+    symlink, yet it canonicalizes onto the home directory."""
+    forbid_rmtree(monkeypatch)
+    keep = write(home / "personal.txt", "mine")
+    alias = tmp_path / "alias"
+    alias.symlink_to(home.parent, target_is_directory=True)
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                            purge_data=True, root=alias / home.name)
+
+    assert result.exit_code == 1
+    assert storage_root_line(result.stdout) == f"memory storage root: {home}"
+    assert keep.read_text() == "mine"
+
+
+def test_purge_data_re_verifies_the_target_immediately_before_removing_it(
+        home, project, tmp_path):
+    """The confirmation window is long enough for the target to be swapped for
+    a link onto the home directory; the check that mattered ran before it."""
+    root = tmp_path / "agent-memory"
+    root.mkdir()
+    removed: list[Path] = []
+
+    def answer(prompt: str) -> str:
+        root.rmdir()
+        root.symlink_to(home, target_is_directory=True)
+        return "y"
+
+    import memriver.uninstall as uninstall_module
+    original = uninstall_module.shutil.rmtree
+    try:
+        uninstall_module.shutil.rmtree = lambda path: removed.append(Path(path))
+        result = full_uninstall(["claude-code"], home=home, cwd=project,
+                                yes=False, purge_data=True, input_fn=answer,
+                                env={"MEMRIVER_ROOT": str(root)})
+    finally:
+        uninstall_module.shutil.rmtree = original
+
+    assert result.exit_code == 1
+    assert removed == []
+    assert home.is_dir()
+
+
+def test_purge_data_removes_the_canonical_target_not_the_given_spelling(
+        home, project, tmp_path):
+    outside = tmp_path / "outside"
+    (outside / "store").mkdir(parents=True)
+    (outside / "store" / "marker.txt").write_text("data")
+    alias = tmp_path / "alias"
+    alias.symlink_to(outside, target_is_directory=True)
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                            purge_data=True, root=alias / "store")
+
+    assert result.exit_code == 0
+    assert f"removed {outside / 'store'}" in result.stdout
+    assert not (outside / "store").exists()
+    assert alias.is_symlink() and outside.is_dir()
+
+
 def test_clean_uv_cache_invokes_uv_with_the_exact_arguments(home, project,
                                                              monkeypatch):
     calls = []
@@ -1010,6 +1348,42 @@ def test_a_wedged_uv_times_out_and_warns_but_keeps_the_exit_code_at_zero(
     assert "uv cache clean memriver" in result.stdout
 
 
+@pytest.mark.parametrize("error", [
+    PermissionError("exec denied"),
+    OSError(8, "Exec format error"),
+])
+def test_an_unstartable_uv_warns_but_keeps_the_exit_code_at_zero(home, project,
+                                                                  monkeypatch,
+                                                                  error):
+    """"Non-fatal" has to cover every way starting the process can fail, not
+    just the two the first draft listed: the config (and possibly the data) is
+    already gone by the time the cache clean runs."""
+    def fake_run(args, **kwargs):
+        raise error
+
+    monkeypatch.setattr("memriver.uninstall.subprocess.run", fake_run)
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                            clean_uv_cache=True)
+
+    assert result.exit_code == 0
+    assert "warning" in result.stdout
+    assert "uv cache clean memriver" in result.stdout
+    assert "uv cache clean memriver-core" in result.stdout
+
+
+def test_an_interrupt_during_the_cache_clean_is_never_swallowed(home, project,
+                                                                 monkeypatch):
+    def fake_run(args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("memriver.uninstall.subprocess.run", fake_run)
+
+    with pytest.raises(KeyboardInterrupt):
+        full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                       clean_uv_cache=True)
+
+
 def test_a_nonzero_uv_exit_warns_but_keeps_the_exit_code_at_zero(home, project,
                                                                  monkeypatch):
     def fake_run(args, **kwargs):
@@ -1039,47 +1413,100 @@ def test_a_config_removal_failure_skips_purge_and_uv_cache_entirely(home, projec
     assert "memory storage root" not in result.stdout
 
 
-# --- Step 12: shared planning-failure text does not hardcode "install" ------
+# --- Step 12: shared planning-failure text names uninstall, not install -----
 
 
-def test_broken_markers_uninstall_planning_failure_is_command_neutral(home, project):
+def broken_markers(home: Path, project: Path):
     write(project / "AGENTS.md",
           "<!-- memriver:begin -->\nold\n<!-- memriver:begin -->\nmore\n")
-
-    result = uninstall(["cursor"], home=home, cwd=project, yes=True)
-
-    assert result.exit_code != 0
-    assert "install again" not in result.stdout
+    return ["cursor"], project
 
 
-def test_symlinked_target_uninstall_planning_failure_is_command_neutral(home, project):
+def symlinked_target(home: Path, project: Path):
     outside = write(project / "outside.json", json.dumps({"mcpServers": {}}))
     (home / ".claude.json").symlink_to(outside)
-
-    result = uninstall(["claude-code"], home=home, cwd=project, yes=True)
-
-    assert result.exit_code != 0
-    assert "install again" not in result.stdout
+    return ["claude-code"], project
 
 
-def test_undecodable_target_uninstall_planning_failure_is_command_neutral(home,
-                                                                          project):
+def symlinked_parent_directory(home: Path, project: Path):
+    elsewhere = home.parent / "claude-elsewhere"
+    elsewhere.mkdir()
+    (home / ".claude").symlink_to(elsewhere, target_is_directory=True)
+    return ["claude-code"], project
+
+
+def undecodable_target(home: Path, project: Path):
     (home / ".claude.json").write_bytes(b"\xff")
-
-    result = uninstall(["claude-code"], home=home, cwd=project, yes=True)
-
-    assert result.exit_code != 0
-    assert "install again" not in result.stdout
+    return ["claude-code"], project
 
 
-def test_duplicate_json_keys_uninstall_planning_failure_is_command_neutral(home,
-                                                                           project):
+def duplicate_json_keys(home: Path, project: Path):
     write(home / ".claude.json", '{"foreign": "first", "foreign": "second"}')
+    return ["claude-code"], project
 
-    result = uninstall(["claude-code"], home=home, cwd=project, yes=True)
 
-    assert result.exit_code != 0
-    assert "install again" not in result.stdout
+def json_number_outside_the_standard(home: Path, project: Path):
+    write(home / ".claude.json", '{"foreign": 1e400}')
+    return ["claude-code"], project
+
+
+def deeply_nested_json(home: Path, project: Path):
+    # deep enough to fail on the parse side, which a removal always reaches --
+    # unlike the render side, which only a document it actually changes does
+    nested = "[" * 100_000 + "]" * 100_000
+    write(home / ".claude.json", '{"foreign": ' + nested + "}")
+    return ["claude-code"], project
+
+
+def duplicate_hook_identities(home: Path, project: Path):
+    write(home / ".claude" / "settings.json", json.dumps({"hooks": {"SessionStart": [
+        hook_group("uvx memriver hook session-start --harness claude-code"),
+        hook_group("uvx memriver hook session-start --harness codex"),
+    ]}}))
+    return ["claude-code"], project
+
+
+def all_outside_a_project(home: Path, project: Path):
+    elsewhere = home.parent / "elsewhere"
+    elsewhere.mkdir()
+    return ALL_HARNESSES, elsewhere
+
+
+def kiro_outside_a_project(home: Path, project: Path):
+    elsewhere = home.parent / "elsewhere-kiro"
+    elsewhere.mkdir()
+    return ["kiro"], elsewhere
+
+
+UNINSTALL_REMEDIATIONS = [
+    (broken_markers, "fix the markers and run uninstall again"),
+    (symlinked_target, "(or remove it) and run uninstall again"),
+    (symlinked_parent_directory, "(or remove it) and run uninstall again"),
+    (undecodable_target, "then run memriver uninstall again"),
+    (duplicate_json_keys, "Remove the duplicate and run uninstall again"),
+    (json_number_outside_the_standard, "Fix the value and run uninstall again"),
+    (deeply_nested_json, "flatten it and run uninstall again"),
+    (duplicate_hook_identities, "remove all but one and run uninstall again"),
+    (all_outside_a_project, "run uninstall inside a project or pass one"),
+    (kiro_outside_a_project, "run uninstall inside a project or pass one"),
+]
+
+
+@pytest.mark.parametrize("setup,remediation", UNINSTALL_REMEDIATIONS,
+                         ids=lambda value: getattr(value, "__name__", ""))
+def test_a_planning_failure_names_uninstall_as_the_command_to_re_run(setup,
+                                                                     remediation,
+                                                                     home, project):
+    """The mirror of test_install.py's own
+    test_a_planning_failure_names_install_as_the_command_to_re_run: these
+    messages come from code both commands share, so each has to end by naming
+    the one the user actually ran."""
+    harnesses, cwd = setup(home, project)
+
+    result = uninstall(harnesses, home=home, cwd=cwd, yes=True)
+
+    assert result.exit_code == 1
+    assert result.stdout.rstrip("\n").endswith(remediation), result.stdout
 
 
 # --- Step 13: a TOCTOU abort during uninstall names uninstall ---------------

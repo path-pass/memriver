@@ -54,14 +54,14 @@ def _snapshot(target, text: str = "") -> Snapshot:
 
 def claude_snapshots(*, claude_json: dict | None = None,
                       settings_json: dict | None = None) -> tuple[Snapshot, Snapshot]:
-    config_target, settings_target = claude_code.targets(HOME, None)
+    config_target, settings_target = claude_code.targets(HOME, None, "install")
     config_text = json.dumps(claude_json) if claude_json is not None else "{}"
     settings_text = json.dumps(settings_json) if settings_json is not None else "{}"
     return (_snapshot(config_target, config_text), _snapshot(settings_target, settings_text))
 
 
 def codex_snapshots(*, config: dict | None = None) -> tuple[Snapshot, Snapshot]:
-    config_target, hooks_target = codex.targets(HOME, None)
+    config_target, hooks_target = codex.targets(HOME, None, "install")
     config_text = tomlkit.dumps(config) if config is not None else ""
     return (_snapshot(config_target, config_text), _snapshot(hooks_target, "{}"))
 
@@ -70,14 +70,14 @@ def codex_snapshots(*, config: dict | None = None) -> tuple[Snapshot, Snapshot]:
 
 
 def test_claude_code_targets():
-    config, settings = claude_code.targets(HOME, None)
+    config, settings = claude_code.targets(HOME, None, "install")
     assert config.path == HOME / ".claude.json"
     assert settings.path == HOME / ".claude" / "settings.json"
     assert config.user_level and settings.user_level
 
 
 def test_codex_targets():
-    config, hooks = codex.targets(HOME, None)
+    config, hooks = codex.targets(HOME, None, "install")
     assert config.path == HOME / ".codex" / "config.toml"
     assert hooks.path == HOME / ".codex" / "hooks.json"
     assert config.user_level and hooks.user_level
@@ -85,8 +85,8 @@ def test_codex_targets():
 
 def test_cursor_targets_need_a_project(tmp_path):
     with pytest.raises(PlanningError):
-        cursor.targets(HOME, None)
-    mcp, instructions = cursor.targets(HOME, tmp_path)
+        cursor.targets(HOME, None, "install")
+    mcp, instructions = cursor.targets(HOME, tmp_path, "install")
     assert mcp.path == HOME / ".cursor" / "mcp.json"
     assert instructions.path == tmp_path / "AGENTS.md"
     assert mcp.user_level and not instructions.user_level
@@ -94,8 +94,8 @@ def test_cursor_targets_need_a_project(tmp_path):
 
 def test_kiro_targets_need_a_project(tmp_path):
     with pytest.raises(PlanningError):
-        kiro.targets(HOME, None)
-    mcp, instructions = kiro.targets(HOME, tmp_path)
+        kiro.targets(HOME, None, "install")
+    mcp, instructions = kiro.targets(HOME, tmp_path, "install")
     assert mcp.path == HOME / ".kiro" / "settings" / "mcp.json"
     assert instructions.path == tmp_path / ".kiro" / "steering" / "memriver.md"
     assert mcp.user_level and not instructions.user_level
@@ -151,7 +151,7 @@ def test_codex_operation_payloads():
 
 
 def test_cursor_operation_payloads(tmp_path):
-    mcp_target, instructions_target = cursor.targets(HOME, tmp_path)
+    mcp_target, instructions_target = cursor.targets(HOME, tmp_path, "install")
     snapshots = (_snapshot(mcp_target), _snapshot(instructions_target))
     ops = cursor.operations(snapshots, {})
     by_id = {op.id: op for op in ops}
@@ -167,7 +167,7 @@ def test_cursor_operation_payloads(tmp_path):
 
 
 def test_kiro_operation_payloads(tmp_path):
-    mcp_target, instructions_target = kiro.targets(HOME, tmp_path)
+    mcp_target, instructions_target = kiro.targets(HOME, tmp_path, "install")
     snapshots = (_snapshot(mcp_target), _snapshot(instructions_target))
     ops = kiro.operations(snapshots, {})
     by_id = {op.id: op for op in ops}
@@ -240,8 +240,8 @@ def test_planning_performs_no_filesystem_writes(tmp_path, monkeypatch):
     claude_code.operations(claude_snapshots(), {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"})
     codex.operations(codex_snapshots(), {})
 
-    cursor_mcp, cursor_instructions = cursor.targets(HOME, tmp_path)
+    cursor_mcp, cursor_instructions = cursor.targets(HOME, tmp_path, "install")
     cursor.operations((_snapshot(cursor_mcp), _snapshot(cursor_instructions)), {})
 
-    kiro_mcp, kiro_instructions = kiro.targets(HOME, tmp_path)
+    kiro_mcp, kiro_instructions = kiro.targets(HOME, tmp_path, "install")
     kiro.operations((_snapshot(kiro_mcp), _snapshot(kiro_instructions)), {})

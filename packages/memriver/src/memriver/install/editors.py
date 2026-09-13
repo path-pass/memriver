@@ -7,8 +7,15 @@ renders, it never runs memory policy.
 Three rules hold across all four editors.
 
 *Foreign content survives.* An edit touches exactly one key path or one marker
-region; everything else in the user's file is carried through untouched, and
-TOML keeps its original formatting because tomlkit round-trips it.
+region; every other value in the user's file is carried through untouched.
+Formatting survives too for TOML (tomlkit round-trips it) and for marker-block
+text (only the block and one newline on each side of it are ever written), and
+a merge or removal that changes nothing returns the original bytes. JSON is
+the exception: ``json.dumps`` re-renders the whole document at indent 2 with
+LF endings, so an accepted change also normalizes the user's escapes, number
+spellings, indentation and line endings. Each removal is the byte-exact
+inverse of its merge, which for JSON means reproducing that same rendering
+rather than the bytes the file once had.
 
 *Ambiguity fails, it never guesses.* Two memriver hook entries, a memriver
 handler sharing a group with someone else's, an unpaired marker: each raises
@@ -24,7 +31,7 @@ from __future__ import annotations
 import json
 import math
 import shlex
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -230,7 +237,7 @@ def json_object_merge(
     """Set one nested key, creating missing parent objects, keeping everything else."""
     if not key_path:
         raise PlanningError("a json-object edit needs a key path")
-    document = _parse_json_object(source)
+    document = _parse_json_object(source, "install")
     parent = document
     for depth, key in enumerate(key_path[:-1]):
         if key not in parent:
@@ -247,7 +254,8 @@ def json_object_merge(
     if present and parent[leaf] == expected:
         return EditResult(rendered=source, changed=False, takeover=False)
     parent[leaf] = expected
-    return EditResult(rendered=_render_json(document), changed=True, takeover=present)
+    return EditResult(rendered=_render_json(document, "install"), changed=True,
+                      takeover=present)
 
 
 def json_object_remove(source: str, key_path: tuple[str, ...]) -> EditResult:
@@ -259,10 +267,11 @@ def json_object_remove(source: str, key_path: tuple[str, ...]) -> EditResult:
     """
     if not key_path:
         raise PlanningError("a json-object edit needs a key path")
-    document = _parse_json_object(source)
+    document = _parse_json_object(source, "uninstall")
     if not _delete_leaf(document, key_path):
         return EditResult(rendered=source, changed=False, takeover=False)
-    return EditResult(rendered=_render_json(document), changed=True, takeover=False)
+    return EditResult(rendered=_render_json(document, "uninstall"), changed=True,
+                      takeover=False)
 
 
 # --- hook-array ------------------------------------------------------------
@@ -280,7 +289,7 @@ def hook_array_identity_merge(
     """
     if not identity:
         raise PlanningError("a hook-array edit needs a command identity")
-    document = _parse_json_object(source)
+    document = _parse_json_object(source, "install")
     if "hooks" not in document:
         document["hooks"] = {}
     hooks = document["hooks"]
@@ -297,7 +306,7 @@ def hook_array_identity_merge(
             if _is_unlexable_memriver_command(handler.get("command"), identity):
                 raise PlanningError(
                     f"a command in hooks.{event} looks like memriver's but is not a "
-                    "parseable shell command; fix or remove it and run memriver again"
+                    "parseable shell command; fix or remove it and run install again"
                 )
     matched = [
         i for i, group in enumerate(groups) if _matching_handlers(group, identity)
@@ -305,23 +314,25 @@ def hook_array_identity_merge(
     if len(matched) > 1:
         raise PlanningError(
             f"hooks.{event} already has {len(matched)} memriver entries; remove all "
-            "but one and run memriver again"
+            "but one and run install again"
         )
     if not matched:
         groups.append(expected)
-        return EditResult(rendered=_render_json(document), changed=True, takeover=False)
+        return EditResult(rendered=_render_json(document, "install"), changed=True,
+                          takeover=False)
 
     index = matched[0]
     current = groups[index]
     if len(current["hooks"]) != 1:
         raise PlanningError(
             f"the memriver handler in hooks.{event} shares a group with other "
-            "handlers; move it into its own group and run memriver again"
+            "handlers; move it into its own group and run install again"
         )
     if current == expected:
         return EditResult(rendered=source, changed=False, takeover=False)
     groups[index] = expected
-    return EditResult(rendered=_render_json(document), changed=True, takeover=True)
+    return EditResult(rendered=_render_json(document, "install"), changed=True,
+                      takeover=True)
 
 
 def hook_array_identity_remove(
@@ -337,7 +348,7 @@ def hook_array_identity_remove(
     """
     if not identity:
         raise PlanningError("a hook-array edit needs a command identity")
-    document = _parse_json_object(source)
+    document = _parse_json_object(source, "uninstall")
     hooks = document.get("hooks")
     if not isinstance(hooks, dict) or event not in hooks:
         return EditResult(rendered=source, changed=False, takeover=False)
@@ -373,7 +384,8 @@ def hook_array_identity_remove(
     # -- P2-3: removal takes back only memriver's own group, leaving whatever
     # container (the user's own, or one install auto-created) held it
     del groups[index]
-    return EditResult(rendered=_render_json(document), changed=True, takeover=False)
+    return EditResult(rendered=_render_json(document, "uninstall"), changed=True,
+                      takeover=False)
 
 
 def _handlers(group: object) -> list[dict[str, Any]]:
@@ -461,9 +473,26 @@ def toml_roundtrip(
     except ValueError as error:  # tomlkit refused the shape of the existing node
         raise PlanningError(
             f"{_dotted(key_path)} cannot be replaced in this file; move it to a "
-            "regular table and run memriver again"
+            "regular table and run install again"
         ) from error
-    return EditResult(rendered=_render_toml(document), changed=True, takeover=present)
+    rendered = _one_newline_before_an_appended_table(source, _render_toml(document))
+    return EditResult(rendered=rendered, changed=True, takeover=present)
+
+
+def _one_newline_before_an_appended_table(source: str, rendered: str) -> str:
+    """Separate a table appended at the end of the file by exactly one newline.
+
+    tomlkit pads a freshly appended table up to a blank line, which renders
+    ``'x = 1\\n'`` and ``'x = 1\\n\\n'`` identically -- information
+    ``toml_table_remove`` would then have no way to give back. Fixing the
+    separator at one newline, and leaving whatever the file already ended with
+    in front of it, makes the pair invertible. Only a pure append is touched;
+    an edit that landed anywhere else in the document is left exactly as
+    tomlkit rendered it.
+    """
+    if not source or not rendered.startswith(source):
+        return rendered
+    return source + "\n" + rendered[len(source):].lstrip("\n")
 
 
 def toml_table_remove(source: str, key_path: tuple[str, ...]) -> EditResult:
@@ -483,17 +512,17 @@ def toml_table_remove(source: str, key_path: tuple[str, ...]) -> EditResult:
         raise PlanningError(f"file is not valid TOML: {error}") from error
     if not _delete_leaf(document, key_path):
         return EditResult(rendered=source, changed=False, takeover=False)
-    rendered = _undo_added_blank_line(source, _render_toml(document))
+    rendered = _undo_added_newline(source, _render_toml(document))
     return EditResult(rendered=rendered, changed=True, takeover=False)
 
 
-def _undo_added_blank_line(source: str, rendered: str) -> str:
-    """Collapse, by exactly one newline, a blank line orphaned right at the
-    point this deletion touched -- the one ``toml_roundtrip`` itself would
-    have added before a freshly created top-level table, and the only
-    trailing whitespace a removal is ever entitled to touch. Scoped to that
-    single spot (never the whole document) so a longer run, or one the
-    deletion never touched at all, survives byte-for-byte.
+def _undo_added_newline(source: str, rendered: str) -> str:
+    """Take back exactly one newline orphaned right at the point this deletion
+    touched -- the separator ``toml_roundtrip`` puts in front of a table it
+    appends, and the only trailing whitespace a removal is ever entitled to
+    touch. Scoped to that single spot (never the whole document) so a run of
+    the user's own blank lines, or one the deletion never touched at all,
+    survives byte-for-byte.
     """
     limit = min(len(source), len(rendered))
     prefix_len = 0
@@ -505,7 +534,7 @@ def _undo_added_blank_line(source: str, rendered: str) -> str:
           and source[len(source) - 1 - suffix_len] == rendered[len(rendered) - 1 - suffix_len]):
         suffix_len += 1
     prefix = rendered[:prefix_len]
-    if prefix_len + suffix_len == len(rendered) and prefix.endswith("\n\n"):
+    if prefix_len + suffix_len == len(rendered) and prefix.endswith("\n"):
         return prefix[:-1] + rendered[prefix_len:]
     return rendered
 
@@ -528,41 +557,43 @@ def _plain(value: object) -> object:
 
 
 def marker_block(source: str, body: str) -> EditResult:
-    """Append or replace the single ``memriver:begin/end`` region of a text file."""
+    """Append or replace the single ``memriver:begin/end`` region of a text file.
+
+    Appending adds exactly one newline in front of the block and one behind it,
+    and touches nothing else: whatever the file already ended with -- no
+    newline, one, a run of blank lines, trailing spaces, CRLF -- is carried
+    through verbatim, so ``marker_block_remove`` can give those bytes back.
+    Normalizing the tail here instead would collapse ``"notes"``,
+    ``"notes\\n"`` and ``"notes\\n\\n"`` onto one rendering that no removal
+    could tell apart again.
+    """
     block = _block_text(body)
-    start, stop = _marker_span(source)
+    start, stop = _marker_span(source, "install")
     if start is None:
-        separator = "\n\n" if source.strip() else ""
-        rendered = source.rstrip("\n") + separator + block + "\n"
+        separator = "\n" if source else ""
+        rendered = source + separator + block + "\n"
     elif source[start:stop] == block:
         return EditResult(rendered=source, changed=False, takeover=False)
     else:
         rendered = source[:start] + block + source[stop:]
-    _marker_span(rendered)
+    _marker_span(rendered, "install")
     return EditResult(rendered=rendered, changed=True, takeover=start is not None)
 
 
 def marker_block_remove(source: str) -> EditResult:
     """Remove the whole memriver marker block, markers included.
 
-    The blank-line separator ``marker_block`` adds before a fresh block is
-    undone the same way here, so an install-then-uninstall round trip on a
-    file that already had content returns exactly the original bytes.
+    The exact inverse of ``marker_block``: one newline comes off each side of
+    the block, because one newline is all ``marker_block`` ever put there.
+    Every other byte around the block -- a run of the user's own blank lines,
+    trailing spaces, a missing final newline, CRLF endings -- is theirs and
+    survives untouched.
     """
-    start, stop = _marker_span(source)
+    start, stop = _marker_span(source, "uninstall")
     if start is None:
         return EditResult(rendered=source, changed=False, takeover=False)
-    before_raw = source[:start]
-    before = before_raw.rstrip("\n")
-    after = source[stop:].lstrip("\n")
-    if before and after:
-        rendered = before + "\n\n" + after
-    elif before:
-        # only restore a trailing newline the rstrip above actually took away
-        # -- content that never had one before the block must not gain one
-        rendered = before + ("\n" if before != before_raw else "")
-    else:
-        rendered = after
+    before, after = source[:start], source[stop:]
+    rendered = before.removesuffix("\n") + after.removeprefix("\n")
     return EditResult(rendered=rendered, changed=True, takeover=False)
 
 
@@ -577,40 +608,41 @@ def _block_text(body: object) -> str:
     return f"{MARKER_BEGIN}\n{inner}\n{MARKER_END}"
 
 
-def _marker_span(text: str) -> tuple[int, int] | tuple[None, None]:
+def _marker_span(text: str, command_name: str) -> tuple[int, int] | tuple[None, None]:
     begins, ends = _positions(text, MARKER_BEGIN), _positions(text, MARKER_END)
     if len(begins) > 1 or len(ends) > 1 or len(begins) != len(ends):
         raise PlanningError(
             f"expected one memriver marker pair, found {len(begins)} begin and "
-            f"{len(ends)} end markers; fix the markers and run memriver again"
+            f"{len(ends)} end markers; fix the markers and run {command_name} again"
         )
     if not begins:
         return None, None
     if begins[0] > ends[0]:
         raise PlanningError(
             f"{MARKER_END} appears before {MARKER_BEGIN}; fix the markers and run "
-            "memriver again"
+            f"{command_name} again"
         )
     return begins[0], ends[0] + len(MARKER_END)
 
 
-def validate_document(text: str, kind: EditorKind) -> None:
+def validate_document(text: str, kind: EditorKind, command_name: str) -> None:
     """Re-parse a fully rendered document, raising ``PlanningError`` if unsound.
 
     The editors already validate what they render; the orchestrator runs this
     over the *final* text of every target -- once after planning and again
     after re-applying only the accepted edits -- so a file is proven whole
-    before it is a candidate for replacement.
+    before it is a candidate for replacement. ``command_name`` is the command
+    the user ran, which is what the remediation in any raised message names.
     """
     if kind == "marker-block":
-        _marker_span(text)
+        _marker_span(text, command_name)
     elif kind == "toml-table":
         try:
             tomlkit.parse(text)
         except ParseError as error:
             raise PlanningError(f"file is not valid TOML: {error}") from error
     else:
-        _parse_json_object(text)
+        _parse_json_object(text, command_name)
 
 
 def _positions(text: str, marker: str) -> list[int]:
@@ -725,53 +757,66 @@ def _delete_leaf(document: Any, key_path: tuple[str, ...]) -> bool:
     return True
 
 
-_NON_STANDARD_NUMBER = (
-    "file holds a number JSON cannot represent (an infinity or a NaN); memriver "
-    "will not rewrite it, because writing it back produces a document strict "
-    "parsers reject. Fix the value and run memriver again"
-)
+def _non_standard_number(command_name: str) -> str:
+    return (
+        "file holds a number JSON cannot represent (an infinity or a NaN); "
+        "memriver will not rewrite it, because writing it back produces a "
+        f"document strict parsers reject. Fix the value and run {command_name} "
+        "again"
+    )
 
 
-def _no_duplicate_names(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+def _duplicate_name_guard(command_name: str) -> Callable[[list[tuple[str, Any]]],
+                                                         dict[str, Any]]:
     """``object_pairs_hook`` that refuses what the default decoder would drop.
 
     ``json.loads`` keeps the last value of a repeated name, so re-serializing
     would erase a foreign value the summary never showed and the user never
     confirmed. Ambiguity fails.
     """
-    seen: dict[str, Any] = {}
-    for name, value in pairs:
-        if name in seen:
-            raise PlanningError(
-                f"file has two JSON members named {name!r}; memriver will not "
-                "rewrite it because re-serializing keeps only the last one. "
-                "Remove the duplicate and run memriver again"
-            )
-        seen[name] = value
-    return seen
+    def no_duplicate_names(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        seen: dict[str, Any] = {}
+        for name, value in pairs:
+            if name in seen:
+                raise PlanningError(
+                    f"file has two JSON members named {name!r}; memriver will not "
+                    "rewrite it because re-serializing keeps only the last one. "
+                    f"Remove the duplicate and run {command_name} again"
+                )
+            seen[name] = value
+        return seen
+
+    return no_duplicate_names
 
 
-def _finite_number(raw: str) -> float:
+def _finite_number_guard(command_name: str) -> Callable[[str], float]:
     """``parse_float`` guard: ``1e400`` decodes to ``inf`` without complaint."""
-    value = float(raw)
-    if not math.isfinite(value):
-        raise PlanningError(_NON_STANDARD_NUMBER)
-    return value
+    def finite_number(raw: str) -> float:
+        value = float(raw)
+        if not math.isfinite(value):
+            raise PlanningError(_non_standard_number(command_name))
+        return value
+
+    return finite_number
 
 
-def _reject_constant(name: str) -> object:
+def _constant_guard(command_name: str) -> Callable[[str], object]:
     """``parse_constant`` guard: ``NaN``/``Infinity`` are not JSON [RFC 8259 §6]."""
-    del name  # the offending token is the user's content; the fixed text says enough
-    raise PlanningError(_NON_STANDARD_NUMBER)
+    def reject_constant(name: str) -> object:
+        del name  # the offending token is the user's content; fixed text says enough
+        raise PlanningError(_non_standard_number(command_name))
+
+    return reject_constant
 
 
-def _parse_json_object(source: str) -> dict[str, Any]:
+def _parse_json_object(source: str, command_name: str) -> dict[str, Any]:
     if not source.strip():
         return {}
     try:
-        document = json.loads(source, object_pairs_hook=_no_duplicate_names,
-                              parse_constant=_reject_constant,
-                              parse_float=_finite_number)
+        document = json.loads(source,
+                              object_pairs_hook=_duplicate_name_guard(command_name),
+                              parse_constant=_constant_guard(command_name),
+                              parse_float=_finite_number_guard(command_name))
     except ValueError as error:
         # every rejection the decoder itself raises, not only the
         # JSONDecodeError subclass: a syntactically legal integer past
@@ -788,27 +833,28 @@ def _parse_json_object(source: str) -> dict[str, Any]:
         # traceback past the PlanningError-only boundary. The message names no
         # path and no depth number, both of which would just repeat what the
         # traceback would have shown.
-        raise PlanningError(_TOO_DEEPLY_NESTED) from error
+        raise PlanningError(_too_deeply_nested(command_name)) from error
     if not isinstance(document, dict):
         raise PlanningError("file is not a JSON object")
     return document
 
 
-_TOO_DEEPLY_NESTED = (
-    "file nests too deeply for memriver to parse; flatten it and run install "
-    "again"
-)
+def _too_deeply_nested(command_name: str) -> str:
+    return (
+        f"file nests too deeply for memriver to parse; flatten it and run "
+        f"{command_name} again"
+    )
 
 
-def _render_json(document: dict[str, Any]) -> str:
+def _render_json(document: dict[str, Any], command_name: str) -> str:
     try:
         rendered = json.dumps(document, indent=2, ensure_ascii=False,
                               allow_nan=False) + "\n"
     except ValueError as error:  # the value itself never goes in the message
-        raise PlanningError(_NON_STANDARD_NUMBER) from error
+        raise PlanningError(_non_standard_number(command_name)) from error
     except RecursionError as error:  # same foreign nesting, the encoding side
-        raise PlanningError(_TOO_DEEPLY_NESTED) from error
-    _parse_json_object(rendered)
+        raise PlanningError(_too_deeply_nested(command_name)) from error
+    _parse_json_object(rendered, command_name)
     return rendered
 
 

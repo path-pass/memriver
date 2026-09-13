@@ -26,9 +26,11 @@ from memriver.install.editors import (
 HARNESS = "claude-code"
 
 
-def targets(home: Path, project_root: Path | None) -> tuple[Target, Target]:
+def targets(home: Path, project_root: Path | None,
+            command_name: str) -> tuple[Target, Target]:
     """``(~/.claude.json, ~/.claude/settings.json)``; both targets are user-level."""
     del project_root  # Claude Code has no project-scoped target.
+    del command_name  # neither target can fail to resolve, so nothing names it.
     config = Target(
         path=home / ".claude.json",
         user_level=True,
@@ -140,16 +142,23 @@ NATIVE_MEMORY_LEFT_NOTE = (
 def uninstall_notes(
     snapshots: tuple[Snapshot, Snapshot], env: Mapping[str, str],
 ) -> tuple[str, ...]:
-    """Read-only completion text: where the native-memory toggle was left."""
+    """Read-only completion text: where the native-memory toggle was left.
+
+    This runs after the write transaction has already committed, so every
+    container shape the write phase accepted has to end in a note or in
+    silence -- an ``env`` holding a string rather than an object is a shape
+    memriver cannot read the toggle out of, and an unreadable shape means no
+    claim, not an exception on top of a configuration already removed.
+    """
     del env
     _, settings = snapshots
     try:
         data = json.loads(settings.text) if settings.text else {}
-    except json.JSONDecodeError:
+    except ValueError:
         return ()  # malformed input already failed planning before this runs
-    if not isinstance(data, dict):
-        return ()
-    if data.get("env", {}).get("CLAUDE_CODE_DISABLE_AUTO_MEMORY") == "1":
+    section = data.get("env") if isinstance(data, dict) else None
+    if isinstance(section, dict) and section.get(
+            "CLAUDE_CODE_DISABLE_AUTO_MEMORY") == "1":
         return (NATIVE_MEMORY_LEFT_NOTE,)
     return ()
 

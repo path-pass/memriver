@@ -175,13 +175,13 @@ def _resolve_project_root(harnesses: Sequence[str], cwd: Path) -> Path | None:
 
 
 def _collect_targets(harnesses: Sequence[str],
-                     home: Path, project_root: Path | None,
+                     home: Path, project_root: Path | None, command_name: str,
                      ) -> tuple[dict[Path, Target], dict[str, tuple[Target, ...]]]:
     """Every harness's targets, with incompatible duplicate claims rejected."""
     per_harness: dict[str, tuple[Target, ...]] = {}
     classified: dict[Path, Target] = {}
     for name in harnesses:
-        targets = HARNESSES[name].targets(home, project_root)
+        targets = HARNESSES[name].targets(home, project_root, command_name)
         per_harness[name] = targets
         for target in targets:
             seen = classified.get(target.path)
@@ -194,7 +194,7 @@ def _collect_targets(harnesses: Sequence[str],
     return classified, per_harness
 
 
-def _refuse_symlinks(target: Target, root: Path | None) -> None:
+def _refuse_symlinks(target: Target, root: Path | None, command_name: str) -> None:
     """Refuse the target and every path component below ``root`` that is a link.
 
     Checking only the leaf would still write through a symlinked ``~/.claude``,
@@ -211,14 +211,15 @@ def _refuse_symlinks(target: Target, root: Path | None) -> None:
             raise PlanningError(
                 f"{component} is a symlink; memriver will not write through it "
                 f"to {target.path}. Replace it with a regular file or directory "
-                "(or remove it) and run memriver again"
+                f"(or remove it) and run {command_name} again"
             )
 
 
-def _read_snapshot(target: Target, root: Path | None) -> Snapshot:
+def _read_snapshot(target: Target, root: Path | None,
+                   command_name: str) -> Snapshot:
     """Read text and mode for planning only; a symlinked path is refused."""
     path = target.path
-    _refuse_symlinks(target, root)
+    _refuse_symlinks(target, root, command_name)
     try:
         if not path.exists():
             return Snapshot(target=target, text=None, mode=None)
@@ -240,13 +241,13 @@ def _read_snapshot(target: Target, root: Path | None) -> Snapshot:
         # message carries the rejected bytes and an errno string.
         raise PlanningError(
             f"{path} could not be read; check that it is UTF-8 text this user "
-            "can read, then run memriver again"
+            f"can read, then run memriver {command_name} again"
         ) from err
 
 
 def _rendered(operations: Iterable[EditOperation | RemovalOperation],
               snapshots: Mapping[Path, Snapshot],
-              apply_fn: Callable[[Any, str], EditResult],
+              apply_fn: Callable[[Any, str], EditResult], command_name: str,
               ) -> tuple[dict[Path, str], dict[str, EditResult]]:
     """Apply operations to in-memory copies, then validate each whole document."""
     texts = {path: snapshot.text or "" for path, snapshot in snapshots.items()}
@@ -258,7 +259,8 @@ def _rendered(operations: Iterable[EditOperation | RemovalOperation],
         results[operation.id] = result
     for path, text in texts.items():
         if text != (snapshots[path].text or ""):
-            validate_document(text, _document_kind(snapshots[path].target))
+            validate_document(text, _document_kind(snapshots[path].target),
+                              command_name)
     return texts, results
 
 
@@ -266,7 +268,8 @@ def _plan(harnesses: Sequence[str], home: Path, cwd: Path, env: Mapping[str, str
           collect_operations: Callable[[str, tuple[Snapshot, ...], Mapping[str, str]],
                                        Sequence[Any]],
           apply_fn: Callable[[Any, str], EditResult],
-          summary_fn: Callable[[Any, EditResult, Path], str]) -> _Plan:
+          summary_fn: Callable[[Any, EditResult, Path], str],
+          command_name: str) -> _Plan:
     """The complete planning pipeline of spec 5.1 -- pure, no filesystem writes.
 
     ``collect_operations``/``apply_fn``/``summary_fn`` are the only install-vs-
@@ -282,10 +285,11 @@ def _plan(harnesses: Sequence[str], home: Path, cwd: Path, env: Mapping[str, str
             f"{', '.join(HARNESSES)}"
         )
     project_root = _resolve_project_root(harnesses, cwd)
-    targets, per_harness = _collect_targets(harnesses, home, project_root)
+    targets, per_harness = _collect_targets(harnesses, home, project_root,
+                                            command_name)
     roots = {True: home, False: project_root}
     snapshots = {
-        path: _read_snapshot(target, roots[target.user_level])
+        path: _read_snapshot(target, roots[target.user_level], command_name)
         for path, target in targets.items()
     }
     harness_snapshots = {
@@ -295,7 +299,7 @@ def _plan(harnesses: Sequence[str], home: Path, cwd: Path, env: Mapping[str, str
     operations: list[Any] = []
     for name in harnesses:
         operations.extend(collect_operations(name, harness_snapshots[name], env))
-    _, results = _rendered(operations, snapshots, apply_fn)
+    _, results = _rendered(operations, snapshots, apply_fn, command_name)
     changes = tuple(
         _PlannedChange(operation, summary_fn(operation, results[operation.id], home))
         for operation in operations if results[operation.id].changed
@@ -397,7 +401,8 @@ def _write_backup(target: Target, original_mode: int, stamp: str) -> Path:
 
 def _write_target(snapshot: Snapshot, text: str, root: Path | None, stamp: str,
                   home: Path, command_name: str,
-                  replace_file: Callable[[Path, Path], None]) -> _Write:
+                  replace_file: Callable[[Path, Path], None],
+                  record: Callable[[_Write], None]) -> None:
     """Re-read the target, refuse it if it moved since planning, then replace it.
 
     Planning read this file before the prompts, and ``text`` was rendered from
@@ -408,21 +413,31 @@ def _write_target(snapshot: Snapshot, text: str, root: Path | None, stamp: str,
     compared and re-checked in one step. ``command_name`` names the command
     whose own apply hit the race, so the remediation text tells the user to
     re-run the command they actually ran.
+
+    ``record`` appends the completed write to the caller's rollback ledger.
+    A rewrite is recorded once the replacement has landed -- an atomic swap
+    that never happened leaves nothing to undo. A deletion is recorded
+    *before* the ``unlink``, because that side effect has no atomic swap in
+    front of it: an interrupt in between would otherwise take the file away
+    with no entry telling rollback to bring it back.
     """
     target = snapshot.target
-    if _read_snapshot(target, root) != snapshot:
+    if _read_snapshot(target, root, command_name) != snapshot:
         raise PlanningError(
             f"{display_path(target.path, home)}: file changed since planning; "
             f"nothing further was written -- re-run memriver {command_name}"
         )
     original_mode = snapshot.mode
     created_dirs: tuple[_CreatedDir, ...] = ()
+    recorded = False
     try:
         created_dirs = _make_dirs(target.path.parent)
         backup = (
             _write_backup(target, original_mode, stamp) if original_mode is not None
             else None
         )
+        write = _Write(target=target, backup=backup, original_mode=original_mode,
+                       created_dirs=created_dirs)
         mode = original_mode
         if mode is None:
             mode = 0o600 if target.user_level else _umask_mode()
@@ -432,17 +447,21 @@ def _write_target(snapshot: Snapshot, text: str, root: Path | None, stamp: str,
             # one behind (spec P2-6). The backup just written above still
             # holds the pre-removal bytes, so rollback and the printed
             # restore command both work exactly as they do for a rewrite.
+            record(write)
+            recorded = True
             target.path.unlink()
         else:
             _replace_atomically(target.path, text.encode("utf-8"), mode, replace_file)
+            record(write)
     except BaseException:
-        # this write never joins the rollback list, so it takes its own
-        # directories back; a backup already written keeps its parent, which is
-        # what `_remove_created_dirs` refusing a non-empty directory does
-        _remove_created_dirs(created_dirs)
+        # a write that never joined the rollback list takes its own directories
+        # back; a backup already written keeps its parent, which is what
+        # `_remove_created_dirs` refusing a non-empty directory does. One
+        # already on the list leaves both to `_roll_back`, which restores the
+        # file first and only then reclaims the directories holding it.
+        if not recorded:
+            _remove_created_dirs(created_dirs)
         raise
-    return _Write(target=target, backup=backup, original_mode=original_mode,
-                  created_dirs=created_dirs)
 
 
 def _make_dirs(directory: Path) -> tuple[_CreatedDir, ...]:
@@ -656,7 +675,8 @@ def run_install(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
     """Plan, confirm, and apply the install; return the process exit code."""
     try:
         plan = _plan(harnesses, home, cwd, env, collect_operations=_install_operations,
-                    apply_fn=apply_edit, summary_fn=render_change_summary)
+                    apply_fn=apply_edit, summary_fn=render_change_summary,
+                    command_name="install")
     except PlanningError as error:
         stdout.write(f"memriver install: {error}\n")
         return 1
@@ -695,7 +715,7 @@ def run_install(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
         return 0
 
     try:
-        texts, _ = _rendered(accepted, plan.snapshots, apply_edit)
+        texts, _ = _rendered(accepted, plan.snapshots, apply_edit, "install")
     except PlanningError as error:
         stdout.write(f"\nmemriver install: {error}\n")
         return 1
@@ -728,7 +748,8 @@ def run_config_uninstall(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
     try:
         plan = _plan(harnesses, home, cwd, env,
                     collect_operations=_uninstall_operations,
-                    apply_fn=apply_removal, summary_fn=render_removal_summary)
+                    apply_fn=apply_removal, summary_fn=render_removal_summary,
+                    command_name="uninstall")
     except PlanningError as error:
         stdout.write(f"memriver uninstall: {error}\n")
         return 1
@@ -760,7 +781,7 @@ def run_config_uninstall(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
         return 0
 
     try:
-        texts, _ = _rendered(accepted, plan.snapshots, apply_removal)
+        texts, _ = _rendered(accepted, plan.snapshots, apply_removal, "uninstall")
     except PlanningError as error:
         stdout.write(f"\nmemriver uninstall: {error}\n")
         return 1
@@ -806,9 +827,8 @@ def _apply(pending: Sequence[tuple[Snapshot, str, Path | None]], plan: _Plan,
     writes: list[_Write] = []
     try:
         for snapshot, text, root in pending:
-            writes.append(
-                _write_target(snapshot, text, root, stamp, home, command_name,
-                              replace_file))
+            _write_target(snapshot, text, root, stamp, home, command_name,
+                          replace_file, writes.append)
     except BaseException as error:  # a Ctrl-C between replacements rolls back too
         stdout.write(f"\nmemriver {command_name} failed: {error}\n")
         stdout.write("".join(
