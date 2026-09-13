@@ -83,6 +83,21 @@ def test_codex_targets():
     assert config.user_level and hooks.user_level
 
 
+def test_targets_name_install_when_no_command_is_given(tmp_path):
+    """Every harness's ``targets()`` is callable with the two arguments it
+    always took; the command to re-run is install unless a caller says
+    otherwise, which is what the two harnesses that can refuse will name."""
+    assert claude_code.targets(HOME, None)[0].path == HOME / ".claude.json"
+    assert codex.targets(HOME, None)[0].path == HOME / ".codex" / "config.toml"
+    for harness in (cursor, kiro):
+        with pytest.raises(PlanningError) as raised:
+            harness.targets(HOME, None)
+        assert "run install inside a project" in str(raised.value)
+    assert cursor.targets(HOME, tmp_path)[1].path == tmp_path / "AGENTS.md"
+    assert kiro.targets(HOME, tmp_path)[1].path == (
+        tmp_path / ".kiro" / "steering" / "memriver.md")
+
+
 def test_cursor_targets_need_a_project(tmp_path):
     with pytest.raises(PlanningError):
         cursor.targets(HOME, None, "install")

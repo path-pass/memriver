@@ -23,7 +23,7 @@ from memriver.protocol_text import PROTOCOL_BLOCK
 
 
 def targets(home: Path, project_root: Path | None,
-            command_name: str) -> tuple[Target, Target]:
+            command_name: str = "install") -> tuple[Target, Target]:
     """``(~/.cursor/mcp.json, <git-root>/AGENTS.md)``.
 
     Raises ``PlanningError`` before returning anything when ``project_root``

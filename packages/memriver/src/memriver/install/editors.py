@@ -7,15 +7,19 @@ renders, it never runs memory policy.
 Three rules hold across all four editors.
 
 *Foreign content survives.* An edit touches exactly one key path or one marker
-region; every other value in the user's file is carried through untouched.
-Formatting survives too for TOML (tomlkit round-trips it) and for marker-block
-text (only the block and one newline on each side of it are ever written), and
-a merge or removal that changes nothing returns the original bytes. JSON is
-the exception: ``json.dumps`` re-renders the whole document at indent 2 with
-LF endings, so an accepted change also normalizes the user's escapes, number
-spellings, indentation and line endings. Each removal is the byte-exact
-inverse of its merge, which for JSON means reproducing that same rendering
-rather than the bytes the file once had.
+region; every other value in the user's file is carried through untouched, and
+a merge or removal that changes nothing returns the original bytes.
+
+Formatting survives with it, in every direction but one. TOML keeps its own
+because tomlkit round-trips it; marker-block text keeps its own because only
+the block and one newline sequence on each side of it are ever written; a JSON
+*removal* keeps its own because it splices out the bytes of the one member it
+takes back and copies the rest of the file through verbatim -- escapes, number
+spellings, indentation, CRLF endings and trailing whitespace included. A JSON
+*merge* is the exception: ``json.dumps`` re-renders the whole document at
+indent 2 with LF endings, so accepting an install change normalizes those same
+things. What a removal owes is the user's bytes, whoever last wrote them --
+not a re-run of install's rendering.
 
 *Ambiguity fails, it never guesses.* Two memriver hook entries, a memriver
 handler sharing a group with someone else's, an unpaired marker: each raises
@@ -264,13 +268,17 @@ def json_object_remove(source: str, key_path: tuple[str, ...]) -> EditResult:
     The inverse of ``json_object_merge``: an absent key is already clean, not
     an error. A parent object left empty by this delete (whether install
     auto-created it or the user had it there already) is never pruned away.
+
+    The parsed document decides *what* goes; the bytes outside that one member
+    are spliced through untouched (see ``_member_removal_span``).
     """
     if not key_path:
         raise PlanningError("a json-object edit needs a key path")
     document = _parse_json_object(source, "uninstall")
     if not _delete_leaf(document, key_path):
         return EditResult(rendered=source, changed=False, takeover=False)
-    return EditResult(rendered=_render_json(document, "uninstall"), changed=True,
+    span = _member_removal_span(source, key_path, "uninstall")
+    return EditResult(rendered=_spliced(source, span, "uninstall"), changed=True,
                       takeover=False)
 
 
@@ -383,9 +391,238 @@ def hook_array_identity_remove(
     # the emptied event array, and "hooks" itself, are never pruned away here
     # -- P2-3: removal takes back only memriver's own group, leaving whatever
     # container (the user's own, or one install auto-created) held it
-    del groups[index]
-    return EditResult(rendered=_render_json(document, "uninstall"), changed=True,
+    span = _element_removal_span(source, ("hooks", event), index, "uninstall")
+    return EditResult(rendered=_spliced(source, span, "uninstall"), changed=True,
                       takeover=False)
+
+
+# --- where a JSON member's bytes are ----------------------------------------
+
+# Re-serializing a JSON document normalizes escapes, number spellings,
+# indentation and line endings across the whole file -- every byte of it, not
+# just memriver's own entry. So a removal never re-serializes: the parsed
+# document (already validated by `_parse_json_object`) decides *what* to
+# remove, this scanner finds *where* those bytes are, and the removal is a
+# splice around them.
+
+_JSON_WHITESPACE = " \t\n\r"
+
+
+class _UnscannableJson(Exception):
+    """The scanner lost the thread of a document the parser had accepted."""
+
+
+@dataclass(frozen=True)
+class _JsonItem:
+    """One member of an object, or one element of an array, and its bytes.
+
+    ``start`` is the first byte of the member (its name's opening quote) or of
+    the element; ``value_start`` is the first byte of the value; ``end`` is
+    just past the value's last byte. Separators are not part of it.
+    """
+
+    name: str | None
+    start: int
+    value_start: int
+    end: int
+
+
+@dataclass(frozen=True)
+class _JsonContainer:
+    items: tuple[_JsonItem, ...]
+    # the bytes between the braces/brackets, the braces themselves excluded
+    inner_start: int
+    inner_end: int
+
+
+class _JsonScan:
+    """A cursor over the source text of a document already known to be valid.
+
+    It has no opinion on what JSON means -- ``json.loads`` has settled that --
+    and only tracks strings (escapes included), nesting and item boundaries
+    well enough to say which bytes belong to which member.
+    """
+
+    def __init__(self, source: str) -> None:
+        self.source = source
+        self.at = 0
+
+    def container(self, start: int) -> _JsonContainer:
+        """Scan the object or array starting at ``start``, listing its items.
+
+        Leaves the cursor just past the closing brace or bracket, which is what
+        lets ``_skip_value`` step over a nested container in one call.
+        """
+        self.at = start
+        self._skip_whitespace()
+        opening = self._peek()
+        if opening not in "{[":
+            raise _UnscannableJson(f"no container at {start}")
+        closing = "}" if opening == "{" else "]"
+        named = opening == "{"
+        self.at += 1
+        inner_start = self.at
+        self._skip_whitespace()
+        if self._peek() == closing:
+            self.at += 1
+            return _JsonContainer((), inner_start, self.at - 1)
+        items: list[_JsonItem] = []
+        while True:
+            self._skip_whitespace()
+            item_start = self.at
+            name = None
+            if named:
+                name_start = self.at
+                self._skip_string()
+                name = self._decoded(name_start, self.at)
+                self._skip_whitespace()
+                self._take(":")
+                self._skip_whitespace()
+            value_start = self.at
+            self._skip_value()
+            items.append(_JsonItem(name, item_start, value_start, self.at))
+            self._skip_whitespace()
+            if self._peek() == ",":
+                self.at += 1
+                continue
+            inner_end = self.at
+            self._take(closing)
+            return _JsonContainer(tuple(items), inner_start, inner_end)
+
+    def _peek(self) -> str:
+        if self.at >= len(self.source):
+            raise _UnscannableJson("the document ends mid-value")
+        return self.source[self.at]
+
+    def _take(self, char: str) -> None:
+        if self._peek() != char:
+            raise _UnscannableJson(f"expected {char!r} at {self.at}")
+        self.at += 1
+
+    def _skip_whitespace(self) -> None:
+        while self.at < len(self.source) and self.source[self.at] in _JSON_WHITESPACE:
+            self.at += 1
+
+    def _skip_string(self) -> None:
+        self._take('"')
+        while True:
+            char = self._peek()
+            self.at += 1
+            if char == "\\":  # the escaped byte is never a closing quote
+                self._peek()
+                self.at += 1
+            elif char == '"':
+                return
+
+    def _skip_value(self) -> None:
+        char = self._peek()
+        if char in "{[":
+            self.container(self.at)
+        elif char == '"':
+            self._skip_string()
+        else:  # a number, true, false or null -- it ends where the syntax does
+            start = self.at
+            while (self.at < len(self.source)
+                   and self.source[self.at] not in _JSON_WHITESPACE + ",]}"):
+                self.at += 1
+            if self.at == start:
+                raise _UnscannableJson(f"no value at {start}")
+
+    def _decoded(self, start: int, stop: int) -> str:
+        try:
+            return json.loads(self.source[start:stop])
+        except ValueError as error:
+            raise _UnscannableJson(f"unreadable member name at {start}") from error
+
+
+def _container_at(scan: _JsonScan, key_path: tuple[str, ...]) -> _JsonContainer:
+    """The container ``key_path`` names; an empty path names the document."""
+    container = scan.container(0)
+    for key in key_path:
+        item = _named(container, key)
+        container = scan.container(item.value_start)
+    return container
+
+
+def _named(container: _JsonContainer, name: str) -> _JsonItem:
+    for item in container.items:
+        if item.name == name:
+            return item
+    raise _UnscannableJson(f"no member named {name!r}")
+
+
+def _member_removal_span(source: str, key_path: tuple[str, ...],
+                         command_name: str) -> tuple[int, int]:
+    """The bytes to cut so ``key_path``'s member -- and one comma -- disappear."""
+    def locate(scan: _JsonScan) -> tuple[int, int]:
+        container = _container_at(scan, key_path[:-1])
+        item = _named(container, key_path[-1])
+        return _span_without(container, container.items.index(item))
+
+    return _located(source, locate, command_name)
+
+
+def _element_removal_span(source: str, key_path: tuple[str, ...], index: int,
+                          command_name: str) -> tuple[int, int]:
+    """The bytes to cut so one array element -- and one comma -- disappear."""
+    def locate(scan: _JsonScan) -> tuple[int, int]:
+        return _span_without(_container_at(scan, key_path), index)
+
+    return _located(source, locate, command_name)
+
+
+def _located(source: str, locate: Callable[[_JsonScan], tuple[int, int]],
+             command_name: str) -> tuple[int, int]:
+    """Run ``locate``, turning every way it can fail into a ``PlanningError``.
+
+    The document has already been parsed and validated by the time this runs,
+    so a failure here is memriver's own scanner falling behind the parser, not
+    a diagnosis about the user's file -- it aborts the plan with nothing
+    written rather than reaching them as a traceback.
+    """
+    try:
+        return locate(_JsonScan(source))
+    except RecursionError as error:  # the same foreign nesting `json.loads` hits
+        raise PlanningError(_too_deeply_nested(command_name)) from error
+    except (_UnscannableJson, IndexError) as error:
+        raise PlanningError(
+            "memriver cannot tell exactly which bytes of this file hold its own "
+            f"entry, so nothing was changed; remove the entry by hand and run "
+            f"{command_name} again"
+        ) from error
+
+
+def _spliced(source: str, span: tuple[int, int], command_name: str) -> str:
+    """``source`` with ``span`` cut out of it, re-parsed before it is returned.
+
+    Every other editor proves what it renders; a splice has to prove it too,
+    and re-parsing is what catches a span that would have left the document
+    malformed before those bytes can reach a file.
+    """
+    start, end = span
+    rendered = source[:start] + source[end:]
+    _parse_json_object(rendered, command_name)
+    return rendered
+
+
+def _span_without(container: _JsonContainer, index: int) -> tuple[int, int]:
+    """The span covering one item plus exactly one adjacent separator.
+
+    A following item's start is the cut's end when there is one, so the removed
+    item's own leading whitespace becomes the next item's; the last item takes
+    the comma and whitespace in front of it instead. The sole item of a
+    container takes the container's whole interior, which leaves ``{}``/``[]``
+    standing -- emptied, never pruned -- rather than a container holding only
+    the indentation of something that is gone.
+    """
+    items = container.items
+    if index >= len(items):
+        raise _UnscannableJson(f"no item {index} in a container of {len(items)}")
+    if len(items) == 1:
+        return container.inner_start, container.inner_end
+    if index + 1 < len(items):
+        return items[index].start, items[index + 1].start
+    return items[index - 1].end, items[index].end
 
 
 def _handlers(group: object) -> list[dict[str, Any]]:
@@ -535,8 +772,25 @@ def _undo_added_newline(source: str, rendered: str) -> str:
         suffix_len += 1
     prefix = rendered[:prefix_len]
     if prefix_len + suffix_len == len(rendered) and prefix.endswith("\n"):
-        return prefix[:-1] + rendered[prefix_len:]
+        return _without_one_trailing_newline(prefix) + rendered[prefix_len:]
     return rendered
+
+
+def _without_one_trailing_newline(text: str) -> str:
+    """``text`` less the newline it ends with -- ``"\\r\\n"`` counted as one.
+
+    A separator is a newline *sequence*: taking the ``"\\n"`` off a CRLF line
+    ending would leave the carriage return behind as an orphan byte in the
+    middle of a file that has none anywhere else.
+    """
+    return text[:-2] if text.endswith("\r\n") else text[:-1]
+
+
+def _without_one_leading_newline(text: str) -> str:
+    """``text`` less the newline it starts with -- ``"\\r\\n"`` counted as one."""
+    if text.startswith("\r\n"):
+        return text[2:]
+    return text.removeprefix("\n")
 
 
 def _toml_value(value: object) -> Any:
@@ -584,16 +838,19 @@ def marker_block_remove(source: str) -> EditResult:
     """Remove the whole memriver marker block, markers included.
 
     The exact inverse of ``marker_block``: one newline comes off each side of
-    the block, because one newline is all ``marker_block`` ever put there.
-    Every other byte around the block -- a run of the user's own blank lines,
-    trailing spaces, a missing final newline, CRLF endings -- is theirs and
-    survives untouched.
+    the block, because one newline is all ``marker_block`` ever put there --
+    and a CRLF ending is one newline, taken back whole rather than split into
+    a stranded carriage return. Every other byte around the block -- a run of
+    the user's own blank lines, trailing spaces, a missing final newline --
+    is theirs and survives untouched.
     """
     start, stop = _marker_span(source, "uninstall")
     if start is None:
         return EditResult(rendered=source, changed=False, takeover=False)
     before, after = source[:start], source[stop:]
-    rendered = before.removesuffix("\n") + after.removeprefix("\n")
+    if before.endswith("\n"):
+        before = _without_one_trailing_newline(before)
+    rendered = before + _without_one_leading_newline(after)
     return EditResult(rendered=rendered, changed=True, takeover=False)
 
 
@@ -625,14 +882,17 @@ def _marker_span(text: str, command_name: str) -> tuple[int, int] | tuple[None, 
     return begins[0], ends[0] + len(MARKER_END)
 
 
-def validate_document(text: str, kind: EditorKind, command_name: str) -> None:
+def validate_document(text: str, kind: EditorKind,
+                      command_name: str = "install") -> None:
     """Re-parse a fully rendered document, raising ``PlanningError`` if unsound.
 
     The editors already validate what they render; the orchestrator runs this
     over the *final* text of every target -- once after planning and again
     after re-applying only the accepted edits -- so a file is proven whole
     before it is a candidate for replacement. ``command_name`` is the command
-    the user ran, which is what the remediation in any raised message names.
+    the user ran, which is what the remediation in any raised message names;
+    it defaults to install, the only command there was when this became part
+    of the package's public surface, so a two-argument call still works.
     """
     if kind == "marker-block":
         _marker_span(text, command_name)

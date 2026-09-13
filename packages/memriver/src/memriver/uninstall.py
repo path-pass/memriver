@@ -11,6 +11,7 @@ nothing else unless that exits clean.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
@@ -72,6 +73,23 @@ def _resolve_storage_root(root_override: Path | None, env: Mapping[str, str],
     return storage_root(env=env, home=home)
 
 
+def _unresolvable(path: Path, error: Exception) -> str:
+    """The refusal for a path canonicalization cannot answer for at all.
+
+    A symlink loop, a component this user may not traverse: every one of them
+    reaches ``_purge_data`` *after* the harness configuration has already been
+    removed, so none of them may leave the process by way of a traceback.
+    ``Path.resolve`` raises ``OSError`` for most of these and a bare
+    ``RuntimeError`` for a loop, which is why both are caught wherever a purge
+    path is resolved.
+    """
+    return (
+        f"memriver uninstall: cannot resolve {path} ({error}); nothing was "
+        "removed. Check what the path points at and run uninstall --purge-data "
+        "again.\n"
+    )
+
+
 def _refuse_purge_target(given: Path, canonical: Path, *, home: Path,
                          cwd: Path) -> str | None:
     """The refusal text for a target too dangerous to delete, or ``None``.
@@ -94,13 +112,18 @@ def _refuse_purge_target(given: Path, canonical: Path, *, home: Path,
     # `home`/`cwd` being relative to the target covers the target *being* one of
     # them and the target being any ancestor of one -- the filesystem root
     # included, since every path is relative to it
-    if any(base.resolve().is_relative_to(canonical) for base in (home, cwd)):
-        return (
-            f"memriver uninstall: {canonical} is too broad a target to delete -- "
-            "it holds the home directory, the current directory, or the whole "
-            "filesystem. Point --root (or MEMRIVER_ROOT) at the memriver store "
-            "itself and run uninstall --purge-data again.\n"
-        )
+    for base in (home, cwd):
+        try:
+            resolved = base.resolve()
+        except (OSError, RuntimeError) as error:
+            return _unresolvable(base, error)
+        if resolved.is_relative_to(canonical):
+            return (
+                f"memriver uninstall: {canonical} is too broad a target to delete "
+                "-- it holds the home directory, the current directory, or the "
+                "whole filesystem. Point --root (or MEMRIVER_ROOT) at the memriver "
+                "store itself and run uninstall --purge-data again.\n"
+            )
     return None
 
 
@@ -114,15 +137,20 @@ def _purge_data(*, yes: bool, dry_run: bool, input_fn: Callable[[str], str],
     outranks both.
 
     The target is canonicalized before anything else looks at it, and it is the
-    canonical path -- not the spelling that produced it -- that is shown, that
-    every guard runs against, and that ``rmtree`` is handed. The guards run a
-    second time immediately before the deletion, because the confirmation
-    prompt is a window in which the target can be swapped.
+    canonical path -- not the spelling that produced it -- that is shown and
+    that every guard runs against. What is finally deleted, though, is not a
+    path at all: ``_remove_confirmed_directory`` binds the deletion to the
+    directory *object* the user was shown, so the confirmation prompt is no
+    longer a window in which the target can be swapped for another one.
     """
     given = _resolve_storage_root(root_override, env, home)
     if not given.is_absolute():
         given = cwd / given
-    canonical = given.resolve()
+    try:
+        canonical = given.resolve()
+    except (OSError, RuntimeError) as error:
+        stdout.write("\n" + _unresolvable(given, error))
+        return 1
     stdout.write(f"\nmemory storage root: {canonical}\n")
     refusal = _refuse_purge_target(given, canonical, home=home, cwd=cwd)
     if refusal is not None:
@@ -140,37 +168,98 @@ def _purge_data(*, yes: bool, dry_run: bool, input_fn: Callable[[str], str],
     if dry_run:
         stdout.write("dry run: the memory store was not removed.\n")
         return 0
-    if not yes:
-        try:
-            answer = input_fn(
-                f"remove the entire memory store at {canonical}? [y/N] ")
-        except EOFError:
-            stdout.write(
-                "memriver uninstall: stdin is not interactive and no answer can be "
-                "read; re-run with --yes to purge the memory store shown above.\n"
-            )
-            return 1
-        if answer.strip().lower() not in ("y", "yes"):
-            stdout.write("data purge declined; the memory store was left in place.\n")
-            return 0
-    refusal = _refuse_purge_target(given, canonical, home=home, cwd=cwd)
-    if refusal is not None or given.resolve() != canonical:
-        stdout.write(refusal or (
-            f"memriver uninstall: {given} no longer resolves to {canonical}; "
-            "nothing was removed. Check what the path points at and run "
-            "uninstall --purge-data again.\n"
-        ))
-        return 1
     try:
-        shutil.rmtree(canonical)
+        confirmed_fd = os.open(canonical,
+                               os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY)
     except OSError as error:
-        reason = error.strerror or str(error)
+        # O_NOFOLLOW is what makes a leaf that turned into a symlink between
+        # the guards above and here fail closed rather than resolve onward
         stdout.write(
-            f"memriver uninstall: {canonical} was only partly removed ({reason}); "
-            "the harness configuration above was removed successfully. Delete the "
-            "remaining directory by hand.\n"
+            f"memriver uninstall: {canonical} could not be opened as a directory "
+            f"({error.strerror or error}); nothing was removed.\n"
         )
         return 1
+    try:
+        confirmed = os.fstat(confirmed_fd)
+        if not yes:
+            try:
+                answer = input_fn(
+                    f"remove the entire memory store at {canonical}? [y/N] ")
+            except EOFError:
+                stdout.write(
+                    "memriver uninstall: stdin is not interactive and no answer can "
+                    "be read; re-run with --yes to purge the memory store shown "
+                    "above.\n"
+                )
+                return 1
+            if answer.strip().lower() not in ("y", "yes"):
+                stdout.write(
+                    "data purge declined; the memory store was left in place.\n")
+                return 0
+        return _remove_confirmed_directory(canonical, confirmed, stdout,
+                                           given=given, home=home, cwd=cwd)
+    finally:
+        os.close(confirmed_fd)
+
+
+def _remove_confirmed_directory(canonical: Path, confirmed: os.stat_result,
+                                stdout: TextIO, *, given: Path, home: Path,
+                                cwd: Path) -> int:
+    """Delete the one directory ``confirmed`` identifies, or nothing at all.
+
+    Comparing path strings a second time only proves that two moments resolved
+    to the same spelling; it does not prove the directory standing there is
+    still the object the user was shown, and it leaves ``rmtree`` to walk the
+    path components once more -- a window in which an ancestor can be replaced.
+
+    So the deletion is anchored instead: the canonical parent is opened once,
+    the leaf's ``(st_dev, st_ino)`` is compared against the confirmed
+    directory's through that fd, and the walk itself runs relative to that same
+    fd. A component swapped after the check now redirects nothing, because no
+    component is looked up again.
+    """
+    try:
+        parent_fd = os.open(canonical.parent, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError as error:
+        stdout.write(
+            f"memriver uninstall: {canonical.parent} could not be opened as a "
+            f"directory ({error.strerror or error}); nothing was removed.\n"
+        )
+        return 1
+    try:
+        try:
+            leaf = os.stat(canonical.name, dir_fd=parent_fd, follow_symlinks=False)
+        except OSError as error:
+            stdout.write(
+                f"memriver uninstall: {canonical} could not be checked "
+                f"({error.strerror or error}); nothing was removed.\n"
+            )
+            return 1
+        if (leaf.st_dev, leaf.st_ino) != (confirmed.st_dev, confirmed.st_ino):
+            stdout.write(
+                f"memriver uninstall: {canonical} is no longer the directory shown "
+                "above; nothing was removed. Check what the path points at and run "
+                "uninstall --purge-data again.\n"
+            )
+            return 1
+        # the object is the confirmed one; the last question is whether the
+        # protected bases moved into it while the prompt was open
+        refusal = _refuse_purge_target(given, canonical, home=home, cwd=cwd)
+        if refusal is not None:
+            stdout.write(refusal)
+            return 1
+        try:
+            shutil.rmtree(canonical.name, dir_fd=parent_fd)
+        except OSError as error:
+            reason = error.strerror or str(error)
+            stdout.write(
+                f"memriver uninstall: {canonical} was only partly removed "
+                f"({reason}); the harness configuration above was removed "
+                "successfully. Delete the remaining directory by hand.\n"
+            )
+            return 1
+    finally:
+        os.close(parent_fd)
     stdout.write(f"removed {canonical}\n")
     return 0
 

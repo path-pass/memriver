@@ -26,7 +26,7 @@ from memriver.protocol_text import PROTOCOL_BLOCK
 
 
 def targets(home: Path, project_root: Path | None,
-            command_name: str) -> tuple[Target, Target]:
+            command_name: str = "install") -> tuple[Target, Target]:
     """``(~/.kiro/settings/mcp.json, <git-root>/.kiro/steering/memriver.md)``.
 
     Raises ``PlanningError`` before returning anything when ``project_root``

@@ -29,6 +29,7 @@ from memriver.install import (
     operation_label,
     render_change_summary,
     toml_roundtrip,
+    validate_document,
 )
 from memriver.protocol_text import PROTOCOL_BLOCK
 
@@ -314,7 +315,7 @@ def test_toml_roundtrip_rejects_broken_toml_and_scalar_intermediates():
                        MEMRIVER_MCP)
 
 
-def test_marker_block_appends_with_normalized_blank_lines():
+def test_marker_block_appends_after_the_files_own_tail():
     result = marker_block("# Project\n\nnotes\n", PROTOCOL_BLOCK)
     assert result.rendered == (
         "# Project\n\nnotes\n\n"
@@ -333,6 +334,41 @@ def test_marker_block_replaces_a_single_pair_in_place():
         f"<!-- memriver:begin -->\n{PROTOCOL_BLOCK}\n<!-- memriver:end -->\n\ntail\n"
     )
     assert result.changed and result.takeover
+
+
+# --- what install renders on the tails that used to be ambiguous ------------
+
+# The two tests below pin a deliberate change to install's own output. An
+# appended table or block used to be padded up to a blank line, with the
+# file's own trailing newlines stripped or absorbed first, so a file ending in
+# no newline, one, or three all produced the same bytes -- information no
+# removal could ever give back, and the reason uninstall could not restore a
+# file it had not written itself. The separator is now exactly one newline
+# sequence in front of whatever the file already ended with. That is a visible
+# difference in install's rendering for these tails, accepted for the sake of
+# an invertible pair, and pinned here so it stays deliberate.
+
+
+def test_install_appends_a_toml_table_after_one_newline_whatever_the_tail_is():
+    assert toml_roundtrip("model = 'gpt'", ("mcp_servers", "memriver"),
+                          MEMRIVER_MCP).rendered == (
+        "model = 'gpt'\n"
+        '[mcp_servers.memriver]\ncommand = "uvx"\nargs = ["memriver"]\n'
+    )
+    assert toml_roundtrip("model = 'gpt'\n\n\n", ("mcp_servers", "memriver"),
+                          MEMRIVER_MCP).rendered == (
+        "model = 'gpt'\n\n\n\n"
+        '[mcp_servers.memriver]\ncommand = "uvx"\nargs = ["memriver"]\n'
+    )
+
+
+def test_install_appends_a_marker_block_after_one_newline_whatever_the_tail_is():
+    block = f"<!-- memriver:begin -->\n{PROTOCOL_BLOCK}\n<!-- memriver:end -->\n"
+    assert marker_block("notes", PROTOCOL_BLOCK).rendered == "notes\n" + block
+    assert marker_block("notes\n\n\n", PROTOCOL_BLOCK).rendered == (
+        "notes\n\n\n\n" + block)
+    # an empty file gets no separator at all -- there is nothing to separate from
+    assert marker_block("", PROTOCOL_BLOCK).rendered == block
 
 
 # --- Step 2: idempotency ---------------------------------------------------
@@ -510,3 +546,26 @@ def test_apply_edit_rejects_a_hook_key_path_the_editor_would_not_touch(key_path)
     )
     with pytest.raises(PlanningError):
         apply_edit(op, "{}")
+
+
+# --- the exported validator still answers a two-argument call ---------------
+
+
+def test_validate_document_names_install_when_no_command_is_given():
+    """``validate_document`` is part of this package's public surface, so a
+    two-argument call has to keep working. The command a caller ran is
+    something only that caller knows; one that does not say gets install, the
+    command every existing caller of this signature was running."""
+    with pytest.raises(PlanningError) as raised:
+        validate_document("<!-- memriver:begin -->\nno end in sight\n",
+                          "marker-block")
+
+    assert "run install again" in str(raised.value)
+
+
+def test_validate_document_still_takes_the_command_that_is_running():
+    with pytest.raises(PlanningError) as raised:
+        validate_document("<!-- memriver:begin -->\nno end in sight\n",
+                          "marker-block", "uninstall")
+
+    assert "run uninstall again" in str(raised.value)

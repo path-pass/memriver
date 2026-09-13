@@ -5,19 +5,19 @@ Three levels are pinned here, mirroring how install itself is tested across
 
 *The four removers are pure text-in/text-out, like their merge counterparts.*
 An absent entry is already clean, not an error; anything ambiguous still
-raises ``PlanningError`` rather than guessing; and a removal is exactly as
-faithful to the user's bytes as the merge it undoes -- never more lossy.
-What that means differs by format, and each half is pinned below:
+raises ``PlanningError`` rather than guessing; and every byte outside the
+entry being removed survives the removal, whoever wrote it:
 
-- TOML and marker-block files keep their formatting on both sides, so
-  ``remove(merge(source)) == source`` byte for byte, over every EOF state a
-  real file turns up with -- no trailing newline, one, a run of them,
-  trailing spaces, CRLF.
-- JSON files do not: ``json_object_merge`` re-renders the whole document at
-  indent 2 with LF endings, so the user's own escapes, number spellings,
-  indentation and line endings are already gone the moment install accepts a
-  change. Removal reproduces install's own rendering exactly, and a document
-  it changes nothing in is handed back byte-identical.
+- ``remove(merge(source)) == source`` byte for byte for TOML and marker-block
+  files, over every EOF state a real file turns up with -- no trailing
+  newline, one, a run of them, trailing spaces, CRLF -- and a table or block
+  an earlier memriver merged still comes back out cleanly.
+- JSON removals splice out the bytes of the one member (or one hook group)
+  they take back. Escapes, number spellings, indentation, CRLF endings and
+  trailing whitespace elsewhere in the file are the user's and are copied
+  through untouched, whether install wrote them or the user reformatted the
+  file afterwards. ``json_object_merge`` is the one editor that still
+  re-renders a whole document, and that is install's side of the pair.
 
 *Each harness's ``uninstall_operations()`` targets exactly what its
 ``operations()`` writes* -- the MCP entry and the hooks/marker block, never
@@ -45,9 +45,7 @@ from memriver.install import (
     claude_code,
     codex,
     cursor,
-    hook_array_identity_merge,
     hook_array_identity_remove,
-    json_object_merge,
     json_object_remove,
     kiro,
     marker_block,
@@ -436,7 +434,7 @@ def test_apply_removal_dispatches_marker_block_by_kind():
     assert result.rendered == "notes\n"
 
 
-# --- a JSON removal is exactly as faithful as the merge it undoes ------------
+# --- a JSON removal rewrites the removed member's bytes and nothing else -----
 
 # CRLF endings, tab indentation, an escaped character, a number spelling and
 # trailing EOF whitespace -- everything a hand-formatted config carries that a
@@ -446,32 +444,109 @@ FOREIGN_JSON = (
     '\t"deep": {"list": [1, 2]}\r\n}\r\n \t'
 )
 
+# the same file with memriver's entry in it, formatted the way its owner keeps
+# it rather than the way any renderer would: install is not the last thing that
+# writes these files, and uninstall meets whatever the user left behind
+HAND_FORMATTED_WITH_MEMRIVER = (
+    '{\r\n'
+    '\t"escaped": "\\u0061",\r\n'
+    '\t"number": 1.00,\r\n'
+    '\t"mcpServers": {\r\n'
+    '\t\t"other": {"command": "x"},\r\n'
+    '\t\t"memriver": {"command": "uvx", "args": ["memriver"]}\r\n'
+    '\t}\r\n'
+    '}\r\n \t'
+)
 
-def test_a_json_removal_renders_the_same_bytes_the_merge_would_have():
-    """``json_object_merge`` re-renders the whole document -- indent 2, LF, no
-    escapes -- so the user's own JSON formatting is already gone by the time
-    anything can be removed. What uninstall owes is symmetry: exactly install's
-    bytes with memriver's entry taken back out, never a byte more."""
-    merged = json_object_merge(FOREIGN_JSON, ("mcpServers", "memriver"),
-                               {"command": "uvx", "args": ["memriver"]})
-    assert merged.rendered != FOREIGN_JSON  # install is the one that re-renders
 
-    removed = json_object_remove(merged.rendered, ("mcpServers", "memriver"))
+def test_a_json_removal_keeps_every_byte_outside_the_removed_member():
+    """Escapes, number spellings, tabs, CRLF endings and the whitespace past
+    the closing brace are the user's bytes, not memriver's to normalize: the
+    removal is a splice of the one member's span, so everything outside it
+    comes through identical."""
+    removed = json_object_remove(HAND_FORMATTED_WITH_MEMRIVER,
+                                 ("mcpServers", "memriver"))
 
-    assert removed.rendered == json_object_merge(
-        FOREIGN_JSON, ("mcpServers",), {}).rendered
+    assert removed.rendered == (
+        '{\r\n'
+        '\t"escaped": "\\u0061",\r\n'
+        '\t"number": 1.00,\r\n'
+        '\t"mcpServers": {\r\n'
+        '\t\t"other": {"command": "x"}\r\n'
+        '\t}\r\n'
+        '}\r\n \t'
+    )
+    assert removed.changed and not removed.takeover
 
 
-def test_a_hook_removal_renders_the_same_bytes_the_merge_would_have():
-    group = hook_group("uvx memriver hook session-start --harness claude-code")
-    merged = hook_array_identity_merge(FOREIGN_JSON, "SessionStart",
-                                       SESSION_START_IDENTITY, group)
+def test_a_json_removal_of_a_leading_member_takes_its_comma_with_it():
+    source = ('{"mcpServers": {"memriver": {"command": "uvx"}, '
+              '"other": {"command": "x"}}}')
 
-    removed = hook_array_identity_remove(merged.rendered, "SessionStart",
+    removed = json_object_remove(source, ("mcpServers", "memriver"))
+
+    assert removed.rendered == '{"mcpServers": {"other": {"command": "x"}}}'
+
+
+def test_a_json_removal_of_the_last_member_empties_the_container_in_place():
+    """Nothing is pruned -- the container install put the entry in stays -- and
+    the whitespace that only existed to hold the removed member goes with it."""
+    source = '{\r\n\t"mcpServers": {\r\n\t\t"memriver": {"command": "uvx"}\r\n\t}\r\n}\r\n'
+
+    removed = json_object_remove(source, ("mcpServers", "memriver"))
+
+    assert removed.rendered == '{\r\n\t"mcpServers": {}\r\n}\r\n'
+
+
+def test_a_json_removal_reads_braces_and_quotes_inside_strings_as_text():
+    source = ('{"note": "}{ \\" \\\\ not structure", '
+              '"mcpServers": {"memriver": {"command": "uvx"}}}')
+
+    removed = json_object_remove(source, ("mcpServers", "memriver"))
+
+    assert removed.rendered == ('{"note": "}{ \\" \\\\ not structure", '
+                                '"mcpServers": {}}')
+
+
+def test_a_hook_removal_keeps_every_byte_outside_the_removed_group():
+    source = (
+        '{\r\n'
+        '\t"hooks": {\r\n'
+        '\t\t"SessionStart": [\r\n'
+        '\t\t\t{"hooks": [{"type": "command", "command": "/opt/audit/run"}]},\r\n'
+        '\t\t\t{"hooks": [{"type": "command", "command": "uvx memriver hook '
+        'session-start --harness claude-code"}]}\r\n'
+        '\t\t]\r\n'
+        '\t},\r\n'
+        '\t"escaped": "\\u0061"\r\n'
+        '}\r\n'
+    )
+
+    removed = hook_array_identity_remove(source, "SessionStart",
                                          SESSION_START_IDENTITY)
 
-    assert removed.rendered == json_object_merge(
-        FOREIGN_JSON, ("hooks", "SessionStart"), []).rendered
+    assert removed.rendered == (
+        '{\r\n'
+        '\t"hooks": {\r\n'
+        '\t\t"SessionStart": [\r\n'
+        '\t\t\t{"hooks": [{"type": "command", "command": "/opt/audit/run"}]}\r\n'
+        '\t\t]\r\n'
+        '\t},\r\n'
+        '\t"escaped": "\\u0061"\r\n'
+        '}\r\n'
+    )
+
+
+def test_a_hook_removal_of_the_only_group_empties_the_event_array_in_place():
+    source = ('{\r\n\t"hooks": {\r\n\t\t"SessionStart": [\r\n\t\t\t'
+              '{"hooks": [{"type": "command", "command": "uvx memriver hook '
+              'session-start --harness codex"}]}\r\n\t\t]\r\n\t}\r\n}\r\n')
+
+    removed = hook_array_identity_remove(source, "SessionStart",
+                                         SESSION_START_IDENTITY)
+
+    assert removed.rendered == ('{\r\n\t"hooks": {\r\n\t\t"SessionStart": []'
+                                '\r\n\t}\r\n}\r\n')
 
 
 def test_a_json_removal_that_changes_nothing_returns_the_foreign_bytes_intact():
@@ -483,19 +558,26 @@ def test_a_json_removal_that_changes_nothing_returns_the_foreign_bytes_intact():
         FOREIGN_JSON, "SessionStart", SESSION_START_IDENTITY).rendered == FOREIGN_JSON
 
 
-def test_a_json_target_keeps_every_byte_before_the_memriver_region(home, project):
-    config = home / ".claude.json"
-    write(config, FOREIGN_JSON)
-    install(["claude-code"], home=home, cwd=project, yes=True)
-    after_install = config.read_bytes()
+def test_a_whole_uninstall_run_keeps_every_byte_outside_the_removed_member(home,
+                                                                           project):
+    """The same guarantee through the real write transaction, not just the
+    editor: a config the user formatted themselves comes back with memriver's
+    member gone and every other byte -- escapes, number spellings, tabs, CRLF,
+    the whitespace past the closing brace -- exactly as it was."""
+    config = write(home / ".claude.json", HAND_FORMATTED_WITH_MEMRIVER)
 
     result = uninstall(["claude-code"], home=home, cwd=project, yes=True)
 
     assert result.exit_code == 0
-    assert config.read_bytes().startswith(after_install.split(b'"mcpServers"')[0])
-    assert json.loads(config.read_bytes()) == {
-        **json.loads(after_install), "mcpServers": {},
-    }
+    assert config.read_bytes().decode("utf-8") == (
+        '{\r\n'
+        '\t"escaped": "\\u0061",\r\n'
+        '\t"number": 1.00,\r\n'
+        '\t"mcpServers": {\r\n'
+        '\t\t"other": {"command": "x"}\r\n'
+        '\t}\r\n'
+        '}\r\n \t'
+    )
 
 
 # --- removal is the byte-exact inverse of the merge, over every EOF state ----
@@ -552,6 +634,128 @@ def test_toml_table_remove_keeps_a_user_blank_run_above_the_removed_table():
     result = toml_table_remove(source, ("mcp_servers", "memriver"))
 
     assert result.rendered == 'model = "gpt"\n\n\n'
+
+
+# --- a separator is a newline sequence, never a single character -------------
+
+
+def test_toml_table_remove_takes_back_a_crlf_separator_whole():
+    """A table separated from the rest of the file by CRLF: taking back the
+    LF alone would leave the carriage return behind as an orphan."""
+    source = 'model = "gpt"\r\n\r\n[mcp_servers.memriver]\r\ncommand = "uvx"\r\n'
+
+    result = toml_table_remove(source, ("mcp_servers", "memriver"))
+
+    assert result.rendered == 'model = "gpt"\r\n'
+
+
+def test_toml_table_remove_leaves_no_orphan_carriage_return_in_a_crlf_blank_run():
+    source = ('model = "gpt"\r\n\r\n\r\n[mcp_servers.memriver]\r\n'
+              'command = "uvx"\r\n')
+
+    result = toml_table_remove(source, ("mcp_servers", "memriver"))
+
+    assert result.rendered == 'model = "gpt"\r\n\r\n'
+
+
+def test_marker_block_remove_takes_back_a_crlf_separator_whole():
+    """The bytes outside a CRLF-separated block are the user's, down to the
+    carriage returns; only the one newline sequence on each side is the
+    block's own."""
+    source = ("head\r\n\r\n<!-- memriver:begin -->\r\nblock\r\n"
+              "<!-- memriver:end -->\r\n\r\ntail\r\n")
+
+    result = marker_block_remove(source)
+
+    assert result.rendered == "head\r\n\r\ntail\r\n"
+
+
+def test_marker_block_remove_keeps_a_crlf_blank_run_around_the_block():
+    source = ("head\r\n\r\n\r\n<!-- memriver:begin -->\r\nblock\r\n"
+              "<!-- memriver:end -->\r\n\r\n\r\ntail\r\n")
+
+    result = marker_block_remove(source)
+
+    assert result.rendered == "head\r\n\r\n\r\n\r\ntail\r\n"
+
+
+# --- a store installed by an earlier memriver still uninstalls cleanly -------
+
+# Both merges below reproduce what memriver wrote before the removers existed:
+# the TOML one appended the table with tomlkit's own padding and no separator
+# of its own, and the marker one normalized the file's tail to a single
+# newline before adding a blank line. Uninstall meets those bytes on real
+# disks, so it is pinned against them and not only against its own merge.
+
+
+def a_previously_merged_toml(source: str) -> str:
+    servers = tomlkit.table(True)
+    entry = tomlkit.table()
+    entry["command"] = "uvx"
+    entry["args"] = ["memriver"]
+    servers["memriver"] = entry
+    document = tomlkit.parse(source)
+    document["mcp_servers"] = servers
+    return tomlkit.dumps(document)
+
+
+def a_previously_merged_marker_block(source: str) -> str:
+    separator = "\n\n" if source.strip() else ""
+    block = ("<!-- memriver:begin -->\n" + PROTOCOL_BLOCK.strip()
+             + "\n<!-- memriver:end -->")
+    return source.rstrip("\n") + separator + block + "\n"
+
+
+@pytest.mark.parametrize("tail", ["", "\n", "\r\n"])
+def test_removing_a_previously_merged_toml_table_restores_the_original_bytes(tail):
+    source = 'model = "gpt"' + tail
+
+    result = toml_table_remove(a_previously_merged_toml(source),
+                               ("mcp_servers", "memriver"))
+
+    assert result.rendered == source
+
+
+@pytest.mark.parametrize("tail,closest", [
+    ("\n\n", "\n"), ("\n\n\n", "\n\n"), ("\r\n\r\n", "\r\n"),
+    ("\r\n\r\n\r\n", "\r\n\r\n"),
+])
+def test_removing_a_previously_merged_toml_table_gives_back_one_separator(
+        tail, closest):
+    """The earlier merge padded up to a blank line and rendered ``'x\\n'`` and
+    ``'x\\n\\n'`` identically, so which of the trailing newlines it contributed
+    is unknowable from the bytes on disk. Removal takes back exactly one
+    newline sequence -- the separator it can account for -- rather than
+    guessing at the run, and never leaves half of a CRLF behind."""
+    source = 'model = "gpt"' + tail
+
+    result = toml_table_remove(a_previously_merged_toml(source),
+                               ("mcp_servers", "memriver"))
+
+    assert result.rendered == 'model = "gpt"' + closest
+
+
+@pytest.mark.parametrize("tail", ["\n", "\r\n", "\r\n\r\n"])
+def test_removing_a_previously_merged_marker_block_restores_the_original_bytes(tail):
+    source = "notes" + tail
+
+    result = marker_block_remove(a_previously_merged_marker_block(source))
+
+    assert result.rendered == source
+
+
+@pytest.mark.parametrize("tail,closest", [("", "\n"), ("\n\n", "\n")])
+def test_removing_a_previously_merged_marker_block_gives_back_one_separator(
+        tail, closest):
+    """The earlier merge stripped the file's own trailing newlines before
+    adding its blank line, so a file that ended with none and one that ended
+    with two left identical bytes. Removal takes back the one newline sequence
+    it owns; inventing or withholding a second one would be a guess."""
+    source = "notes" + tail
+
+    result = marker_block_remove(a_previously_merged_marker_block(source))
+
+    assert result.rendered == "notes" + closest
 
 
 # --- Step 2: each harness's uninstall_operations() targets exactly what
@@ -1071,21 +1275,31 @@ def test_purge_data_refuses_a_regular_file_root(home, project, tmp_path):
 def test_purge_data_reports_a_partial_removal_when_rmtree_fails(home, project,
                                                                  tmp_path,
                                                                  monkeypatch):
-    root = tmp_path / "agent-memory"
-    root.mkdir()
-    (root / "marker.txt").write_text("data")
-    error = OSError()
-    error.strerror = "Permission denied"
+    """The wording is only accurate if the store really is half gone, so the
+    injected failure deletes part of the tree before it raises -- exactly the
+    state a real mid-walk ``PermissionError`` leaves behind."""
+    import shutil
 
-    def broken_rmtree(path):
+    delete_tree = shutil.rmtree  # captured before the patch below replaces it
+    root = tmp_path / "agent-memory"
+    (root / "sessions").mkdir(parents=True)
+    (root / "sessions" / "one.json").write_text("gone")
+    (root / "index.db").write_text("still here")
+
+    def half_removing_rmtree(path, **kwargs):
+        delete_tree(root / "sessions")
+        error = OSError()
+        error.strerror = "Permission denied"
         raise error
 
-    monkeypatch.setattr("memriver.uninstall.shutil.rmtree", broken_rmtree)
+    monkeypatch.setattr("memriver.uninstall.shutil.rmtree", half_removing_rmtree)
 
     result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
                             purge_data=True, env={"MEMRIVER_ROOT": str(root)})
 
     assert result.exit_code != 0
+    assert not (root / "sessions").exists()  # genuinely half removed
+    assert (root / "index.db").read_text() == "still here"
     assert "was only partly removed (Permission denied)" in result.stdout
     assert "harness configuration above was removed successfully" in result.stdout
     assert "Delete the remaining directory by hand" in result.stdout
@@ -1147,7 +1361,7 @@ def test_a_scalar_features_container_still_lets_the_codex_removal_report_success
 
 def forbid_rmtree(monkeypatch) -> None:
     """Make any ``rmtree`` call fail the test outright, whatever it is handed."""
-    def refuse(path):
+    def refuse(path, **kwargs):
         raise AssertionError(f"rmtree was called on a protected target: {path}")
 
     monkeypatch.setattr("memriver.uninstall.shutil.rmtree", refuse)
@@ -1242,32 +1456,133 @@ def test_purge_data_refuses_a_symlinked_parent_that_redirects_onto_the_home(
     assert keep.read_text() == "mine"
 
 
-def test_purge_data_re_verifies_the_target_immediately_before_removing_it(
-        home, project, tmp_path):
+def test_purge_data_refuses_a_leaf_swapped_for_a_symlink_during_the_confirmation(
+        home, project, tmp_path, monkeypatch):
     """The confirmation window is long enough for the target to be swapped for
-    a link onto the home directory; the check that mattered ran before it."""
+    a link onto the home directory; the object that was confirmed is gone, so
+    nothing is deleted."""
+    forbid_rmtree(monkeypatch)
     root = tmp_path / "agent-memory"
     root.mkdir()
-    removed: list[Path] = []
 
     def answer(prompt: str) -> str:
         root.rmdir()
         root.symlink_to(home, target_is_directory=True)
         return "y"
 
+    result = full_uninstall(["claude-code"], home=home, cwd=project,
+                            yes=False, purge_data=True, input_fn=answer,
+                            env={"MEMRIVER_ROOT": str(root)})
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.stdout
+    assert "nothing was removed" in result.stdout
+    assert home.is_dir()
+
+
+def test_purge_data_refuses_a_replacement_directory_at_the_confirmed_path(
+        home, project, tmp_path):
+    """A same-path swap keeps every string equal: the shown path still resolves
+    to itself, yet the directory standing there is a different object than the
+    one the user confirmed. Deleting it would destroy a tree nobody agreed to."""
+    root = tmp_path / "agent-memory"
+    root.mkdir()
+    (root / "confirmed.txt").write_text("the object the user saw")
+    moved = tmp_path / "moved-away"
+
+    def answer(prompt: str) -> str:
+        root.rename(moved)
+        root.mkdir()
+        (root / "replacement.txt").write_text("never confirmed")
+        return "y"
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project,
+                            yes=False, purge_data=True, input_fn=answer,
+                            env={"MEMRIVER_ROOT": str(root)})
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.stdout
+    assert "nothing was removed" in result.stdout
+    assert (root / "replacement.txt").read_text() == "never confirmed"
+    assert (moved / "confirmed.txt").exists()
+
+
+def test_purge_data_deletes_the_confirmed_directory_when_a_parent_is_swapped_last(
+        home, project, tmp_path):
+    """A parent component replaced after the final check redirects the *path*,
+    not the directory the deletion is anchored to: the victim tree the swapped
+    parent points at is never walked."""
+    import shutil
+
+    delete_tree = shutil.rmtree  # captured before the patch below replaces it
+    parent = tmp_path / "parent"
+    store = parent / "agent-memory"
+    store.mkdir(parents=True)
+    (store / "data.txt").write_text("memriver's own")
+    victim_parent = tmp_path / "victim-parent"
+    victim = victim_parent / "agent-memory"
+    victim.mkdir(parents=True)
+    (victim / "precious.txt").write_text("someone else's")
+
+    def swapping_rmtree(path, **kwargs):
+        # the race the path-string check cannot see: between the last check and
+        # the walk, `parent` becomes a link onto a tree memriver never named
+        parent.rename(tmp_path / "parent-moved")
+        (tmp_path / "parent").symlink_to(victim_parent, target_is_directory=True)
+        return delete_tree(path, **kwargs)
+
     import memriver.uninstall as uninstall_module
     original = uninstall_module.shutil.rmtree
     try:
-        uninstall_module.shutil.rmtree = lambda path: removed.append(Path(path))
+        uninstall_module.shutil.rmtree = swapping_rmtree
         result = full_uninstall(["claude-code"], home=home, cwd=project,
-                                yes=False, purge_data=True, input_fn=answer,
-                                env={"MEMRIVER_ROOT": str(root)})
+                                yes=True, purge_data=True,
+                                env={"MEMRIVER_ROOT": str(store)})
     finally:
         uninstall_module.shutil.rmtree = original
 
+    assert (victim / "precious.txt").read_text() == "someone else's"
+    assert not (tmp_path / "parent-moved" / "agent-memory").exists()
+    assert result.exit_code == 0
+
+
+def test_purge_data_reports_a_symlink_loop_instead_of_raising(home, project,
+                                                              tmp_path):
+    """Canonicalization runs after the harness configuration is already removed;
+    a loop there must be a readable refusal, never a traceback on top of a
+    half-finished uninstall."""
+    looping = tmp_path / "a"
+    other = tmp_path / "b"
+    looping.symlink_to(other)
+    other.symlink_to(looping)
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                            purge_data=True, root=looping)
+
     assert result.exit_code == 1
-    assert removed == []
-    assert home.is_dir()
+    assert "Traceback" not in result.stdout
+    assert f"cannot resolve {looping}" in result.stdout
+    assert "nothing was removed" in result.stdout
+
+
+def test_the_purge_guard_reports_a_current_directory_it_cannot_resolve(home,
+                                                                       tmp_path):
+    """The protected bases are resolved too, and a loop in one of them is the
+    same readable refusal rather than an exception out of the guard."""
+    from memriver.uninstall import _refuse_purge_target
+
+    looping = tmp_path / "a"
+    other = tmp_path / "b"
+    looping.symlink_to(other)
+    other.symlink_to(looping)
+    store = tmp_path / "agent-memory"
+    store.mkdir()
+
+    refusal = _refuse_purge_target(store, store, home=home, cwd=looping)
+
+    assert refusal is not None
+    assert f"cannot resolve {looping}" in refusal
+    assert "nothing was removed" in refusal
 
 
 def test_purge_data_removes_the_canonical_target_not_the_given_spelling(

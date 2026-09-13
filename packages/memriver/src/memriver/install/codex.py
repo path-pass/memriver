@@ -67,7 +67,7 @@ NATIVE_MEMORY_OFF_NOTE = (
 
 
 def targets(home: Path, project_root: Path | None,
-            command_name: str) -> tuple[Target, Target]:
+            command_name: str = "install") -> tuple[Target, Target]:
     """``(~/.codex/config.toml, ~/.codex/hooks.json)``; both targets are user-level."""
     del project_root  # Codex CLI has no project-scoped target.
     del command_name  # neither target can fail to resolve, so nothing names it.
