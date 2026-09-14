@@ -1740,6 +1740,38 @@ def test_purge_data_leaves_a_replacement_swapped_in_under_the_confirmed_root(
     assert "was only partly removed" in result.stdout
 
 
+def test_purge_data_leaves_a_replacement_that_reuses_the_freed_child_inode(
+        home, project, tmp_path, monkeypatch):
+    """The harder version of the swap: the original child is not just renamed
+    away, it is deleted, so its inode goes back on the free list before the
+    replacement is created. A filesystem that hands the same inode straight
+    back (ext4 and overlayfs routinely do) would make the replacement
+    indistinguishable from the child the walk confirmed -- unless the walk is
+    still holding the original open, which keeps that inode allocated and out
+    of reach of the ``mkdir``."""
+    root = tmp_path / "agent-memory"
+    (root / "sessions").mkdir(parents=True)
+    (root / "sessions" / "one.json").write_text("the object the walk opened")
+    moved = tmp_path / "moved-away"
+
+    def free_the_childs_inode() -> None:
+        (root / "sessions").rename(moved)
+        (moved / "one.json").unlink()
+        moved.rmdir()  # the confirmed inode is released here
+        (root / "sessions").mkdir()  # an unrelated, empty directory
+
+    swap_during_the_walk(monkeypatch, free_the_childs_inode, at=2)
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                            purge_data=True, env={"MEMRIVER_ROOT": str(root)})
+
+    assert result.exit_code != 0
+    assert "Traceback" not in result.stdout
+    assert (root / "sessions").is_dir()  # the replacement survives
+    assert f"{root / 'sessions'} was replaced" in result.stdout
+    assert "was only partly removed" in result.stdout
+
+
 def test_purge_data_removes_a_nested_tree_through_the_confirmed_directory(
         home, project, tmp_path):
     """The ordinary case the fd-anchored walk still has to get right: nested

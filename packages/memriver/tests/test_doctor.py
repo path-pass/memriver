@@ -280,6 +280,82 @@ def test_control_characters_in_a_finding_render_on_one_line_with_no_raw_escape(
     assert "evil" in scopes_line and "injected" in scopes_line and "RED" in scopes_line
 
 
+@pytest.mark.parametrize("hostile", [
+    "evil\u202edm.txt",   # a bidi override reorders what the terminal shows
+    "bad\udc9b31m",       # a non-UTF-8 filename byte, surrogateescaped
+    "two\u2028lines",     # a line separator some terminals break on
+    "zero\u200bwidth",    # a zero-width space, invisible in the report
+])
+def test_visible_neutralises_every_invisible_character_class(hostile):
+    """A store's names reach the human renderer as text, and `str` carries
+    more than the C0/C1 code points: Unicode format controls (Cf) can reorder
+    the line a terminal draws, and a filename byte no codec accepts arrives as
+    a lone surrogate (Cs) that turns straight back into that raw byte when it
+    is written to a surrogateescape stdout. Category, not a code-point list,
+    is what covers all of them."""
+    import unicodedata
+
+    rendered = doctor._visible(hostile)
+
+    assert all(unicodedata.category(char) not in {"Cc", "Cf", "Cs", "Zl", "Zp"}
+               for char in rendered)
+    assert len(rendered) == len(hostile)
+
+
+def _terminal_stdout() -> tuple[io.BytesIO, io.TextIOWrapper]:
+    """A stdout that behaves like a real terminal's: surrogateescape on the
+    way out, which turns a lone surrogate straight back into the raw byte it
+    stood for."""
+    raw = io.BytesIO()
+    return raw, io.TextIOWrapper(raw, encoding="utf-8", errors="surrogateescape",
+                                 newline="")
+
+
+def test_a_surrogateescaped_location_reaches_stdout_without_its_raw_byte(
+        monkeypatch, tmp_path):
+    """The renderer's own contract, pinned without needing a filesystem that
+    will store the name: `\\udc9b` written to a surrogateescape stdout is the
+    byte 0x9b, a C1 CSI introducer, so it has to be neutralised before it is
+    written, not merely absent from the `str`."""
+    finding = DiagnosticFinding(
+        kind="unparsable", memory_ids=(), scopes=(Scope.global_(),),
+        location_hints=(os.fsdecode(b"global/entries/bad\x9b31m.md"),),
+        reason="stored entry cannot be decoded",
+        suggestion="repair or remove the stored entry")
+    install_fake_diagnostics_service_for_findings(monkeypatch, "degraded", [finding])
+    raw, out = _terminal_stdout()
+
+    doctor.run_doctor(root=tmp_path, json_output=False, stale_days=90,
+                      stdout=out, stderr=io.StringIO())
+    out.flush()
+
+    assert b"31m.md" in raw.getvalue()  # the location really was rendered
+    assert b"\x9b" not in raw.getvalue()
+
+
+def test_a_non_utf8_filename_in_a_real_store_renders_without_its_raw_byte(tmp_path):
+    """The same, end to end through a real store, so the decode boundary is
+    the filesystem's rather than a literal in this file. Filesystems that
+    enforce UTF-8 names (APFS does) cannot hold the file at all, and there is
+    nothing to render there."""
+    entries = tmp_path / "global" / "entries"
+    entries.mkdir(parents=True)
+    hostile = entries / os.fsdecode(b"bad\x9b31m.md")
+    try:
+        hostile.write_text("not a memory at all", encoding="utf-8")
+    except OSError:
+        pytest.skip("this filesystem rejects filenames that are not valid UTF-8")
+
+    raw, out = _terminal_stdout()
+    exit_code = doctor.run_doctor(root=tmp_path, json_output=False, stale_days=90,
+                                  stdout=out, stderr=io.StringIO())
+    out.flush()
+
+    assert exit_code == 1  # the store is degraded, so the name really is rendered
+    assert b"31m.md" in raw.getvalue()
+    assert b"\x9b" not in raw.getvalue()
+
+
 def test_healthy_human_output_has_no_findings_section(monkeypatch, tmp_path):
     install_fake_diagnostics_service(monkeypatch, "healthy", 0)
     result = invoke_doctor(root=tmp_path)

@@ -987,36 +987,35 @@ def test_rollback_leaves_a_directory_whose_path_was_recycled_by_another_actor(
     a path whose identity no longer matches -- and everything above it, now
     provably non-empty -- is left alone.
 
-    Only a filesystem that hands the recreated directory a *new* inode can
-    exercise that: where the freed inode is handed straight back (ext4 and
-    overlayfs routinely do), the identity matches and the contract says to
-    remove it, so the recycle cannot be staged at all and the test skips."""
+    Staging that needs the recreated directory to get a *new* inode, and
+    ext4 and overlayfs routinely hand the freed one straight back. Holding a
+    descriptor on the original across the `rmdir` is what makes the outcome
+    the same everywhere: an open descriptor keeps that inode allocated, so the
+    `mkdir` below cannot be given it and the two directories stay
+    distinguishable on every filesystem."""
     settings = home / ".kiro" / "settings"
     kiro = home / ".kiro"
     calls: list[Path] = []
-    identities: list[tuple[int, int]] = []
+    original: list[int] = []
 
     def replace_file(source: Path, destination: Path) -> None:
         calls.append(Path(destination))
         if len(calls) == 1:
             Path(source).unlink()  # memriver's own in-flight temp file
-            before = settings.lstat()
-            settings.rmdir()
-            settings.mkdir()  # a different actor's directory, same path
-            after = settings.lstat()
-            identities.append((before.st_dev, before.st_ino))
-            identities.append((after.st_dev, after.st_ino))
+            held = os.open(settings, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                original.append(settings.lstat().st_ino)
+                settings.rmdir()
+                settings.mkdir()  # a different actor's directory, same path
+            finally:
+                os.close(held)
             raise OSError("injected replacement failure")
         os.replace(source, destination)
 
     result = install(["kiro"], home=home, cwd=project, yes=True,
                      replace=replace_file)
 
-    if identities[0] == identities[1]:
-        pytest.skip(
-            "the filesystem reused the inode; identity cannot distinguish the "
-            "recycled directory")
-
+    assert settings.lstat().st_ino != original[0]  # the recycle really happened
     assert result.exit_code != 0
     assert settings.is_dir()  # the replacement survives
     assert kiro.is_dir()  # holding a stranger's directory, not provably empty

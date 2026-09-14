@@ -19,8 +19,10 @@ from __future__ import annotations
 import argparse
 import os
 import pathlib
+import stat
 import tempfile
 import urllib.request
+from collections.abc import Callable
 
 SOURCE_URL = ("https://raw.githubusercontent.com/gitleaks/gitleaks/"
               "{ref}/config/gitleaks.toml")
@@ -29,18 +31,36 @@ OUTPUT = (pathlib.Path(__file__).resolve().parent.parent / "packages"
           / "gitleaks.toml")
 
 
-def _atomic_write_bytes(path: pathlib.Path, data: bytes) -> None:
-    """Write `data` to `path` without ever exposing a truncated file.
+def _atomic_write_bytes(path: pathlib.Path, data: bytes, *,
+                        validate: Callable[[pathlib.Path], object] | None = None
+                        ) -> None:
+    """Write `data` to `path` without ever exposing a truncated or bad file.
 
     Same pattern as the repository's own `_atomic_write`: write to a temp
     sibling in the same directory, then `os.replace`. An interruption or
     ENOSPC mid-write leaves the temp file damaged and `path` untouched,
     instead of truncating the live rules file the scanner imports at startup.
+
+    `validate` is handed the finished temp sibling *before* the replace, so a
+    file that parses but the runtime cannot use never reaches `path`: it
+    raises, the temp file is unlinked, and the previous good file stands.
+
+    The temp sibling inherits the target's mode when there is one to inherit.
+    `os.replace` gives the target's name to the temp file's inode, so without
+    this a 0644 rules file a checkout ships would come back 0600 and stop
+    being readable by a second user or a packaging job. A path that does not
+    exist yet keeps mkstemp's private 0600.
     """
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
+            try:
+                os.fchmod(f.fileno(), stat.S_IMODE(path.stat().st_mode))
+            except FileNotFoundError:
+                pass
+        if validate is not None:
+            validate(pathlib.Path(tmp))
         os.replace(tmp, path)
     except BaseException:
         if os.path.exists(tmp):
@@ -61,18 +81,21 @@ def main() -> None:
     with urllib.request.urlopen(url, timeout=30) as resp:
         data = resp.read()
 
-    # Parse BEFORE overwriting, never after: the secret scanner's import-time
-    # tomllib.loads is deliberately unguarded, so a truncated or non-TOML 200
-    # written to disk would break `import memriver_core.content_policy
-    # .secret_scanner` outright -- and with it every write. A failed sync must
-    # leave the previous good ruleset in place.
+    # Validate BEFORE overwriting, never after: the secret scanner's
+    # import-time load is deliberately unguarded, so a truncated 200, a
+    # non-TOML one, or -- legal TOML the loader still chokes on -- a rule
+    # missing its `id` would break `import memriver_core.content_policy
+    # .secret_scanner` outright, and with it every write. Parsing the payload
+    # here catches the first two; the scanner's own loader, run against the
+    # temp sibling, is the only thing that catches the third, because it is
+    # the check the runtime itself performs. A failed sync must leave the
+    # previous good ruleset in place.
+    from memriver_core.content_policy.secret_scanner import _load_rules
+
     raw = tomllib.loads(data.decode("utf-8"))["rules"]
-    _atomic_write_bytes(OUTPUT, data)
+    _atomic_write_bytes(OUTPUT, data, validate=_load_rules)
 
-    # imported after the write so the counts describe what was just vendored
-    from memriver_core.content_policy.secret_scanner import _RULES
-
-    loaded = {rule_id for rule_id, *_ in _RULES}
+    loaded = {rule_id for rule_id, *_ in _load_rules(OUTPUT)}
     print(f"wrote {OUTPUT}: {len(raw)} upstream rules, "
           f"{sum(r['id'] in loaded for r in raw)} usable on Python "
           f"{sys.version_info.major}.{sys.version_info.minor}")

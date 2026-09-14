@@ -341,9 +341,20 @@ def _empty_directory(fd: int, *, directory: Path, replaced: list[Path]) -> None:
     there is no ``rmdir`` by fd -- so it names the child, and a name can change
     hands while the walk beneath it runs. The child's identity is captured when
     it is opened and re-checked immediately before the ``rmdir``: a stranger
-    standing at that name is left alone and appended to ``replaced``, which the
+    standing at that name is appended to ``replaced``, which the
     partial-removal report names. ``directory`` is carried only to spell those
     paths out for the user.
+
+    The descriptor is held open across that comparison and across the ``rmdir``
+    itself, never closed the moment the recursion returns. An open descriptor
+    keeps the original inode allocated, so a replacement created after the
+    original is renamed away *and* unlinked cannot be handed the same inode and
+    pass the comparison by wearing the confirmed identity.
+
+    What remains is best-effort, not a guarantee: POSIX offers no atomic "stat
+    and rmdir", so a stranger that takes the name in the instant between the
+    two is still removed. The window needs exact, very short concurrent timing,
+    and ``rmdir`` never touches a non-empty directory, but it is not closed.
     """
     with os.scandir(fd) as entries:
         children = list(entries)
@@ -357,13 +368,13 @@ def _empty_directory(fd: int, *, directory: Path, replaced: list[Path]) -> None:
             opened = os.fstat(child_fd)
             _empty_directory(child_fd, directory=directory / child.name,
                              replaced=replaced)
+            still_there = os.stat(child.name, dir_fd=fd, follow_symlinks=False)
+            if not _is_confirmed(still_there, opened):
+                replaced.append(directory / child.name)
+                continue
+            os.rmdir(child.name, dir_fd=fd)
         finally:
             os.close(child_fd)
-        still_there = os.stat(child.name, dir_fd=fd, follow_symlinks=False)
-        if not _is_confirmed(still_there, opened):
-            replaced.append(directory / child.name)
-            continue
-        os.rmdir(child.name, dir_fd=fd)
 
 
 def _clean_uv_cache(stdout: TextIO) -> None:

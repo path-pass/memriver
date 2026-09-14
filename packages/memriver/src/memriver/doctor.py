@@ -9,7 +9,7 @@ spec S10).
 
 from __future__ import annotations
 
-import re
+import unicodedata
 from typing import IO, TYPE_CHECKING
 
 from .core_logging import quiet_core_logging
@@ -36,11 +36,22 @@ _EXIT_CODES = {"uninitialized": 0, "empty": 0, "healthy": 0, "degraded": 1}
 # store, which a user can hand-edit to contain a newline (forging a second
 # finding line) or an ANSI escape (a raw terminal control sequence); the JSON
 # renderer needs no such guard -- json.dumps already escapes both.
-_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+#
+# Categorised rather than enumerated, because a code-point list keeps missing
+# things a real store name carries: Cc/Cf are the C0, C1 and format controls
+# (U+202E RIGHT-TO-LEFT OVERRIDE reorders the line a terminal draws without
+# being a control character), Zl/Zp the line and paragraph separators, and Cs
+# the lone surrogates that a filename no codec accepts arrives as -- those
+# turn back into their original raw byte the moment stdout, which uses
+# surrogateescape on a terminal, encodes them.
+_INVISIBLE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
 
 
 def _visible(value: str) -> str:
-    return _CONTROL_CHARS_RE.sub(" ", value)
+    return "".join(
+        " " if unicodedata.category(char) in _INVISIBLE_CATEGORIES else char
+        for char in value
+    )
 
 
 def _finding_to_dict(finding: DiagnosticFinding) -> dict:

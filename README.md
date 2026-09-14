@@ -17,7 +17,7 @@ Monorepo (uv workspace):
 uv run memriver          # stdio MCP server, storage at ~/agent-memory
 ```
 
-## Hook up a harness (manual, until `memriver install` ships)
+## Hook up a harness by hand
 
 Claude Code: `claude mcp add memriver -- uv run --project /path/to/repo memriver`
 
@@ -50,12 +50,18 @@ is on PyPI, point `uvx` at locally built wheels:
 
 ```bash
 uv build --all-packages                      # wheels land in ./dist
-export UV_FIND_LINKS="$PWD/dist"             # persist this in your shell profile
+export UV_FIND_LINKS="/absolute/path/to/memriver/dist"   # your checkout's path
 ```
 
 `UV_FIND_LINKS` has to be in the profile, not just the current shell: the
 harness starts the hooks and the MCP server in its own environment, and a
-variable exported once is gone by then. After rebuilding the wheels, run
+variable exported once is gone by then. Spell the path out in full rather than
+as `$PWD/dist` — a profile expands `$PWD` afresh in every shell, so the value
+would follow whatever directory that shell happened to start in. A harness
+launched from a GUI may not read an interactive shell profile at all; the same
+absolute value then has to reach the environment that harness actually
+inherits (its own env settings, a launch agent, or the desktop session).
+After rebuilding the wheels, run
 `uvx --refresh memriver --help` once so `uvx` picks up the new build instead of
 its cached one.
 
