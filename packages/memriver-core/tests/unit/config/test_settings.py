@@ -4,7 +4,6 @@ Split out of the former tests/test_config.py; the load_settings precedence
 cases live next door in test_loader.py.
 """
 
-import os
 from pathlib import Path
 
 import pytest
@@ -87,15 +86,16 @@ def test_storage_root_falls_back_to_an_injected_home_without_an_env_override(
 @pytest.fixture(scope="module")
 def _simulated_shell_env():
     """Stands in for a developer machine that already exports MEMRIVER_* in
-    its shell profile. Set on the real process environment (not via
-    monkeypatch) and at module scope, so it is in place *before* this
-    directory's per-test autouse fixture (conftest.py) runs -- proving that
-    fixture, not this one, is what clears it for each test."""
-    os.environ["MEMRIVER_SEARCH_LIMIT_MAX"] = "1"
-    try:
+    its shell profile. Set on the real process environment at module scope,
+    so it is in place *before* this directory's per-test autouse fixture
+    (conftest.py) runs -- proving that fixture, not this one, is what clears
+    it for each test. Its own `MonkeyPatch` rather than a bare assignment for
+    the same reason the machine is worth simulating at all: pytest may have
+    inherited a real value for this var, and popping it on teardown would run
+    the rest of the session without it."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("MEMRIVER_SEARCH_LIMIT_MAX", "1")
         yield
-    finally:
-        os.environ.pop("MEMRIVER_SEARCH_LIMIT_MAX", None)
 
 
 def test_a_preexisting_shell_env_var_does_not_leak_into_defaults(_simulated_shell_env):

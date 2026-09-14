@@ -69,18 +69,19 @@ def _canonical_timestamp(raw: object) -> str:
     PyYAML's own resolver, and `str()` on that (or on a legacy
     second-resolution string this server itself once wrote) does not match
     what `now()` emits -- breaking the lexicographic freshness sort in
-    `search`/`index`/`dream`. Anything that cannot be parsed as a datetime is
-    left untouched: a bad timestamp must never make the memory unreadable.
+    `search`/`index`/`dream`. Anything that cannot be canonicalized is left
+    untouched: a bad timestamp must never make the memory unreadable, so
+    diagnostics -- not the decoder -- is what reports it. That includes a
+    value that parses but cannot be *converted*: an extreme offset near
+    `datetime.min`/`max` overflows the UTC conversion rather than failing to
+    parse.
     """
-    if isinstance(raw, datetime):
-        dt = raw
-    else:
-        try:
-            dt = datetime.fromisoformat(str(raw))
-        except ValueError:
-            return str(raw)
-    dt = dt.astimezone(UTC) if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
-    return dt.strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+    try:
+        dt = raw if isinstance(raw, datetime) else datetime.fromisoformat(str(raw))
+        dt = dt.astimezone(UTC) if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+        return dt.strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+    except (ValueError, OverflowError):
+        return str(raw)
 
 
 def encode(memory: Memory) -> str:

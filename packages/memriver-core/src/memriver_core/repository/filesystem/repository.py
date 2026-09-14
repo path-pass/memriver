@@ -21,7 +21,7 @@ from memriver_core.models import (
     ProjectId,
     Scope,
     SearchHit,
-    now,
+    now_strictly_after,
 )
 
 from .locking import store_lock
@@ -122,7 +122,7 @@ class FileMemoryRepository:
             if description is not None:
                 # None keeps the existing description; "" explicitly clears it
                 memory.description = description.strip()
-            memory.updated = now()
+            memory.updated = now_strictly_after(memory.updated)
             self._write(memory)
         return memory
 

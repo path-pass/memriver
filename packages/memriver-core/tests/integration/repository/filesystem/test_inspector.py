@@ -1,11 +1,21 @@
 import os
+import re
 from pathlib import Path
 
 import pytest
 from memriver_core.application.diagnostics import DiagnosticsService
 from memriver_core.application.errors import StorageFailure
-from memriver_core.models import Memory, ProjectId, Scope, StoreReport
-from memriver_core.repository.filesystem import FilesystemStoreInspector
+from memriver_core.models import (
+    AccessContext,
+    Memory,
+    ProjectId,
+    Scope,
+    StoreReport,
+)
+from memriver_core.repository.filesystem import (
+    FileMemoryRepository,
+    FilesystemStoreInspector,
+)
 from memriver_core.repository.filesystem.markdown_codec import encode
 
 SOURCE = {"harness": "test", "session": "s", "method": "explicit"}
@@ -187,6 +197,31 @@ def test_every_scope_is_listed_in_relative_location_order(tmp_path):
         f"projects/{PROJECT.project_id}/entries/mid.md",
     ]
     assert report.findings == ()
+
+
+def test_timestamp_overflowing_utc_conversion_stays_visible_and_reads_as_invalid(tmp_path):
+    """A hand-edited timestamp whose UTC conversion overflows must degrade the
+    store to one `invalid-updated` finding -- not disappear from the ordinary
+    read path and resurface as an undecodable file."""
+    text = encode(Memory.new(body="内容", type="project", scope=GLOBAL,
+                             source=SOURCE, id="far-past"))
+    _write_raw(tmp_path, GLOBAL, "far-past.md",
+               re.sub(r"^(created|updated): .*$",
+                      r"\1: 0001-01-01T00:00:00+14:00", text, flags=re.MULTILINE))
+
+    repository = FileMemoryRepository(tmp_path)
+    ctx = AccessContext(project_id=None)
+    assert [m.id for m in repository.iter_visible(ctx)] == ["far-past"]
+    assert repository.get("far-past", ctx).id == "far-past"
+
+    inspector = FilesystemStoreInspector(tmp_path)
+    report = inspector.inspect()
+    assert [item.memory.id for item in report.entries] == ["far-past"]
+    assert report.findings == ()
+
+    diagnostics = DiagnosticsService(inspector).run()
+    assert [f.kind for f in diagnostics.findings] == ["invalid-updated"]
+    assert diagnostics.findings[0].memory_ids == ("far-past",)
 
 
 def test_files_outside_the_entry_layout_are_ignored(tmp_path):

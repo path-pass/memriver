@@ -9,6 +9,7 @@ from .memory import (
     SearchHit,
     Trust,
     now,
+    now_strictly_after,
     sanitize_name,
 )
 from .store_diagnostics import (
@@ -37,5 +38,6 @@ __all__ = [
     "StoreReport",
     "Trust",
     "now",
+    "now_strictly_after",
     "sanitize_name",
 ]

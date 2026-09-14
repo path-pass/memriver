@@ -1,6 +1,8 @@
 import inspect
 import os
+import re
 import stat
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -77,11 +79,11 @@ def test_project_scope_gets_its_own_directory(memory_repository, root):
     assert (root / "projects" / "demo-abc123" / "entries" / f"{m.id}.md").exists()
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
 def test_created_directories_are_private_to_the_owner(memory_repository, root):
     # memory filenames are semantic now; a world/group-readable directory
     # lets other local users enumerate them by listing, even without read
-    # access to the file contents themselves
+    # access to the file contents themselves. Only the mode bits are read
+    # here, and those are reported the same to every uid -- no skip for root.
     m = _m(scope=Scope.project(ProjectId("demo-abc123")))
     memory_repository.create(m, AccessContext(project_id=ProjectId("demo-abc123")))
     # the root itself is created by store_lock, the levels below it by
@@ -91,6 +93,28 @@ def test_created_directories_are_private_to_the_owner(memory_repository, root):
     assert made_dirs, "expected create() to have made at least one directory"
     for d in made_dirs:
         assert stat.S_IMODE(d.stat().st_mode) == 0o700, d
+
+
+@pytest.mark.parametrize("existing_mode", [0o755, 0o711])
+def test_only_the_levels_a_write_creates_are_made_private(
+        memory_repository, root, existing_mode):
+    # the flip side of the guarantee above: a level that was already there is
+    # the user's, not the store's. A shared checkout, or a root deliberately
+    # relaxed (or locked down, as the permission tests below do), must survive
+    # a write untouched -- only the descendants this write brings into
+    # existence are forced to 0700.
+    (root / "projects").mkdir(parents=True)
+    (root / "projects").chmod(existing_mode)
+    root.chmod(existing_mode)
+
+    m = _m(scope=Scope.project(ProjectId("demo-abc123")))
+    memory_repository.create(m, AccessContext(project_id=ProjectId("demo-abc123")))
+
+    assert stat.S_IMODE(root.stat().st_mode) == existing_mode
+    assert stat.S_IMODE((root / "projects").stat().st_mode) == existing_mode
+    for created in (root / "projects" / "demo-abc123",
+                    root / "projects" / "demo-abc123" / "entries"):
+        assert stat.S_IMODE(created.stat().st_mode) == 0o700, created
 
 
 def test_invalid_project_slug_rejected(memory_repository, root):
@@ -520,6 +544,29 @@ def test_iter_visible_skips_entries_whose_id_fails_id_re(memory_repository, root
     assert "Bad_Name" not in visible_ids
     assert memory_repository.search("Bad_Name", CTX, 5) == []
     assert any("Bad_Name" in rec.message for rec in caplog.records)
+
+
+def test_two_updates_within_one_clock_tick_still_advance_updated(
+        memory_repository, monkeypatch):
+    # a coarse clock, or two updates inside one tick, must not leave two
+    # revisions sharing an `updated`: freshness ordering (search, dream) would
+    # then fall back to the id tiebreak and report the older body as newer
+    class FrozenClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 8, 29, 10, 0, 0, tzinfo=tz)
+
+    monkeypatch.setattr("memriver_core.models.memory.datetime", FrozenClock)
+    m = _m(id="ticking")
+    memory_repository.create(m, CTX)
+
+    first = memory_repository.update_body(m.id, "v2", CTX).updated
+    second = memory_repository.update_body(m.id, "v3", CTX).updated
+    assert m.updated < first < second
+    # ...and each one is still the canonical form the sort key relies on
+    assert all(re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z", stamp)
+               for stamp in (first, second))
+    assert memory_repository.get(m.id, CTX).updated == second
 
 
 def test_hand_edited_naive_timestamp_sorts_correctly_among_server_written(
