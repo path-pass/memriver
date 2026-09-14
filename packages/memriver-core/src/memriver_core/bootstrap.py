@@ -5,10 +5,17 @@ from __future__ import annotations
 from pathlib import Path
 
 from .application.diagnostics import DiagnosticsService
-from .application.service import MemoryService
+
+# EMPTY_INDEX is re-exported (not composed) here: bootstrap is the one
+# memriver_core surface, alongside config/models, that a transport may import
+# -- so a transport comparing against MemoryService.index's own sentinel does
+# not need its own copy of the literal, nor a reach into application.service.
+from .application.service import EMPTY_INDEX, MemoryService
 from .config import DEFAULT_MAX_BODY_CHARS, Settings
 from .content_policy.secret_scanner import SecretScanner
 from .repository.filesystem import FileMemoryRepository, FilesystemStoreInspector
+
+__all__ = ["EMPTY_INDEX", "build_diagnostics_service", "build_service"]
 
 
 def build_service(settings: Settings, *, root: Path | None = None) -> MemoryService:

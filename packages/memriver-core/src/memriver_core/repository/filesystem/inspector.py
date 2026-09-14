@@ -85,7 +85,7 @@ class FilesystemStoreInspector:
                          if child.is_dir()]
         found = []
         for entries_dir in entries_dirs:
-            scope = _dir_scope(entries_dir)
+            scope = _dir_scope(entries_dir, self.root)
             if scope is None:  # not one of the two known shapes
                 continue
             found += [(path, path.relative_to(self.root).as_posix(), scope)

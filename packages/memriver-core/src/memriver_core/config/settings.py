@@ -9,7 +9,7 @@ import os
 from collections.abc import Mapping
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ENV_PREFIX = "MEMRIVER_"
@@ -67,3 +67,14 @@ class Settings(BaseSettings):
         if isinstance(value, bool):
             raise ValueError("expected an integer, got a boolean")  # noqa: TRY004
         return value
+
+    @model_validator(mode="after")
+    def _default_within_max(self) -> Settings:
+        # a default above the max would make the untouched, common case (no
+        # explicit limit on a search call) silently ask for more hits than
+        # the store is configured to ever return
+        if self.search_limit_default > self.search_limit_max:
+            raise ValueError(
+                f"search_limit_default ({self.search_limit_default}) must not "
+                f"exceed search_limit_max ({self.search_limit_max})")
+        return self

@@ -858,21 +858,35 @@ def marker_block(source: str, body: str) -> EditResult:
 def marker_block_remove(source: str) -> EditResult:
     """Remove the whole memriver marker block, markers included.
 
-    The exact inverse of ``marker_block``: one newline comes off each side of
-    the block, because one newline is all ``marker_block`` ever put there --
-    and a CRLF ending is one newline, taken back whole rather than split into
-    a stranded carriage return. Every other byte around the block -- a run of
+    The inverse of ``marker_block``: one newline comes off each side of the
+    block, because one newline is all ``marker_block`` ever put there -- and a
+    CRLF ending is one newline, taken back whole rather than split into a
+    stranded carriage return. Every other byte around the block -- a run of
     the user's own blank lines, trailing spaces, a missing final newline --
     is theirs and survives untouched.
+
+    ``marker_block`` only ever *appends* those two newlines; replacing an
+    existing pair leaves whatever separated it alone. So a block a user pasted
+    between two of their own lines has a single newline on each side, and both
+    of them are line breaks that text needs. The newline on either side of the
+    block is therefore reclaimed only when doing so cannot run two lines
+    together -- when one side of the join is empty or already ends in a break.
     """
     start, stop = _marker_span(source, "uninstall")
     if start is None:
         return EditResult(rendered=source, changed=False, takeover=False)
     before, after = source[:start], source[stop:]
     if before.endswith("\n"):
-        before = _without_one_trailing_newline(before)
-    rendered = before + _without_one_leading_newline(after)
-    return EditResult(rendered=rendered, changed=True, takeover=False)
+        trimmed = _without_one_trailing_newline(before)
+        if (not after or after.startswith(("\n", "\r\n"))
+                or not trimmed or trimmed.endswith("\n")):
+            before = trimmed
+    if after.startswith(("\n", "\r\n")):
+        remainder = _without_one_leading_newline(after)
+        if (not before or before.endswith("\n")
+                or not remainder or remainder.startswith(("\n", "\r\n"))):
+            after = remainder
+    return EditResult(rendered=before + after, changed=True, takeover=False)
 
 
 def _block_text(body: object) -> str:

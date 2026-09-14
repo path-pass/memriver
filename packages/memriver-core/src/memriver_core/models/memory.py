@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal, NewType, get_args
 
 from ulid import ULID
@@ -28,7 +28,30 @@ Trust = Literal["user", "agent", "untrusted-derived"]
 
 
 def now() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # microseconds, not seconds: `updated` doubles as the freshness sort key
+    # (search, dream), and a same-second update must still advance it
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def now_strictly_after(previous: str) -> str:
+    """`now()`, forced past `previous` when the clock has not moved on.
+
+    Resolution alone does not guarantee an advance: the clock's own tick can
+    be coarser than two consecutive writes, and it can step backwards. Since
+    `updated` is the freshness sort key, a rewrite that landed on -- or before
+    -- the value it replaces would let the older body sort as the newer one.
+    A `previous` outside the canonical form carries no comparable instant, so
+    there the plain clock reading is all there is; diagnostics reports that
+    value separately.
+    """
+    stamp = now()
+    try:
+        earliest = (datetime.strptime(previous, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=UTC)
+                    + timedelta(microseconds=1)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    except (ValueError, OverflowError):
+        return stamp
+    # both are the same fixed-width form, so lexicographic order is chronological
+    return max(stamp, earliest)
 
 
 # ids are either server-generated ULIDs (fallback) or sanitized kebab slugs;

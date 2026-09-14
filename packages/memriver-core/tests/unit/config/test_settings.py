@@ -79,3 +79,35 @@ def test_storage_root_falls_back_to_an_injected_home_without_an_env_override(
     monkeypatch.delenv("MEMRIVER_ROOT", raising=False)
     assert storage_root(env={}, home=tmp_path / "injected-home") == (
         tmp_path / "injected-home" / "agent-memory")
+
+
+# --- a machine with a MEMRIVER_* var already exported must not leak in ---
+
+@pytest.fixture(scope="module")
+def _simulated_shell_env():
+    """Stands in for a developer machine that already exports MEMRIVER_* in
+    its shell profile. Set on the real process environment at module scope,
+    so it is in place *before* this directory's per-test autouse fixture
+    (conftest.py) runs -- proving that fixture, not this one, is what clears
+    it for each test. Its own `MonkeyPatch` rather than a bare assignment for
+    the same reason the machine is worth simulating at all: pytest may have
+    inherited a real value for this var, and popping it on teardown would run
+    the rest of the session without it."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("MEMRIVER_SEARCH_LIMIT_MAX", "1")
+        yield
+
+
+def test_a_preexisting_shell_env_var_does_not_leak_into_defaults(_simulated_shell_env):
+    assert Settings().search_limit_max == 50
+
+
+# --- cross-field validation ---
+
+def test_search_limit_default_may_not_exceed_search_limit_max():
+    with pytest.raises(ValidationError, match="search_limit_default"):
+        Settings(search_limit_default=100, search_limit_max=50)
+
+
+def test_search_limit_default_equal_to_the_max_is_allowed():
+    assert Settings(search_limit_default=50, search_limit_max=50).search_limit_default == 50

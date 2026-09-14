@@ -739,6 +739,62 @@ def test_marker_block_remove_keeps_a_crlf_blank_run_around_the_block():
     assert result.rendered == "head\r\n\r\n\r\n\r\ntail\r\n"
 
 
+# --- a removal never fuses two lines that were separate -----------------------
+
+# The merge appends a newline on each side of a block it adds, but it replaces
+# an existing marker pair in place without adding any. A block a user pasted
+# between two of their own lines therefore has exactly one newline on each
+# side, and both of them are line breaks the user's text needs. Reclaiming
+# both would run the two lines together.
+
+
+def test_marker_block_remove_keeps_the_one_line_break_between_the_users_lines():
+    source = ("before\n<!-- memriver:begin -->\nblock\n"
+              "<!-- memriver:end -->\nafter\n")
+
+    result = marker_block_remove(source)
+
+    assert result.rendered == "before\nafter\n"
+
+
+def test_marker_block_remove_keeps_the_one_crlf_line_break_between_the_users_lines():
+    source = ("before\r\n<!-- memriver:begin -->\r\nblock\r\n"
+              "<!-- memriver:end -->\r\nafter\r\n")
+
+    result = marker_block_remove(source)
+
+    assert result.rendered == "before\r\nafter\r\n"
+
+
+def test_marker_block_remove_keeps_the_line_break_in_front_of_a_block_that_ends_mid_line():
+    """The same fusing hazard on the other side: nothing follows the end
+    marker on its own line, so the newline in front of the block is the only
+    break between the user's two lines and must stay."""
+    source = "a\n<!-- memriver:begin -->\nblock\n<!-- memriver:end -->b\n"
+
+    result = marker_block_remove(source)
+
+    assert result.rendered == "a\nb\n"
+
+
+def test_marker_block_remove_keeps_the_crlf_line_break_in_front_of_a_block_that_ends_mid_line():
+    source = "a\r\n<!-- memriver:begin -->\r\nblock\r\n<!-- memriver:end -->b\r\n"
+
+    result = marker_block_remove(source)
+
+    assert result.rendered == "a\r\nb\r\n"
+
+
+def test_marker_block_remove_takes_the_line_break_of_a_block_at_the_file_start():
+    """With nothing in front of the block there is no line to fuse with, so
+    the newline behind it is the block's own and comes off."""
+    source = "<!-- memriver:begin -->\nblock\n<!-- memriver:end -->\nafter\n"
+
+    result = marker_block_remove(source)
+
+    assert result.rendered == "after\n"
+
+
 # --- a store installed by an earlier memriver still uninstalls cleanly -------
 
 # Both merges below reproduce what memriver wrote before the removers existed:
@@ -1346,7 +1402,7 @@ def test_purge_data_reports_a_partial_removal_when_the_walk_fails(home, project,
     (root / "sessions" / "one.json").write_text("gone")
     (root / "index.db").write_text("still here")
 
-    def half_removing_walk(fd):
+    def half_removing_walk(fd, **kwargs):
         delete_tree(root / "sessions")
         error = OSError()
         error.strerror = "Permission denied"
@@ -1440,11 +1496,11 @@ def swap_during_the_walk(monkeypatch, swap, *, at: int = 1) -> None:
     walk = uninstall_module._empty_directory
     entered: list[int] = []
 
-    def swapping(fd: int) -> None:
+    def swapping(fd: int, **kwargs) -> None:
         entered.append(fd)
         if len(entered) == at:
             swap()
-        return walk(fd)
+        return walk(fd, **kwargs)
 
     monkeypatch.setattr("memriver.uninstall._empty_directory", swapping)
 
@@ -1653,6 +1709,67 @@ def test_purge_data_leaves_a_replacement_swapped_in_after_the_confirmed_open(
     # the confirmed object is what the walk emptied, and it is left standing
     assert moved.is_dir() and not any(moved.iterdir())
     assert "a different object" in result.stdout
+
+
+def test_purge_data_leaves_a_replacement_swapped_in_under_the_confirmed_root(
+        home, project, tmp_path, monkeypatch):
+    """The same swap one level down. A child of the store is renamed away
+    after the walk has already opened it, and an unrelated empty directory
+    takes its name; the walk empties the object it holds a descriptor on, but
+    the ``rmdir`` that detaches it can only name it -- so the name's identity
+    is checked once more first, and the stranger is left standing and named."""
+    root = tmp_path / "agent-memory"
+    (root / "sessions").mkdir(parents=True)
+    (root / "sessions" / "one.json").write_text("the object the walk opened")
+    moved = tmp_path / "moved-away"
+
+    def swap_the_child() -> None:
+        (root / "sessions").rename(moved)
+        (root / "sessions").mkdir()  # an unrelated, empty directory
+
+    swap_during_the_walk(monkeypatch, swap_the_child, at=2)
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                            purge_data=True, env={"MEMRIVER_ROOT": str(root)})
+
+    assert result.exit_code != 0
+    assert "Traceback" not in result.stdout
+    assert (root / "sessions").is_dir()  # the replacement survives
+    assert moved.is_dir() and not any(moved.iterdir())  # the real child emptied
+    assert f"{root / 'sessions'} was replaced" in result.stdout
+    assert "was only partly removed" in result.stdout
+
+
+def test_purge_data_leaves_a_replacement_that_reuses_the_freed_child_inode(
+        home, project, tmp_path, monkeypatch):
+    """The harder version of the swap: the original child is not just renamed
+    away, it is deleted, so its inode goes back on the free list before the
+    replacement is created. A filesystem that hands the same inode straight
+    back (ext4 and overlayfs routinely do) would make the replacement
+    indistinguishable from the child the walk confirmed -- unless the walk is
+    still holding the original open, which keeps that inode allocated and out
+    of reach of the ``mkdir``."""
+    root = tmp_path / "agent-memory"
+    (root / "sessions").mkdir(parents=True)
+    (root / "sessions" / "one.json").write_text("the object the walk opened")
+    moved = tmp_path / "moved-away"
+
+    def free_the_childs_inode() -> None:
+        (root / "sessions").rename(moved)
+        (moved / "one.json").unlink()
+        moved.rmdir()  # the confirmed inode is released here
+        (root / "sessions").mkdir()  # an unrelated, empty directory
+
+    swap_during_the_walk(monkeypatch, free_the_childs_inode, at=2)
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                            purge_data=True, env={"MEMRIVER_ROOT": str(root)})
+
+    assert result.exit_code != 0
+    assert "Traceback" not in result.stdout
+    assert (root / "sessions").is_dir()  # the replacement survives
+    assert f"{root / 'sessions'} was replaced" in result.stdout
+    assert "was only partly removed" in result.stdout
 
 
 def test_purge_data_removes_a_nested_tree_through_the_confirmed_directory(

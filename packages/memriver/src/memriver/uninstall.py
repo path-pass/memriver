@@ -282,10 +282,12 @@ def _remove_confirmed_directory(canonical: Path, confirmed: os.stat_result,
             if refusal is not None:
                 stdout.write(refusal)
                 return 1
+            replaced: list[Path] = []
             try:
-                _empty_directory(leaf_fd)
+                _empty_directory(leaf_fd, directory=canonical, replaced=replaced)
             except OSError as error:
-                stdout.write(_partly_removed(canonical, error.strerror or str(error)))
+                stdout.write(_partly_removed(canonical, error.strerror or str(error),
+                                             replaced))
                 return 1
             try:
                 still_there = os.stat(canonical.name, dir_fd=parent_fd,
@@ -299,7 +301,8 @@ def _remove_confirmed_directory(canonical: Path, confirmed: os.stat_result,
                     return 1
                 os.rmdir(canonical.name, dir_fd=parent_fd)
             except OSError as error:
-                stdout.write(_partly_removed(canonical, error.strerror or str(error)))
+                stdout.write(_partly_removed(canonical, error.strerror or str(error),
+                                             replaced))
                 return 1
         finally:
             os.close(leaf_fd)
@@ -314,21 +317,44 @@ def _is_confirmed(candidate: os.stat_result, confirmed: os.stat_result) -> bool:
                                                     confirmed.st_ino)
 
 
-def _partly_removed(canonical: Path, reason: str) -> str:
-    return (
+def _partly_removed(canonical: Path, reason: str,
+                    replaced: Sequence[Path] = ()) -> str:
+    return "".join(
+        f"memriver uninstall: {path} was replaced while it was being removed "
+        "and was left alone.\n" for path in replaced
+    ) + (
         f"memriver uninstall: {canonical} was only partly removed ({reason}); "
         "the harness configuration above was removed successfully. Delete the "
         "remaining directory by hand.\n"
     )
 
 
-def _empty_directory(fd: int) -> None:
+def _empty_directory(fd: int, *, directory: Path, replaced: list[Path]) -> None:
     """Delete everything inside the open directory ``fd``, not the directory itself.
 
     Every step is relative to a descriptor this walk opened itself, so nothing
     a concurrent rename does to the path above can redirect a single unlink.
     Child directories are opened with ``O_NOFOLLOW``, which keeps a symlink a
     symlink: it is unlinked where it stands, never followed into.
+
+    Detaching an emptied child is the one step no descriptor can carry out --
+    there is no ``rmdir`` by fd -- so it names the child, and a name can change
+    hands while the walk beneath it runs. The child's identity is captured when
+    it is opened and re-checked immediately before the ``rmdir``: a stranger
+    standing at that name is appended to ``replaced``, which the
+    partial-removal report names. ``directory`` is carried only to spell those
+    paths out for the user.
+
+    The descriptor is held open across that comparison and across the ``rmdir``
+    itself, never closed the moment the recursion returns. An open descriptor
+    keeps the original inode allocated, so a replacement created after the
+    original is renamed away *and* unlinked cannot be handed the same inode and
+    pass the comparison by wearing the confirmed identity.
+
+    What remains is best-effort, not a guarantee: POSIX offers no atomic "stat
+    and rmdir", so a stranger that takes the name in the instant between the
+    two is still removed. The window needs exact, very short concurrent timing,
+    and ``rmdir`` never touches a non-empty directory, but it is not closed.
     """
     with os.scandir(fd) as entries:
         children = list(entries)
@@ -339,10 +365,16 @@ def _empty_directory(fd: int) -> None:
         child_fd = os.open(child.name,
                            os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY, dir_fd=fd)
         try:
-            _empty_directory(child_fd)
+            opened = os.fstat(child_fd)
+            _empty_directory(child_fd, directory=directory / child.name,
+                             replaced=replaced)
+            still_there = os.stat(child.name, dir_fd=fd, follow_symlinks=False)
+            if not _is_confirmed(still_there, opened):
+                replaced.append(directory / child.name)
+                continue
+            os.rmdir(child.name, dir_fd=fd)
         finally:
             os.close(child_fd)
-        os.rmdir(child.name, dir_fd=fd)
 
 
 def _clean_uv_cache(stdout: TextIO) -> None:

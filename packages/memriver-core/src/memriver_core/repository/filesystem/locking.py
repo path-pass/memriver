@@ -25,7 +25,15 @@ def store_lock(root: Path) -> Iterator[None]:
     and goes no further. Callers must never see a raw platform exception here.
     """
     try:
+        # memory filenames are semantic now; a world/group-readable root lets
+        # other local users enumerate them by listing. Only the root created
+        # here, not one that already existed -- some callers deliberately
+        # lock a directory down to simulate a permission failure, and this
+        # must not silently undo that.
+        pre_existing = root.exists()
         root.mkdir(parents=True, exist_ok=True)
+        if not pre_existing:
+            root.chmod(0o700)
         with open(root / ".lock", "a+") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             try:

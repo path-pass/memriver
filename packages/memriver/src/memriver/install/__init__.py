@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import tempfile
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -125,6 +126,14 @@ BACKUP_INFIX = ".memriver-backup-"
 CODEX_TRUST_NOTE = (
     "Run /hooks in Codex, review the memriver hook definitions, and trust them.\n"
     "If this reinstall changed a hook definition, Codex may require re-trust."
+)
+
+MISSING_UVX_NOTE = (
+    "The hook and MCP entries memriver configures invoke 'uvx memriver', and "
+    "uvx was not found on PATH.\n"
+    "Each harness resolves that command itself at startup, so install uv "
+    "(https://docs.astral.sh/uv/) -- or make uvx reachable from the "
+    "environment the harness starts in -- before relying on these edits."
 )
 
 
@@ -623,6 +632,8 @@ def _write_completion_notes(plan: _Plan, harnesses: Sequence[str],
         if hasattr(module, "notes"):
             stdout.writelines("\n" + note + "\n" for note in module.notes(
                 plan.harness_snapshots[name], plan.env, in_effect))
+    if shutil.which("uvx") is None:
+        stdout.write("\n" + MISSING_UVX_NOTE + "\n")
     if "codex" in harnesses:
         stdout.write("\n" + CODEX_TRUST_NOTE + "\n")
 

@@ -13,6 +13,7 @@ and every turn end, and must never pay for importing the MCP server.
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -53,6 +54,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     hook = commands.add_parser("hook", help="run a harness hook over stdin/stdout")
     hook.add_argument("event", choices=["session-start", "stop"])
+    # spelled out here, like install's below: importing hooks.Harness at parse
+    # time would pull memriver_core.models into every invocation, including
+    # install/uninstall/--version. test_hook_harness_choices_match_the_literal
+    # pins these names to hooks.Harness so the two cannot drift.
     hook.add_argument("--harness", choices=["claude-code", "codex"], required=True)
     _add_store_options(hook, project_dir_default=None,
                        project_dir_help="project whose 'project' memory scope is "
@@ -203,7 +208,31 @@ def _doctor(args: argparse.Namespace) -> int:
                       stdout=sys.stdout, stderr=sys.stderr)
 
 
+def _configure_logging() -> None:
+    """Pin memriver's own loggers to stderr, wherever the root logger points.
+
+    Under stdio transport, stdout is the JSON-RPC/hook channel and stderr is
+    the only place a loader warning (an unreadable config.toml, an unknown
+    key) can surface. `logging.basicConfig` cannot promise that: it is a no-op
+    once the root logger has a handler, so a process that embeds `main()`
+    after configuring logging to stdout would leak those warnings into the
+    protocol stream. Configuring the two memriver loggers directly, and taking
+    them off propagation, makes the destination independent of the root.
+
+    Idempotent: `main()` is an ordinary callable and may be invoked more than
+    once in a process, which must not double every warning line.
+    """
+    for name in ("memriver", "memriver_core"):
+        logger = logging.getLogger(name)
+        logger.propagate = False
+        logger.setLevel(logging.WARNING)
+        if not logger.handlers:
+            logger.addHandler(logging.StreamHandler(sys.stderr))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    # before any handler can reach load_settings
+    _configure_logging()
     raw = list(sys.argv[1:] if argv is None else argv)
     args = _build_parser().parse_args(_normalize_legacy_serve(raw))
     return args.handler(args)

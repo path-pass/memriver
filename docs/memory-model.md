@@ -31,8 +31,8 @@ id: mise-runtime-management
 type: user
 scope: global
 sync: true
-created: 2026-08-29T10:00:00Z
-updated: 2026-08-29T10:00:00Z
+created: 2026-08-29T10:00:00.000000Z
+updated: 2026-08-29T10:00:00.000000Z
 source: {harness: claude-code, method: agent}
 trust: user
 description: mise manages every runtime; check before suggesting installs
@@ -56,6 +56,14 @@ All language runtimes on this machine are managed by mise, not nvm/pyenv.
   third-party code, tool output). Trust gates future promotion into shared
   storage.
 - Freshness is judged by `updated`, not by type.
+
+The frontmatter is read as YAML 1.2 core-schema booleans: **`true` and `false`
+are the only booleans**, and `yes`/`no`/`on`/`off` are ordinary strings
+everywhere in the block — including hand-written keys such as `source`, where
+`{interactive: yes}` is the string `"yes"`. `sync` is the only boolean field,
+and it opts in only for `true` (any case); anything else, including `yes`,
+reads as `false`. This is deliberate: `sync` is the privacy boundary, and a
+hand-edited value must never collapse into an opt-in that was not written.
 
 ## Naming
 

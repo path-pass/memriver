@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 from memriver import doctor
 from memriver_core import StorageFailure
-from memriver_core.models import DiagnosticFinding, DiagnosticsReport, Scope
+from memriver_core.models import DiagnosticFinding, DiagnosticsReport, ProjectId, Scope
 
 
 @dataclass(frozen=True)
@@ -66,6 +66,17 @@ def install_fake_diagnostics_service(monkeypatch, state: str, finding_count: int
 
     monkeypatch.setattr("memriver_core.bootstrap.build_diagnostics_service", fake_build)
     return build_calls, run_calls
+
+
+def install_fake_diagnostics_service_for_findings(monkeypatch, state: str, findings) -> None:
+    """Like install_fake_diagnostics_service, but with caller-supplied findings
+    instead of the generic ``_finding()`` stand-in."""
+    report = DiagnosticsReport(state=state, findings=tuple(findings))
+
+    def fake_build(settings, *, root=None):
+        return _FakeDiagnosticsService(report, [])
+
+    monkeypatch.setattr("memriver_core.bootstrap.build_diagnostics_service", fake_build)
 
 
 def install_raising_service(monkeypatch, exc: Exception):
@@ -126,9 +137,7 @@ def test_huge_stale_days_against_a_missing_store_stays_uninitialized(tmp_path):
     assert result.stdout == "store not initialized yet\n"
 
 
-@pytest.mark.parametrize("json_output", [False, True])
-def test_an_invalid_env_setting_is_the_same_path_free_exit_two(monkeypatch, tmp_path,
-                                                               json_output):
+def test_an_invalid_env_setting_is_the_same_path_free_exit_two(monkeypatch, tmp_path):
     """`load_settings` is the one call doctor makes before the store is opened,
     and the env layer's ValidationError is deliberately not swallowed there: it
     echoes the offending value and, as a traceback, absolute source paths.
@@ -136,12 +145,38 @@ def test_an_invalid_env_setting_is_the_same_path_free_exit_two(monkeypatch, tmp_
     not report findings (exit 1) either."""
     monkeypatch.setenv("MEMRIVER_MAX_BODY_CHARS", "not-a-number")
     install_fake_diagnostics_service(monkeypatch, "healthy", 0)
-    result = invoke_doctor(root=tmp_path, json_output=json_output)
+    result = invoke_doctor(root=tmp_path)
 
     assert result.exit_code == 2
     assert result.stdout == ""
     assert result.stderr == "memriver doctor: memory store is inaccessible\n"
     assert "not-a-number" not in result.stderr
+
+
+def test_an_invalid_env_setting_with_json_still_emits_a_json_error_object(monkeypatch,
+                                                                          tmp_path):
+    """Same failure as above, but `--json` callers parse stdout as JSON and get
+    nothing today: a script piping `memriver doctor --json` cannot tell an
+    inaccessible store from a hang. The stderr line and exit code are
+    unchanged; stdout gets a machine-readable error object instead of silence."""
+    monkeypatch.setenv("MEMRIVER_MAX_BODY_CHARS", "not-a-number")
+    install_fake_diagnostics_service(monkeypatch, "healthy", 0)
+    result = invoke_doctor(root=tmp_path, json_output=True)
+
+    assert result.exit_code == 2
+    assert result.stderr == "memriver doctor: memory store is inaccessible\n"
+    assert "not-a-number" not in result.stdout
+    assert json.loads(result.stdout) == {"error": "memory store is inaccessible"}
+
+
+def test_inaccessible_store_with_json_emits_a_json_error_object(monkeypatch, tmp_path):
+    install_raising_service(monkeypatch, StorageFailure())
+    result = invoke_doctor(root=tmp_path / "private", json_output=True)
+
+    assert result.exit_code == 2
+    assert str(tmp_path) not in result.stdout
+    assert result.stderr == "memriver doctor: memory store is inaccessible\n"
+    assert json.loads(result.stdout) == {"error": "memory store is inaccessible"}
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
@@ -220,6 +255,105 @@ def test_human_output_groups_by_kind_with_no_body_or_absolute_path(monkeypatch, 
     assert "repair or remove the stored entry" in result.stdout
     assert "Memory.body" not in result.stdout
     assert str(tmp_path) not in result.stdout
+
+
+def test_control_characters_in_a_finding_render_on_one_line_with_no_raw_escape(
+        monkeypatch, tmp_path):
+    """A store's scope/location strings come from directory and file names,
+    which a user can hand-edit to contain a newline or an ANSI escape. Neither
+    may forge a second finding line or emit a raw terminal control sequence in
+    the human renderer -- the JSON renderer is already safe via json.dumps."""
+    malicious_scope = Scope.project(ProjectId("evil\ninjected\x1b[31mRED"))
+    finding = DiagnosticFinding(
+        kind="unparsable", memory_ids=(), scopes=(malicious_scope,),
+        location_hints=("global/entries/bad\x1b[31m.md",),
+        reason="stored entry cannot be decoded",
+        suggestion="repair or remove the stored entry")
+    install_fake_diagnostics_service_for_findings(monkeypatch, "degraded", [finding])
+
+    result = invoke_doctor(root=tmp_path)
+
+    assert "\x1b" not in result.stdout
+    lines = result.stdout.splitlines()
+    assert len(lines) == 7  # the injected newline must not forge an extra line
+    scopes_line = next(l for l in lines if l.strip().startswith("- scopes:"))
+    assert "evil" in scopes_line and "injected" in scopes_line and "RED" in scopes_line
+
+
+@pytest.mark.parametrize("hostile", [
+    "evil\u202edm.txt",   # a bidi override reorders what the terminal shows
+    "bad\udc9b31m",       # a non-UTF-8 filename byte, surrogateescaped
+    "two\u2028lines",     # a line separator some terminals break on
+    "zero\u200bwidth",    # a zero-width space, invisible in the report
+])
+def test_visible_neutralises_every_invisible_character_class(hostile):
+    """A store's names reach the human renderer as text, and `str` carries
+    more than the C0/C1 code points: Unicode format controls (Cf) can reorder
+    the line a terminal draws, and a filename byte no codec accepts arrives as
+    a lone surrogate (Cs) that turns straight back into that raw byte when it
+    is written to a surrogateescape stdout. Category, not a code-point list,
+    is what covers all of them."""
+    import unicodedata
+
+    rendered = doctor._visible(hostile)
+
+    assert all(unicodedata.category(char) not in {"Cc", "Cf", "Cs", "Zl", "Zp"}
+               for char in rendered)
+    assert len(rendered) == len(hostile)
+
+
+def _terminal_stdout() -> tuple[io.BytesIO, io.TextIOWrapper]:
+    """A stdout that behaves like a real terminal's: surrogateescape on the
+    way out, which turns a lone surrogate straight back into the raw byte it
+    stood for."""
+    raw = io.BytesIO()
+    return raw, io.TextIOWrapper(raw, encoding="utf-8", errors="surrogateescape",
+                                 newline="")
+
+
+def test_a_surrogateescaped_location_reaches_stdout_without_its_raw_byte(
+        monkeypatch, tmp_path):
+    """The renderer's own contract, pinned without needing a filesystem that
+    will store the name: `\\udc9b` written to a surrogateescape stdout is the
+    byte 0x9b, a C1 CSI introducer, so it has to be neutralised before it is
+    written, not merely absent from the `str`."""
+    finding = DiagnosticFinding(
+        kind="unparsable", memory_ids=(), scopes=(Scope.global_(),),
+        location_hints=(os.fsdecode(b"global/entries/bad\x9b31m.md"),),
+        reason="stored entry cannot be decoded",
+        suggestion="repair or remove the stored entry")
+    install_fake_diagnostics_service_for_findings(monkeypatch, "degraded", [finding])
+    raw, out = _terminal_stdout()
+
+    doctor.run_doctor(root=tmp_path, json_output=False, stale_days=90,
+                      stdout=out, stderr=io.StringIO())
+    out.flush()
+
+    assert b"31m.md" in raw.getvalue()  # the location really was rendered
+    assert b"\x9b" not in raw.getvalue()
+
+
+def test_a_non_utf8_filename_in_a_real_store_renders_without_its_raw_byte(tmp_path):
+    """The same, end to end through a real store, so the decode boundary is
+    the filesystem's rather than a literal in this file. Filesystems that
+    enforce UTF-8 names (APFS does) cannot hold the file at all, and there is
+    nothing to render there."""
+    entries = tmp_path / "global" / "entries"
+    entries.mkdir(parents=True)
+    hostile = entries / os.fsdecode(b"bad\x9b31m.md")
+    try:
+        hostile.write_text("not a memory at all", encoding="utf-8")
+    except OSError:
+        pytest.skip("this filesystem rejects filenames that are not valid UTF-8")
+
+    raw, out = _terminal_stdout()
+    exit_code = doctor.run_doctor(root=tmp_path, json_output=False, stale_days=90,
+                                  stdout=out, stderr=io.StringIO())
+    out.flush()
+
+    assert exit_code == 1  # the store is degraded, so the name really is rendered
+    assert b"31m.md" in raw.getvalue()
+    assert b"\x9b" not in raw.getvalue()
 
 
 def test_healthy_human_output_has_no_findings_section(monkeypatch, tmp_path):
