@@ -11,11 +11,14 @@ from __future__ import annotations
 import io
 import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 from memriver import doctor
+from memriver.doctor import run_doctor
+from memriver.project_context import bind
 from memriver_core import StorageFailure
 from memriver_core.models import DiagnosticFinding, DiagnosticsReport, ProjectId, Scope
 
@@ -216,6 +219,8 @@ def test_a_broken_entries_layout_is_inaccessible_not_empty(tmp_path):
     assert str(root) not in result.stderr
 
 
+_EMPTY_PROJECTS_JSON = {"registered": [], "finding": None, "integrity": None}
+
 _EXPECTED_JSON = {
     "state": "degraded",
     "findings": [{
@@ -226,6 +231,7 @@ _EXPECTED_JSON = {
         "reason": "stored entry cannot be decoded",
         "suggestion": "repair or remove the stored entry",
     }],
+    "projects": _EMPTY_PROJECTS_JSON,
 }
 
 
@@ -240,7 +246,9 @@ def test_json_output_keeps_arrays_when_empty(monkeypatch, tmp_path):
     install_fake_diagnostics_service(monkeypatch, "healthy", 0)
     result = invoke_doctor(root=tmp_path, json_output=True)
 
-    assert json.loads(result.stdout) == {"state": "healthy", "findings": []}
+    assert json.loads(result.stdout) == {
+        "state": "healthy", "findings": [], "projects": _EMPTY_PROJECTS_JSON,
+    }
 
 
 def test_human_output_groups_by_kind_with_no_body_or_absolute_path(monkeypatch, tmp_path):
@@ -365,7 +373,7 @@ def test_healthy_human_output_has_no_findings_section(monkeypatch, tmp_path):
 
 def test_doctor_reads_the_store_only(monkeypatch, tmp_path):
     """[DEFERRED-4] No harness-configuration audit: doctor never looks under
-    HOME beyond the explicit store root, and the JSON has exactly the two
+    HOME beyond the explicit store root, and the JSON has exactly the three
     documented keys."""
     sentinel_home = tmp_path / "sentinel-home"
     sentinel_home.mkdir()
@@ -375,4 +383,56 @@ def test_doctor_reads_the_store_only(monkeypatch, tmp_path):
     result = invoke_doctor(root=tmp_path / "store", json_output=True)
 
     assert list(sentinel_home.iterdir()) == []
-    assert set(json.loads(result.stdout)) == {"state", "findings"}
+    assert set(json.loads(result.stdout)) == {"state", "findings", "projects"}
+
+
+def test_doctor_lists_registered_projects_missing_and_unverifiable_roots(tmp_path, capsys, monkeypatch):
+    store = tmp_path / "store"
+    present, gone, locked = (tmp_path / "present", tmp_path / "gone", tmp_path / "locked")
+    for d in (present, gone, locked):
+        d.mkdir()
+    bind(store, ProjectId("a-0123456789abcdef"), str(present.resolve()), create=True)
+    bind(store, ProjectId("a-0123456789abcdef"), str(gone.resolve()), create=False)
+    bind(store, ProjectId("a-0123456789abcdef"), str(locked.resolve()), create=False)
+    gone_key, locked_key = str(gone.resolve()), str(locked.resolve())   # before the mock: resolve() stats
+    gone.rmdir()
+    real_stat = os.stat
+
+    def stat(path, *a, **kw):
+        if str(path) == locked_key:
+            raise PermissionError(13, "denied")
+        return real_stat(path, *a, **kw)
+
+    monkeypatch.setattr(os, "stat", stat)
+    code = run_doctor(root=store, json_output=True, stale_days=90, stdout=sys.stdout, stderr=sys.stderr)
+    report = json.loads(capsys.readouterr().out)
+    assert report["projects"] == {"registered": [{"id": "a-0123456789abcdef", "roots": 3,
+                                                  "missing_roots": [gone_key],
+                                                  "unverifiable_roots": [locked_key]}],
+                                  "finding": None, "integrity": None}
+    assert code == 0
+
+
+def test_doctor_reports_a_repointed_root_like_the_resolver_does(tmp_path, capsys):
+    old = tmp_path / "old"
+    new = tmp_path / "new"
+    old.mkdir()
+    bind(tmp_path / "store", ProjectId("a-0123456789abcdef"), str(old.resolve()), create=True)
+    old.rmdir()
+    new.mkdir()
+    old.symlink_to(new)
+    code = run_doctor(root=tmp_path / "store", json_output=True, stale_days=90, stdout=sys.stdout, stderr=sys.stderr)
+    report = json.loads(capsys.readouterr().out)
+    bound = str(new.resolve().parent / "old")            # the string that was bound: tmp_path/old, canonical at bind time
+    assert report["projects"]["integrity"] == f"{bound}: registered root is no longer a canonical path"
+    assert code >= 1
+
+
+def test_doctor_reports_an_invalid_registry_and_exits_nonzero(tmp_path, capsys):
+    d = tmp_path / "projects" / "bad-0123456789abcdef"
+    d.mkdir(parents=True)
+    (d / "project.toml").write_text("roots = [\n")
+    code = run_doctor(root=tmp_path, json_output=False, stale_days=90, stdout=sys.stdout, stderr=sys.stderr)
+    out = capsys.readouterr().out
+    assert "projects/bad-0123456789abcdef/project.toml: project file is not valid TOML" in out
+    assert code >= 1

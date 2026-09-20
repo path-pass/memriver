@@ -9,6 +9,8 @@ spec S10).
 
 from __future__ import annotations
 
+import os
+import stat
 import unicodedata
 from typing import IO, TYPE_CHECKING
 
@@ -65,16 +67,17 @@ def _finding_to_dict(finding: DiagnosticFinding) -> dict:
     }
 
 
-def _render_json(report: DiagnosticsReport, stdout: IO[str]) -> None:
+def _render_json(report: DiagnosticsReport, projects: dict, stdout: IO[str]) -> None:
     import json
 
     stdout.write(json.dumps({
         "state": report.state,
         "findings": [_finding_to_dict(f) for f in report.findings],
+        "projects": projects,
     }, indent=2) + "\n")
 
 
-def _render_human(report: DiagnosticsReport, stdout: IO[str]) -> None:
+def _render_human(report: DiagnosticsReport, projects: dict, stdout: IO[str]) -> None:
     stdout.write(_STATE_MESSAGES[report.state] + "\n")
     by_kind: dict[str, list[DiagnosticFinding]] = {}
     for finding in report.findings:
@@ -88,6 +91,25 @@ def _render_human(report: DiagnosticsReport, stdout: IO[str]) -> None:
             stdout.write(f"    locations: {locations}\n")
             stdout.write(f"    reason: {finding.reason}\n")
             stdout.write(f"    suggestion: {finding.suggestion}\n")
+    _render_projects_section(projects, stdout)
+
+
+def _render_projects_section(projects: dict, stdout: IO[str]) -> None:
+    # a store that has never adopted the project registry has nothing here to
+    # report; the section only appears once there is something to say
+    if not (projects["registered"] or projects["finding"] or projects["integrity"]):
+        return
+    stdout.write("\nprojects:\n")
+    for project in projects["registered"]:
+        stdout.write(f"  {project['id']}: {project['roots']} roots\n")
+        for root in project["missing_roots"]:
+            stdout.write(f"    missing: {root}\n")
+        for root in project["unverifiable_roots"]:
+            stdout.write(f"    unverifiable: {root}\n")
+    if projects["finding"] is not None:
+        stdout.write(f"  invalid: {projects['finding']['location']}: {projects['finding']['reason']}\n")
+    if projects["integrity"] is not None:
+        stdout.write(f"  integrity: {projects['integrity']}\n")
 
 
 def run_doctor(*, root: Path | None, json_output: bool, stale_days: int,
@@ -96,6 +118,16 @@ def run_doctor(*, root: Path | None, json_output: bool, stale_days: int,
     # lazy-import convention for the memriver_core stack
     from memriver_core.bootstrap import build_diagnostics_service
     from memriver_core.config import load_settings
+
+    from .project_context import RegistryInvalid, load_registry, root_integrity
+
+    def classify(root_path: str) -> str:
+        try:
+            return "ok" if stat.S_ISDIR(os.stat(root_path).st_mode) else "missing"
+        except FileNotFoundError:
+            return "missing"
+        except OSError:
+            return "unverifiable"
 
     try:
         with quiet_core_logging():
@@ -116,8 +148,27 @@ def run_doctor(*, root: Path | None, json_output: bool, stale_days: int,
             stdout.write(json.dumps({"error": _INACCESSIBLE_JSON_ERROR}) + "\n")
         return 2
 
+    try:
+        registry = load_registry(settings.root)
+        verdicts = {r: classify(r) for p in registry.projects for r in p.roots}
+        projects = {
+            "registered": [
+                {"id": str(p.id), "roots": len(p.roots),
+                 "missing_roots": [r for r in p.roots if verdicts[r] == "missing"],
+                 "unverifiable_roots": [r for r in p.roots if verdicts[r] == "unverifiable"]}
+                for p in registry.projects],
+            "finding": None,
+            # the same check the resolver runs: a server that is degraded
+            # because a root was re-pointed must never meet a green doctor
+            "integrity": root_integrity(registry),
+        }
+    except RegistryInvalid as err:
+        projects = {"registered": [], "finding": {"location": err.location, "reason": err.reason},
+                    "integrity": None}
+
     if json_output:
-        _render_json(report, stdout)
+        _render_json(report, projects, stdout)
     else:
-        _render_human(report, stdout)
-    return _EXIT_CODES[report.state]
+        _render_human(report, projects, stdout)
+    return max(_EXIT_CODES[report.state],
+              1 if projects["finding"] or projects["integrity"] else 0)
