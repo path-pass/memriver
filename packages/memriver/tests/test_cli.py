@@ -400,3 +400,46 @@ def test_configuring_the_memriver_loggers_twice_does_not_stack_handlers():
         cli._configure_logging()
 
         assert [len(logger.handlers) for logger in named] == [1, 1]
+
+
+def test_configure_logging_replaces_a_preattached_stdout_handler(tmp_path, capsys):
+    """An embedding process may already have attached its own
+    `StreamHandler(sys.stdout)` to `memriver_core` before memriver's own
+    `main()` runs. `_configure_logging` only added a handler when the logger
+    had none, so that pre-existing stdout handler survived -- and with
+    propagation off, a loader warning went out over it, straight into the
+    JSON-RPC/hook stdout stream. Configuring must replace it, not add
+    alongside it."""
+    import logging
+
+    with isolated_memriver_loggers() as named:
+        for logger in named:
+            logger.addHandler(logging.StreamHandler(sys.stdout))
+
+        assert cli.main(["doctor", "--root", str(tmp_path)]) == 0
+        logging.getLogger("memriver_core.config.loader").warning(
+            "config.toml could not be read")
+
+    captured = capsys.readouterr()
+    assert "config.toml could not be read" not in captured.out
+    assert "config.toml could not be read" in captured.err
+
+
+def test_configure_logging_replaces_a_preattached_null_handler(tmp_path, capsys):
+    """A `NullHandler` pre-attached by an embedding process must not survive
+    configuration either: with propagation off, it would otherwise be the
+    only handler on the logger, and every warning is swallowed instead of
+    reaching stderr."""
+    import logging
+
+    with isolated_memriver_loggers() as named:
+        for logger in named:
+            logger.addHandler(logging.NullHandler())
+
+        assert cli.main(["doctor", "--root", str(tmp_path)]) == 0
+        logging.getLogger("memriver_core.config.loader").warning(
+            "config.toml could not be read")
+
+    captured = capsys.readouterr()
+    assert "config.toml could not be read" not in captured.out
+    assert "config.toml could not be read" in captured.err

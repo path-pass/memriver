@@ -8,6 +8,7 @@ tests are not.
 import importlib.util
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -120,3 +121,32 @@ def test_sync_replaces_the_ruleset_when_the_scanner_can_load_it(monkeypatch,
     assert target.read_bytes() == fresh
     assert stat.S_IMODE(target.stat().st_mode) == 0o644
     assert "1 upstream rules" in capsys.readouterr().out
+
+
+def test_sync_repairs_a_live_ruleset_that_is_already_corrupt(monkeypatch, tmp_path):
+    """The file the sync tool exists to repair can itself be the thing that's
+    broken -- here, a rule with no `id`. Validating the download must not go
+    through a loader whose own module-level import already explodes on that
+    corrupt live file, or a corrupt file could never be repaired.
+
+    The corruption has to land on the real, installed
+    memriver_core.content_policy.rules/gitleaks.toml (not `OUTPUT`, which
+    `_run_sync` below points at a tmp_path): that real file is what
+    `secret_scanner` loads at import time, and the module has to be forced
+    out of `sys.modules` first so importing it again actually re-runs that
+    module-level load against the now-corrupt bytes.
+    """
+    live_rules_file = sync_gitleaks_rules.OUTPUT
+    original = live_rules_file.read_bytes()
+    live_rules_file.write_bytes(b'[[rules]]\nregex = "x"\n')
+    sys.modules.pop("memriver_core.content_policy.secret_scanner", None)
+    try:
+        fresh = b'[[rules]]\nid = "fresh"\nregex = "ghp_[0-9A-Za-z]{36}"\n'
+        target = _run_sync(monkeypatch, tmp_path, fresh)
+
+        sync_gitleaks_rules.main()
+
+        assert target.read_bytes() == fresh
+    finally:
+        live_rules_file.write_bytes(original)
+        sys.modules.pop("memriver_core.content_policy.secret_scanner", None)

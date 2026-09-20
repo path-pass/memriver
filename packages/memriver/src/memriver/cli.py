@@ -219,6 +219,14 @@ def _configure_logging() -> None:
     protocol stream. Configuring the two memriver loggers directly, and taking
     them off propagation, makes the destination independent of the root.
 
+    Each logger's handlers are replaced outright, not added to: an embedding
+    process may have already attached its own handler to `memriver` or
+    `memriver_core` before `main()` runs -- a `StreamHandler(sys.stdout)`
+    would otherwise still carry warnings into the protocol stream, and a
+    `NullHandler` would otherwise still swallow them, since propagation is
+    off. Replacing also rebinds to the current `sys.stderr` if it was swapped
+    since an earlier call, e.g. under test capture.
+
     Idempotent: `main()` is an ordinary callable and may be invoked more than
     once in a process, which must not double every warning line.
     """
@@ -226,8 +234,7 @@ def _configure_logging() -> None:
         logger = logging.getLogger(name)
         logger.propagate = False
         logger.setLevel(logging.WARNING)
-        if not logger.handlers:
-            logger.addHandler(logging.StreamHandler(sys.stderr))
+        logger.handlers[:] = [logging.StreamHandler(sys.stderr)]
 
 
 def main(argv: Sequence[str] | None = None) -> int:

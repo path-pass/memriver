@@ -81,16 +81,18 @@ def main() -> None:
     with urllib.request.urlopen(url, timeout=30) as resp:
         data = resp.read()
 
-    # Validate BEFORE overwriting, never after: the secret scanner's
-    # import-time load is deliberately unguarded, so a truncated 200, a
-    # non-TOML one, or -- legal TOML the loader still chokes on -- a rule
-    # missing its `id` would break `import memriver_core.content_policy
-    # .secret_scanner` outright, and with it every write. Parsing the payload
-    # here catches the first two; the scanner's own loader, run against the
-    # temp sibling, is the only thing that catches the third, because it is
-    # the check the runtime itself performs. A failed sync must leave the
-    # previous good ruleset in place.
-    from memriver_core.content_policy.secret_scanner import _load_rules
+    # Validate BEFORE overwriting, never after: a truncated 200, a non-TOML
+    # one, or -- legal TOML the loader still chokes on -- a rule missing its
+    # `id` must not reach the live file the secret scanner loads at import.
+    # Parsing the payload here catches the first two; the scanner's own
+    # loader, run against the temp sibling, is the only thing that catches
+    # the third, because it is the check the runtime itself performs. This
+    # imports the loader from `rules_loader`, not from `secret_scanner`
+    # itself: `secret_scanner` loads the *live* ruleset at import
+    # (`_RULES = _load_rules(...)`), so if that live file -- the very one
+    # this script exists to repair -- is already corrupt, importing
+    # `secret_scanner` would raise before a repair could ever run.
+    from memriver_core.content_policy.rules_loader import _load_rules
 
     raw = tomllib.loads(data.decode("utf-8"))["rules"]
     _atomic_write_bytes(OUTPUT, data, validate=_load_rules)
