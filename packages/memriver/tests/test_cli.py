@@ -7,12 +7,14 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 from memriver import cli, hooks
 from memriver.hooks import HookResult
-from memriver.project_context import project_slug
+from memriver.project_context import bind
 from memriver.protocol_text import STOP_NUDGE
+from memriver_core.models import ProjectId
 
 PROTOCOL_VERSION = "2025-06-18"
 
@@ -102,6 +104,28 @@ def test_install_rejects_combining_harness_and_all():
     assert "not allowed with" in out.stderr
 
 
+@pytest.mark.parametrize(("argv", "handler", "expected"), [
+    (["project", "init", "--yes"], "_project_init",
+     {"directory": None, "yes": True, "root": None}),
+    (["project", "adopt", "x-0123456789abcdef", "/d"], "_project_adopt",
+     {"project_id": "x-0123456789abcdef", "directory": Path("/d"), "yes": False}),
+    (["project", "unbind", "x-0123456789abcdef", "/d"], "_project_unbind",
+     {"project_id": "x-0123456789abcdef", "directory": Path("/d"), "yes": False}),
+    (["project", "explain", "--project-dir", "/d"], "_project_explain",
+     {"project_dir": Path("/d"), "root": None}),
+])
+def test_project_subcommands_parse(argv, handler, expected):
+    args = cli._build_parser().parse_args(argv)
+    assert args.handler is getattr(cli, handler)
+    assert {key: getattr(args, key) for key in expected} == expected
+
+
+def test_project_without_a_subcommand_is_a_parser_error():
+    out = _run_cli("project")
+    assert out.returncode == 2
+    assert "Traceback" not in out.stderr
+
+
 @pytest.mark.parametrize(
     "argv",
     [
@@ -113,9 +137,14 @@ def test_legacy_and_explicit_serve_parse_to_the_same_handler(argv, monkeypatch):
     assert capture_dispatch(argv, monkeypatch).command == "serve"
 
 
-def test_hook_subcommand_writes_only_hook_result_streams(monkeypatch):
-    result = invoke_main(["hook", "stop", "--harness", "codex"],
-                         stdin='{"stop_hook_active": false}')
+def test_hook_subcommand_writes_only_hook_result_streams(tmp_path):
+    """The Stop nudge fires inside a registered project, and only what the hook
+    composed reaches stdout."""
+    root = tmp_path / "mem"
+    repo = _git_repo(tmp_path, "hook-repo")
+    _register(root, repo)
+    result = invoke_main(["hook", "stop", "--harness", "codex", "--root", str(root)],
+                         stdin=json.dumps({"stop_hook_active": False, "cwd": str(repo)}))
     assert json.loads(result.stdout) == {"decision": "block", "reason": STOP_NUDGE}
     assert result.stderr == ""
     assert result.exit_code == 0
@@ -163,8 +192,8 @@ def _write_over_stdio(root, cwd, extra_args: list[str], content: str,
                      "params": {}})
         _send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
                      "params": {"name": "memory_write",
-                                "arguments": {"content": content, "type": "project",
-                                              "scope": "project"}}})
+                                "arguments": {"content": content,
+                                              "type": "project"}}})
         return _await_response(proc, 2)
     finally:
         proc.stdin.close()
@@ -178,14 +207,26 @@ def _git_repo(tmp_path, name: str):
     return git_repo
 
 
-def _entry_files(root, git_repo):
-    return sorted((root / "projects" / project_slug(git_repo) / "entries").glob("*.md"))
+def _register(root, repo) -> ProjectId:
+    """Bind the fixture repo, the way `memriver project init` would.
+
+    A `.git` directory confers no identity any more: without a registered
+    root the server has no project to write to at all.
+    """
+    project_id = ProjectId(f"fixture-{repo.name.replace('_', '-')}")
+    bind(root, project_id, str(repo.resolve()), create=True)
+    return project_id
+
+
+def _entry_files(root, project_id):
+    return sorted((root / "projects" / project_id / "entries").glob("*.md"))
 
 
 def test_project_scope_follows_project_dir_not_cwd(tmp_path):
     """--project-dir decides project attribution even when cwd is elsewhere."""
     root = tmp_path / "mem"
     git_repo = _git_repo(tmp_path, "target-repo")
+    project_id = _register(root, git_repo)
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
 
@@ -193,18 +234,19 @@ def test_project_scope_follows_project_dir_not_cwd(tmp_path):
                                  extra_args=["--project-dir", str(git_repo)],
                                  content="stored for the target repo")
     assert response["result"]["isError"] is False
-    assert len(_entry_files(root, git_repo)) == 1
+    assert len(_entry_files(root, project_id)) == 1
 
 
 def test_project_scope_defaults_to_working_directory(tmp_path):
     """Without --project-dir the MCP client's working directory decides the scope."""
     root = tmp_path / "mem"
     git_repo = _git_repo(tmp_path, "cwd-repo")
+    project_id = _register(root, git_repo)
 
     response = _write_over_stdio(root, cwd=git_repo, extra_args=[],
                                  content="stored for the cwd repo")
     assert response["result"]["isError"] is False
-    assert len(_entry_files(root, git_repo)) == 1
+    assert len(_entry_files(root, project_id)) == 1
 
 
 def test_config_file_in_root_is_honoured_end_to_end(tmp_path):
@@ -213,12 +255,13 @@ def test_config_file_in_root_is_honoured_end_to_end(tmp_path):
     root.mkdir()
     (root / "config.toml").write_text("max_body_chars = 10\n", encoding="utf-8")
     git_repo = _git_repo(tmp_path, "configured-repo")
+    project_id = _register(root, git_repo)
 
     response = _write_over_stdio(root, cwd=git_repo, extra_args=[],
                                  content="x" * 11)
     assert response["result"]["isError"] is False  # tools report, never raise
     assert "too large" in json.dumps(response["result"])
-    assert not _entry_files(root, git_repo)
+    assert not _entry_files(root, project_id)
 
 
 def test_bad_env_value_reports_readably(tmp_path):
@@ -268,11 +311,12 @@ def test_explicit_serve_starts_the_same_stdio_server(tmp_path):
     """`memriver serve` is an alias, not a second server."""
     root = tmp_path / "mem"
     repo = _git_repo(tmp_path, "explicit-serve")
+    project_id = _register(root, repo)
 
     response = _write_over_stdio(root, cwd=repo, extra_args=[],
                                  content="served explicitly", command="serve")
     assert response["result"]["isError"] is False
-    assert len(_entry_files(root, repo)) == 1
+    assert len(_entry_files(root, project_id)) == 1
 
 
 def test_hook_without_project_dir_keeps_the_payload_cwd_fallback_reachable(monkeypatch):
@@ -310,12 +354,16 @@ def test_importing_the_cli_does_not_import_the_server_stack():
     assert out.returncode == 0, out.stderr
 
 
-def test_running_a_hook_does_not_import_the_server_stack():
+def test_running_a_hook_does_not_import_the_server_stack(tmp_path):
+    root = tmp_path / "mem"
+    repo = _git_repo(tmp_path, "leak-check-repo")
+    _register(root, repo)
     out = _python_c("import sys\n"
                     "from memriver.cli import main\n"
-                    "assert main(['hook', 'stop', '--harness', 'codex']) == 0\n"
+                    f"assert main(['hook', 'stop', '--harness', 'codex', "
+                    f"'--root', {str(root)!r}]) == 0\n"
                     + _LEAK_CHECK,
-                    stdin='{"stop_hook_active": false}')
+                    stdin=json.dumps({"stop_hook_active": False, "cwd": str(repo)}))
     assert out.returncode == 0, out.stderr
     assert json.loads(out.stdout)["decision"] == "block"
 

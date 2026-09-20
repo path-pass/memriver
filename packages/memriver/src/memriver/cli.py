@@ -113,7 +113,50 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="days since a memory was last updated before it is "
                              "flagged stale (default: 90)")
     doctor.set_defaults(handler=_doctor)
+
+    _add_project_commands(commands)
     return parser
+
+
+def _add_project_commands(commands) -> None:
+    """`memriver project ...`: the only commands that write the project registry."""
+    project = commands.add_parser(
+        "project", help="register directories as memory projects")
+    project_commands = project.add_subparsers(dest="project_command", required=True)
+
+    def add(name: str, help_text: str, *, confirmable: bool = True) -> argparse.ArgumentParser:
+        sub = project_commands.add_parser(name, help=help_text)
+        sub.add_argument("--root", type=Path, default=None,
+                         help="storage root holding the registry (default: "
+                              "$MEMRIVER_ROOT or ~/agent-memory)")
+        if confirmable:
+            # explain writes nothing, so it has nothing to confirm
+            sub.add_argument("--yes", action="store_true",
+                             help="accept the plan shown, without prompting")
+        return sub
+
+    init = add("init", "register a new project rooted at a directory")
+    init.add_argument("directory", type=Path, nargs="?", default=None,
+                      help="project root (default: the current working directory)")
+    init.set_defaults(handler=_project_init)
+
+    adopt = add("adopt", "bind a directory to an existing project id")
+    adopt.add_argument("project_id", help="id of the project to bind to")
+    adopt.add_argument("directory", type=Path, nargs="?", default=None,
+                       help="project root (default: the current working directory)")
+    adopt.set_defaults(handler=_project_adopt)
+
+    unbind = add("unbind", "remove a root from a project")
+    unbind.add_argument("project_id", help="id of the project to edit")
+    unbind.add_argument("directory", type=Path, help="root to remove, as registered")
+    unbind.set_defaults(handler=_project_unbind)
+
+    explain = add("explain", "show which project a directory resolves to",
+                  confirmable=False)
+    explain.add_argument("--project-dir", type=Path, default=None,
+                         help="directory to explain (default: the current "
+                              "working directory)")
+    explain.set_defaults(handler=_project_explain)
 
 
 def _positive_int(value: str) -> int:
@@ -198,6 +241,37 @@ def _uninstall(args: argparse.Namespace) -> int:
                          clean_uv_cache=args.clean_uv_cache, root=args.root,
                          home=Path.home(), cwd=Path.cwd(), env=os.environ,
                          input_fn=input, stdout=sys.stdout, replace_file=os.replace)
+
+
+def _project_init(args: argparse.Namespace) -> int:
+    from .project_commands import run_init
+
+    return run_init(args.directory, root=args.root, yes=args.yes,
+                    stdin_is_tty=sys.stdin.isatty(), input_fn=input,
+                    stdout=sys.stdout, cwd=Path.cwd(), home=Path.home())
+
+
+def _project_adopt(args: argparse.Namespace) -> int:
+    from .project_commands import run_adopt
+
+    return run_adopt(args.project_id, args.directory, root=args.root, yes=args.yes,
+                     stdin_is_tty=sys.stdin.isatty(), input_fn=input,
+                     stdout=sys.stdout, cwd=Path.cwd(), home=Path.home())
+
+
+def _project_unbind(args: argparse.Namespace) -> int:
+    from .project_commands import run_unbind
+
+    return run_unbind(args.project_id, args.directory, root=args.root, yes=args.yes,
+                      stdin_is_tty=sys.stdin.isatty(), input_fn=input,
+                      stdout=sys.stdout, cwd=Path.cwd(), home=Path.home())
+
+
+def _project_explain(args: argparse.Namespace) -> int:
+    from .project_commands import run_explain
+
+    return run_explain(root=args.root, project_dir=args.project_dir,
+                       stdout=sys.stdout, cwd=Path.cwd(), home=Path.home())
 
 
 def _doctor(args: argparse.Namespace) -> int:
