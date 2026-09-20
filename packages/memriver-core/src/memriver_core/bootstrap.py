@@ -15,7 +15,12 @@ from .config import DEFAULT_MAX_BODY_CHARS, Settings
 from .content_policy.secret_scanner import SecretScanner
 from .repository.filesystem import FileMemoryRepository, FilesystemStoreInspector
 
-__all__ = ["EMPTY_INDEX", "build_diagnostics_service", "build_service"]
+# store_lock is re-exported for the umbrella's project registry, whose writes
+# must serialize with entry writes; bootstrap is the one surface a transport
+# may import it from.
+from .repository.filesystem.locking import store_lock
+
+__all__ = ["EMPTY_INDEX", "build_diagnostics_service", "build_service", "store_lock"]
 
 
 def build_service(settings: Settings, *, root: Path | None = None) -> MemoryService:

@@ -94,3 +94,10 @@ def test_build_diagnostics_service_returns_the_service_not_the_inspector(tmp_pat
     service = bootstrap.build_diagnostics_service(Settings(root=tmp_path))
     assert isinstance(service, DiagnosticsService)
     assert not isinstance(service, FilesystemStoreInspector)
+
+
+def test_bootstrap_reexports_store_lock():
+    from memriver_core import bootstrap
+    from memriver_core.repository.filesystem.locking import store_lock
+
+    assert bootstrap.store_lock is store_lock

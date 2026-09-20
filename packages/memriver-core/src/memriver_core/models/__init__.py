@@ -1,5 +1,6 @@
 from .memory import (
     ID_RE,
+    PROJECT_ID_RE,
     AccessContext,
     IndexListing,
     Memory,
@@ -11,6 +12,7 @@ from .memory import (
     now,
     now_strictly_after,
     sanitize_name,
+    single_line,
 )
 from .store_diagnostics import (
     DiagnosticFinding,
@@ -23,6 +25,7 @@ from .store_diagnostics import (
 
 __all__ = [
     "ID_RE",
+    "PROJECT_ID_RE",
     "AccessContext",
     "DiagnosticFinding",
     "DiagnosticsReport",
@@ -40,4 +43,5 @@ __all__ = [
     "now",
     "now_strictly_after",
     "sanitize_name",
+    "single_line",
 ]

@@ -58,6 +58,20 @@ def now_strictly_after(previous: str) -> str:
 # both shapes are safe as file stems, everything else is refused before globbing
 ID_RE = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9][a-z0-9-]{0,63}")
 
+# a project id is a directory name under projects/ and a scope suffix; the
+# repository and the umbrella's registry validate against the same pattern
+PROJECT_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
+
+# stored fields and path-derived text are hand-editable, and index lines are
+# injected into agent context automatically, so no field may smuggle a newline
+# or an embedded instruction into another line: control characters and Unicode
+# line separators collapse to spaces before a value is placed on a line
+_LINE_UNSAFE_RE = re.compile(r"[\x00-\x1f\x7f-\x9f  ]")
+
+
+def single_line(value: str) -> str:
+    return " ".join(_LINE_UNSAFE_RE.sub(" ", value).split())
+
 
 def sanitize_name(proposal: str) -> str | None:
     """Agent-proposed entry name -> permanent id, or None when unsalvageable.

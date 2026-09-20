@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -16,6 +15,7 @@ from memriver_core.application.errors import (
 )
 from memriver_core.models import (
     ID_RE,
+    PROJECT_ID_RE,
     AccessContext,
     Memory,
     ProjectId,
@@ -53,11 +53,11 @@ def _dir_scope(entries_dir: Path, root: Path) -> Scope | None:
 def _scope_dir(scope: Scope) -> Path:
     if scope.project_id is None:
         return Path("global")
-    slug = scope.project_id
-    # slugs come from untrusted tool input; reject path traversal
-    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug):
-        raise ValueError(f"invalid project slug: {slug!r}")
-    return Path("projects") / slug
+    project_id = scope.project_id
+    # project ids come from untrusted tool input; reject path traversal
+    if not PROJECT_ID_RE.fullmatch(project_id):
+        raise ValueError(f"invalid project id: {project_id!r}")
+    return Path("projects") / project_id
 
 
 class FileMemoryRepository:

@@ -15,7 +15,7 @@ from memriver_core.application.errors import (
     InvalidScope,
     ProjectUnavailable,
 )
-from memriver_core.models import IndexListing, Memory, Scope, sanitize_name
+from memriver_core.models import IndexListing, Memory, Scope, sanitize_name, single_line
 
 if TYPE_CHECKING:
     from memriver_core.content_policy.protocol import ContentPolicy
@@ -29,20 +29,10 @@ if TYPE_CHECKING:
 # error echoes the rejected value.
 _HARNESS_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 
-# entries are hand-editable and now injected into agent context automatically
-# (rather than agent-pulled), so no hand-edited or malicious field may smuggle
-# embedded instructions or newlines into the index; this collapses control
-# characters and Unicode line separators to spaces before a field is truncated.
-_INDEX_UNSAFE_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
-
 # What MemoryService.index returns for a store with nothing visible in it --
 # the single source transports compare against, rather than each keeping its
 # own copy of the literal in sync by hand.
 EMPTY_INDEX = "(no memories yet)"
-
-
-def _single_line(value: str) -> str:
-    return " ".join(_INDEX_UNSAFE_RE.sub(" ", value).split())
 
 
 class MemoryService:
@@ -128,8 +118,8 @@ class MemoryService:
             # either can carry a newline just as the cue can, and per-field
             # normalization keeps one field's characters out of another's
             # budget. `type` is the codec's Literal, so it needs none.
-            cue = _single_line(raw_cue)[:60]
-            memory_id, updated = _single_line(m.id), _single_line(m.updated[:10])
+            cue = single_line(raw_cue)[:60]
+            memory_id, updated = single_line(m.id), single_line(m.updated[:10])
             lines.append(f"- [{m.type}] {memory_id}: {cue} ({updated})")
         omitted = len(listing.entries) - self._index_budget_lines
         if omitted > 0:
