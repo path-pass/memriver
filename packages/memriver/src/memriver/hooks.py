@@ -11,6 +11,11 @@ message the agent can read as instructions.
 harness even where both currently build the same object: the schemas are owned
 by two vendors and have diverged before. Composition of the text itself is
 shared, because that is ours.
+
+*Stop stays light.* The Stop path only needs to know whether the current
+directory belongs to a registered project, so it resolves that through
+``project_context`` and ``memriver_core.config`` alone: it never builds the
+service stack, never takes the store lock, and never creates the store.
 """
 
 from __future__ import annotations
@@ -22,11 +27,9 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .core_logging import quiet_core_logging
-from .project_context import build_context
 from .protocol_text import (
     COMPACT_PREFIX,
     COMPACT_RESCUE_SUFFIX,
-    EMPTY_VISIBLE,
     INDEX_BEGIN_DELIMITER,
     INDEX_END_DELIMITER,
     SESSION_START_PREFIX,
@@ -132,12 +135,14 @@ def run_hook(event: HookEvent, harness: Harness, payload_text: str, *,
              cwd: Path) -> HookResult:
     """Run one hook event. Returns what to write; never raises, never exits."""
     if event == "stop":
-        return _stop(harness, payload_text)
+        return _stop(harness, payload_text, root=root, project_dir=project_dir,
+                    cwd=cwd)
     return _session_start(harness, payload_text, root=root,
                           project_dir=project_dir, cwd=cwd)
 
 
-def _stop(harness: Harness, payload_text: str) -> HookResult:
+def _stop(harness: Harness, payload_text: str, *, root: Path | None,
+         project_dir: Path | None, cwd: Path) -> HookResult:
     try:
         payload = json.loads(payload_text)
         # only a literal JSON false is a first Stop. A missing key, a string
@@ -146,6 +151,15 @@ def _stop(harness: Harness, payload_text: str) -> HookResult:
         # that blocks every Stop forever.
         if not (isinstance(payload, dict)
                 and payload.get("stop_hook_active") is False):
+            return HookResult()
+        # config only (pydantic-settings), never bootstrap: the Stop path must
+        # stay light and must not create the store or take the lock
+        from memriver_core.config import storage_root
+
+        from .project_context import resolve
+
+        store_root = Path(root) if root is not None else storage_root()
+        if resolve(store_root, _resolve_dir(payload, project_dir, cwd)).state != "registered":
             return HookResult()
         return HookResult(stdout=_emit(_STOP_ENCODERS[harness](STOP_NUDGE)))
     except Exception:  # noqa: BLE001 - a failed nudge is never worth a message
@@ -194,10 +208,13 @@ def _read_index(root: Path | None, project_dir: Path) -> str:
     from memriver_core.bootstrap import build_service
     from memriver_core.config import load_settings
 
+    from .project_context import resolve
+
     with quiet_core_logging():
         settings = load_settings(root_override=root)
-        return build_service(settings, root=settings.root).index(
-            build_context(project_dir))
+        resolution = resolve(settings.root, project_dir)
+        body = build_service(settings, root=settings.root).index(resolution.context())
+    return resolution.header() + "\n" + body
 
 
 def _neutralize_delimiters(index: str) -> str:
@@ -264,22 +281,17 @@ def _fit(index: str, wrap: Callable[[str], str], budget: _InlineBudget) -> str:
 
 
 def _compose(index: str, source: object, harness: Harness) -> str:
-    # imported here, not at module scope: this keeps the single-sourced
-    # sentinel without paying for memriver_core.bootstrap's own imports
-    # (repository/content_policy/config, none of them cheap) on the Stop
-    # path, which never reaches this function at all
-    from memriver_core.bootstrap import EMPTY_INDEX
-
-    # a store that holds only unreadable entries is indistinguishable from an
-    # empty one here, so the copy speaks about visibility, not existence
-    if index == EMPTY_INDEX:
-        return EMPTY_VISIBLE
+    # `index` is the project header, a newline, then the body `_read_index`
+    # built. The header is never dropped by `_fit`: it goes into the wrapper
+    # rather than the part that gets fitted to the harness's inline budget.
+    header, _, body = index.partition("\n")
     prefix, suffix = ((COMPACT_PREFIX, "\n" + COMPACT_RESCUE_SUFFIX)
                       if source == "compact" else (SESSION_START_PREFIX, ""))
+    header = _neutralize_delimiters(header)
 
-    def wrap(body: str) -> str:
-        return (f"{prefix}\n{INDEX_BEGIN_DELIMITER}\n{body}\n"
+    def wrap(body_text: str) -> str:
+        return (f"{prefix}\n{INDEX_BEGIN_DELIMITER}\n{header}\n{body_text}\n"
                 f"{INDEX_END_DELIMITER}{suffix}")
 
-    return _fit(_neutralize_delimiters(index), wrap,
+    return _fit(_neutralize_delimiters(body), wrap,
                 INLINE_CONTEXT_BUDGET[harness])
