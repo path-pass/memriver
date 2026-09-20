@@ -24,11 +24,11 @@ class MemoryRepository(Protocol):
       are written by hand (or by a future reviewed maintenance step), never
       by an agent-facing caller.
     - ``create(memory, ctx)`` owns the atomic name reservation. A project
-      write checks the caller's visible scopes; readable same-scope
-      collisions raise
-      ``NameTaken(memory_id, existing=m)``; cross-scope collisions raise
-      ``NameTaken(memory_id, existing=None)``; occupied but unreadable storage
-      raises ``UnreadableMemory(memory_id)``.
+      write checks the caller's visible scopes; a readable collision in any of
+      them raises ``NameTaken(memory_id, existing=m)``; occupied but
+      unreadable storage raises ``UnreadableMemory(memory_id)``. ``existing``
+      is always the colliding memory: the search never leaves the caller's
+      scopes, so there is no collision it would have to withhold.
     - ``get``/``update_body``/``delete`` raise ``MemoryNotFound(memory_id)``,
       ``UnreadableMemory(memory_id)``, or ``StorageFailure()``. No method
       accepts ``ctx=None``, and the ordinary API has no implicit "all

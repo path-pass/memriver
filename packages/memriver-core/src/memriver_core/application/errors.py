@@ -46,12 +46,13 @@ class UnreadableMemory(MemoryError):
 class NameTaken(MemoryError):
     """`memory_id` is already in use; `existing` is the memory holding it.
 
-    `existing=None` is the cross-scope refusal: the collision sits outside the
-    caller's scopes, so nothing about it -- content, type, or scope -- may be
-    echoed back across that boundary.
+    Always populated: a name reservation searches the caller's visible scopes
+    and nothing else, so whatever holds the name is by construction something
+    the caller may already read. There is no refusal left that has to withhold
+    the colliding memory, and no caller may omit it.
     """
 
-    def __init__(self, memory_id: str, existing: Memory | None = None) -> None:
+    def __init__(self, memory_id: str, existing: Memory) -> None:
         super().__init__(f"name taken: {memory_id}")
         self.memory_id = memory_id
         self.existing = existing

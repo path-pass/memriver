@@ -80,22 +80,15 @@ class FileMemoryRepository:
         # entry is replaced without ever being looked at. Bind them here, so
         # the guarantee is the adapter's own and does not depend on every
         # caller having checked first.
-        if (memory.scope.project_id is not None
-                and memory.scope not in ctx.visible_scopes()):
+        if memory.scope not in ctx.visible_scopes():
             # names the scope, never the memory: the refusal must not echo
             # content across the boundary it is enforcing
             raise InvalidScope(f"scope {memory.scope.to_storage()!r} is not "
                                "writable from this context")
+        check_scopes = list(ctx.visible_scopes())
         with store_lock(self.root):
             # check-then-write must hold the lock, or two writers race to
-            # the same name and the loser silently overwrites the winner.
-            #
-            # a global name must never shadow, or claim, a name any project
-            # already uses -- so a global write checks every scope in the
-            # store, not just the caller's own two
-            check_scopes = (None if memory.scope.project_id is None
-                            else list(ctx.visible_scopes()))
-            old = None
+            # the same name and the loser silently overwrites the winner
             if self._occupied(memory.id, check_scopes):
                 # a file sits at this name -- _read may still refuse it
                 # (unparseable, or frontmatter scope contradicting its
@@ -105,13 +98,9 @@ class FileMemoryRepository:
                     old = self._read(memory.id, check_scopes)
                 except Exception:  # noqa: BLE001
                     raise UnreadableMemory(memory.id) from None
-            if old is not None:
-                if memory.scope.project_id is None and old.scope != memory.scope:
-                    # the collision lives in another scope (a project, reached
-                    # only because a global write searches the whole store);
-                    # its content/type must not leak across that boundary, so
-                    # `existing` stays None and the caller gets no echo
-                    raise NameTaken(memory.id, existing=None)
+                # the collision was found in the caller's own visible scopes,
+                # so echoing it crosses no boundary -- including a global
+                # entry, which every context may already read
                 raise NameTaken(memory.id, existing=old)
             self._write(memory)
 
@@ -270,7 +259,7 @@ class FileMemoryRepository:
         except OSError as err:
             raise StorageFailure from err
 
-    def _occupied(self, memory_id: str, scopes: list[Scope] | None) -> bool:
+    def _occupied(self, memory_id: str, scopes: list[Scope]) -> bool:
         """Whether any file sits at this name -- decodable or not.
 
         The write-side collision check must treat every existing file as
@@ -284,24 +273,22 @@ class FileMemoryRepository:
             return False
         return True
 
-    def _find(self, memory_id: str, scopes: list[Scope] | None) -> Path:
+    def _find(self, memory_id: str, scopes: list[Scope]) -> Path:
         # memory ids are untrusted tool input; reject unknown shapes before globbing
         if not ID_RE.fullmatch(memory_id):
             raise MemoryNotFound(memory_id)
-        if scopes is None:
-            patterns = [f"global/entries/{memory_id}.md",
-                        f"projects/*/entries/{memory_id}.md"]
-        else:
-            # searching only the caller's scopes makes cross-project resolution
-            # impossible by construction, not by a check after the fact
-            patterns = [str(_scope_dir(s) / "entries" / f"{memory_id}.md")
-                        for s in scopes]
+        # every lookup is scoped: searching only the caller's scopes makes
+        # cross-project resolution impossible by construction, not by a check
+        # after the fact. There is no whole-store pattern to fall back to --
+        # an administrative all-store query needs its own named method.
+        patterns = [str(_scope_dir(s) / "entries" / f"{memory_id}.md")
+                    for s in scopes]
         for pattern in patterns:
             for path in self.root.glob(pattern):
                 return path
         raise MemoryNotFound(memory_id)
 
-    def _read(self, memory_id: str, scopes: list[Scope] | None) -> Memory:
+    def _read(self, memory_id: str, scopes: list[Scope]) -> Memory:
         path = self._find(memory_id, scopes)
         try:
             text = path.read_text(encoding="utf-8")

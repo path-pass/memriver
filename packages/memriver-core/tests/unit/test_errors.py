@@ -30,6 +30,10 @@ SUBCLASSES = [
 TAXONOMY = [MemoryError, *SUBCLASSES]
 
 
+def _memory() -> Memory:
+    return Memory.new(body="b", type="project", scope=Scope.global_(), source={})
+
+
 def test_base_does_not_subclass_builtin_key_error():
     assert not issubclass(MemoryError, KeyError)
 
@@ -39,26 +43,31 @@ def test_all_taxonomy_members_subclass_the_base(cls):
     assert issubclass(cls, MemoryError)
 
 
-def test_name_taken_defaults_existing_to_none():
-    err = NameTaken("x")
-    assert err.memory_id == "x"
-    assert err.existing is None
-
-
-def test_name_taken_existing_none_explicit():
-    err = NameTaken("x", existing=None)
-    assert err.existing is None
-
-
-def test_name_taken_existing_set():
-    m = Memory.new(body="b", type="project", scope=Scope.global_(), source={})
+def test_name_taken_carries_the_memory_holding_the_name():
+    m = _memory()
     err = NameTaken("x", existing=m)
+    assert err.memory_id == "x"
     assert err.existing is m
 
 
-@pytest.mark.parametrize("cls", [MemoryNotFound, UnreadableMemory, NameTaken])
-def test_storage_boundary_errors_carry_the_memory_id_as_a_field(cls):
-    assert cls("some-name").memory_id == "some-name"
+def test_name_taken_requires_the_memory_holding_the_name():
+    # a name reservation only ever collides inside the caller's visible
+    # scopes, so the memory holding the name is by construction one the caller
+    # may see: there is no refusal left that has nothing to hand back, and an
+    # adapter must not invent one by omitting the argument
+    with pytest.raises(TypeError):
+        NameTaken("x")  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize(
+    "make",
+    [lambda: MemoryNotFound("some-name"),
+     lambda: UnreadableMemory("some-name"),
+     lambda: NameTaken("some-name", existing=_memory())],
+    ids=["MemoryNotFound", "UnreadableMemory", "NameTaken"],
+)
+def test_storage_boundary_errors_carry_the_memory_id_as_a_field(make):
+    assert make().memory_id == "some-name"
 
 
 def test_global_read_only_message_is_fixed():
