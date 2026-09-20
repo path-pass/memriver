@@ -6,6 +6,7 @@ from typing import Literal
 from fastmcp import FastMCP
 from memriver_core import (
     ContentRejected,
+    GlobalReadOnly,
     InvalidScope,
     MemoryNotFound,
     NameTaken,
@@ -16,7 +17,7 @@ from memriver_core import (
 from memriver_core.bootstrap import build_service
 from memriver_core.config import Settings
 
-from .project_context import build_context
+from .project_context import ProjectResolution, resolve
 from .protocol_text import INSTRUCTIONS
 
 # read, update, delete and write map the same application errors to different
@@ -29,10 +30,27 @@ Operation = Literal["read", "write", "update", "delete", "list"]
 
 _COULD_NOT_READ_STORE = "could not read the memory store"
 
+# The global scope is readable from every context and writable from none, so
+# one refusal covers create, update and delete: it tells the agent to stop
+# rather than look for another way in.
+_GLOBAL_READ_ONLY = ("global memories are read-only to agents; no change was made. Tell "
+                     "the user; do not retry through another entry or edit the store directly.")
+
+# Why there is no project, and what the agent should ask for -- keyed by the
+# resolution state, never by a path: the header line is the only place a
+# directory is ever named.
+_NO_PROJECT = {
+    "none": ("no writable project: this directory is not registered. No memory was saved. "
+             "Ask the user to choose a project root and run memriver project init; do not "
+             "run it yourself."),
+    "degraded": ("no writable project: the project registry is invalid. No memory was "
+                 "saved. Ask the user to run memriver project explain."),
+}
+
 
 def _map_error(operation: Operation, err: Exception, *,
                entry_id: str | None = None,
-               project_dir: Path | None = None) -> dict:
+               resolution: ProjectResolution | None = None) -> dict:
     """Application error -> the tool's error dict. Tools never raise.
 
     Every string a client sees for a storage-boundary error is written here,
@@ -43,14 +61,18 @@ def _map_error(operation: Operation, err: Exception, *,
     """
     if operation == "list":
         return {"error": _COULD_NOT_READ_STORE}
+    if isinstance(err, GlobalReadOnly):
+        # one refusal for every mutating operation: the rule is the scope's,
+        # not the operation's
+        return {"error": _GLOBAL_READ_ONLY}
     if operation == "write":
         if isinstance(err, NameTaken):
-            if err.existing is None:
-                # the collision lives in another scope; its content and type
-                # must not leak across that boundary, so nothing is echoed
-                return {"error": f"name {err.memory_id!r} is already used "
-                                 "elsewhere in the store; choose another name"}
             old = err.existing
+            if old.scope.project_id is None:
+                # readable from here, but no memory_update can ever land on
+                # it: echoing the entry would only invite a refused retry
+                return {"error": f"name {err.memory_id!r} is already used by a "
+                                 "read-only global memory; choose another name"}
             return {"error": f"name {err.memory_id!r} already exists; "
                              "memory_update it, or choose a more precise name "
                              "if this is a different fact",
@@ -65,9 +87,11 @@ def _map_error(operation: Operation, err: Exception, *,
             return {"error": f"name {err.memory_id!r} is taken by a file that "
                              "is not a readable entry"}
         if isinstance(err, ProjectUnavailable):
-            # the core is path-free on purpose: project_dir belongs to the
-            # transport, which is what resolved it in the first place
-            return {"error": f"not inside a git project: {project_dir}"}
+            # the core's message is one generic line for every context; the
+            # transport is what resolved the project, so it is what says why
+            # there is none and what to ask the user for
+            state = resolution.state if resolution is not None else "none"
+            return {"error": _NO_PROJECT.get(state, _NO_PROJECT["none"])}
         if isinstance(err, ContentRejected | InvalidScope | ValueError):
             # policy/scope copy is authored in the core, where the wording is
             # the rule itself, and is already client-safe (it never echoes the
@@ -108,7 +132,10 @@ def build_server(root: Path, project_dir: Path,
     """
     settings = settings if settings is not None else Settings()
     service = build_service(settings, root=root)
-    ctx = build_context(project_dir)
+    # resolved once, at build time: every tool answers for the same project
+    # for the life of the server, and the header cannot drift between calls
+    resolution = resolve(root, project_dir)
+    ctx = resolution.context()
 
     mcp = FastMCP("memriver", instructions=INSTRUCTIONS)
 
@@ -118,9 +145,10 @@ def build_server(root: Path, project_dir: Path,
 
     @mcp.tool
     async def memory_index() -> str:
-        """List all active memories (global + current project) as a compact index."""
+        """The session's project on the first line, then a compact index of every
+        visible memory (global + project)."""
         try:
-            return service.index(ctx)
+            return resolution.header() + "\n" + service.index(ctx)
         except Exception as err:  # noqa: BLE001
             return _map_error("list", err)["error"]
 
@@ -148,28 +176,28 @@ def build_server(root: Path, project_dir: Path,
     @mcp.tool
     async def memory_write(content: str,
                            type: Literal["user", "feedback", "project", "reference"],
-                           name: str = "", scope: str = "project",
-                           sync: bool = True, harness: str = "unknown",
+                           name: str = "", sync: bool = True,
+                           harness: str = "unknown",
                            description: str = "") -> dict:
-        """Save one durable fact to shared memory.
+        """Save one durable fact to the current project's memory.
+        Global memories are read-only to agents.
         type: user = who the user is; feedback = how they want you to work;
         project = ongoing work/constraints; reference = external resources.
         name: short kebab-case name proposal; it becomes the permanent id.
-        scope: 'project' (default) or 'global' (cross-project user facts only).
         description: one-line recall cue shown in the index; when should a
         future session remember this?"""
         try:
-            m = service.create(content=content, type=type, name=name, scope=scope,
-                               sync=sync, harness=harness, description=description,
-                               ctx=ctx)
+            m = service.create(content=content, type=type, name=name, sync=sync,
+                               harness=harness, description=description, ctx=ctx)
         except Exception as err:  # noqa: BLE001
-            return _map_error("write", err, project_dir=project_dir)
+            return _map_error("write", err, resolution=resolution)
         return {"id": m.id, "scope": m.scope.to_storage()}
 
     @mcp.tool
     async def memory_update(entry_id: str, content: str,
                             description: str | None = None) -> dict:
         """Rewrite an existing memory in place; the name and type stay.
+        Global entries are read-only; the call is refused.
         description: omit to keep the existing one; pass a string to replace
         it, or "" to clear it."""
         try:
@@ -180,7 +208,8 @@ def build_server(root: Path, project_dir: Path,
 
     @mcp.tool
     async def memory_delete(entry_id: str) -> dict:
-        """Delete a memory that is no longer true or no longer wanted."""
+        """Delete a memory that is no longer true or no longer wanted.
+        Global entries are read-only; the call is refused."""
         try:
             service.delete(entry_id, ctx)
         except Exception as err:  # noqa: BLE001
@@ -189,7 +218,8 @@ def build_server(root: Path, project_dir: Path,
 
     @mcp.tool
     async def memory_dream(limit: int = 3) -> dict:
-        """Maintenance review queue: the entries least recently confirmed true.
+        """Maintenance review queue: the current project's entries only, least
+        recently confirmed true first.
 
         For DEDICATED memory-hygiene sessions only -- do not call this during
         regular task work. For each returned entry, verify it against reality:
@@ -197,7 +227,7 @@ def build_server(root: Path, project_dir: Path,
         confirmation); outdated -> memory_update with the corrected body;
         no longer true or wanted -> memory_delete."""
         try:
-            return {"entries": [
+            return {"project": resolution.header(), "entries": [
                 {"id": m.id, "type": m.type, "scope": m.scope.to_storage(),
                  "description": m.description, "body": m.body,
                  "created": m.created, "updated": m.updated, "trust": m.trust}

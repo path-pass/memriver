@@ -16,9 +16,11 @@ from __future__ import annotations
 import pytest
 from fastmcp import Client
 from memriver import server as server_module
+from memriver.project_context import ProjectResolution, bind
 from memriver.server import _map_error, build_server
 from memriver_core.application.errors import (
     ContentRejected,
+    GlobalReadOnly,
     InvalidScope,
     MemoryNotFound,
     NameTaken,
@@ -32,21 +34,26 @@ from memriver_core.content_policy.secret_scanner import SecretScanner
 from memriver_core.models import Memory, ProjectId, Scope
 
 SOURCE = {"harness": "test", "method": "agent"}
+PROJECT = ProjectId("demo-0123456789abcdef")
 
-EXISTING = Memory.new(body="v1 body", type="user", scope=Scope.global_(),
+EXISTING = Memory.new(body="v1 body", type="user", scope=Scope.project(PROJECT),
                       id="n", description="original cue", source=SOURCE)
+EXISTING_GLOBAL = Memory.new(body="v1 body", type="user", scope=Scope.global_(),
+                             id="n", description="original cue", source=SOURCE)
 
 TAKEN_SAME_SCOPE = ("name 'n' already exists; memory_update it, or choose a "
                     "more precise name if this is a different fact")
-TAKEN_ELSEWHERE = ("name 'n' is already used elsewhere in the store; choose "
-                   "another name")
+TAKEN_GLOBAL = ("name 'n' is already used by a read-only global memory; choose "
+                "another name")
 TAKEN_UNREADABLE = "name 'n' is taken by a file that is not a readable entry"
+GLOBAL_READ_ONLY = ("global memories are read-only to agents; no change was made. Tell the user; "
+                    "do not retry through another entry or edit the store directly.")
 
 
 # --- _map_error, fed nothing but structured fields ---
 
 @pytest.mark.parametrize("err, expected", [
-    (NameTaken("n", existing=None), {"error": TAKEN_ELSEWHERE}),
+    (NameTaken("n", existing=EXISTING_GLOBAL), {"error": TAKEN_GLOBAL}),
     (UnreadableMemory("n"), {"error": TAKEN_UNREADABLE}),
     (StorageFailure(), {"error": "could not write entry"}),
     (MemoryNotFound("n"), {"error": "could not write entry"}),
@@ -65,16 +72,40 @@ def test_write_mapping(err, expected):
 def test_write_name_taken_echoes_the_existing_memory_from_the_field():
     assert _map_error("write", NameTaken("n", existing=EXISTING)) == {
         "error": TAKEN_SAME_SCOPE,
-        "existing": {"id": "n", "type": "user", "scope": "global",
+        "existing": {"id": "n", "type": "user", "scope": f"project:{PROJECT}",
                      "updated": EXISTING.updated, "snippet": "v1 body",
                      "description": "original cue"},
     }
 
 
-def test_write_outside_a_project_names_the_path_the_transport_resolved(tmp_path):
-    assert _map_error("write", ProjectUnavailable("not inside a git project"),
-                      project_dir=tmp_path) == {
-        "error": f"not inside a git project: {tmp_path}"}
+def test_a_global_collision_is_refused_without_echoing_the_entry():
+    # the global entry is readable from here, but it can never be rewritten,
+    # so the echo would only invite a memory_update that is refused in turn
+    assert _map_error("write", NameTaken("n", existing=EXISTING_GLOBAL)) == {
+        "error": TAKEN_GLOBAL}
+
+
+@pytest.mark.parametrize("resolution, expected", [
+    (ProjectResolution("none", None, None, None),
+     ("no writable project: this directory is not registered. No memory was saved. "
+      "Ask the user to choose a project root and run memriver project init; do not "
+      "run it yourself.")),
+    (ProjectResolution("degraded", None, None, "x"),
+     ("no writable project: the project registry is invalid. No memory was saved. "
+      "Ask the user to run memriver project explain.")),
+])
+def test_write_without_a_project_states_the_resolution_not_a_path(resolution, expected):
+    # the core message is path-free and generic; the transport owns the
+    # state-specific instruction, and still names no path
+    assert _map_error("write", ProjectUnavailable("no writable project in this context"),
+                      resolution=resolution) == {"error": expected}
+
+
+@pytest.mark.parametrize("operation, kwargs", [
+    ("write", {}), ("update", {"entry_id": "n"}), ("delete", {"entry_id": "n"}),
+])
+def test_every_mutation_of_a_global_entry_reports_the_same_refusal(operation, kwargs):
+    assert _map_error(operation, GlobalReadOnly(), **kwargs) == {"error": GLOBAL_READ_ONLY}
 
 
 @pytest.mark.parametrize("operation", ["read", "update"])
@@ -163,8 +194,9 @@ class OtherBackend:
 @pytest.fixture
 def other_backend_server(tmp_path, monkeypatch):
     """build_server, but over OtherBackend instead of the filesystem."""
-    git_repo = tmp_path / "demo"
-    (git_repo / ".git").mkdir(parents=True)
+    directory = tmp_path / "demo"
+    directory.mkdir()
+    bind(tmp_path / "mem", PROJECT, str(directory.resolve()), create=True)
     settings = Settings()
 
     def build(error: Exception):
@@ -178,32 +210,31 @@ def other_backend_server(tmp_path, monkeypatch):
                 index_budget_lines=settings.index_budget_lines)
 
         monkeypatch.setattr(server_module, "build_service", build_service)
-        return build_server(root=tmp_path / "mem", project_dir=git_repo)
+        return build_server(root=tmp_path / "mem", project_dir=directory)
 
     return build
 
 
 @pytest.mark.parametrize("error, expected", [
-    (NameTaken("n", existing=None), {"error": TAKEN_ELSEWHERE}),
+    (NameTaken("n", existing=EXISTING_GLOBAL), {"error": TAKEN_GLOBAL}),
     (UnreadableMemory("n"), {"error": TAKEN_UNREADABLE}),
     (StorageFailure(), {"error": "could not write entry"}),
+    (GlobalReadOnly(), {"error": GLOBAL_READ_ONLY}),
 ])
 async def test_write_over_another_backend_answers_identically(
         other_backend_server, error, expected):
     async with Client(other_backend_server(error)) as c:
         assert (await c.call_tool("memory_write", {
-            "content": "v2", "type": "user", "name": "n",
-            "scope": "global"})).data == expected
+            "content": "v2", "type": "user", "name": "n"})).data == expected
 
 
 async def test_write_collision_over_another_backend_echoes_the_same_dict(
         other_backend_server):
     async with Client(other_backend_server(NameTaken("n", existing=EXISTING))) as c:
         assert (await c.call_tool("memory_write", {
-            "content": "v2", "type": "user", "name": "n",
-            "scope": "global"})).data == {
+            "content": "v2", "type": "user", "name": "n"})).data == {
             "error": TAKEN_SAME_SCOPE,
-            "existing": {"id": "n", "type": "user", "scope": "global",
+            "existing": {"id": "n", "type": "user", "scope": f"project:{PROJECT}",
                          "updated": EXISTING.updated, "snippet": "v1 body",
                          "description": "original cue"}}
 
@@ -237,6 +268,7 @@ async def test_update_storage_failure_over_another_backend_is_distinct(other_bac
     (MemoryNotFound("n"), {"error": "no such entry: n"}),
     (UnreadableMemory("n"), {"error": "could not delete entry: n"}),
     (StorageFailure(), {"error": "could not delete entry: n"}),
+    (GlobalReadOnly(), {"error": GLOBAL_READ_ONLY}),
 ])
 async def test_delete_over_another_backend_answers_identically(
         other_backend_server, error, expected):
@@ -247,13 +279,12 @@ async def test_delete_over_another_backend_answers_identically(
 async def test_a_chatty_backend_cannot_reach_the_client(other_backend_server):
     # the worst case the fix exists for: a backend that stuffs its own driver
     # text into the error. The fields decide the response; the text is unused.
-    chatty = NameTaken("n", existing=None)
+    chatty = NameTaken("n", existing=EXISTING_GLOBAL)
     chatty.args = ("UNIQUE constraint failed: memories.id (/srv/db/mem.sqlite)",)
     async with Client(other_backend_server(chatty)) as c:
         out = (await c.call_tool("memory_write", {
-            "content": "v2", "type": "user", "name": "n",
-            "scope": "global"})).data
-    assert out == {"error": TAKEN_ELSEWHERE}
+            "content": "v2", "type": "user", "name": "n"})).data
+    assert out == {"error": TAKEN_GLOBAL}
 
 
 def test_a_project_scoped_echo_renders_the_scope_as_the_codec_does():
