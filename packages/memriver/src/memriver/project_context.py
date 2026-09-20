@@ -334,7 +334,9 @@ def bind(store_root: Path, project_id: ProjectId, root: str, *, create: bool) ->
     being the canonical directory the caller confirmed, and the registry state.
     """
     def change(current: tuple[str, ...] | None, registry: Registry) -> tuple[str, ...] | None:
-        if create and current is not None:
+        if create and os.path.lexists(store_root / PROJECTS_DIRNAME / project_id):
+            # lexists, not the registry: a stray file under that name is skipped
+            # by load_registry but would still collide with the directory to create
             raise ValueError("project id already exists")
         if not create and current is None:
             raise ValueError("no such project")
@@ -365,7 +367,11 @@ def _bound_here(root: str, roots: tuple[str, ...]) -> bool:
 
 
 def unbind(store_root: Path, project_id: ProjectId, root: str) -> None:
-    """Remove exactly the stored string ``root``; the path need not exist."""
+    """Remove every element string-equal to ``root``; the path need not exist.
+
+    Other spellings that alias the same directory are left alone, and a
+    hand-edited file holding one spelling twice comes back clean.
+    """
     def change(current: tuple[str, ...] | None, registry: Registry) -> tuple[str, ...] | None:
         if current is None or root not in current:
             raise ValueError("root is not bound to this project")
@@ -400,8 +406,9 @@ def _write_document(store_root: Path, project_dir: Path, roots: tuple[str, ...])
     _mkdir_private(store_root, project_dir)
     fd, tmp = tempfile.mkstemp(dir=project_dir, suffix=".tmp")
     try:
-        os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
+            # inside the with: a failing fchmod must still close the descriptor
+            os.fchmod(f.fileno(), 0o600)
             f.write(text)
         os.replace(tmp, project_dir / REGISTRY_FILENAME)
     except BaseException:

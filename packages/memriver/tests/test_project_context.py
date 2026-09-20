@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import stat
 import threading
 from pathlib import Path
@@ -560,3 +561,47 @@ def test_count_child_git_markers(tmp_path):
     (tmp_path / "linked").symlink_to(outside)
     assert count_child_git_markers(tmp_path) == 2
     assert count_child_git_markers(tmp_path / "missing") is None
+
+
+def test_failed_chmod_closes_the_descriptor_and_leaves_nothing_behind(tmp_path, dirs, monkeypatch):
+    from memriver_core import StorageFailure
+
+    bind(tmp_path, A, dirs["x-work"], create=True)
+    doc = tmp_path / "projects" / A / "project.toml"
+    opened: list[int] = []
+    true_mkstemp = project_context.tempfile.mkstemp
+
+    def watched(*args, **kwargs):
+        fd, path = true_mkstemp(*args, **kwargs)
+        opened.append(fd)
+        return fd, path
+
+    def boom(*args, **kwargs):
+        raise OSError("no chmod here")
+
+    monkeypatch.setattr(project_context.tempfile, "mkstemp", watched)
+    monkeypatch.setattr(project_context.os, "fchmod", boom)
+    with pytest.raises(StorageFailure):
+        bind(tmp_path, A, dirs["y-work"], create=False)
+    assert doc.read_text() == f'roots = ["{dirs["x-work"]}"]\n'
+    assert [p.name for p in doc.parent.iterdir()] == ["project.toml"]
+    with pytest.raises(OSError):                           # the descriptor did not leak
+        os.fstat(opened[0])
+
+
+def test_unbind_removes_every_copy_of_the_same_root_string(tmp_path, dirs):
+    # a hand-edited file can hold one spelling twice; other spellings that alias
+    # the same directory are left alone
+    _register(tmp_path, A, [dirs["x-work"], dirs["x-work"], dirs["y-work"]])
+    unbind(tmp_path, A, dirs["x-work"])
+    assert (tmp_path / "projects" / A / "project.toml").read_text() \
+        == f'roots = ["{dirs["y-work"]}"]\n'
+
+
+def test_bind_create_refuses_an_id_that_exists_as_anything(tmp_path, dirs):
+    (tmp_path / "projects").mkdir()
+    squatter = tmp_path / "projects" / A
+    squatter.write_text("not a project directory")         # load_registry ignores stray files
+    with pytest.raises(ValueError, match="project id already exists"):
+        bind(tmp_path, A, dirs["x-work"], create=True)
+    assert squatter.read_text() == "not a project directory"
