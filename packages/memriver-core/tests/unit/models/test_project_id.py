@@ -12,5 +12,9 @@ def test_project_id_rejects_other_shapes(value):
     assert PROJECT_ID_RE.fullmatch(value) is None
 
 
-def test_single_line_collapses_control_and_line_separators():
+def test_single_line_collapses_control_characters():
     assert single_line("a\nb c\x00d   e") == "a b c d e"
+
+
+def test_single_line_collapses_unicode_line_separators():
+    assert single_line("a b c") == "a b c"

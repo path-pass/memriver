@@ -66,7 +66,7 @@ PROJECT_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
 # injected into agent context automatically, so no field may smuggle a newline
 # or an embedded instruction into another line: control characters and Unicode
 # line separators collapse to spaces before a value is placed on a line
-_LINE_UNSAFE_RE = re.compile(r"[\x00-\x1f\x7f-\x9f  ]")
+_LINE_UNSAFE_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 
 
 def single_line(value: str) -> str:
