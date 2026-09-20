@@ -2,9 +2,11 @@
 
 Every diagnostic rule lives in memriver_core, reached only through
 memriver_core.bootstrap.build_diagnostics_service. This module owns exit
-codes, fixed state messages, and JSON/human rendering -- it never touches the
-store itself, and [DEFERRED-4] performs no harness-configuration audit (see
-spec S10).
+codes, fixed state messages, and JSON/human rendering. It also reads the
+project registry directly (project_context.load_registry/root_integrity) to
+report registered projects and stats each root to classify it -- read-only,
+never a write or the store lock -- and [DEFERRED-4] performs no
+harness-configuration audit (see spec S10).
 """
 
 from __future__ import annotations
@@ -96,20 +98,24 @@ def _render_human(report: DiagnosticsReport, projects: dict, stdout: IO[str]) ->
 
 def _render_projects_section(projects: dict, stdout: IO[str]) -> None:
     # a store that has never adopted the project registry has nothing here to
-    # report; the section only appears once there is something to say
+    # report; the section only appears once there is something to say.
+    # Registry roots and directory names are hand-editable, same as the
+    # findings above -- every registry-derived string goes through _visible()
+    # so a root/location/reason/diagnostic can never forge an extra line.
     if not (projects["registered"] or projects["finding"] or projects["integrity"]):
         return
     stdout.write("\nprojects:\n")
     for project in projects["registered"]:
         stdout.write(f"  {project['id']}: {project['roots']} roots\n")
         for root in project["missing_roots"]:
-            stdout.write(f"    missing: {root}\n")
+            stdout.write(f"    missing: {_visible(root)}\n")
         for root in project["unverifiable_roots"]:
-            stdout.write(f"    unverifiable: {root}\n")
-    if projects["finding"] is not None:
-        stdout.write(f"  invalid: {projects['finding']['location']}: {projects['finding']['reason']}\n")
+            stdout.write(f"    unverifiable: {_visible(root)}\n")
+    finding = projects["finding"]
+    if finding is not None:
+        stdout.write(f"  invalid: {_visible(finding['location'])}: {_visible(finding['reason'])}\n")
     if projects["integrity"] is not None:
-        stdout.write(f"  integrity: {projects['integrity']}\n")
+        stdout.write(f"  integrity: {_visible(projects['integrity'])}\n")
 
 
 def run_doctor(*, root: Path | None, json_output: bool, stale_days: int,
@@ -170,5 +176,5 @@ def run_doctor(*, root: Path | None, json_output: bool, stale_days: int,
         _render_json(report, projects, stdout)
     else:
         _render_human(report, projects, stdout)
-    return max(_EXIT_CODES[report.state],
-              1 if projects["finding"] or projects["integrity"] else 0)
+    finding = projects["finding"]
+    return max(_EXIT_CODES[report.state], 1 if finding or projects["integrity"] else 0)

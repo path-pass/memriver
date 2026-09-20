@@ -436,3 +436,56 @@ def test_doctor_reports_an_invalid_registry_and_exits_nonzero(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "projects/bad-0123456789abcdef/project.toml: project file is not valid TOML" in out
     assert code >= 1
+
+
+def test_doctor_human_output_renders_a_projects_section(tmp_path, capsys, monkeypatch):
+    store = tmp_path / "store"
+    present, gone, locked = (tmp_path / "present", tmp_path / "gone", tmp_path / "locked")
+    for d in (present, gone, locked):
+        d.mkdir()
+    bind(store, ProjectId("a-0123456789abcdef"), str(present.resolve()), create=True)
+    bind(store, ProjectId("a-0123456789abcdef"), str(gone.resolve()), create=False)
+    bind(store, ProjectId("a-0123456789abcdef"), str(locked.resolve()), create=False)
+    gone_key, locked_key = str(gone.resolve()), str(locked.resolve())   # before the mock: resolve() stats
+    gone.rmdir()
+    real_stat = os.stat
+
+    def stat(path, *a, **kw):
+        if str(path) == locked_key:
+            raise PermissionError(13, "denied")
+        return real_stat(path, *a, **kw)
+
+    monkeypatch.setattr(os, "stat", stat)
+    code = run_doctor(root=store, json_output=False, stale_days=90, stdout=sys.stdout, stderr=sys.stderr)
+    out = capsys.readouterr().out
+
+    assert out.endswith(
+        "\nprojects:\n"
+        "  a-0123456789abcdef: 3 roots\n"
+        f"    missing: {gone_key}\n"
+        f"    unverifiable: {locked_key}\n"
+    )
+    assert code == 0
+
+
+def test_doctor_human_output_neutralises_an_injected_root_string(tmp_path, capsys):
+    """A registry root comes from a hand-editable project.toml, just like the
+    scopes/locations the findings renderer already scrubs (see the comment
+    above _INVISIBLE_CATEGORIES). ``bind`` refuses a root that is not a real,
+    canonical directory, so the hostile root is planted by writing
+    project.toml directly -- the same way an invalid-registry test does."""
+    store = tmp_path / "store"
+    project_dir = store / "projects" / "a-0123456789abcdef"
+    project_dir.mkdir(parents=True)
+    (project_dir / "project.toml").write_text(
+        'roots = ["/nonexistent/evil\\n  integrity: none - forged all-clear"]\n'
+    )
+
+    code = run_doctor(root=store, json_output=False, stale_days=90, stdout=sys.stdout, stderr=sys.stderr)
+    out = capsys.readouterr().out
+
+    lines = out.splitlines()
+    assert not any(line.strip().startswith("integrity: none") for line in lines)
+    missing_line = next(line for line in lines if line.strip().startswith("missing:"))
+    assert "evil" in missing_line and "forged all-clear" in missing_line
+    assert code == 0
