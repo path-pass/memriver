@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import stat
+import threading
 from pathlib import Path
 
 import pytest
@@ -9,12 +11,17 @@ from memriver.project_context import (
     RegisteredProject,
     Registry,
     RegistryInvalid,
+    bind,
+    count_child_git_markers,
     covers,
     find_git_root,
     load_registry,
+    new_project_id,
+    project_exists,
     resolve,
     resolve_project,
     root_integrity,
+    unbind,
 )
 from memriver_core.models import AccessContext, ProjectId
 
@@ -100,6 +107,29 @@ def test_invalid_file_error_never_echoes_the_offending_value(tmp_path):
     with pytest.raises(RegistryInvalid) as info:
         load_registry(tmp_path)
     assert "SENTINEL" not in str(info.value)
+
+
+def test_project_file_without_a_roots_key_names_the_missing_key(tmp_path):
+    d = tmp_path / "projects" / A
+    d.mkdir(parents=True)
+    (d / "project.toml").write_text("", encoding="utf-8")
+    with pytest.raises(RegistryInvalid) as info:
+        load_registry(tmp_path)
+    assert (info.value.location, info.value.reason) == (
+        f"projects/{A}/project.toml", "project file has no roots key")
+
+
+def test_project_file_that_is_a_symlink_is_never_followed(tmp_path):
+    # a live link out of the store would let anything outside it decide which
+    # directories the project owns
+    outside = tmp_path / "outside.toml"
+    outside.write_text('roots = ["/x/work"]\n', encoding="utf-8")
+    d = tmp_path / "projects" / A
+    d.mkdir(parents=True)
+    (d / "project.toml").symlink_to(outside)
+    with pytest.raises(RegistryInvalid) as info:
+        load_registry(tmp_path)
+    assert info.value.reason == "project file could not be read"
 
 
 def test_dangling_project_file_symlink_is_unreadable_not_missing(tmp_path):
@@ -292,6 +322,28 @@ def test_unverifiable_root_check_is_degraded(tmp_path, monkeypatch):
     assert res.state == "degraded" and res.diagnostic == f"{real}: registered root could not be checked"
 
 
+def test_root_that_cannot_be_lstatted_is_degraded(tmp_path, monkeypatch):
+    real = (tmp_path / "work").resolve()
+    real.mkdir()
+    registry = _registry((A, [str(real)]))
+    true_lstat = project_context.os.lstat
+
+    def fake(path, *args, **kwargs):
+        if str(path) == str(real):
+            raise PermissionError(13, "denied")
+        return true_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(project_context.os, "lstat", fake)
+    assert root_integrity(registry) == f"{real}: registered root could not be checked"
+    res = resolve_project(registry, tmp_path)
+    assert res.state == "degraded"
+    assert res.diagnostic == f"{real}: registered root could not be checked"
+
+
+def test_covers_refuses_a_path_the_os_cannot_address(tmp_path):
+    assert covers(Path("/x\x00y"), tmp_path) is False
+
+
 def test_covers_is_physical_and_ancestor_aware(tmp_path, monkeypatch):
     _case_insensitive(monkeypatch)
     (tmp_path / "Home" / "x").mkdir(parents=True)
@@ -350,3 +402,161 @@ def test_header_neutralizes_control_characters_and_truncates():
     assert "\n" not in line and " " not in line
     assert line.startswith(f"project: {A} (root /x/ evil a")
     assert len(line) <= len(f"project: {A} (root ") + 120 + 1
+
+
+# --- registry writes ---
+
+def test_new_project_id_shape():
+    pid = new_project_id("My Work.Dir")
+    assert pid.startswith("my-work-dir-") and len(pid) == len("my-work-dir-") + 16
+    assert new_project_id("").startswith("project-")
+    pid = new_project_id("é" * 300)
+    assert len(pid.encode()) <= 255 and pid.startswith("project-")
+
+
+@pytest.fixture
+def dirs(tmp_path):
+    """Real, canonical directories to bind: bind refuses paths that do not exist."""
+    out = {}
+    for name in ("x-work", "y-work", "z-old", "w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7", "w8"):
+        (tmp_path / "roots" / name).mkdir(parents=True)
+        out[name] = str((tmp_path / "roots" / name).resolve())
+    return out
+
+
+def test_bind_create_makes_private_dir_and_exact_document(tmp_path, dirs):
+    store = tmp_path / "store"
+    bind(store, A, dirs["x-work"], create=True)
+    d = store / "projects" / A
+    assert stat.S_IMODE(d.stat().st_mode) == 0o700
+    assert stat.S_IMODE((d / "project.toml").stat().st_mode) == 0o600
+    assert (d / "project.toml").read_text() == f'roots = ["{dirs["x-work"]}"]\n'
+    bind(store, A, dirs["y-work"], create=False)
+    assert (d / "project.toml").read_text() == f'roots = ["{dirs["x-work"]}", "{dirs["y-work"]}"]\n'
+    assert not (d / "entries").exists()
+
+
+def test_bind_create_and_adopt_existence_rules(tmp_path, dirs):
+    with pytest.raises(ValueError, match="no such project"):
+        bind(tmp_path, A, dirs["x-work"], create=False)
+    bind(tmp_path, A, dirs["x-work"], create=True)
+    with pytest.raises(ValueError, match="project id already exists"):
+        bind(tmp_path, A, dirs["y-work"], create=True)
+    (tmp_path / "projects" / "old-abc123" / "entries").mkdir(parents=True)   # entries-only
+    bind(tmp_path, ProjectId("old-abc123"), dirs["z-old"], create=False)
+    assert (tmp_path / "projects" / "old-abc123" / "project.toml").read_text() \
+        == f'roots = ["{dirs["z-old"]}"]\n'
+
+
+def test_bind_refuses_a_root_that_vanished_or_was_redirected(tmp_path, dirs):
+    with pytest.raises(ValueError, match="not a canonical existing directory"):
+        bind(tmp_path, A, str(tmp_path / "never"), create=True)
+    link = tmp_path / "link"
+    link.symlink_to(dirs["x-work"])
+    with pytest.raises(ValueError, match="not a canonical existing directory"):
+        bind(tmp_path, A, str(link), create=True)
+    assert not (tmp_path / "projects").exists()
+
+
+def test_bind_refuses_when_a_comparison_cannot_be_checked(tmp_path, dirs, monkeypatch):
+    bind(tmp_path, A, dirs["x-work"], create=True)
+    _unverifiable(monkeypatch)
+    with pytest.raises(ValueError, match="could not be checked"):
+        bind(tmp_path, B, dirs["y-work"], create=True)
+    assert not (tmp_path / "projects" / B).exists()
+
+
+def test_bind_same_id_alias_is_a_no_op_and_cross_id_is_refused(tmp_path, monkeypatch):
+    _case_insensitive(monkeypatch)
+    real = tmp_path / "Work"
+    real.mkdir()
+    # on a case-sensitive volume the alias spelling must exist too (bind requires an
+    # existing canonical directory); on APFS this mkdir is a no-op on the same directory
+    (tmp_path / "work").mkdir(exist_ok=True)
+    bind(tmp_path / "store", A, str(real), create=True)
+    doc = tmp_path / "store" / "projects" / A / "project.toml"
+    before = doc.stat().st_mtime_ns
+    bind(tmp_path / "store", A, str(real), create=False)
+    bind(tmp_path / "store", A, str(tmp_path / "work"), create=False)
+    assert doc.read_text() == f'roots = ["{real}"]\n' and doc.stat().st_mtime_ns == before
+    with pytest.raises(ValueError, match="already bound to another project"):
+        bind(tmp_path / "store", B, str(tmp_path / "work"), create=True)
+    assert not (tmp_path / "store" / "projects" / B).exists()
+
+
+def test_unbind_removes_one_root_even_if_path_is_gone(tmp_path, dirs):
+    bind(tmp_path, A, dirs["x-work"], create=True)
+    bind(tmp_path, A, dirs["y-work"], create=False)
+    import shutil
+    shutil.rmtree(dirs["x-work"])                          # moved away: the path is gone
+    unbind(tmp_path, A, dirs["x-work"])
+    doc = tmp_path / "projects" / A / "project.toml"
+    assert doc.read_text() == f'roots = ["{dirs["y-work"]}"]\n'
+    unbind(tmp_path, A, dirs["y-work"])
+    assert doc.read_text() == "roots = []\n"
+    with pytest.raises(ValueError, match="not bound to this project"):
+        unbind(tmp_path, A, dirs["y-work"])
+
+
+def test_bind_refuses_to_write_over_an_invalid_registry(tmp_path, dirs):
+    d = tmp_path / "projects" / B
+    d.mkdir(parents=True)
+    (d / "project.toml").write_text("roots = [\n")
+    with pytest.raises(RegistryInvalid):
+        bind(tmp_path, A, dirs["x-work"], create=True)
+    assert not (tmp_path / "projects" / A).exists()
+
+
+def test_failed_replace_keeps_old_document_and_no_temp_file(tmp_path, dirs, monkeypatch):
+    from memriver_core import StorageFailure
+
+    bind(tmp_path, A, dirs["x-work"], create=True)
+    doc = tmp_path / "projects" / A / "project.toml"
+
+    def boom(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(project_context.os, "replace", boom)
+    # store_lock wraps every OSError raised inside its block as StorageFailure
+    with pytest.raises(StorageFailure):
+        bind(tmp_path, A, dirs["y-work"], create=False)
+    assert doc.read_text() == f'roots = ["{dirs["x-work"]}"]\n'
+    assert [p.name for p in doc.parent.iterdir()] == ["project.toml"]
+
+
+def test_concurrent_binds_do_not_lose_updates(tmp_path, dirs):
+    bind(tmp_path, A, dirs["w0"], create=True)
+    errors: list[Exception] = []
+
+    def worker(i: int) -> None:
+        try:
+            bind(tmp_path, A, dirs[f"w{i}"], create=False)
+        except Exception as err:  # noqa: BLE001
+            errors.append(err)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(1, 9)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    assert set(load_registry(tmp_path).projects[0].roots) == {dirs[f"w{i}"] for i in range(9)}
+
+
+def test_project_exists_counts_unbound_directories(tmp_path):
+    (tmp_path / "projects" / "old-abc123" / "entries").mkdir(parents=True)
+    assert project_exists(tmp_path, ProjectId("old-abc123"))
+    assert not project_exists(tmp_path, A)
+
+
+def test_count_child_git_markers(tmp_path):
+    (tmp_path / "a" / ".git").mkdir(parents=True)
+    (tmp_path / "b").mkdir()
+    (tmp_path / "b" / ".git").write_text("gitdir: elsewhere")
+    (tmp_path / "c" / "deep" / ".git").mkdir(parents=True)
+    (tmp_path / ".git").mkdir()
+    outside = tmp_path.parent / "outside-repo"
+    (outside / ".git").mkdir(parents=True)
+    (tmp_path / "linked").symlink_to(outside)
+    assert count_child_git_markers(tmp_path) == 2
+    assert count_child_git_markers(tmp_path / "missing") is None

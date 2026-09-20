@@ -13,8 +13,12 @@ place their static instruction file at the nearest git root.
 from __future__ import annotations
 
 import os
+import re
+import secrets
 import stat
+import tempfile
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -33,6 +37,7 @@ REASONS = {
     "unlistable": "project directory could not be read",
     "unreadable": "project file could not be read",
     "not-toml": "project file is not valid TOML",
+    "missing-roots": "project file has no roots key",
     "extra-key": "project file has a key other than roots",
     "not-strings": "roots is not an array of strings",
     "not-absolute": "root is not an absolute path",
@@ -108,14 +113,17 @@ def valid_project_id(name: str) -> bool:
 def same_directory(a: str, b: str) -> bool | None:
     """``os.path.samefile`` with "absent" and "could not check" told apart.
 
-    False: both exist and differ, or one of them does not exist (an offline
-    root is not a match). None: the check itself failed (permission, I/O) --
-    no caller may read that as "no match". Every comparison in this package
-    goes through this one name, so a test can swap it for a whole module.
+    False: both exist and differ, one of them does not exist (an offline
+    root is not a match), or one cannot be addressed at all. None: the check
+    itself failed (permission, I/O) -- no caller may read that as "no match".
+    Every comparison in this package goes through this one name, so a test
+    can swap it for a whole module.
     """
     try:
         return os.path.samefile(a, b)
-    except (FileNotFoundError, NotADirectoryError):
+    except (FileNotFoundError, NotADirectoryError, ValueError):
+        # ValueError: a path the OS cannot even address (an embedded NUL) --
+        # definitely not this directory, and no amount of retrying changes it
         return False
     except OSError:
         return None
@@ -194,11 +202,15 @@ def load_registry(store_root: Path) -> Registry:
 
 def _read_roots(path: Path, location: str) -> tuple[str, ...]:
     try:
-        os.lstat(path)
+        info = os.lstat(path)
     except FileNotFoundError:
         return ()
     except OSError as err:
         raise RegistryInvalid(location, REASONS["unreadable"]) from err
+    if stat.S_ISLNK(info.st_mode):
+        # a link is never followed, live or dangling: its target is chosen
+        # outside the store layout and must not decide what the project owns
+        raise RegistryInvalid(location, REASONS["unreadable"])
     try:
         raw = path.read_bytes()
     except OSError as err:
@@ -208,6 +220,8 @@ def _read_roots(path: Path, location: str) -> tuple[str, ...]:
         document = tomllib.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as err:
         raise RegistryInvalid(location, REASONS["not-toml"]) from err
+    if "roots" not in document:
+        raise RegistryInvalid(location, REASONS["missing-roots"])
     if set(document) != {"roots"}:
         raise RegistryInvalid(location, REASONS["extra-key"])
     roots = document["roots"]
@@ -296,3 +310,124 @@ def resolve(store_root: Path, start: Path) -> ProjectResolution:
     except RegistryInvalid as err:
         return _degraded(f"{err.location}: {err.reason}")
     return resolve_project(registry, start)
+
+
+# --- registry writes ---
+
+def new_project_id(directory_name: str) -> ProjectId:
+    """``<normalized name>-<16 hex>``, fitted to one 255-byte path component."""
+    suffix = "-" + secrets.token_hex(8)
+    name = re.sub(r"[^a-z0-9]+", "-", directory_name.lower()).strip("-")
+    budget = _MAX_FILENAME_BYTES - len(suffix)
+    name = name.encode()[:budget].decode("utf-8", errors="ignore").rstrip("-") or "project"
+    return ProjectId(f"{name}{suffix}")
+
+
+def project_exists(store_root: Path, project_id: ProjectId) -> bool:
+    return (store_root / PROJECTS_DIRNAME / project_id).is_dir()
+
+
+def bind(store_root: Path, project_id: ProjectId, root: str, *, create: bool) -> None:
+    """Append ``root`` to the project's roots; ``create`` says whether the id is new.
+
+    Re-validates the world under the lock: the id's existence, the root still
+    being the canonical directory the caller confirmed, and the registry state.
+    """
+    def change(current: tuple[str, ...] | None, registry: Registry) -> tuple[str, ...] | None:
+        if create and current is not None:
+            raise ValueError("project id already exists")
+        if not create and current is None:
+            raise ValueError("no such project")
+        if not os.path.isdir(root) or os.path.realpath(root) != root:
+            raise ValueError("root is not a canonical existing directory")
+        for other in registry.projects:
+            if other.id != project_id and _bound_here(root, other.roots):
+                raise ValueError("root is already bound to another project")
+        roots = current or ()
+        if _bound_here(root, roots):
+            return None                       # already bound (by string or alias): nothing to write
+        return (*roots, root)
+
+    _rewrite(store_root, project_id, change)
+
+
+def _bound_here(root: str, roots: tuple[str, ...]) -> bool:
+    """Whether ``root`` is one of ``roots`` by string or alias; a None check refuses."""
+    for r in roots:
+        if root == r:
+            return True
+        same = same_directory(root, r)
+        if same is None:
+            raise ValueError("root could not be checked")
+        if same:
+            return True
+    return False
+
+
+def unbind(store_root: Path, project_id: ProjectId, root: str) -> None:
+    """Remove exactly the stored string ``root``; the path need not exist."""
+    def change(current: tuple[str, ...] | None, registry: Registry) -> tuple[str, ...] | None:
+        if current is None or root not in current:
+            raise ValueError("root is not bound to this project")
+        return tuple(r for r in current if r != root)
+
+    _rewrite(store_root, project_id, change)
+
+
+def _rewrite(store_root: Path, project_id: ProjectId,
+             change: Callable[[tuple[str, ...] | None, Registry], tuple[str, ...] | None]) -> None:
+    # imported here so that importing this module (the Stop hook does, every
+    # turn) never loads the core service stack that bootstrap pulls in
+    from memriver_core.bootstrap import store_lock
+
+    if not valid_project_id(project_id):
+        raise ValueError("invalid project id")
+    with store_lock(store_root):
+        registry = load_registry(store_root)   # RegistryInvalid propagates: never write over a broken registry
+        current = next((p.roots for p in registry.projects if p.id == project_id), None)
+        roots = change(current, registry)
+        if roots is None:
+            return
+        _write_document(store_root, store_root / PROJECTS_DIRNAME / project_id, roots)
+
+
+def _write_document(store_root: Path, project_dir: Path, roots: tuple[str, ...]) -> None:
+    import tomlkit
+
+    document = tomlkit.document()
+    document["roots"] = list(roots)
+    text = tomlkit.dumps(document)
+    _mkdir_private(store_root, project_dir)
+    fd, tmp = tempfile.mkstemp(dir=project_dir, suffix=".tmp")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, project_dir / REGISTRY_FILENAME)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def _mkdir_private(store_root: Path, directory: Path) -> None:
+    """``mkdir -p`` from ``store_root`` down to ``directory``, 0700 on created levels only."""
+    d = store_root
+    for part in ("", *directory.relative_to(store_root).parts):
+        d = d / part if part else d
+        try:
+            d.mkdir(mode=0o700)
+        except FileExistsError:
+            continue
+        d.chmod(0o700)
+
+
+def count_child_git_markers(directory: Path) -> int | None:
+    """Direct children holding a ``.git`` entry of any kind; ``None`` when unlistable."""
+    try:
+        with os.scandir(directory) as children:
+            return sum(1 for child in children
+                       if child.is_dir(follow_symlinks=False)
+                       and os.path.lexists(os.path.join(child.path, ".git")))
+    except OSError:
+        return None
