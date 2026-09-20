@@ -259,7 +259,9 @@ def resolve_project(registry: Registry, start: Path) -> ProjectResolution:
         cwd = Path(start).resolve(strict=True)
         if not cwd.is_dir():
             return _degraded(_UNRESOLVABLE_CWD)
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
+        # start is not always the OS cwd -- the hooks take it from the harness
+        # payload, and a NUL in it makes resolve() raise ValueError, not OSError
         return _degraded(_UNRESOLVABLE_CWD)
     integrity = root_integrity(registry)
     if integrity is not None:

@@ -314,6 +314,16 @@ def test_start_that_is_a_file_or_missing_is_degraded(tmp_path):
 
 # --- resolve (never raises) ---
 
+def test_resolve_survives_a_start_path_the_os_cannot_even_address(tmp_path):
+    # the hooks take cwd from the harness payload, and JSON can carry a NUL:
+    # resolving it raises ValueError, which must still come back as degraded
+    res = resolve(tmp_path / "store", Path("/SENTINEL\x00cwd"))
+    assert res.state == "degraded"
+    assert res.diagnostic == "working directory could not be resolved"
+    assert res.context().project_id is None
+    assert "SENTINEL" not in res.diagnostic
+
+
 def test_resolve_turns_invalid_registry_into_degraded(tmp_path):
     d = tmp_path / "store" / "projects" / A
     d.mkdir(parents=True)
