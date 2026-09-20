@@ -377,11 +377,7 @@ def test_concurrent_create_of_one_id_yields_exactly_one_winner(backend, storage_
         # with none of the loser's content mixed into it
         stored = backend.make_repository(storage_dir).get(memory_id, CTX)
         assert stored == candidates[winner]
-        # `existing` may be None -- the loser can lose before the winner's
-        # write lands -- but when it is set it is the winner's memory, never a
-        # partial or losing one
-        if conflict.existing is not None:
-            assert conflict.existing == stored
+        assert conflict.existing == stored
 
 
 # --- search ---

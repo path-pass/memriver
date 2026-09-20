@@ -9,7 +9,6 @@ import inspect
 import pytest
 from memriver_core.application.errors import (
     ContentRejected,
-    InvalidScope,
     MemoryNotFound,
     NameTaken,
     ProjectUnavailable,
@@ -106,7 +105,7 @@ def build(memory_repository=None, content_policy=None, **overrides) -> MemorySer
 
 def write(service, ctx=CTX, **overrides):
     kwargs = {"content": "a durable fact", "type": "project", "name": "",
-              "scope": "project", "sync": True, "harness": "claude-code",
+              "sync": True, "harness": "claude-code",
               "description": "", "ctx": ctx}
     kwargs.update(overrides)
     return service.create(**kwargs)
@@ -168,65 +167,25 @@ def test_harness_shape_accepts_the_documented_charset():
     assert content_policy.calls[0] == ("Claude_Code-1.0", 8000)
 
 
-# --- create: scope resolution ---
+# --- create: project-only scope ---
 
-def test_global_scope_resolves_to_the_global_scope_value():
+def test_create_without_project_raises_project_unavailable():
     memory_repository = FakeMemoryRepository()
-    write(build(memory_repository), scope="global")
-    assert memory_repository.created[0].scope == Scope.global_()
-
-
-def test_project_scope_uses_the_context_project():
-    memory_repository = FakeMemoryRepository()
-    write(build(memory_repository), scope="project")
-    assert memory_repository.created[0].scope == Scope.project(PID)
-
-
-def test_explicit_current_project_scope_is_allowed():
-    memory_repository = FakeMemoryRepository()
-    write(build(memory_repository), scope=f"project:{PID}")
-    assert memory_repository.created[0].scope == Scope.project(PID)
-
-
-def test_project_scope_without_a_project_is_unavailable_and_path_free():
-    memory_repository = FakeMemoryRepository()
-    with pytest.raises(ProjectUnavailable) as err:
-        write(build(memory_repository), ctx=GLOBAL_ONLY, scope="project")
-    assert "/" not in str(err.value)  # the transport owns the path text
+    with pytest.raises(ProjectUnavailable):
+        write(build(memory_repository), ctx=GLOBAL_ONLY)
     assert memory_repository.created == []
 
 
-def test_global_scope_still_works_without_a_project():
+def test_create_has_no_scope_parameter():
+    with pytest.raises(TypeError):
+        write(build(), scope="global")
+
+
+def test_create_writes_into_the_context_project():
     memory_repository = FakeMemoryRepository()
-    write(build(memory_repository), ctx=GLOBAL_ONLY, scope="global")
-    assert memory_repository.created[0].scope == Scope.global_()
-
-
-def test_foreign_project_scope_is_refused():
-    memory_repository = FakeMemoryRepository()
-    with pytest.raises(InvalidScope) as err:
-        write(build(memory_repository), scope="project:other-000000")
-    assert str(err.value) == ("scope 'project:other-000000' is outside the current "
-                              "project; use 'project' or 'global'")
-    assert memory_repository.created == []
-
-
-def test_any_project_scope_is_refused_when_the_context_has_no_project():
-    with pytest.raises(InvalidScope):
-        write(build(), ctx=GLOBAL_ONLY, scope="project:other-000000")
-
-
-def test_malformed_project_scope_keeps_the_outside_project_message():
-    with pytest.raises(InvalidScope) as err:
-        write(build(), scope="project:")
-    assert str(err.value) == ("scope 'project:' is outside the current "
-                              "project; use 'project' or 'global'")
-
-
-def test_scope_outside_the_grammar_keeps_the_invalid_scope_message():
-    with pytest.raises(InvalidScope) as err:
-        write(build(), scope="team:x")
-    assert str(err.value) == "invalid scope: 'team:x'"
+    m = write(build(memory_repository), name="fact")
+    assert m.scope == Scope.project(PID)
+    assert memory_repository.created == [m]
 
 
 # --- create: naming and collisions ---
@@ -350,33 +309,52 @@ def test_dream_batch_cap_is_a_signature_literal():
 
 
 def test_dream_returns_the_least_recently_confirmed_first():
-    memory_repository = FakeMemoryRepository([memory("entry-2", updated="2026-08-01T00:00:00Z"),
-                           memory("entry-0", updated="2026-01-01T00:00:00Z"),
-                           memory("entry-1", updated="2026-06-01T00:00:00Z")])
+    memory_repository = FakeMemoryRepository([
+        memory("entry-2", updated="2026-08-01T00:00:00Z", scope=Scope.project(PID)),
+        memory("entry-0", updated="2026-01-01T00:00:00Z", scope=Scope.project(PID)),
+        memory("entry-1", updated="2026-06-01T00:00:00Z", scope=Scope.project(PID))])
     assert [m.id for m in build(memory_repository).dream(CTX, 3)] == [
         "entry-0", "entry-1", "entry-2"]
 
 
 def test_dream_breaks_ties_by_id():
-    memory_repository = FakeMemoryRepository([memory(i) for i in ["b", "a", "c"]])
+    memory_repository = FakeMemoryRepository(
+        [memory(i, scope=Scope.project(PID)) for i in ["b", "a", "c"]])
     assert [m.id for m in build(memory_repository).dream(CTX, 3)] == ["a", "b", "c"]
 
 
 def test_dream_clamps_the_limit_up_from_zero():
-    memory_repository = FakeMemoryRepository([memory("entry-0", updated="2026-01-01T00:00:00Z"),
-                           memory("entry-1", updated="2026-06-01T00:00:00Z")])
+    memory_repository = FakeMemoryRepository([
+        memory("entry-0", updated="2026-01-01T00:00:00Z", scope=Scope.project(PID)),
+        memory("entry-1", updated="2026-06-01T00:00:00Z", scope=Scope.project(PID))])
     hits = build(memory_repository).dream(CTX, 0)
     assert [m.id for m in hits] == ["entry-0"]
 
 
 def test_dream_clamps_the_limit_down_to_the_batch_cap():
-    memory_repository = FakeMemoryRepository([memory(f"entry-{i:02d}", updated=f"2026-01-{i + 1:02d}"
-                                  "T00:00:00Z") for i in range(15)])
+    memory_repository = FakeMemoryRepository(
+        [memory(f"entry-{i:02d}", updated=f"2026-01-{i + 1:02d}T00:00:00Z",
+                scope=Scope.project(PID)) for i in range(15)])
     assert len(build(memory_repository).dream(CTX, 10 ** 9)) == 10
 
 
 def test_dream_of_an_empty_store_is_empty():
     assert build(FakeMemoryRepository()).dream(CTX, 5) == []
+
+
+def test_dream_returns_only_the_current_project_oldest_first():
+    memory_repository = FakeMemoryRepository(memories=[
+        memory("oldest-global", updated="2026-01-01T00:00:00Z"),
+        memory("other-project", updated="2026-01-02T00:00:00Z", scope=Scope.project(ProjectId("other-abc123"))),
+        memory("newer-mine", updated="2026-01-04T00:00:00Z", scope=Scope.project(PID)),
+        memory("older-mine", updated="2026-01-03T00:00:00Z", scope=Scope.project(PID)),
+    ])
+    assert [m.id for m in build(memory_repository).dream(CTX, limit=3)] == ["older-mine", "newer-mine"]
+
+
+def test_dream_is_empty_without_a_project():
+    memory_repository = FakeMemoryRepository(memories=[memory("g")])
+    assert build(memory_repository).dream(GLOBAL_ONLY, limit=3) == []
 
 
 # --- index ---

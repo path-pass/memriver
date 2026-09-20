@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING
 
 from memriver_core.application.errors import (
     ContentRejected,
-    InvalidScope,
     ProjectUnavailable,
 )
 from memriver_core.models import IndexListing, Memory, Scope, sanitize_name, single_line
@@ -50,8 +49,12 @@ class MemoryService:
         self._search_limit_max = search_limit_max
         self._index_budget_lines = index_budget_lines
 
-    def create(self, *, content: str, type: str, name: str, scope: str, sync: bool,
+    def create(self, *, content: str, type: str, name: str, sync: bool,
                harness: str, description: str, ctx: AccessContext) -> Memory:
+        if ctx.project_id is None:
+            # path-free on purpose: the transport owns project_dir and
+            # restores the path-bearing message
+            raise ProjectUnavailable("no writable project in this context")
         if not _HARNESS_RE.fullmatch(harness):
             raise ContentRejected("invalid harness identifier "
                                   "(allowed: letters, digits, ., _, -, max 64 chars)")
@@ -69,9 +72,8 @@ class MemoryService:
         # content/harness/description
         if name.strip():
             self._content_policy.check(name, self._metadata_max_chars)
-        resolved = self._resolve_scope(scope, ctx)
-        memory = Memory.new(body=content, type=type, scope=resolved, sync=sync,
-                            id=sanitize_name(name), description=description,
+        memory = Memory.new(body=content, type=type, scope=Scope.project(ctx.project_id),
+                            sync=sync, id=sanitize_name(name), description=description,
                             source={"harness": harness, "method": "agent"})
         self._memory_repository.create(memory, ctx)
         return memory
@@ -97,8 +99,12 @@ class MemoryService:
         # body, which bumps `updated` and rotates it to the back of this queue.
         # Oldest-first selection therefore cycles through the whole store over
         # successive reviews instead of jamming on evergreen memories.
+        if ctx.project_id is None:
+            return []
         limit = max(1, min(limit, max_limit))
-        entries = sorted(self._memory_repository.iter_visible(ctx),
+        project_scope = Scope.project(ctx.project_id)
+        entries = sorted((m for m in self._memory_repository.iter_visible(ctx)
+                          if m.scope == project_scope),
                          key=lambda m: (m.updated, m.id))
         return entries[:limit]
 
@@ -137,30 +143,3 @@ class MemoryService:
 
     def delete(self, memory_id: str, ctx: AccessContext) -> None:
         self._memory_repository.delete(memory_id, ctx)
-
-    def _resolve_scope(self, raw: str, ctx: AccessContext) -> Scope:
-        if raw == "project":
-            if ctx.project_id is None:
-                # path-free on purpose: the transport owns project_dir and
-                # restores the path-bearing message
-                raise ProjectUnavailable("not inside a git project")
-            resolved = Scope.project(ctx.project_id)
-        else:
-            try:
-                resolved = Scope.parse(raw)
-            except ValueError as err:
-                # a malformed 'project:...' is still an attempt at a project
-                # scope, so it keeps the boundary refusal rather than turning
-                # into the generic grammar error
-                if raw.startswith("project:"):
-                    raise InvalidScope(self._outside(raw)) from err
-                raise InvalidScope(str(err)) from err
-        # an explicit 'project:<slug>' would otherwise let a caller seed
-        # another project's memories; the caller's own project stays valid
-        if resolved not in ctx.visible_scopes():
-            raise InvalidScope(self._outside(raw))
-        return resolved
-
-    @staticmethod
-    def _outside(raw: str) -> str:
-        return f"scope {raw!r} is outside the current project; use 'project' or 'global'"

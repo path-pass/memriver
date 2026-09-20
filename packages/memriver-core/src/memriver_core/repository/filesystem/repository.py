@@ -305,7 +305,7 @@ class FileMemoryRepository:
             raise MemoryNotFound(memory_id) from None
         except Exception as err:
             raise UnreadableMemory(memory_id) from err
-        # _find resolves an id across every project directory, so the file's own
+        # _find resolves an id across only the caller's visible scopes, so the file's own
         # frontmatter would otherwise decide which scope it answers for: a
         # hand-edited file left under one project while declaring another scope
         # could be read across the physical boundary. The directory is the
