@@ -17,14 +17,55 @@ script only reports the counts as a sanity check on the download.
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
+import stat
+import tempfile
 import urllib.request
+from collections.abc import Callable
 
 SOURCE_URL = ("https://raw.githubusercontent.com/gitleaks/gitleaks/"
               "{ref}/config/gitleaks.toml")
 OUTPUT = (pathlib.Path(__file__).resolve().parent.parent / "packages"
           / "memriver-core" / "src" / "memriver_core" / "content_policy" / "rules"
           / "gitleaks.toml")
+
+
+def _atomic_write_bytes(path: pathlib.Path, data: bytes, *,
+                        validate: Callable[[pathlib.Path], object] | None = None
+                        ) -> None:
+    """Write `data` to `path` without ever exposing a truncated or bad file.
+
+    Same pattern as the repository's own `_atomic_write`: write to a temp
+    sibling in the same directory, then `os.replace`. An interruption or
+    ENOSPC mid-write leaves the temp file damaged and `path` untouched,
+    instead of truncating the live rules file the scanner imports at startup.
+
+    `validate` is handed the finished temp sibling *before* the replace, so a
+    file that parses but the runtime cannot use never reaches `path`: it
+    raises, the temp file is unlinked, and the previous good file stands.
+
+    The temp sibling inherits the target's mode when there is one to inherit.
+    `os.replace` gives the target's name to the temp file's inode, so without
+    this a 0644 rules file a checkout ships would come back 0600 and stop
+    being readable by a second user or a packaging job. A path that does not
+    exist yet keeps mkstemp's private 0600.
+    """
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            try:
+                os.fchmod(f.fileno(), stat.S_IMODE(path.stat().st_mode))
+            except FileNotFoundError:
+                pass
+        if validate is not None:
+            validate(pathlib.Path(tmp))
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
 
 
 def main() -> None:
@@ -40,18 +81,23 @@ def main() -> None:
     with urllib.request.urlopen(url, timeout=30) as resp:
         data = resp.read()
 
-    # Parse BEFORE overwriting, never after: the secret scanner's import-time
-    # tomllib.loads is deliberately unguarded, so a truncated or non-TOML 200
-    # written to disk would break `import memriver_core.content_policy
-    # .secret_scanner` outright -- and with it every write. A failed sync must
-    # leave the previous good ruleset in place.
+    # Validate BEFORE overwriting, never after: a truncated 200, a non-TOML
+    # one, or -- legal TOML the loader still chokes on -- a rule missing its
+    # `id` must not reach the live file the secret scanner loads at import.
+    # Parsing the payload here catches the first two; the scanner's own
+    # loader, run against the temp sibling, is the only thing that catches
+    # the third, because it is the check the runtime itself performs. This
+    # imports the loader from `rules_loader`, not from `secret_scanner`
+    # itself: `secret_scanner` loads the *live* ruleset at import
+    # (`_RULES = _load_rules(...)`), so if that live file -- the very one
+    # this script exists to repair -- is already corrupt, importing
+    # `secret_scanner` would raise before a repair could ever run.
+    from memriver_core.content_policy.rules_loader import _load_rules
+
     raw = tomllib.loads(data.decode("utf-8"))["rules"]
-    OUTPUT.write_bytes(data)
+    _atomic_write_bytes(OUTPUT, data, validate=_load_rules)
 
-    # imported after the write so the counts describe what was just vendored
-    from memriver_core.content_policy.secret_scanner import _RULES
-
-    loaded = {rule_id for rule_id, *_ in _RULES}
+    loaded = {rule_id for rule_id, *_ in _load_rules(OUTPUT)}
     print(f"wrote {OUTPUT}: {len(raw)} upstream rules, "
           f"{sum(r['id'] in loaded for r in raw)} usable on Python "
           f"{sys.version_info.major}.{sys.version_info.minor}")

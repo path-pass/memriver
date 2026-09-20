@@ -10,6 +10,7 @@ from memriver_core import (
     MemoryNotFound,
     NameTaken,
     ProjectUnavailable,
+    StorageFailure,
     UnreadableMemory,
 )
 from memriver_core.bootstrap import build_service
@@ -21,7 +22,12 @@ from .protocol_text import INSTRUCTIONS
 # read, update, delete and write map the same application errors to different
 # client-visible strings, so the exception type alone cannot decide the
 # response -- every call site passes the operation it is translating for.
-Operation = Literal["read", "write", "update", "delete"]
+# "list" covers memory_index/memory_search/memory_dream: none of them names a
+# single entry, so there is no id or scope to react to -- any failure there is
+# reported the same way, regardless of the exception's type or fields.
+Operation = Literal["read", "write", "update", "delete", "list"]
+
+_COULD_NOT_READ_STORE = "could not read the memory store"
 
 
 def _map_error(operation: Operation, err: Exception, *,
@@ -35,6 +41,8 @@ def _map_error(operation: Operation, err: Exception, *,
     error with the same fields produces the same response byte for byte --
     and cannot leak a path, an errno, or a driver message into one.
     """
+    if operation == "list":
+        return {"error": _COULD_NOT_READ_STORE}
     if operation == "write":
         if isinstance(err, NameTaken):
             if err.existing is None:
@@ -78,15 +86,26 @@ def _map_error(operation: Operation, err: Exception, *,
         return {"error": f"could not delete entry: {entry_id}"}
     if isinstance(err, ContentRejected):
         return {"error": str(err)}
+    if operation == "update" and isinstance(err, StorageFailure):
+        # update's read-modify-write can fail on either half; a StorageFailure
+        # here may be the write side (e.g. a full disk), not a corrupt source
+        # file, so it must not be reported as "unreadable" like read's is
+        return {"error": f"could not update entry: {entry_id}"}
     return {"error": f"unreadable entry file: {entry_id}"}
 
 
 def build_server(root: Path, project_dir: Path,
                  settings: Settings | None = None) -> FastMCP:
-    # `root` stays an explicit argument -- callers that already resolved it (the
-    # CLI, the tests) must not have it re-read from the environment here. Only
-    # the behaviour knobs come from `settings`; when it is None the environment
-    # and the built-in defaults supply them.
+    """Build the MCP server bound to `root`/`project_dir`.
+
+    `root` stays an explicit argument -- callers that already resolved it (the
+    CLI, the tests) must not have it re-read from the environment here. Only
+    the behaviour knobs come from `settings`; when it is None a bare
+    `Settings()` supplies them from the environment and the built-in defaults
+    -- unlike `load_settings`, this does NOT read `<root>/config.toml`. A
+    caller that wants the config file honoured must call `load_settings`
+    itself and pass the result in as `settings`.
+    """
     settings = settings if settings is not None else Settings()
     service = build_service(settings, root=root)
     ctx = build_context(project_dir)
@@ -100,7 +119,10 @@ def build_server(root: Path, project_dir: Path,
     @mcp.tool
     async def memory_index() -> str:
         """List all active memories (global + current project) as a compact index."""
-        return service.index(ctx)
+        try:
+            return service.index(ctx)
+        except Exception as err:  # noqa: BLE001
+            return _map_error("list", err)["error"]
 
     @mcp.tool
     async def memory_read(entry_id: str) -> dict:
@@ -116,9 +138,12 @@ def build_server(root: Path, project_dir: Path,
     @mcp.tool
     async def memory_search(query: str, limit: int | None = None) -> list[dict]:
         """Search memories relevant to a task (global + current project)."""
-        return [{"id": h.id, "scope": h.scope.to_storage(), "type": h.type,
-                 "snippet": h.snippet}
-                for h in service.search(query, ctx, limit)]
+        try:
+            return [{"id": h.id, "scope": h.scope.to_storage(), "type": h.type,
+                     "snippet": h.snippet}
+                    for h in service.search(query, ctx, limit)]
+        except Exception as err:  # noqa: BLE001
+            return [_map_error("list", err)]
 
     @mcp.tool
     async def memory_write(content: str,
@@ -171,10 +196,13 @@ def build_server(root: Path, project_dir: Path,
         still true -> memory_update with the unchanged body (records the
         confirmation); outdated -> memory_update with the corrected body;
         no longer true or wanted -> memory_delete."""
-        return {"entries": [
-            {"id": m.id, "type": m.type, "scope": m.scope.to_storage(),
-             "description": m.description, "body": m.body,
-             "created": m.created, "updated": m.updated, "trust": m.trust}
-            for m in service.dream(ctx, limit=limit)]}
+        try:
+            return {"entries": [
+                {"id": m.id, "type": m.type, "scope": m.scope.to_storage(),
+                 "description": m.description, "body": m.body,
+                 "created": m.created, "updated": m.updated, "trust": m.trust}
+                for m in service.dream(ctx, limit=limit)]}
+        except Exception as err:  # noqa: BLE001
+            return _map_error("list", err)
 
     return mcp

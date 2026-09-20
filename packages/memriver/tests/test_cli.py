@@ -328,3 +328,118 @@ def test_install_harness_choices_match_the_installer(monkeypatch):
     out = _run_cli("install", "--help")
     assert out.returncode == 0
     assert "{" + ",".join(HARNESSES) + "}" in out.stdout
+
+
+def test_hook_harness_choices_match_the_literal():
+    """The hook subcommand's --harness choices are pinned to hooks.Harness the
+    same way install's are pinned to install.HARNESSES, so the two can never
+    silently drift apart."""
+    from typing import get_args
+
+    from memriver.hooks import Harness
+
+    out = _run_cli("hook", "--help")
+    assert out.returncode == 0
+    assert "{" + ",".join(get_args(Harness)) + "}" in out.stdout
+
+
+@contextlib.contextmanager
+def isolated_memriver_loggers():
+    """Hand `_configure_logging` a clean slate and give it back afterwards.
+
+    Its handler captures whichever `sys.stderr` is current when it is created,
+    which in a process that only ever calls `main()` once is the right one --
+    but across tests it would be a previous test's captured stream.
+    """
+    import logging
+
+    named = [logging.getLogger(name) for name in ("memriver", "memriver_core")]
+    saved = [(logger.handlers[:], logger.propagate, logger.level)
+             for logger in named]
+    for logger in named:
+        logger.handlers.clear()
+    try:
+        yield named
+    finally:
+        for logger, (handlers, propagate, level) in zip(named, saved, strict=True):
+            logger.handlers[:] = handlers
+            logger.propagate = propagate
+            logger.setLevel(level)
+
+
+def test_loader_warnings_go_to_stderr_even_behind_a_stdout_root_handler(
+        tmp_path, capsys):
+    """`logging.basicConfig` is a documented no-op once the root logger has a
+    handler. A process that embeds `main()` and has already configured logging
+    to stdout would therefore push memriver_core's loader warnings into the
+    very stream the MCP and hook protocols own. The two memriver loggers get
+    their own stderr handler and stop propagating, so where the root logger
+    points stops mattering."""
+    import logging
+
+    root_handler = logging.StreamHandler(sys.stdout)
+    logging.getLogger().addHandler(root_handler)
+    try:
+        with isolated_memriver_loggers():
+            assert cli.main(["doctor", "--root", str(tmp_path)]) == 0
+            logging.getLogger("memriver_core.config.loader").warning(
+                "config.toml could not be read")
+    finally:
+        logging.getLogger().removeHandler(root_handler)
+
+    captured = capsys.readouterr()
+    assert "config.toml could not be read" not in captured.out
+    assert "config.toml could not be read" in captured.err
+
+
+def test_configuring_the_memriver_loggers_twice_does_not_stack_handlers():
+    """`main()` is an ordinary callable, and calling it twice in one process
+    must not double every warning line."""
+    with isolated_memriver_loggers() as named:
+        cli._configure_logging()
+        cli._configure_logging()
+
+        assert [len(logger.handlers) for logger in named] == [1, 1]
+
+
+def test_configure_logging_replaces_a_preattached_stdout_handler(tmp_path, capsys):
+    """An embedding process may already have attached its own
+    `StreamHandler(sys.stdout)` to `memriver_core` before memriver's own
+    `main()` runs. `_configure_logging` only added a handler when the logger
+    had none, so that pre-existing stdout handler survived -- and with
+    propagation off, a loader warning went out over it, straight into the
+    JSON-RPC/hook stdout stream. Configuring must replace it, not add
+    alongside it."""
+    import logging
+
+    with isolated_memriver_loggers() as named:
+        for logger in named:
+            logger.addHandler(logging.StreamHandler(sys.stdout))
+
+        assert cli.main(["doctor", "--root", str(tmp_path)]) == 0
+        logging.getLogger("memriver_core.config.loader").warning(
+            "config.toml could not be read")
+
+    captured = capsys.readouterr()
+    assert "config.toml could not be read" not in captured.out
+    assert "config.toml could not be read" in captured.err
+
+
+def test_configure_logging_replaces_a_preattached_null_handler(tmp_path, capsys):
+    """A `NullHandler` pre-attached by an embedding process must not survive
+    configuration either: with propagation off, it would otherwise be the
+    only handler on the logger, and every warning is swallowed instead of
+    reaching stderr."""
+    import logging
+
+    with isolated_memriver_loggers() as named:
+        for logger in named:
+            logger.addHandler(logging.NullHandler())
+
+        assert cli.main(["doctor", "--root", str(tmp_path)]) == 0
+        logging.getLogger("memriver_core.config.loader").warning(
+            "config.toml could not be read")
+
+    captured = capsys.readouterr()
+    assert "config.toml could not be read" not in captured.out
+    assert "config.toml could not be read" in captured.err

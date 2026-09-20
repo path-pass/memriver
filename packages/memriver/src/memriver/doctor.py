@@ -9,6 +9,7 @@ spec S10).
 
 from __future__ import annotations
 
+import unicodedata
 from typing import IO, TYPE_CHECKING
 
 from .core_logging import quiet_core_logging
@@ -26,7 +27,31 @@ _STATE_MESSAGES = {
     "degraded": "store has findings",
 }
 _INACCESSIBLE_MESSAGE = "memriver doctor: memory store is inaccessible"
+# the --json counterpart of _INACCESSIBLE_MESSAGE, without the CLI prefix --
+# this is a value read back by a script, not a line printed to a terminal
+_INACCESSIBLE_JSON_ERROR = "memory store is inaccessible"
 _EXIT_CODES = {"uninitialized": 0, "empty": 0, "healthy": 0, "degraded": 1}
+
+# scopes and location hints are derived from directory and file names in the
+# store, which a user can hand-edit to contain a newline (forging a second
+# finding line) or an ANSI escape (a raw terminal control sequence); the JSON
+# renderer needs no such guard -- json.dumps already escapes both.
+#
+# Categorised rather than enumerated, because a code-point list keeps missing
+# things a real store name carries: Cc/Cf are the C0, C1 and format controls
+# (U+202E RIGHT-TO-LEFT OVERRIDE reorders the line a terminal draws without
+# being a control character), Zl/Zp the line and paragraph separators, and Cs
+# the lone surrogates that a filename no codec accepts arrives as -- those
+# turn back into their original raw byte the moment stdout, which uses
+# surrogateescape on a terminal, encodes them.
+_INVISIBLE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
+
+
+def _visible(value: str) -> str:
+    return "".join(
+        " " if unicodedata.category(char) in _INVISIBLE_CATEGORIES else char
+        for char in value
+    )
 
 
 def _finding_to_dict(finding: DiagnosticFinding) -> dict:
@@ -57,8 +82,8 @@ def _render_human(report: DiagnosticsReport, stdout: IO[str]) -> None:
     for kind in sorted(by_kind):
         stdout.write(f"\n{kind}:\n")
         for finding in by_kind[kind]:
-            scopes = ", ".join(scope.to_storage() for scope in finding.scopes)
-            locations = ", ".join(finding.location_hints)
+            scopes = ", ".join(_visible(scope.to_storage()) for scope in finding.scopes)
+            locations = ", ".join(_visible(hint) for hint in finding.location_hints)
             stdout.write(f"  - scopes: {scopes}\n")
             stdout.write(f"    locations: {locations}\n")
             stdout.write(f"    reason: {finding.reason}\n")
@@ -85,6 +110,10 @@ def run_doctor(*, root: Path | None, json_output: bool, stale_days: int,
         # the reason itself stays out of stderr: a pydantic error echoes the
         # rejected value, a traceback the absolute source paths.
         stderr.write(_INACCESSIBLE_MESSAGE + "\n")
+        if json_output:
+            import json
+
+            stdout.write(json.dumps({"error": _INACCESSIBLE_JSON_ERROR}) + "\n")
         return 2
 
     if json_output:

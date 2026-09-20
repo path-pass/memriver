@@ -136,3 +136,15 @@ def test_boolean_in_config_file_is_rejected_not_coerced(tmp_path, caplog):
 def test_valid_config_file_still_wins_after_the_guard(tmp_path):
     root = _root(tmp_path, "max_body_chars = 42\n")
     assert load_settings(root_override=root).max_body_chars == 42
+
+
+def test_root_key_in_config_file_is_ignored_and_warns(tmp_path, caplog):
+    # chicken and egg: the root is what located this file, so a 'root' key
+    # inside it can never take effect -- it is dropped, not applied
+    root = _root(tmp_path, 'root = "/somewhere/else"\nmax_body_chars = 42\n')
+    with caplog.at_level("WARNING"):
+        s = load_settings(root_override=root)
+    assert s.root == root
+    assert s.max_body_chars == 42
+    assert "root" in caplog.text
+    assert "MEMRIVER_ROOT" in caplog.text

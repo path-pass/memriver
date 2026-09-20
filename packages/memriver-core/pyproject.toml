@@ -2,8 +2,19 @@
 name = "memriver-core"
 version = "0.1.0"
 description = "memriver core: markdown memory store with a deterministic write gate"
+readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "path-pass" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 # pydantic/pydantic-settings are repo-wide baseline, not a heavy dependency;
 # the ceiling on core's dependency list targets HEAVY deps only (ML runtimes,
 # cloud SDKs, LLM clients) so future packages (dream/sync/vector) stay light.
@@ -13,6 +24,11 @@ dependencies = [
     "pydantic>=2",
     "pydantic-settings>=2",
 ]
+
+[project.urls]
+Homepage = "https://github.com/path-pass/memriver"
+Repository = "https://github.com/path-pass/memriver"
+Issues = "https://github.com/path-pass/memriver/issues"
 
 [build-system]
 requires = ["hatchling"]

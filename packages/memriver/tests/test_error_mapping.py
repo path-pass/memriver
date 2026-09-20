@@ -81,10 +81,25 @@ def test_write_outside_a_project_names_the_path_the_transport_resolved(tmp_path)
 @pytest.mark.parametrize("err, expected", [
     (MemoryNotFound("n"), "no such entry: n"),
     (UnreadableMemory("n"), "unreadable entry file: n"),
-    (StorageFailure(), "unreadable entry file: n"),
 ])
 def test_read_and_update_mapping(operation, err, expected):
     assert _map_error(operation, err, entry_id="n") == {"error": expected}
+
+
+def test_read_storage_failure_is_an_unreadable_entry():
+    # read never writes, so a StorageFailure here can only be the file itself
+    assert _map_error("read", StorageFailure(), entry_id="n") == {
+        "error": "unreadable entry file: n"}
+
+
+def test_update_storage_failure_is_not_reported_as_an_unreadable_entry():
+    """update's read-modify-write can fail on either half: a StorageFailure
+    from the write side (e.g. a full disk) is not the same problem as a
+    corrupt source file, and telling an agent to "repair" a write failure
+    sends it chasing the wrong fix. A failed write during update is therefore
+    reported as an update failure, distinct from an unreadable entry."""
+    assert _map_error("update", StorageFailure(), entry_id="n") == {
+        "error": "could not update entry: n"}
 
 
 def test_update_forwards_the_content_policy_refusal():
@@ -139,10 +154,10 @@ class OtherBackend:
         raise self.error
 
     def iter_visible(self, ctx):
-        return iter(())
+        raise self.error
 
     def search(self, query, ctx, limit):
-        return []
+        raise self.error
 
 
 @pytest.fixture
@@ -196,7 +211,6 @@ async def test_write_collision_over_another_backend_echoes_the_same_dict(
 @pytest.mark.parametrize("error, expected", [
     (MemoryNotFound("n"), {"error": "no such entry: n"}),
     (UnreadableMemory("n"), {"error": "unreadable entry file: n"}),
-    (StorageFailure(), {"error": "unreadable entry file: n"}),
 ])
 async def test_read_and_update_over_another_backend_answer_identically(
         other_backend_server, error, expected):
@@ -204,6 +218,19 @@ async def test_read_and_update_over_another_backend_answer_identically(
         assert (await c.call_tool("memory_read", {"entry_id": "n"})).data == expected
         assert (await c.call_tool("memory_update", {
             "entry_id": "n", "content": "v2"})).data == expected
+
+
+async def test_read_storage_failure_over_another_backend_is_unreadable(other_backend_server):
+    async with Client(other_backend_server(StorageFailure())) as c:
+        assert (await c.call_tool("memory_read", {"entry_id": "n"})).data == {
+            "error": "unreadable entry file: n"}
+
+
+async def test_update_storage_failure_over_another_backend_is_distinct(other_backend_server):
+    async with Client(other_backend_server(StorageFailure())) as c:
+        assert (await c.call_tool("memory_update", {
+            "entry_id": "n", "content": "v2"})).data == {
+            "error": "could not update entry: n"}
 
 
 @pytest.mark.parametrize("error, expected", [
@@ -234,3 +261,26 @@ def test_a_project_scoped_echo_renders_the_scope_as_the_codec_does():
                    id="p", source=SOURCE)
     assert _map_error("write", NameTaken("p", existing=m))["existing"]["scope"] == (
         "project:demo-000000")
+
+
+# --- memory_index / memory_search / memory_dream never raise either ---
+
+@pytest.mark.parametrize("error", [StorageFailure(), RuntimeError("driver exploded")])
+async def test_memory_index_never_raises(other_backend_server, error):
+    async with Client(other_backend_server(error)) as c:
+        result = await c.call_tool("memory_index", {})
+    assert result.data == "could not read the memory store"
+
+
+@pytest.mark.parametrize("error", [StorageFailure(), RuntimeError("driver exploded")])
+async def test_memory_search_never_raises(other_backend_server, error):
+    async with Client(other_backend_server(error)) as c:
+        result = await c.call_tool("memory_search", {"query": "q"})
+    assert result.data == [{"error": "could not read the memory store"}]
+
+
+@pytest.mark.parametrize("error", [StorageFailure(), RuntimeError("driver exploded")])
+async def test_memory_dream_never_raises(other_backend_server, error):
+    async with Client(other_backend_server(error)) as c:
+        result = await c.call_tool("memory_dream", {"limit": 2})
+    assert result.data == {"error": "could not read the memory store"}

@@ -6,6 +6,8 @@ from memriver_core.models import (
     Memory,
     ProjectId,
     Scope,
+    now,
+    now_strictly_after,
     sanitize_name,
 )
 
@@ -18,6 +20,44 @@ def test_new_generates_ulid_and_timestamps():
     assert m.created == m.updated
     assert m.created.endswith("Z") or "+" in m.created
     assert m.sync is True and m.trust == "agent"
+
+
+def test_now_emits_microseconds_so_consecutive_calls_can_be_ordered():
+    # at second resolution two updates within the same wall second produced
+    # identical strings and freshness ordering could not tell them apart.
+    # The microsecond field is what makes ordering possible; a strict advance
+    # is not asserted because the clock's own tick may be coarser than a call.
+    stamp = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z"
+    first = now()
+    second = now()
+    assert re.fullmatch(stamp, first)
+    assert re.fullmatch(stamp, second)
+    assert second >= first
+
+
+def test_now_strictly_after_advances_even_when_the_clock_stands_still(monkeypatch):
+    # the clock's own tick may be coarser than two consecutive updates, and it
+    # can even step backwards; `updated` is the freshness sort key, so a
+    # rewrite has to land strictly after the value it replaces regardless
+    monkeypatch.setattr("memriver_core.models.memory.now",
+                        lambda: "2026-08-29T10:00:00.000000Z")
+    assert now_strictly_after("2026-08-29T10:00:00.000000Z") == "2026-08-29T10:00:00.000001Z"
+    assert now_strictly_after("2026-08-29T10:00:00.000001Z") == "2026-08-29T10:00:00.000002Z"
+    # a clock that jumped backwards must not drag `updated` back with it
+    assert now_strictly_after("2027-01-01T00:00:00.000000Z") == "2027-01-01T00:00:00.000001Z"
+    # ...and a clock that has genuinely moved on is what wins
+    assert now_strictly_after("2020-01-01T00:00:00.000000Z") == "2026-08-29T10:00:00.000000Z"
+
+
+@pytest.mark.parametrize("previous", ["not-a-date", "", "2026-08-29T10:00:00Z",
+                                      "0001-01-01 00:00:00+14:00"])
+def test_now_strictly_after_falls_back_to_the_clock_for_a_non_canonical_value(
+        previous, monkeypatch):
+    # nothing comparable to advance past: a stored value outside the canonical
+    # form is a diagnostics finding, not a reason to refuse the update
+    monkeypatch.setattr("memriver_core.models.memory.now",
+                        lambda: "2026-08-29T10:00:00.000000Z")
+    assert now_strictly_after(previous) == "2026-08-29T10:00:00.000000Z"
 
 
 def test_invalid_type_rejected():
