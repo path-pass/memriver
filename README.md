@@ -115,9 +115,11 @@ Known limits:
 | `memory_dream(limit=3)` | Maintenance queue: the current project's entries least recently confirmed true — for dedicated memory-hygiene sessions only |
 
 Every write passes the content policy (secret-shaped content is refused, the
-value is never echoed back) and the size limits from *Configuration*. Tools
-never raise through the transport: an operational failure comes back as a
-path-free error message.
+value is never echoed back) and the size limits from *Configuration*. An
+operational failure inside a tool comes back as a path-free error message
+rather than an exception through the transport; a call that does not match a
+tool's schema — an unknown argument, a missing one, a wrong type — is rejected
+by the MCP layer before the tool runs.
 
 The storage model — frontmatter fields, the four types, naming rules, the
 strict boolean and timestamp formats — is specified in

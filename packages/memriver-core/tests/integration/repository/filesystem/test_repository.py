@@ -563,9 +563,11 @@ def test_project_id_named_global_is_not_confused_with_the_global_scope(
     # `_dir_scope` checked parent.name == "global" before parent.parent.name
     # == "projects", so projects/global/entries misjudged itself as the
     # global scope directory -- a scope mismatch against its own frontmatter,
-    # and the entry vanished from get()/iter_visible(). A registered project id
-    # always ends in a -<16 hex> suffix, so only the core API can hit this
-    # directly.
+    # and the entry vanished from get()/iter_visible(). `memriver project init`
+    # generates ids ending in a -<16 hex> suffix, so it never produces this one
+    # by itself -- but any id matching PROJECT_ID_RE is legal, and `memriver
+    # project adopt global <dir>` binds an existing projects/global/ directory,
+    # so the case is reachable without going through the core API.
     project_global = ProjectId("global")
     ctx = AccessContext(project_id=project_global)
     m = _m(scope=Scope.project(project_global), id="proj-named-global")

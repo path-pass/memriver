@@ -77,12 +77,20 @@ The agent proposes a short kebab-case name; the server disposes:
   is unique across the entire store; a project name is unique within its
   project, and a project write may not claim a name a global entry holds.
   Different projects may reuse the same name.
-- **Name collisions are refused, not resolved.** A write against an existing
-  name returns the existing entry's summary instead of writing. The agent —
-  which has the semantic context — then decides: same fact → update the
-  existing entry; different fact → propose a more precise name. The server
-  never silently forks a topic with a `-2` suffix. This refusal doubles as
-  the cheapest possible duplicate-topic detector.
+- **Name collisions are refused, not resolved**, and the refusal depends on
+  which scope holds the name. Against an existing **project** entry the write
+  comes back as `name '<id>' already exists; memory_update it, or choose a
+  more precise name if this is a different fact`, carrying that entry's
+  summary. The agent — which has the semantic context — then decides: same
+  fact → update the existing entry; different fact → propose a more precise
+  name. Against a **global** entry there is nothing to offer, because global
+  is read-only to agents: the write comes back as the fixed line `name '<id>'
+  is already used by a read-only global memory; choose another name`, with no
+  summary, and `memory_update` / `memory_delete` aimed at a global entry are
+  refused too, with their own fixed line (`global memories are read-only to
+  agents; no change was made.` …). Either way the server never silently forks
+  a topic with a `-2` suffix, and the project-entry refusal doubles as the
+  cheapest possible duplicate-topic detector.
 - A missing or unsalvageable proposal falls back to a server-generated ULID,
   keeping the write tool's never-raise contract.
 
@@ -123,13 +131,21 @@ retrieval happens to surface it. That leaves a blind spot — a memory nobody
 ever searches for again just sits there, correct or not, indefinitely
 unexamined.
 
-`memory_dream` closes it with amortized full-coverage review instead of
-retrieval-triggered spot checks: each call hands back the batch of entries
-whose `updated` is oldest, for a dedicated maintenance session (started by
-the user, or by a user-scheduled headless run) to check against reality.
-It is a tool for that session alone — a working task session must never
-call it, since a maintenance sweep has nothing to do with the task at hand
-and would just crowd its context.
+`memory_dream` closes it for one project at a time, with amortized
+full-coverage review instead of retrieval-triggered spot checks: each call
+hands back the batch of the **current project's** entries whose `updated` is
+oldest, for a dedicated maintenance session (started by the user, or by a
+user-scheduled headless run) to check against reality. It is a tool for that
+session alone — a working task session must never call it, since a
+maintenance sweep has nothing to do with the task at hand and would just
+crowd its context.
+
+The queue is project-scoped because the review ends in a write, and the only
+scope an agent may write is the current project. Global entries never enter
+it, and a session with no project gets an empty queue back rather than
+somebody else's work: global memory is maintained by hand, in
+`~/agent-memory/global/entries/`. Reviewing every project therefore means one
+maintenance session per project.
 
 This works because `updated` doubles as "last confirmed true", not merely
 "last edited". An entry the reviewer finds still correct is confirmed by
@@ -162,13 +178,12 @@ to. The protocol reaches their agents through three layers:
    comes back as a structured refusal that names the valid values. The agent
    self-corrects within the same turn. The server never guesses; it refuses
    and teaches.
-3. **Installed protocol instructions (richer guidance, planned).** Tool
-   descriptions cannot carry behavioral guidance — when to write a memory,
-   what not to store, check the index before writing. A planned `memriver
-   install` will inject a single server-maintained protocol block into each
-   harness's native instruction file (Codex `AGENTS.md`, Claude Code
-   `CLAUDE.md`, Cursor rules, Kiro steering). The injection points differ
-   per harness; the text would be one source, maintained in the server.
+3. **Installed protocol instructions (richer guidance).** Tool descriptions
+   cannot carry behavioral guidance — when to write a memory, what not to
+   store, check the index before writing. `memriver install` writes it per
+   harness; what each one gets is the install table in the README. The
+   injection points differ per harness; the text is one source, maintained in
+   the server.
 
 Layers 1–2 alone make an unconfigured harness work correctly; layer 3
 upgrades "works" to "works well". The taxonomy's four words fitting in a
