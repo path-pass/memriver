@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 from memriver_core.application.errors import (
+    GlobalReadOnly,
     InvalidScope,
     MemoryNotFound,
     NameTaken,
@@ -20,6 +21,7 @@ from memriver_core.application.errors import (
 )
 from memriver_core.models import AccessContext, Memory, ProjectId, Scope
 from memriver_core.repository.filesystem import FileMemoryRepository
+from memriver_core.repository.filesystem.markdown_codec import encode
 from memriver_core.repository.protocol import MemoryRepository
 
 SOURCE = {"harness": "test", "session": "s", "method": "agent"}
@@ -28,6 +30,7 @@ MINE = ProjectId("mine-000000")
 OTHER = ProjectId("other-000000")
 
 GLOBAL = Scope.global_()
+MINE_SCOPE = Scope.project(MINE)
 
 CTX = AccessContext(project_id=MINE)
 GLOBAL_ONLY = AccessContext(project_id=None)
@@ -46,10 +49,17 @@ class BackendHarness:
     `occupy_unreadably` plants something undecodable at a global name, so the
     third collision outcome can be exercised without this file knowing what
     "undecodable" means for the backend.
+
+    `plant_global` stores a global entry behind the repository's back. The
+    port refuses every agent-facing write to the global scope, so a test that
+    needs one on disk cannot go through `create`; planting it is the test-only
+    stand-in for the hand-editing (or reviewed maintenance step) that puts a
+    global memory there in production.
     """
 
     make_repository: Callable[[Path], MemoryRepository]
     occupy_unreadably: Callable[[Path, str], None]
+    plant_global: Callable[[Path, Memory], None]
 
 
 def _plant_unreadable_file(storage_dir: Path, memory_id: str) -> None:
@@ -58,10 +68,17 @@ def _plant_unreadable_file(storage_dir: Path, memory_id: str) -> None:
     (d / f"{memory_id}.md").write_text("hand-written notes\n", encoding="utf-8")
 
 
+def _plant_global_entry(storage_dir: Path, memory: Memory) -> None:
+    d = storage_dir / "global" / "entries"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{memory.id}.md").write_text(encode(memory), encoding="utf-8")
+
+
 BACKENDS: dict[str, BackendHarness] = {
     "filesystem": BackendHarness(
         make_repository=FileMemoryRepository,
         occupy_unreadably=_plant_unreadable_file,
+        plant_global=_plant_global_entry,
     ),
 }
 
@@ -82,13 +99,23 @@ def occupy_unreadably(backend, storage_dir):
 
 
 @pytest.fixture
+def plant_global(backend, storage_dir):
+    return lambda memory: backend.plant_global(storage_dir, memory)
+
+
+@pytest.fixture
 def memory_repository(backend, storage_dir) -> MemoryRepository:
     return backend.make_repository(storage_dir)
 
 
-def _m(body="内容", type="project", scope=GLOBAL, id=None, description=""):
+def _m(body="内容", type="project", scope=MINE_SCOPE, id=None, description=""):
     return Memory.new(body=body, type=type, scope=scope, source=SOURCE, id=id,
                       description=description)
+
+
+def _global(name: str = "tea", body: str = "drinks oolong") -> Memory:
+    """A global memory for `plant_global`; the port refuses to create one."""
+    return Memory.new(body=body, type="user", scope=GLOBAL, source=SOURCE, id=name)
 
 
 # --- CRUD ---
@@ -152,14 +179,14 @@ def test_another_projects_memory_is_invisible(memory_repository):
     assert [m.id for m in memory_repository.iter_visible(CTX)] == []
 
 
-def test_global_memories_are_visible_to_every_context(memory_repository):
-    memory_repository.create(_m(id="shared"), OTHER_CTX)
+def test_global_memories_are_visible_to_every_context(memory_repository, plant_global):
+    plant_global(_global(name="shared"))
     assert [m.id for m in memory_repository.iter_visible(CTX)] == ["shared"]
     assert [m.id for m in memory_repository.iter_visible(GLOBAL_ONLY)] == ["shared"]
 
 
-def test_iter_visible_returns_global_plus_current_project(memory_repository):
-    memory_repository.create(_m(body="g", id="g"), CTX)
+def test_iter_visible_returns_global_plus_current_project(memory_repository, plant_global):
+    plant_global(_global(name="g"))
     memory_repository.create(_m(body="p", scope=Scope.project(MINE), id="p"), CTX)
     memory_repository.create(_m(body="f", scope=Scope.project(OTHER), id="f"), OTHER_CTX)
     assert {m.id for m in memory_repository.iter_visible(CTX)} == {"g", "p"}
@@ -191,12 +218,75 @@ def test_create_outside_the_context_writes_nothing_even_without_a_collision(memo
     assert [m.id for m in memory_repository.iter_visible(OTHER_CTX)] == []
 
 
-def test_create_of_a_global_memory_is_unaffected(memory_repository):
-    # every context sees the global scope, so global writes keep working from
-    # a project context and from a project-less one alike
-    memory_repository.create(_m(id="g"), CTX)
-    memory_repository.create(_m(id="g2"), GLOBAL_ONLY)
-    assert {m.id for m in memory_repository.iter_visible(GLOBAL_ONLY)} == {"g", "g2"}
+# --- the global scope is read-only ---
+#
+# Global entries are readable from every context and writable from none: the
+# port refuses create/update_body/delete whose target is global, and changes
+# nothing. Only the refusal is asserted here -- "changed nothing" down to the
+# stored bytes is a backend-specific claim and lives in the filesystem
+# integration tests.
+
+@pytest.mark.parametrize("ctx", [CTX, GLOBAL_ONLY, OTHER_CTX])
+def test_create_global_is_refused_in_every_context(memory_repository, ctx):
+    with pytest.raises(GlobalReadOnly):
+        memory_repository.create(_global(), ctx)
+    with pytest.raises(MemoryNotFound):
+        memory_repository.get("tea", ctx)
+
+
+def test_update_of_global_entry_is_refused_and_entry_unchanged(memory_repository, plant_global):
+    plant_global(_global())
+    for ctx in (CTX, GLOBAL_ONLY):
+        with pytest.raises(GlobalReadOnly):
+            memory_repository.update_body("tea", "drinks coffee", ctx)
+        # a body-preserving edit is still an edit: the refusal is about the
+        # target scope, not about whether the new body differs
+        with pytest.raises(GlobalReadOnly):
+            memory_repository.update_body("tea", "drinks oolong", ctx, description="same")
+    assert memory_repository.get("tea", CTX).body == "drinks oolong"
+
+
+def test_delete_of_global_entry_is_refused(memory_repository, plant_global):
+    plant_global(_global())
+    with pytest.raises(GlobalReadOnly):
+        memory_repository.delete("tea", CTX)
+    with pytest.raises(GlobalReadOnly):
+        memory_repository.delete("tea", GLOBAL_ONLY)
+    assert memory_repository.get("tea", GLOBAL_ONLY).body == "drinks oolong"
+
+
+def test_project_mutations_still_work(memory_repository):
+    # the negative control for the three refusals above: the guard keys off the
+    # target's scope, so every project mutation is untouched by it
+    memory_repository.create(_m(id="p", body="v1"), CTX)
+    assert memory_repository.update_body("p", "v2", CTX).body == "v2"
+    memory_repository.delete("p", CTX)
+    with pytest.raises(MemoryNotFound):
+        memory_repository.get("p", CTX)
+
+
+def test_global_name_still_blocks_a_project_write(memory_repository, plant_global):
+    # global is read-only, not invisible: it is in every context's visible
+    # scopes, so a global name still reserves that name against a project write
+    plant_global(_global())
+    with pytest.raises(NameTaken) as info:
+        memory_repository.create(_m(id="tea"), CTX)
+    assert info.value.existing is not None and info.value.existing.scope == GLOBAL
+
+
+def test_same_name_in_global_and_project_refuses_update_and_keeps_project_copy(
+        memory_repository, plant_global):
+    # the project copy first, through the API; then a hand-planted global twin
+    memory_repository.create(_m(id="tea", body="project copy"), CTX)
+    plant_global(_global(body="global copy"))
+    with pytest.raises(GlobalReadOnly):
+        memory_repository.update_body("tea", "changed", CTX)
+    with pytest.raises(GlobalReadOnly):
+        memory_repository.delete("tea", CTX)
+    # the project copy is reachable from a context that cannot see the global
+    # twin's shadow -- iter_visible lists both scopes; the project one is intact
+    bodies = {m.scope: m.body for m in memory_repository.iter_visible(CTX) if m.id == "tea"}
+    assert bodies[Scope.project(MINE)] == "project copy"
 
 
 # --- collisions ---
@@ -213,21 +303,6 @@ def test_same_scope_collision_raises_name_taken_with_the_existing_memory(memory_
         memory_repository.create(_m(body="v2", id="n"), CTX)
     assert err.value.memory_id == "n"
     assert err.value.existing == first
-
-
-def test_global_write_refused_when_another_project_holds_the_name(memory_repository):
-    memory_repository.create(_m(body="foreign secret plan", scope=Scope.project(OTHER), id="n"),
-                OTHER_CTX)
-    with pytest.raises(NameTaken) as err:
-        memory_repository.create(_m(body="v2", id="n"), CTX)
-    assert err.value.memory_id == "n"
-    # existing=None is the cross-scope refusal: the field carries no trace of
-    # the memory holding the name, so no transport can echo one
-    assert err.value.existing is None
-    assert "foreign secret plan" not in str(err.value)
-    # the foreign memory is untouched and no global memory was created
-    assert memory_repository.get("n", OTHER_CTX).body == "foreign secret plan"
-    assert [m.id for m in memory_repository.iter_visible(GLOBAL_ONLY)] == []
 
 
 def test_collision_with_an_undecodable_item_raises_unreadable_memory(

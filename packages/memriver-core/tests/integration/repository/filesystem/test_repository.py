@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from memriver_core.application.errors import (
+    GlobalReadOnly,
     InvalidScope,
     MemoryNotFound,
     NameTaken,
@@ -23,6 +24,10 @@ SOURCE = {"harness": "test", "session": "s", "method": "explicit"}
 MINE = ProjectId("mine-000000")
 OTHER = ProjectId("other-000000")
 GLOBAL = Scope.global_()
+MINE_SCOPE = Scope.project(MINE)
+# CTX's own entries directory, and the scope line encode() writes into them
+MINE_ENTRIES = Path("projects") / MINE / "entries"
+MINE_SCOPE_LINE = f"scope: {MINE_SCOPE.to_storage()}"
 
 CTX = AccessContext(project_id=MINE)
 OTHER_CTX = AccessContext(project_id=OTHER)
@@ -38,15 +43,29 @@ def memory_repository(root) -> FileMemoryRepository:
     return FileMemoryRepository(root)
 
 
-def _m(body="内容", type="project", scope=GLOBAL, id=None, description=""):
+def _m(body="内容", type="project", scope=MINE_SCOPE, id=None, description=""):
     return Memory.new(body=body, type=type, scope=scope, source=SOURCE, id=id,
                       description=description)
 
 
 def _write_raw(root: Path, rel: str, text: str) -> Path:
-    path = root / "global" / "entries" / rel
+    """Plant a file in CTX's project entries directory, bypassing the repository."""
+    path = root / MINE_ENTRIES / rel
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+    return path
+
+
+def _plant_global(root: Path, memory: Memory) -> Path:
+    """Write a global entry behind the repository's back.
+
+    Global is read-only through the port, so a test that needs a global entry
+    on disk cannot create one -- it writes the document itself, exactly as a
+    hand-editing user (or a future reviewed maintenance step) would.
+    """
+    path = root / "global" / "entries" / f"{memory.id}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(encode(memory), encoding="utf-8")
     return path
 
 
@@ -65,7 +84,16 @@ def test_signatures_match_the_repository_protocol(memory_repository):
 
 # --- storage layout ---
 
-def test_create_writes_into_the_global_entries_directory(memory_repository, root):
+def test_create_of_global_is_refused_and_creates_no_global_directory(memory_repository, root):
+    # the refusal has to land before any directory work: a store that grew an
+    # empty global/entries on every rejected write would advertise a write path
+    # the port does not have
+    with pytest.raises(GlobalReadOnly):
+        memory_repository.create(_m(scope=GLOBAL), CTX)
+    assert not (root / "global").exists()
+
+
+def test_create_writes_into_the_project_entries_directory(memory_repository, root):
     m = _m()
     memory_repository.create(m, CTX)
     path = _entry_path(root, m)
@@ -201,7 +229,7 @@ def test_get_refuses_a_file_whose_stored_scope_does_not_parse_as_absent(memory_r
     # is the same scope mismatch as above -- not found, not "unreadable"
     path = _write_raw(root, "n.md",
                       encode(_m(body="hand-edited", id="n")).replace(
-                          "scope: global", "scope: nonsense"))
+                          MINE_SCOPE_LINE, "scope: nonsense"))
     with pytest.raises(MemoryNotFound):
         memory_repository.get("n", CTX)
     assert "nonsense" in path.read_text(encoding="utf-8")
@@ -212,7 +240,7 @@ def test_iter_visible_skips_a_file_whose_stored_scope_does_not_parse(memory_repo
     memory_repository.create(mine, CTX)
     _write_raw(root, "n.md",
                encode(_m(body="hand-edited", id="n")).replace(
-                   "scope: global", "scope: nonsense"))
+                   MINE_SCOPE_LINE, "scope: nonsense"))
     assert {m.id for m in memory_repository.iter_visible(CTX)} == {mine.id}
 
 
@@ -221,7 +249,7 @@ def test_create_refuses_when_name_taken_by_an_unparsable_scope_file(memory_repos
     # must still refuse it rather than clobbering a hand-edited file
     path = _write_raw(root, "n.md",
                       encode(_m(body="hand-edited", id="n")).replace(
-                          "scope: global", "scope: nonsense"))
+                          MINE_SCOPE_LINE, "scope: nonsense"))
     before = path.read_bytes()
     with pytest.raises(UnreadableMemory):
         memory_repository.create(_m(body="v1", type="user", id="n"), CTX)
@@ -313,7 +341,7 @@ def test_create_refuses_clobber_when_name_equals_missing_frontmatter_key(memory_
     path = _write_raw(root, "source.md", "---\n"
                       "id: source\n"
                       "type: user\n"
-                      "scope: global\n"
+                      f"{MINE_SCOPE_LINE}\n"
                       "sync: true\n"
                       "created: 2026-08-29T10:00:00Z\n"
                       "updated: 2026-08-29T10:00:00Z\n"
@@ -356,7 +384,7 @@ def test_create_refuses_when_name_taken_by_id_mismatched_file(memory_repository,
     with pytest.raises(UnreadableMemory):
         memory_repository.create(_m(body="v1", type="user", id="foo"), CTX)
     assert path.read_bytes() == before
-    assert not (root / "global" / "entries" / "bar.md").exists()
+    assert not (root / MINE_ENTRIES / "bar.md").exists()
 
 
 def test_same_scope_collision_echoes_the_existing_memory(memory_repository):
@@ -369,29 +397,57 @@ def test_same_scope_collision_echoes_the_existing_memory(memory_repository):
     assert err.value.existing == first
 
 
-def test_global_create_refused_when_a_foreign_project_holds_the_name(memory_repository, root):
-    # a global name must never shadow, or claim, a name any project already
-    # uses -- so a global create checks every scope in the store, and the
-    # refusal must not echo that project's content or type back
-    foreign = _m(body="foreign project secret plan", scope=Scope.project(OTHER),
-                 id="n")
-    memory_repository.create(foreign, OTHER_CTX)
-    path = _entry_path(root, foreign)
+def test_project_create_refused_when_a_global_entry_holds_the_name(memory_repository, root):
+    # global is read-only, not invisible: it is in every context's visible
+    # scopes, so a hand-planted global name still reserves that name -- and the
+    # refusal must leave both the global document and the project directory as
+    # they were
+    path = _plant_global(root, _m(body="curated global fact", type="user",
+                                  scope=GLOBAL, id="n"))
     before = path.read_bytes()
 
     with pytest.raises(NameTaken) as err:
         memory_repository.create(_m(body="v2", type="user", id="n"), CTX)
     assert err.value.memory_id == "n"
-    assert err.value.existing is None
-    assert "secret plan" not in str(err.value)
+    assert err.value.existing is not None and err.value.existing.scope == GLOBAL
     assert path.read_bytes() == before
-    assert list(root.glob("global/entries/*.md")) == []
+    assert list(root.glob(f"{MINE_ENTRIES}/*.md")) == []
 
 
 def test_project_create_ignores_a_foreign_projects_name(memory_repository, root):
     memory_repository.create(_m(body="a", scope=Scope.project(OTHER), id="shared-name"), OTHER_CTX)
     memory_repository.create(_m(body="b", scope=Scope.project(MINE), id="shared-name"), CTX)
     assert memory_repository.get("shared-name", CTX).body == "b"
+
+
+# --- the global scope is read-only, down to the bytes ---
+
+def _snapshot(storage_dir: Path) -> dict[str, tuple[bytes, int]]:
+    return {str(p.relative_to(storage_dir)): (p.read_bytes(), p.stat().st_mtime_ns)
+            for p in storage_dir.rglob("*") if p.is_file() and p.name != ".lock"}
+
+
+def test_global_refusals_leave_the_store_byte_identical(tmp_path):
+    # the contract file can only see that the refusals raise; here the store is
+    # inspectable, so "no change was made" is checked as the bytes and mtimes
+    # it claims to be -- a rewrite with identical content would still fail this
+    d = tmp_path / "global" / "entries"
+    d.mkdir(parents=True)
+    g = Memory.new(body="drinks oolong", type="user", scope=Scope.global_(), source=SOURCE,
+                   id="tea")
+    (d / "tea.md").write_text(encode(g), encoding="utf-8")
+    memory_repository = FileMemoryRepository(tmp_path)
+    ctx = AccessContext(project_id=ProjectId("mine-000000"))
+    before = _snapshot(tmp_path)
+    for call in (lambda: memory_repository.create(
+                     Memory.new(body="x", type="user", scope=Scope.global_(), source=SOURCE,
+                                id="new"), ctx),
+                 lambda: memory_repository.update_body("tea", "x", ctx),
+                 lambda: memory_repository.delete("tea", ctx)):
+        with pytest.raises(GlobalReadOnly):
+            call()
+    assert _snapshot(tmp_path) == before
+    assert not (tmp_path / "global" / "entries" / "new.md").exists()
 
 
 # --- storage failures ---
@@ -404,8 +460,8 @@ def _assert_opaque(err: StorageFailure, root: Path) -> None:
 
 def test_create_failure_raises_an_opaque_storage_failure(memory_repository, root):
     # a file where the entries directory belongs: mkdir fails with OSError
-    (root / "global").mkdir(parents=True)
-    (root / "global" / "entries").write_text("not a directory", encoding="utf-8")
+    (root / MINE_ENTRIES).parent.mkdir(parents=True)
+    (root / MINE_ENTRIES).write_text("not a directory", encoding="utf-8")
     with pytest.raises(StorageFailure) as err:
         memory_repository.create(_m(id="n"), CTX)
     _assert_opaque(err.value, root)
@@ -413,7 +469,7 @@ def test_create_failure_raises_an_opaque_storage_failure(memory_repository, root
 
 def test_read_failure_raises_an_opaque_storage_failure(memory_repository, root):
     # a directory named like an entry file: reading it fails with OSError
-    (root / "global" / "entries" / "n.md").mkdir(parents=True)
+    (root / MINE_ENTRIES / "n.md").mkdir(parents=True)
     with pytest.raises(StorageFailure) as err:
         memory_repository.get("n", CTX)
     _assert_opaque(err.value, root)
@@ -525,8 +581,8 @@ def test_a_store_root_named_projects_keeps_global_entries_addressable(tmp_path):
     # directory-is-truth check and disappeared from get()/iter_visible().
     root = tmp_path / "projects"
     repository = FileMemoryRepository(root)
-    m = _m(id="global-under-projects-root")
-    repository.create(m, CTX)
+    m = _m(scope=GLOBAL, id="global-under-projects-root")
+    _plant_global(root, m)
     assert repository.get(m.id, CTX) == m
     assert [visible.id for visible in repository.iter_visible(CTX)] == [m.id]
 
@@ -583,7 +639,7 @@ def test_hand_edited_naive_timestamp_sorts_correctly_among_server_written(
                "---\n"
                "id: hand\n"
                "type: user\n"
-               "scope: global\n"
+               f"{MINE_SCOPE_LINE}\n"
                "sync: true\n"
                "created: 2026-06-01T00:00:00\n"
                "updated: 2026-06-01T00:00:00\n"

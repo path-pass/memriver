@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from memriver_core.application.errors import (
+    GlobalReadOnly,
     InvalidScope,
     MemoryNotFound,
     NameTaken,
@@ -69,12 +70,16 @@ class FileMemoryRepository:
     # --- port ---
 
     def create(self, memory: Memory, ctx: AccessContext) -> None:
+        # global is read-only through this port, from every context: refuse
+        # before the lock, before any mkdir, so a rejected write leaves not
+        # even an empty global/entries behind
+        if memory.scope.project_id is None:
+            raise GlobalReadOnly()
         # the collision check below searches the caller's scopes, but _write
         # routes by memory.scope: let the two disagree and a foreign project's
         # entry is replaced without ever being looked at. Bind them here, so
         # the guarantee is the adapter's own and does not depend on every
-        # caller having checked first. Global stays writable from anywhere --
-        # it is in every context's visible scopes.
+        # caller having checked first.
         if (memory.scope.project_id is not None
                 and memory.scope not in ctx.visible_scopes()):
             # names the scope, never the memory: the refusal must not echo
@@ -118,6 +123,12 @@ class FileMemoryRepository:
         # read-modify-write must not interleave with a peer process
         with store_lock(self.root):
             memory = self._read(memory_id, list(ctx.visible_scopes()))
+            # the scope that decides this is the located entry's, not the
+            # caller's: a project context resolves global names too, so the
+            # check has to sit after the read -- and inside the lock, where no
+            # peer can move the entry between the check and the write
+            if memory.scope.project_id is None:
+                raise GlobalReadOnly()
             memory.body = body.strip()
             if description is not None:
                 # None keeps the existing description; "" explicitly clears it
@@ -133,7 +144,12 @@ class FileMemoryRepository:
             # one whose frontmatter scope contradicts its directory, must
             # raise here rather than being unlinked untouched -- the same
             # directory-is-truth check _read already enforces
-            self._read(memory_id, scopes)
+            memory = self._read(memory_id, scopes)
+            # same as update_body: the located entry's scope decides, and the
+            # check sits inside the lock so nothing can be unlinked between it
+            # and the refusal
+            if memory.scope.project_id is None:
+                raise GlobalReadOnly()
             try:
                 self._find(memory_id, scopes).unlink()
             except OSError as err:

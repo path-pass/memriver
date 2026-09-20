@@ -2,6 +2,7 @@ import memriver_core
 import pytest
 from memriver_core.application.errors import (
     ContentRejected,
+    GlobalReadOnly,
     InvalidScope,
     MemoryError,
     MemoryNotFound,
@@ -19,6 +20,7 @@ SUBCLASSES = [
     ContentRejected,
     InvalidScope,
     ProjectUnavailable,
+    GlobalReadOnly,
     StorageFailure,
 ]
 
@@ -57,6 +59,14 @@ def test_name_taken_existing_set():
 @pytest.mark.parametrize("cls", [MemoryNotFound, UnreadableMemory, NameTaken])
 def test_storage_boundary_errors_carry_the_memory_id_as_a_field(cls):
     assert cls("some-name").memory_id == "some-name"
+
+
+def test_global_read_only_message_is_fixed():
+    from memriver_core import GlobalReadOnly, MemoryError
+
+    err = GlobalReadOnly()
+    assert isinstance(err, MemoryError)
+    assert str(err) == "global memories are read-only to agents; no change was made"
 
 
 def test_storage_failure_accepts_no_adapter_detail():

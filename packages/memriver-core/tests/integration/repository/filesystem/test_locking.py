@@ -1,11 +1,16 @@
 import threading
 import time
 
-from memriver_core.models import AccessContext, Memory, Scope
+from memriver_core.models import AccessContext, Memory, ProjectId, Scope
 from memriver_core.repository.filesystem import FileMemoryRepository
 from memriver_core.repository.filesystem.locking import store_lock
 
-CTX = AccessContext(project_id=None)
+# the races below are about the store-wide lock, not about the scope: the
+# repository refuses every global write, so they seed project entries
+MINE = ProjectId("mine-000000")
+SCOPE = Scope.project(MINE)
+CTX = AccessContext(project_id=MINE)
+ENTRIES = f"projects/{MINE}/entries"
 
 
 def test_store_lock_creates_the_root_and_its_lock_file(tmp_path):
@@ -53,7 +58,7 @@ def test_create_holds_the_lock_across_check_then_write(tmp_path):
         try:
             barrier.wait(timeout=5)
             memory_repository.create(Memory.new(
-                body=name, type="user", scope=Scope.global_(), source={}, id=name), CTX)
+                body=name, type="user", scope=SCOPE, source={}, id=name), CTX)
         except Exception as err:  # noqa: BLE001
             errors.append(err)
 
@@ -66,7 +71,7 @@ def test_create_holds_the_lock_across_check_then_write(tmp_path):
 
     assert errors == []
     assert max_active == 1  # flock serialized check-then-write, not just write
-    assert {p.stem for p in (tmp_path / "global" / "entries").glob("*.md")} == {"a", "b"}
+    assert {p.stem for p in (tmp_path / ENTRIES).glob("*.md")} == {"a", "b"}
 
 
 def test_update_body_serializes_concurrent_writers(tmp_path):
@@ -78,7 +83,7 @@ def test_update_body_serializes_concurrent_writers(tmp_path):
     # be inside it at a time.
     memory_repository = FileMemoryRepository(tmp_path)
     memory_repository.create(Memory.new(
-        body="base", type="user", scope=Scope.global_(), source={}, id="n"), CTX)
+        body="base", type="user", scope=SCOPE, source={}, id="n"), CTX)
     active = 0
     max_active = 0
     counter_lock = threading.Lock()

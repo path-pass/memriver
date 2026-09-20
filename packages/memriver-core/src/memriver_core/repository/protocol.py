@@ -18,10 +18,14 @@ class MemoryRepository(Protocol):
       project-scoped memory whose scope is not in ``ctx.visible_scopes()``
       raises ``InvalidScope`` and stores nothing, so the scope that routes the
       write and the scopes that are searched for a collision cannot disagree.
-      Global-scoped memories are writable from every context.
+    - The global scope is read-only through this port: ``create`` of a
+      global-scoped memory, and ``update_body``/``delete`` whose located entry
+      is global, raise ``GlobalReadOnly`` and change nothing. Global entries
+      are written by hand (or by a future reviewed maintenance step), never
+      by an agent-facing caller.
     - ``create(memory, ctx)`` owns the atomic name reservation. A project
-      write checks the caller's visible scopes; a global write checks the
-      whole store; readable same-scope collisions raise
+      write checks the caller's visible scopes; readable same-scope
+      collisions raise
       ``NameTaken(memory_id, existing=m)``; cross-scope collisions raise
       ``NameTaken(memory_id, existing=None)``; occupied but unreadable storage
       raises ``UnreadableMemory(memory_id)``.

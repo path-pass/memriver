@@ -7,6 +7,7 @@ whichever spelling a caller used.
 
 from .application.errors import (
     ContentRejected,
+    GlobalReadOnly,
     InvalidScope,
     MemoryError,
     MemoryNotFound,
@@ -20,6 +21,7 @@ __version__ = "0.1.0"
 
 __all__ = [
     "ContentRejected",
+    "GlobalReadOnly",
     "InvalidScope",
     "MemoryError",
     "MemoryNotFound",
