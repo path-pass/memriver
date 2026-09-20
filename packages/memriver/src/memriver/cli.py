@@ -47,9 +47,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # --version`, so serve has to answer for --version too
     serve.add_argument("--version", action="version", version=__version__)
     _add_store_options(serve, project_dir_default=Path.cwd(),
-                       project_dir_help="project whose 'project' memory scope is "
-                                        "used (default: the current working "
-                                        "directory)")
+                       project_dir_help="directory where project discovery starts "
+                                        "(the registry decides the project; "
+                                        "default: the current working directory)")
     serve.set_defaults(handler=_serve)
 
     hook = commands.add_parser("hook", help="run a harness hook over stdin/stdout")
@@ -60,9 +60,10 @@ def _build_parser() -> argparse.ArgumentParser:
     # pins these names to hooks.Harness so the two cannot drift.
     hook.add_argument("--harness", choices=["claude-code", "codex"], required=True)
     _add_store_options(hook, project_dir_default=None,
-                       project_dir_help="project whose 'project' memory scope is "
-                                        "used (default: the directory the harness "
-                                        "reports, else the current working directory)")
+                       project_dir_help="directory where project discovery starts "
+                                        "(the registry decides the project; default: "
+                                        "the directory the harness reports, else the "
+                                        "current working directory)")
     hook.set_defaults(handler=_hook)
 
     install = commands.add_parser(

@@ -62,8 +62,10 @@ to be missing, `memriver doctor` shows what the store actually holds.
 ## Projects
 
 A project is a directory you registered. Nothing else confers project
-identity -- not a `.git` directory, not a marker file -- and memriver never
-writes anything inside a project directory.
+identity -- not a `.git` directory, not a marker file -- and the `memriver
+project` commands never write anything inside a project directory; the
+registry lives in the store. (Installing Cursor or Kiro still writes their
+static instruction file at the git root, as the install table shows.)
 
 ```bash
 uvx memriver project init                 # register the current directory
