@@ -101,7 +101,9 @@ def _render_projects_section(projects: dict, stdout: IO[str]) -> None:
     # report; the section only appears once there is something to say.
     # Registry roots and directory names are hand-editable, same as the
     # findings above -- every registry-derived string goes through _visible()
-    # so a root/location/reason/diagnostic can never forge an extra line.
+    # so a root/location/reason/diagnostic can never forge an extra line. The
+    # project id is the one exception, and it needs none: load_registry only
+    # returns ids that match PROJECT_ID_RE.
     if not (projects["registered"] or projects["finding"] or projects["integrity"]):
         return
     stdout.write("\nprojects:\n")

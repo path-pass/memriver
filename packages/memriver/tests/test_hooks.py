@@ -102,10 +102,10 @@ def fake_service(monkeypatch):
     return install
 
 
-def git_dir(tmp_path, name):
-    project = tmp_path / name
-    (project / ".git").mkdir(parents=True)
-    return project
+def a_directory(tmp_path, name):
+    directory = tmp_path / name
+    directory.mkdir()
+    return directory
 
 
 def _plant_global(root, memory: Memory) -> None:
@@ -129,10 +129,6 @@ def session_start(harness, payload, *, root, project_dir=None, cwd=None):
 
 
 def additional_context(result: HookResult) -> str:
-    return json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
-
-
-def _context(result) -> str:
     return json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
 
 
@@ -221,7 +217,7 @@ def test_non_ascii_index_is_not_escaped(tmp_path, fake_service):
 ])
 def test_a_stored_description_cannot_forge_the_index_delimiters(tmp_path, forgery):
     """Both delimiters fit inside the 60-character cue budget, so a description
-    can spell them verbatim without needing the newline that ``_single_line``
+    can spell them verbatim without needing the newline that ``single_line``
     already strips. The data region is only a boundary while exactly one pair
     of delimiters exists, so the phrase they share is broken inside it."""
     root = tmp_path / "root"
@@ -366,7 +362,7 @@ def test_empty_store_still_shows_the_header(fake_service, tmp_path, registered):
     assert header.startswith(f"project: {PROJECT} (root ")
     result = run_hook("session-start", "claude-code", json.dumps({"cwd": str(registered)}),
                       root=store, project_dir=None, cwd=tmp_path)
-    text = _context(result)
+    text = additional_context(result)
     assert _line_after_begin(text) == header
     assert "(no memories yet)" in text
 
@@ -375,7 +371,7 @@ def test_unregistered_directory_header_says_none_and_creates_no_store(fake_servi
     fake_service("(no memories yet)")
     result = run_hook("session-start", "codex", json.dumps({"cwd": str(tmp_path)}),
                       root=tmp_path / "mem", project_dir=None, cwd=tmp_path)
-    assert _line_after_begin(_context(result)) == NONE_HEADER
+    assert _line_after_begin(additional_context(result)) == NONE_HEADER
     assert not (tmp_path / "mem").exists()
 
 
@@ -385,7 +381,7 @@ def test_header_survives_truncation(fake_service, tmp_path, registered):
     header = _registered_header(store, registered)
     result = run_hook("session-start", "codex", json.dumps({"cwd": str(registered)}),
                       root=store, project_dir=None, cwd=tmp_path)
-    text = _context(result)
+    text = additional_context(result)
     assert _line_after_begin(text) == header
     assert "more entries omitted" in text
 
@@ -393,21 +389,21 @@ def test_header_survives_truncation(fake_service, tmp_path, registered):
 def test_project_dir_option_beats_payload_cwd_and_fallback(tmp_path, fake_service):
     service = fake_service()
     store = tmp_path / "mem"
-    chosen = git_dir(tmp_path, "chosen")
+    chosen = a_directory(tmp_path, "chosen")
     bind(store, ProjectId("chosen-0123456789abcdef"), str(chosen.resolve()), create=True)
-    session_start("claude-code", {"cwd": str(git_dir(tmp_path, "payload"))},
+    session_start("claude-code", {"cwd": str(a_directory(tmp_path, "payload"))},
                   root=store, project_dir=chosen,
-                  cwd=git_dir(tmp_path, "fallback"))
+                  cwd=a_directory(tmp_path, "fallback"))
     assert service.contexts[-1].project_id == ProjectId("chosen-0123456789abcdef")
 
 
 def test_payload_cwd_beats_the_supplied_fallback(tmp_path, fake_service):
     service = fake_service()
     store = tmp_path / "mem"
-    payload_dir = git_dir(tmp_path, "payload")
+    payload_dir = a_directory(tmp_path, "payload")
     bind(store, ProjectId("payload-0123456789abcdef"), str(payload_dir.resolve()), create=True)
     session_start("claude-code", {"cwd": str(payload_dir)}, root=store,
-                  cwd=git_dir(tmp_path, "fallback"))
+                  cwd=a_directory(tmp_path, "fallback"))
     assert service.contexts[-1].project_id == ProjectId("payload-0123456789abcdef")
 
 
@@ -417,13 +413,13 @@ def test_fallback_cwd_is_used_when_the_payload_has_no_string_cwd(payload_cwd,
                                                                  fake_service):
     service = fake_service()
     store = tmp_path / "mem"
-    fallback = git_dir(tmp_path, "fallback")
+    fallback = a_directory(tmp_path, "fallback")
     bind(store, ProjectId("fallback-0123456789abcdef"), str(fallback.resolve()), create=True)
     session_start("claude-code", payload_cwd, root=store, cwd=fallback)
     assert service.contexts[-1].project_id == ProjectId("fallback-0123456789abcdef")
 
 
-def test_a_directory_outside_any_git_repo_is_global_only(tmp_path, fake_service):
+def test_an_unregistered_directory_is_global_only(tmp_path, fake_service):
     service = fake_service()
     session_start("claude-code", {"cwd": str(tmp_path)}, root=tmp_path / "root")
     assert service.contexts[-1].project_id is None
@@ -644,14 +640,30 @@ def test_stop_never_imports_the_service_stack(tmp_path, registered):
         "import json, sys\n"
         "from pathlib import Path\n"
         "from memriver.hooks import run_hook\n"
-        f"run_hook('stop', 'claude-code', json.dumps({{'stop_hook_active': False, 'cwd': {str(registered)!r}}}),\n"
+        f"result = run_hook('stop', 'claude-code', json.dumps({{'stop_hook_active': False, 'cwd': {str(registered)!r}}}),\n"
         f"         root=Path({str(tmp_path / 'mem')!r}), project_dir=None, cwd=Path({str(tmp_path)!r}))\n"
         "bad = [m for m in sys.modules if m.startswith(('memriver_core.application.service',\n"
         "       'memriver_core.bootstrap', 'memriver_core.repository', 'detect_secrets'))]\n"
-        "print(json.dumps(bad))\n"
+        "print(json.dumps([bad, bool(result.stdout)]))\n"
     )
     out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
-    assert json.loads(out.stdout) == []
+    # the nudge really fired: a Stop that silently did nothing would import
+    # nothing either, and would pass this test for the wrong reason
+    assert json.loads(out.stdout) == [[], True]
+
+
+def test_stop_falls_back_to_the_configured_store_root(tmp_path, registered,
+                                                      monkeypatch):
+    """``root=None`` is what the installed hook command passes when the user
+    never gave ``--root``: the store then comes from ``storage_root()``, and
+    the nudge has to resolve against that same store."""
+    monkeypatch.setenv("MEMRIVER_ROOT", str(tmp_path / "mem"))
+
+    result = run_hook("stop", "claude-code",
+                      json.dumps({"stop_hook_active": False, "cwd": str(registered)}),
+                      root=None, project_dir=None, cwd=tmp_path)
+
+    assert json.loads(result.stdout) == {"decision": "block", "reason": STOP_NUDGE}
 
 
 def test_stop_against_a_missing_store_creates_nothing(tmp_path):

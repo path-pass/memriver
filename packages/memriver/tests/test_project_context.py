@@ -86,6 +86,8 @@ def test_bound_project_keeps_roots_as_stored(tmp_path):
 @pytest.mark.parametrize("body, reason", [
     ("roots = [\n", "project file is not valid TOML"),
     ('roots = ["/x"]\nname = "x"\n', "project file has a key other than roots"),
+    # a file with keys but no roots is the missing key, not the extra one
+    ('name = "x"\n', "project file has no roots key"),
     ('roots = "/x"\n', "roots is not an array of strings"),
     ("roots = [1]\n", "roots is not an array of strings"),
     ('roots = ["relative/path"]\n', "root is not an absolute path"),

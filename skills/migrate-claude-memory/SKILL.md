@@ -34,9 +34,9 @@ markdown file per fact with YAML frontmatter (`name`, `description`,
    - `description`: the frontmatter `description`, verbatim.
    - `type`: `metadata.type` when it is one of user/feedback/project/reference;
      anything else falls back to `project` — note the fallback in the report.
-   - `scope`: `project`, unless the type is `user` or `feedback` AND the body
-     itself says it applies across projects — then `global`.
    - `harness`: `"claude-code"`. Leave `sync` at its default.
+
+   Every entry is written to the current project; there is no scope to choose.
 3. `memory_index()` again; confirm every migrated name appears.
 4. Report a table: migrated / skipped / rejected, each with its reason.
 
@@ -45,6 +45,8 @@ markdown file per fact with YAML frontmatter (`name`, `description`,
 - Name already taken: `memory_read` it. Same body → already migrated, skip.
   Different body → report both versions to the user and touch nothing; never
   `memory_update` over an existing entry during migration.
+- `name … already used by a read-only global memory` — report it as *not
+  migrated (global)*; never update the global entry.
 - `memory_write` rejects the content (secret-shaped text): report the file
   and move on. Do not rephrase content to get past the policy.
 - File without parseable frontmatter: skip and report. `MEMORY.md` itself is
@@ -57,6 +59,10 @@ markdown file per fact with YAML frontmatter (`name`, `description`,
   the migration's.
 - Original `modified` timestamps are not carried over (memriver stamps its
   own); say so in the report instead of encoding dates into bodies.
+- If memriver reports `no writable project: this directory is not registered`,
+  stop and tell the user to run `memriver project init`; if it reports `the
+  project registry is invalid`, tell them to run `memriver project explain`.
+  Never run either yourself.
 
 ## Common mistakes
 
@@ -66,3 +72,4 @@ markdown file per fact with YAML frontmatter (`name`, `description`,
 | Splitting one file into several memories, or renaming ids | One file = one memory under its original name |
 | Deleting source files or trimming MEMORY.md after success | The source stays untouched |
 | `memory_update` on a name collision | Read, compare, then skip or escalate — never overwrite |
+| Passing a `scope`, or routing "cross-project" facts to global | Every migrated file becomes a memory in the current project; global is read-only to agents |

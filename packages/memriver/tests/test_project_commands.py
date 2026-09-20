@@ -390,3 +390,32 @@ def test_no_command_or_refusal_touches_the_target(env, scenario):
         case "unbind-not-bound": run_unbind(PID, work / "backend", yes=True, **common)
         case "explain": run_explain(root=env["store"], project_dir=None, stdout=out, cwd=work, home=env["home"])
     assert _tree(work) == before
+
+
+def test_init_refuses_a_directory_inside_the_memory_store(env):
+    # the store holds the registry: a directory inside it is memriver's own
+    # bookkeeping, never a project the user works in
+    inside = env["store"] / "projects" / "somewhere"
+    inside.mkdir(parents=True)
+    before = _tree(env["store"])
+    code, out = _init(env, inside, yes=True)
+    assert code == 2 and f"lies inside the memory store {env['store']}" in out
+    assert _tree(env["store"]) == before
+
+
+def test_init_refuses_an_unaddressable_path_without_a_traceback(env):
+    # a NUL in the path makes resolve() raise ValueError, not OSError
+    code, out = _init(env, Path("/x\x00y"), yes=True)
+    assert code == 2 and "is not an existing directory" in out
+    assert not (env["store"] / "projects").exists()
+
+
+def test_unbind_resolves_a_relative_directory_against_the_injected_cwd(env):
+    # the fallback lookup used the process cwd, so a relative path that only
+    # exists under the injected cwd never found the root it names
+    link = env["work"] / "link"
+    link.symlink_to(env["work"] / "frontend", target_is_directory=True)
+    bind(env["store"], PID, str((env["work"] / "frontend").resolve()), create=True)
+    code, out = _unbind(env, PID, Path("link"), yes=True)
+    assert code == 0, out
+    assert load_registry(env["store"]).projects[0].roots == ()

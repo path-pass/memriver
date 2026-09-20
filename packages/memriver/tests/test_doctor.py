@@ -428,6 +428,26 @@ def test_doctor_reports_a_repointed_root_like_the_resolver_does(tmp_path, capsys
     assert code >= 1
 
 
+def test_doctor_human_output_renders_a_real_integrity_line(tmp_path, capsys):
+    """The scrubbing test below plants a forged ``integrity:`` line and asserts
+    it never renders; this is the positive control -- a genuinely re-pointed
+    root does produce one."""
+    old, new = tmp_path / "old", tmp_path / "new"
+    old.mkdir()
+    bind(tmp_path / "store", ProjectId("a-0123456789abcdef"), str(old.resolve()), create=True)
+    old.rmdir()
+    new.mkdir()
+    old.symlink_to(new)
+
+    code = run_doctor(root=tmp_path / "store", json_output=False, stale_days=90,
+                      stdout=sys.stdout, stderr=sys.stderr)
+    out = capsys.readouterr().out
+
+    bound = str(new.resolve().parent / "old")
+    assert f"  integrity: {bound}: registered root is no longer a canonical path\n" in out
+    assert code >= 1
+
+
 def test_doctor_reports_an_invalid_registry_and_exits_nonzero(tmp_path, capsys):
     d = tmp_path / "projects" / "bad-0123456789abcdef"
     d.mkdir(parents=True)

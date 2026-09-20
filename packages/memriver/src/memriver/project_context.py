@@ -214,7 +214,7 @@ def _read_roots(path: Path, location: str) -> tuple[str, ...]:
     try:
         raw = path.read_bytes()
     except OSError as err:
-        # exists (or is a dangling link) but cannot be read: not "unbound"
+        # exists but cannot be read: not "unbound"
         raise RegistryInvalid(location, REASONS["unreadable"]) from err
     try:
         document = tomllib.loads(raw.decode("utf-8"))

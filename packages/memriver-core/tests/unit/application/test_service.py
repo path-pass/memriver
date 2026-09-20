@@ -170,15 +170,18 @@ def test_harness_shape_accepts_the_documented_charset():
 # --- create: project-only scope ---
 
 def test_create_without_project_raises_project_unavailable():
-    memory_repository = FakeMemoryRepository()
-    with pytest.raises(ProjectUnavailable):
-        write(build(memory_repository), ctx=GLOBAL_ONLY)
+    content_policy, memory_repository = FakeContentPolicy(), FakeMemoryRepository()
+    with pytest.raises(ProjectUnavailable) as err:
+        write(build(memory_repository, content_policy), ctx=GLOBAL_ONLY)
+    # the core knows no directory, so its message can carry no path; the
+    # refusal also precedes the gate, so nothing was even inspected
+    assert "/" not in str(err.value)
+    assert content_policy.calls == []
     assert memory_repository.created == []
 
 
 def test_create_has_no_scope_parameter():
-    with pytest.raises(TypeError):
-        write(build(), scope="global")
+    assert "scope" not in inspect.signature(MemoryService.create).parameters
 
 
 def test_create_writes_into_the_context_project():

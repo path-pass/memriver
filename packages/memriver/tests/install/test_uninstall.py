@@ -55,8 +55,10 @@ from memriver.install import (
     toml_table_remove,
 )
 from memriver.install.codex import NATIVE_MEMORY_LEFT_NOTE as CODEX_NATIVE_MEMORY_LEFT
+from memriver.project_context import bind
 from memriver.protocol_text import PROTOCOL_BLOCK
 from memriver.uninstall import run_uninstall as run_full_uninstall
+from memriver_core.models import ProjectId
 
 ALL_HARNESSES = ["claude-code", "codex", "cursor", "kiro"]
 
@@ -2205,3 +2207,20 @@ def test_a_removal_summary_never_prints_a_takeover_line(home, project):
                        replies=["y", "y", "y"])
 
     assert HARNESS_SETTING_TAKEOVER_NOTICE not in result.stdout
+
+
+# --- Step 12: uninstall is decoupled from the project registry --------------
+
+
+def test_config_uninstall_leaves_the_registry_alone(home, project):
+    """Removing a harness configuration is not unregistering a project: the
+    registry lives in the store, and only ``memriver project`` writes it."""
+    store = home / "agent-memory"
+    bind(store, ProjectId("work-0123456789abcdef"), str(project.resolve()), create=True)
+    install(["cursor"], home=home, cwd=project)
+
+    result = uninstall(["cursor"], home=home, cwd=project)
+
+    assert result.exit_code == 0
+    assert (store / "projects" / "work-0123456789abcdef" / "project.toml").read_text() \
+        == f'roots = ["{project.resolve()}"]\n'

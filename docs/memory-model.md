@@ -47,7 +47,8 @@ All language runtimes on this machine are managed by mise, not nvm/pyenv.
   agents already trained on this taxonomy need no re-learning.
 - **description** — a one-line recall cue, written for the reader deciding
   whether to open the entry; rendered in the index.
-- **scope** — `global` (follows the user everywhere) or a project slug.
+- **scope** — `global` (follows the user everywhere; read-only to agents,
+  written by hand) or a registered project id (`memriver project init`).
 - **sync** — per-entry privacy boundary: `false` means this entry never
   leaves the machine, regardless of mode.
 - **trust** — provenance of the *source material*: `user` (stated
@@ -74,8 +75,8 @@ The agent proposes a short kebab-case name; the server disposes:
   handle, and the future sync key. It is never renamed, even if the content
   drifts (delete and rewrite if the name becomes truly wrong). A global name
   is unique across the entire store; a project name is unique within its
-  project and may not be claimed by a later global write. Different projects
-  may reuse the same name.
+  project, and a project write may not claim a name a global entry holds.
+  Different projects may reuse the same name.
 - **Name collisions are refused, not resolved.** A write against an existing
   name returns the existing entry's summary instead of writing. The agent —
   which has the semantic context — then decides: same fact → update the

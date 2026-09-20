@@ -126,6 +126,13 @@ async def test_write_without_project_is_refused_with_fixed_text(
         r = (await c.call_tool("memory_write", {"content": "fact", "type": "project"})).data
     assert r == {"error": ("no writable project: the project registry is invalid. No memory "
                            "was saved. Ask the user to run memriver project explain.")}
+    # a body the content policy would reject on its own still comes back as the
+    # no-project refusal: ProjectUnavailable is raised before the gate runs
+    async with Client(unregistered_server) as c:
+        r = (await c.call_tool("memory_write", {"content": "   ", "type": "project"})).data
+    assert r == {"error": ("no writable project: this directory is not registered. No memory "
+                           "was saved. Ask the user to choose a project root and run memriver "
+                           "project init; do not run it yourself.")}
     assert not (tmp_path / "mem" / "global").exists()
 
 

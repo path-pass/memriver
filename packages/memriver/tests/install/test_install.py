@@ -45,6 +45,8 @@ from memriver.install.codex import (
 from memriver.install.codex import (
     NATIVE_MEMORY_OFF_NOTE as CODEX_NATIVE_MEMORY_OFF_NOTE,
 )
+from memriver.project_context import bind
+from memriver_core.models import ProjectId
 
 CODEX_TRUST_TEXT = (
     "Run /hooks in Codex, review the memriver hook definitions, and trust them.\n"
@@ -1356,3 +1358,98 @@ def test_installing_all_four_harnesses_writes_every_target(home, project):
         assert path.exists(), path
     assert json.loads((home / ".cursor" / "mcp.json").read_text())["mcpServers"]
     assert tomlkit.parse((home / ".codex" / "config.toml").read_text())["mcp_servers"]
+
+
+# --- install is decoupled from the project registry ---------------------------
+#
+# The static file still lands on the nearest git root, and the registry still
+# decides the project identity the MCP server reports. Neither reads the other:
+# these four cases cross the two axes (registered or not, git root or not) and
+# pin that the outcomes stay independent.
+
+STATIC_FILE = {"cursor": Path("AGENTS.md"),
+               "kiro": Path(".kiro") / "steering" / "memriver.md"}
+
+
+def _server_header(store: Path, directory: Path) -> str:
+    """The first line of ``memory_index`` from a real server bound to ``directory``."""
+    import asyncio
+
+    from fastmcp import Client
+    from memriver.server import build_server
+
+    server = build_server(root=store, project_dir=directory)
+
+    async def probe():
+        async with Client(server) as c:
+            return (await c.call_tool("memory_index", {})).data.splitlines()[0]
+
+    return asyncio.run(probe())
+
+
+@pytest.mark.parametrize("harness", ["cursor", "kiro"])
+def test_install_in_unregistered_repo_lands_on_git_root_and_registers_nothing(
+        home, project, harness):
+    store = home / "agent-memory"
+    (project / "src").mkdir()
+
+    result = install([harness], home=home, cwd=project / "src")
+
+    assert result.exit_code == 0
+    assert (project / STATIC_FILE[harness]).exists()
+    assert not (store / "projects").exists()
+    assert _server_header(store, project / "src").startswith("project: none")
+
+
+@pytest.mark.parametrize("harness", ["cursor", "kiro"])
+def test_install_under_registered_parent_lands_in_each_repo(home, tmp_path, harness):
+    parent = tmp_path / "work"
+    (parent / "frontend" / ".git").mkdir(parents=True)
+    (parent / "backend" / ".git").mkdir(parents=True)
+    store = home / "agent-memory"
+    bind(store, ProjectId("work-0123456789abcdef"), str(parent.resolve()), create=True)
+
+    result = install([harness], home=home, cwd=parent / "frontend")
+
+    assert result.exit_code == 0
+    assert (parent / "frontend" / STATIC_FILE[harness]).exists()
+    assert not (parent / STATIC_FILE[harness]).exists()
+    assert _server_header(store, parent / "frontend").startswith(
+        "project: work-0123456789abcdef")
+
+
+@pytest.mark.parametrize("harness", ["cursor", "kiro"])
+def test_registered_child_keeps_git_root_install_and_its_own_identity(home, tmp_path,
+                                                                      harness):
+    parent = tmp_path / "work"
+    (parent / "frontend" / ".git").mkdir(parents=True)
+    (parent / "frontend" / "src").mkdir()
+    store = home / "agent-memory"
+    bind(store, ProjectId("work-0123456789abcdef"), str(parent.resolve()), create=True)
+    bind(store, ProjectId("frontend-0123456789abcdef"),
+         str((parent / "frontend").resolve()), create=True)
+
+    result = install([harness], home=home, cwd=parent / "frontend" / "src")
+
+    assert result.exit_code == 0
+    assert (parent / "frontend" / STATIC_FILE[harness]).exists()
+    assert _server_header(store, parent / "frontend" / "src").startswith(
+        "project: frontend-0123456789abcdef")
+
+
+@pytest.mark.parametrize("harness", ["cursor", "kiro"])
+def test_install_from_registered_non_git_parent_keeps_the_no_git_root_outcome(
+        home, tmp_path, harness):
+    parent = tmp_path / "work"
+    parent.mkdir()
+    store = home / "agent-memory"
+    bind(store, ProjectId("work-0123456789abcdef"), str(parent.resolve()), create=True)
+
+    result = install([harness], home=home, cwd=parent)
+
+    # being registered is not being a repository: the same refusal the
+    # unregistered no-git-root case gets, and nothing written
+    assert result.exit_code == 1
+    assert result.stdout.rstrip("\n").endswith(
+        "run install inside a project or pass one"), result.stdout
+    assert not (parent / STATIC_FILE[harness]).exists()

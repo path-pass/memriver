@@ -46,7 +46,7 @@ def _store_root(root: Path | None, home: Path) -> Path:
     given = Path(root) if root is not None else storage_root(home=home)
     try:
         return given.resolve()          # non-strict: the store may not exist yet
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         return given
 
 
@@ -60,7 +60,9 @@ def _canonical_target(directory: Path | None, cwd: Path) -> Path | str:
     target = Path(directory) if directory is not None else cwd
     try:
         canonical = target.resolve(strict=True)
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
+        # ValueError: a path the OS cannot even address (an embedded NUL),
+        # exactly as project_context.resolve_project treats it
         return f"refused: {target} is not an existing directory"
     if not canonical.is_dir():
         return f"refused: {canonical} is not a directory"
@@ -70,7 +72,7 @@ def _canonical_target(directory: Path | None, cwd: Path) -> Path | str:
 def _refuse_target(canonical: Path, *, home: Path, store: Path) -> str | None:
     try:
         home_canonical = home.resolve()
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         home_canonical = home
     verdict = project_context.covers(canonical, home_canonical)
     if verdict is None:
@@ -83,6 +85,13 @@ def _refuse_target(canonical: Path, *, home: Path, store: Path) -> str | None:
     if verdict:
         return (f"refused: the memory store {store} lies inside this directory; "
                 "the registry would end up inside the project")
+    verdict = project_context.covers(store, canonical)
+    if verdict is None:
+        return CANNOT_VERIFY.format(what="the memory store")
+    if verdict:
+        # the other direction: a directory inside the store is memriver's own
+        # bookkeeping, not a project the user works in
+        return f"refused: {canonical} lies inside the memory store {store}"
     return None
 
 
@@ -91,7 +100,7 @@ def _plan_still_valid(canonical: Path, store: Path, *, root: Path | None, home: 
     try:
         return canonical.resolve(strict=True) == canonical and canonical.is_dir() \
             and _store_root(root, home) == store
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         return False
 
 
@@ -276,8 +285,11 @@ def run_unbind(project_id: str, directory: Path, *, root: Path | None, yes: bool
     key = literal if literal in roots else None
     if key is None:
         try:
-            resolved = str(Path(directory).resolve(strict=True))
-        except (OSError, RuntimeError):
+            # `literal` is already the given path anchored to the injected cwd:
+            # resolving that, not the bare argument, is what makes a relative
+            # directory mean the same thing here as it did in the plan
+            resolved = str(Path(literal).resolve(strict=True))
+        except (OSError, RuntimeError, ValueError):
             resolved = None
         key = resolved if resolved in roots else None
     if key is None:
@@ -320,7 +332,7 @@ def run_explain(*, root: Path | None, project_dir: Path | None, stdout, cwd: Pat
     resolution = resolve(store_root, start)
     try:
         canonical = str(start.resolve(strict=True))
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         canonical = str(start)
     lines = [f"store: {store_root}", f"cwd: {canonical}", f"state: {resolution.state}"]
     if resolution.state == "registered":

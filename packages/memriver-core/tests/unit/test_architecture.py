@@ -339,7 +339,7 @@ def test_imports_from_source_clean_module_passes(source):
 # gitleaks.toml is a secret-scanning rule resource under content_policy/; its
 # name has nothing to do with git project discovery, which is why this rule is
 # scoped to models/ and application/ rather than to the whole package.
-GIT_MARKERS = ['".git"', "'.git'", "subprocess", "project_slug", "_git_root"]
+GIT_MARKERS = ['".git"', "'.git'", "subprocess", "find_git_root"]
 
 
 @pytest.mark.parametrize("package", ["memriver_core.models", "memriver_core.application"])

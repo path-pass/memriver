@@ -6,7 +6,6 @@ string here is a spec regression, not a style choice.
 
 from __future__ import annotations
 
-from memriver import protocol_text
 from memriver.protocol_text import (
     COMPACT_PREFIX,
     COMPACT_RESCUE_SUFFIX,
@@ -32,9 +31,8 @@ def test_protocol_block_has_one_instruction_source():
 def test_instructions_and_protocol_block_carry_the_project_scoped_write_rules():
     assert "Global memories are read-only to agents" in INSTRUCTIONS
     assert "never register or rebind a project on your own" in INSTRUCTIONS
-    assert ("Call memory_index first; its first line names the session's project"
-            in PROTOCOL_BLOCK)
-    assert not hasattr(protocol_text, "EMPTY_VISIBLE")
+    assert ("Call memory_index first; its first line names the session's project "
+            "or says none is registered.") in PROTOCOL_BLOCK
 
 
 def test_mcp_server_instructions_are_the_same_object(tmp_path):

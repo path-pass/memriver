@@ -145,9 +145,9 @@ def test_only_the_levels_a_write_creates_are_made_private(
         assert stat.S_IMODE(created.stat().st_mode) == 0o700, created
 
 
-def test_invalid_project_slug_rejected(memory_repository, root):
-    # slugs reach the adapter as untrusted input; path traversal must be
-    # rejected. The context carries the same evil slug here, so the scope
+def test_invalid_project_id_rejected(memory_repository, root):
+    # project ids reach the adapter as untrusted input; path traversal must be
+    # rejected. The context carries the same evil id here, so the scope
     # binding check lets it through and the path builder is the one that
     # has to refuse it.
     evil = Scope.project(ProjectId("../evil"))
@@ -558,13 +558,14 @@ def test_lock_lifecycle_failure_does_not_mask_domain_errors(memory_repository):
 
 # --- timestamp normalization / ordering (fix 3+4) ---
 
-def test_project_slug_named_global_is_not_confused_with_the_global_scope(
+def test_project_id_named_global_is_not_confused_with_the_global_scope(
         memory_repository, root):
     # `_dir_scope` checked parent.name == "global" before parent.parent.name
     # == "projects", so projects/global/entries misjudged itself as the
     # global scope directory -- a scope mismatch against its own frontmatter,
-    # and the entry vanished from get()/iter_visible(). project_slug always
-    # appends a -<6hex> suffix, so only the core API can hit this directly.
+    # and the entry vanished from get()/iter_visible(). A registered project id
+    # always ends in a -<16 hex> suffix, so only the core API can hit this
+    # directly.
     project_global = ProjectId("global")
     ctx = AccessContext(project_id=project_global)
     m = _m(scope=Scope.project(project_global), id="proj-named-global")

@@ -59,17 +59,58 @@ Hooks never fail the harness: any error inside memriver degrades to "no
 injection" for that event instead of blocking the session. If memories seem
 to be missing, `memriver doctor` shows what the store actually holds.
 
+## Projects
+
+A project is a directory you registered. Nothing else confers project
+identity -- not a `.git` directory, not a marker file -- and memriver never
+writes anything inside a project directory.
+
+```bash
+uvx memriver project init                 # register the current directory
+uvx memriver project init ~/99_git/work   # register a parent folder holding several repos
+uvx memriver project adopt <id> <dir>     # bind an existing project to another (or a moved) directory
+uvx memriver project unbind <id> <dir>    # drop one binding; memories stay
+uvx memriver project explain              # what the current directory resolves to
+```
+
+Every directory under a registered root -- including repositories added
+later -- shares that project's memories; the nearest registered ancestor
+wins, so registering a sub-directory carves it out as its own project. An
+unregistered directory has no project scope: agents can read global memory
+but have nowhere to save, and the session-start injection says so. Global
+memory is read-only to agents; edit `~/agent-memory/global/entries/` by
+hand. Changing a binding takes effect when the affected harness sessions and
+their MCP servers restart.
+
+Known limits:
+
+- A directory that reuses a registered path inherits that project's memories.
+- A deleted `project.toml` is indistinguishable from "never registered"; if
+  the deleted one belonged to a sub-project, its directory falls back to the
+  registered parent.
+- A root as wide as a whole workspace is, in effect, a writable global.
+- The session-start hook resolves the directory the harness reports while the
+  MCP server resolves its own working directory, so the two can name different
+  projects. Kiro multi-root workspaces start every MCP server in the first
+  root: project-scoped memory is not supported there.
+- After upgrading memriver, restart every harness session and MCP server that
+  shares the store; a running server keeps its old rules.
+- Global entries written before this version may hold project facts; agents
+  cannot remove them, so review `global/entries/` by hand.
+- Confirmation prompts protect against mistakes, not against an agent with a
+  shell: the store is a directory your user can write.
+
 ## Tools
 
 | Tool | Purpose |
 |---|---|
-| `memory_index()` | Compact index of every active memory (global + current project) |
+| `memory_index()` | The session's project on the first line, then a compact index (global + project) |
 | `memory_read(entry_id)` | One memory in full, by name |
 | `memory_search(query, limit=None)` | Memories relevant to a task |
-| `memory_write(content, type, name="", scope="project", sync=True, harness="unknown", description="")` | Save one durable fact; `type` is `user` / `feedback` / `project` / `reference`; `name` becomes the permanent id; `scope` is `project` or `global` |
-| `memory_update(entry_id, content, description=None)` | Rewrite a memory in place (name and type stay) |
-| `memory_delete(entry_id)` | Remove a memory that is no longer true or wanted |
-| `memory_dream(limit=3)` | Maintenance queue: the entries least recently confirmed true — for dedicated memory-hygiene sessions only |
+| `memory_write(content, type, name="", sync=True, harness="unknown", description="")` | Save one durable fact to the current project; global is read-only to agents; `type` is `user` / `feedback` / `project` / `reference`; `name` becomes the permanent id |
+| `memory_update(entry_id, content, description=None)` | Rewrite a memory in place (name and type stay); refused for global entries |
+| `memory_delete(entry_id)` | Remove a memory that is no longer true or wanted; refused for global entries |
+| `memory_dream(limit=3)` | Maintenance queue: the current project's entries least recently confirmed true — for dedicated memory-hygiene sessions only |
 
 Every write passes the content policy (secret-shaped content is refused, the
 value is never echoed back) and the size limits from *Configuration*. Tools
@@ -125,11 +166,12 @@ non-fatal if `uv` is missing or fails.
 
 `skills/migrate-claude-memory/SKILL.md` is an agent skill that moves an
 existing Claude Code auto-memory store (`~/.claude/projects/<slug>/memory/`)
-into memriver through the MCP tools: one file becomes one memory under its
-original name, bodies and descriptions are copied verbatim, and the source
-directory is never modified. Copy the directory to `~/.claude/skills/` and
-ask Claude Code to migrate your memory. Install memriver first — the skill
-writes through `memory_write`, so the tools have to be present.
+into memriver through the MCP tools: every file becomes a memory in the
+current project under its original name, bodies and descriptions are copied
+verbatim, and the source directory is never modified. Copy the directory to
+`~/.claude/skills/` and ask Claude Code to migrate your memory. Install
+memriver first — the skill writes through `memory_write`, so the tools have to
+be present, and the directory you run it in has to be a registered project.
 
 ## Hook up a harness by hand
 
@@ -147,23 +189,26 @@ Cursor (`~/.cursor/mcp.json`) / Kiro: same `command`/`args` shape under
 `mcpServers.memriver`.
 
 The MCP client's working directory determines project attribution: `--project`
-runs memriver from this checkout while keeping that directory, so `scope="project"`
-memories land under the project you are actually working in (use `--directory`
-and every project would share memriver's own slug). Pass `--project-dir` to the
-`memriver` command to pin a project explicitly.
+runs memriver from this checkout while keeping that directory, so memories land
+under the project you are actually working in (use `--directory` and every
+session would resolve against memriver's own checkout). `--project-dir` on the
+`memriver` command is where project discovery starts (the registry decides the
+id); pass it to pin a directory.
 
 ## Storage layout
 
 ```
 ~/agent-memory/
   global/entries/<name>.md
-  projects/<slug>/entries/<name>.md
+  projects/<id>/entries/<name>.md
+  projects/<id>/project.toml   # the project's registered roots
   config.toml            # optional, see Configuration
 ```
 
 `<name>` is the kebab-case name the agent proposed (or a server-generated
-ULID when no usable name was given); `<slug>` derives from the project's git
-root. Directories memriver creates are private to your user (`0700`).
+ULID when no usable name was given); `<id>` is the project id `memriver
+project init` generated. Directories memriver creates are private to your
+user (`0700`).
 Override the root with `--root` or `MEMRIVER_ROOT`.
 
 ## Installing before the PyPI release

@@ -52,8 +52,9 @@ class MemoryService:
     def create(self, *, content: str, type: str, name: str, sync: bool,
                harness: str, description: str, ctx: AccessContext) -> Memory:
         if ctx.project_id is None:
-            # path-free on purpose: the transport owns project_dir and
-            # restores the path-bearing message
+            # path-free on purpose, and one message for every cause: the
+            # transport is what resolved the project, so it is what turns this
+            # into the state-specific line the agent reads
             raise ProjectUnavailable("no writable project in this context")
         if not _HARNESS_RE.fullmatch(harness):
             raise ContentRejected("invalid harness identifier "
@@ -97,8 +98,8 @@ class MemoryService:
         # `updated` doubles as "last confirmed true": reviewing a memory and
         # finding it still correct is recorded by rewriting it with an unchanged
         # body, which bumps `updated` and rotates it to the back of this queue.
-        # Oldest-first selection therefore cycles through the whole store over
-        # successive reviews instead of jamming on evergreen memories.
+        # Oldest-first selection therefore cycles through the current project's
+        # entries over successive reviews instead of jamming on evergreen ones.
         if ctx.project_id is None:
             return []
         limit = max(1, min(limit, max_limit))
