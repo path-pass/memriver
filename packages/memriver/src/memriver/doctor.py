@@ -108,7 +108,8 @@ def _render_projects_section(projects: dict, stdout: IO[str]) -> None:
         return
     stdout.write("\nprojects:\n")
     for project in projects["registered"]:
-        stdout.write(f"  {project['id']}: {project['roots']} roots\n")
+        n = project["roots"]
+        stdout.write(f"  {project['id']}: {n} {'root' if n == 1 else 'roots'}\n")
         for root in project["missing_roots"]:
             stdout.write(f"    missing: {_visible(root)}\n")
         for root in project["unverifiable_roots"]:

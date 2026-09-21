@@ -325,6 +325,14 @@ def test_unverifiable_root_check_is_degraded(tmp_path, monkeypatch):
     assert res.state == "degraded" and res.diagnostic == f"{real}: registered root could not be checked"
 
 
+def test_nul_bearing_root_is_unverifiable_not_raising():
+    # os.lstat on a path the OS cannot even address raises ValueError, not
+    # OSError; _nearest_existing must treat that the same as "could not be
+    # checked" rather than letting it escape root_integrity
+    registry = _registry((A, ["/x\x00y"]))
+    assert root_integrity(registry) == "/x\x00y: registered root could not be checked"
+
+
 def test_root_that_cannot_be_lstatted_is_degraded(tmp_path, monkeypatch):
     real = (tmp_path / "work").resolve()
     real.mkdir()

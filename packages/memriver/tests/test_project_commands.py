@@ -157,6 +157,50 @@ def test_parent_plan_lists_a_case_alias_child_root_as_independent(env, monkeypat
     assert f"frontend-0123456789abcdef: {child_alias.resolve()}" in out.getvalue()
 
 
+def test_init_independent_list_never_forges_a_fake_project_line(env):
+    # bind() refuses a root that is not a real, canonical, existing directory,
+    # so the only way to plant a value with an embedded newline is a
+    # hand-edited project.toml -- exactly how an invalid-registry test does it
+    canonical_work = env["work"].resolve()
+    fake_id = "evil-0123456789abcdef"
+    forged = f"{canonical_work}/child\n    {fake_id}: /forged"
+    nested_dir = env["store"] / "projects" / "nested-0123456789abcdef"
+    nested_dir.mkdir(parents=True)
+    (nested_dir / "project.toml").write_text(
+        'roots = ["' + forged.replace("\n", "\\n") + '"]\n', encoding="utf-8")
+
+    code, out = _init(env, yes=True)
+
+    assert code == 0
+    assert not any(line.startswith(f"    {fake_id}: /forged") for line in out.splitlines())
+    assert "/forged" in out          # the value is still shown, just on one line
+
+
+def test_explain_diagnostic_never_forges_a_fake_root_line(env, monkeypatch):
+    forged = "/nonexistent-xyz\n  root: /forged"
+    bad_dir = env["store"] / "projects" / "diag-0123456789abcdef"
+    bad_dir.mkdir(parents=True)
+    (bad_dir / "project.toml").write_text(
+        'roots = ["' + forged.replace("\n", "\\n") + '"]\n', encoding="utf-8")
+    true_lstat = project_context.os.lstat
+
+    def fake_lstat(path, *a, **kw):
+        if str(path) == forged:
+            raise PermissionError(13, "denied")
+        return true_lstat(path, *a, **kw)
+
+    monkeypatch.setattr(project_context.os, "lstat", fake_lstat)
+
+    out = io.StringIO()
+    code = run_explain(root=env["store"], project_dir=None, stdout=out, cwd=env["home"],
+                       home=env["home"])
+    text = out.getvalue()
+
+    assert code == 1
+    assert not any(line.startswith("  root: /forged") for line in text.splitlines())
+    assert "/forged" in text
+
+
 def test_adopt_existing_unbound_project_and_idempotence(env):
     (env["store"] / "projects" / "old-abc123" / "entries").mkdir(parents=True)
     code, out = _adopt(env, "old-abc123", env["work"], yes=True)
@@ -314,6 +358,16 @@ def test_store_failure_is_a_fixed_line_and_exit_2(env, monkeypatch):
     monkeypatch.setattr("memriver.project_commands.bind", boom)
     code, out = _init(env, yes=True)
     assert code == 2 and "could not complete the registry write" in out
+
+
+def test_init_gives_up_after_five_id_collisions(env, monkeypatch):
+    def always_taken(*a, **kw):
+        raise ValueError("project id already exists")
+
+    monkeypatch.setattr("memriver.project_commands.bind", always_taken)
+    code, out = _init(env, yes=True)
+    assert code == 2
+    assert "refused: could not allocate a project id; run the command again" in out
 
 
 def test_adopt_makes_old_entries_readable_through_a_server(env):

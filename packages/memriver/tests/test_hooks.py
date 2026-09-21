@@ -375,6 +375,19 @@ def test_unregistered_directory_header_says_none_and_creates_no_store(fake_servi
     assert not (tmp_path / "mem").exists()
 
 
+def test_session_start_shows_the_degraded_header_for_a_broken_registry(fake_service, tmp_path):
+    fake_service("(no memories yet)")
+    store = tmp_path / "mem"
+    project_dir = store / "projects" / "bad-0123456789abcdef"
+    project_dir.mkdir(parents=True)
+    (project_dir / "project.toml").write_text("roots = [\n")
+    header = _registered_header(store, tmp_path)
+    assert header.startswith("project: unavailable — registry invalid (")
+    result = run_hook("session-start", "claude-code", json.dumps({"cwd": str(tmp_path)}),
+                      root=store, project_dir=None, cwd=tmp_path)
+    assert _line_after_begin(additional_context(result)) == header
+
+
 def test_header_survives_truncation(fake_service, tmp_path, registered):
     fake_service("\n".join(f"- [user] e{i}: cue {i} (2026-01-01)" for i in range(2000)))
     store = tmp_path / "mem"

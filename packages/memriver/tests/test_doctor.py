@@ -488,6 +488,19 @@ def test_doctor_human_output_renders_a_projects_section(tmp_path, capsys, monkey
     assert code == 0
 
 
+def test_doctor_human_output_uses_the_singular_for_one_root(tmp_path, capsys):
+    store = tmp_path / "store"
+    solo = tmp_path / "solo"
+    solo.mkdir()
+    bind(store, ProjectId("b-0123456789abcdef"), str(solo.resolve()), create=True)
+
+    code = run_doctor(root=store, json_output=False, stale_days=90, stdout=sys.stdout, stderr=sys.stderr)
+    out = capsys.readouterr().out
+
+    assert out.endswith("\nprojects:\n  b-0123456789abcdef: 1 root\n")
+    assert code == 0
+
+
 def test_doctor_human_output_neutralises_an_injected_root_string(tmp_path, capsys):
     """A registry root comes from a hand-editable project.toml, just like the
     scopes/locations the findings renderer already scrubs (see the comment

@@ -261,7 +261,9 @@ def _nearest_existing(root: str) -> str | None:
             os.lstat(candidate)
         except FileNotFoundError:
             continue
-        except OSError:
+        except (OSError, ValueError):
+            # ValueError: a path the OS cannot even address (an embedded
+            # NUL) -- not offline, but not checkable either
             return "error:"
         return str(candidate)
     return None

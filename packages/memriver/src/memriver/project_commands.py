@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import IO
 
 from memriver_core import StorageFailure
-from memriver_core.models import ProjectId
+from memriver_core.models import ProjectId, single_line
 
 from . import project_context
 from .project_context import (
@@ -141,7 +141,8 @@ def _independent_lines(registry: Registry, canonical: Path, project_id: ProjectI
                 nested.append((p.id, r))
     if not nested:
         return ""
-    return f"  {INDEPENDENT_NOTE}\n" + "".join(f"    {pid}: {r}\n" for pid, r in nested)
+    return (f"  {INDEPENDENT_NOTE}\n"
+            + "".join(f"    {pid}: {single_line(r)}\n" for pid, r in nested))
 
 
 def _bind_command(command: str, project_id: ProjectId, *, create: bool, canonical: Path,
@@ -183,7 +184,7 @@ def _bind_command(command: str, project_id: ProjectId, *, create: bool, canonica
         stdout.write(CANNOT_VERIFY.format(what="registered roots") + "\n")
         return 2
     roots_line = ("" if existing is None or not existing.roots
-                  else "  roots:   " + ", ".join(existing.roots) + "\n")
+                  else "  roots:   " + ", ".join(single_line(r) for r in existing.roots) + "\n")
     plan = (f"memriver project {command}\n"
             f"  store:   {store}\n"
             f"  project: {project_id}  ({'new' if create else 'existing'})\n"
@@ -200,7 +201,7 @@ def _bind_command(command: str, project_id: ProjectId, *, create: bool, canonica
     if not _plan_still_valid(canonical, store, root=root, home=home):
         stdout.write(OUT_OF_DATE + "\n")
         return 2
-    while True:
+    for _attempt in range(5):
         try:
             bind(store, project_id, str(canonical), create=create)
             break
@@ -216,6 +217,9 @@ def _bind_command(command: str, project_id: ProjectId, *, create: bool, canonica
         except StorageFailure:
             stdout.write(STORE_FAILURE + "\n")
             return 2
+    else:
+        stdout.write("refused: could not allocate a project id; run the command again\n")
+        return 2
     stdout.write(f"bound {canonical} to {project_id}\n{RESTART_NOTE}\n")
     return 0
 
@@ -275,7 +279,7 @@ def run_unbind(project_id: str, directory: Path, *, root: Path | None, yes: bool
         if err.reason == "root is already bound to another project":
             stdout.write(f"refused: the registry is invalid ({err.location}: {err.reason}); "
                          f"edit {store_root / 'projects' / pid / 'project.toml'} by hand and "
-                         f"remove the root {literal}, then run memriver project explain\n")
+                         f"remove the root {single_line(literal)}, then run memriver project explain\n")
         else:
             stdout.write(f"refused: the registry is invalid ({err.location}: {err.reason}); "
                          "fix that file by hand, then run memriver project explain\n")
@@ -304,8 +308,8 @@ def run_unbind(project_id: str, directory: Path, *, root: Path | None, yes: bool
     plan = (f"memriver project unbind\n"
             f"  store:   {store_root}\n"
             f"  project: {pid}\n"
-            f"  roots before: {', '.join(roots)}\n"
-            f"  roots after:  {', '.join(after) or '(none)'}\n"
+            f"  roots before: {', '.join(single_line(r) for r in roots)}\n"
+            f"  roots after:  {', '.join(single_line(r) for r in after) or '(none)'}\n"
             f"  the current directory resolves afterwards: {afterwards_line}\n")
     code = _confirm(plan, yes=yes, stdin_is_tty=stdin_is_tty, input_fn=input_fn, stdout=stdout)
     if code is not None:
@@ -336,12 +340,13 @@ def run_explain(*, root: Path | None, project_dir: Path | None, stdout, cwd: Pat
         canonical = str(start)
     lines = [f"store: {store_root}", f"cwd: {canonical}", f"state: {resolution.state}"]
     if resolution.state == "registered":
-        lines += [f"project: {resolution.project_id}", f"root: {resolution.root}",
+        lines += [f"project: {resolution.project_id}",
+                  f"root: {single_line(resolution.root or '')}",
                   f"scopes: global, project:{resolution.project_id}",
                   f"writes: project:{resolution.project_id}"]
     else:
         if resolution.state == "degraded":
-            lines.append(f"diagnostic: {resolution.diagnostic}")
+            lines.append(f"diagnostic: {single_line(resolution.diagnostic or '')}")
         lines += ["scopes: global", "writes: none"]
     stdout.write("\n".join(lines) + "\n")
     return 1 if resolution.state == "degraded" else 0
