@@ -242,6 +242,18 @@ def test_adopt_existing_unbound_project_and_idempotence(env):
     assert code == 2 and "no such project" in out
 
 
+def test_an_invalid_project_id_argument_cannot_forge_an_output_line(env):
+    # the id comes from the caller, not the registry, but it is echoed on the
+    # management surface like every other untrusted string
+    code, out = _adopt(env, "bad\nFORGED-LINE", env["work"], yes=True)
+    assert code == 2
+    assert not any(line.startswith("FORGED-LINE") for line in out.splitlines())
+    assert "no such project: bad FORGED-LINE" in out
+    code, out = _unbind(env, "bad\nFORGED-LINE", env["work"], yes=True)
+    assert code == 2
+    assert not any(line.startswith("FORGED-LINE") for line in out.splitlines())
+
+
 def test_adopt_applies_the_same_target_checks(env):
     (env["store"] / "projects" / "old-abc123").mkdir(parents=True)
     code, out = _adopt(env, "old-abc123", env["home"], yes=True)

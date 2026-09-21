@@ -251,7 +251,7 @@ def run_init(directory: Path | None, *, root: Path | None, yes: bool, stdin_is_t
 
 def _existing_id(raw: str, store: Path, stdout) -> ProjectId | None:
     if not project_context.valid_project_id(raw) or not project_exists(store, ProjectId(raw)):
-        stdout.write(f"no such project: {raw[:255]}\n")
+        stdout.write(f"no such project: {visible(raw[:255])}\n")
         return None
     return ProjectId(raw)
 
