@@ -18,6 +18,7 @@ import secrets
 import stat
 import tempfile
 import tomllib
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,6 +47,19 @@ REASONS = {
     "unverifiable": "root could not be checked",
 }
 _UNRESOLVABLE_CWD = "working directory could not be resolved"
+
+# What the management surfaces (the project commands, doctor) neutralise
+# before printing a registry-derived string: a directory or file name the
+# user can hand-edit to carry a newline (forging a second output line) or an
+# ANSI escape (a raw terminal control sequence). Categorised rather than
+# enumerated, because a code-point list keeps missing things a real name
+# carries: Cc is the C0/C1 controls, Cf the format controls (U+202E
+# RIGHT-TO-LEFT OVERRIDE reorders the line a terminal draws without being a
+# control character), Zl/Zp the line and paragraph separators U+2028/U+2029,
+# and Cs the lone surrogates that a filename no codec accepts arrives as --
+# those turn back into their original raw byte the moment stdout, which uses
+# surrogateescape on a terminal, encodes them.
+_INVISIBLE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
 
 
 def find_git_root(start: Path) -> Path | None:
@@ -104,6 +118,20 @@ def _degraded(diagnostic: str) -> ProjectResolution:
 
 def _field(value: str) -> str:
     return single_line(value)[:_HEADER_FIELD_CHARS]
+
+
+def visible(text: str) -> str:
+    """``text`` with every invisible character replaced by one space, one for one.
+
+    Unlike ``single_line`` this never collapses or strips ordinary spaces: a
+    management surface shows a path as the user spelled it, so a root named
+    ``two  spaces`` stays recognisable. The agent-facing header keeps
+    ``single_line`` and its length cap.
+    """
+    return "".join(
+        " " if unicodedata.category(char) in _INVISIBLE_CATEGORIES else char
+        for char in text
+    )
 
 
 def valid_project_id(name: str) -> bool:
@@ -207,9 +235,12 @@ def _read_roots(path: Path, location: str) -> tuple[str, ...]:
         return ()
     except OSError as err:
         raise RegistryInvalid(location, REASONS["unreadable"]) from err
-    if stat.S_ISLNK(info.st_mode):
-        # a link is never followed, live or dangling: its target is chosen
-        # outside the store layout and must not decide what the project owns
+    if not stat.S_ISREG(info.st_mode):
+        # only a regular file is ever opened. A link, live or dangling, is
+        # never followed: its target is chosen outside the store layout and
+        # must not decide what the project owns. A FIFO, socket, device or
+        # directory is refused here because opening one can block forever
+        # or read something that is not the registry
         raise RegistryInvalid(location, REASONS["unreadable"])
     try:
         raw = path.read_bytes()

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import IO
 
 from memriver_core import StorageFailure
-from memriver_core.models import ProjectId, single_line
+from memriver_core.models import ProjectId
 
 from . import project_context
 from .project_context import (
@@ -27,6 +27,7 @@ from .project_context import (
     resolve,
     resolve_project,
     unbind,
+    visible,
 )
 
 RESTART_NOTE = ("Restart the affected harness sessions and their memriver MCP servers "
@@ -37,6 +38,8 @@ INDEPENDENT_NOTE = "These registered sub-projects stay independent:"
 OUT_OF_DATE = "refused: the plan is out of date (a path changed while waiting); run the command again"
 STORE_FAILURE = "refused: could not complete the registry write; inspect with memriver project explain"
 CANNOT_VERIFY = "refused: could not verify the directory's relation to {what}"
+NO_FREE_ID = "refused: could not allocate a project id; run the command again"
+ID_ATTEMPTS = 5                 # random ids tried before init gives up, per phase
 
 
 def _store_root(root: Path | None, home: Path) -> Path:
@@ -63,9 +66,9 @@ def _canonical_target(directory: Path | None, cwd: Path) -> Path | str:
     except (OSError, RuntimeError, ValueError):
         # ValueError: a path the OS cannot even address (an embedded NUL),
         # exactly as project_context.resolve_project treats it
-        return f"refused: {target} is not an existing directory"
+        return f"refused: {visible(str(target))} is not an existing directory"
     if not canonical.is_dir():
-        return f"refused: {canonical} is not a directory"
+        return f"refused: {visible(str(canonical))} is not a directory"
     return canonical
 
 
@@ -83,7 +86,7 @@ def _refuse_target(canonical: Path, *, home: Path, store: Path) -> str | None:
     if verdict is None:
         return CANNOT_VERIFY.format(what="the memory store")
     if verdict:
-        return (f"refused: the memory store {store} lies inside this directory; "
+        return (f"refused: the memory store {visible(str(store))} lies inside this directory; "
                 "the registry would end up inside the project")
     verdict = project_context.covers(store, canonical)
     if verdict is None:
@@ -91,7 +94,7 @@ def _refuse_target(canonical: Path, *, home: Path, store: Path) -> str | None:
     if verdict:
         # the other direction: a directory inside the store is memriver's own
         # bookkeeping, not a project the user works in
-        return f"refused: {canonical} lies inside the memory store {store}"
+        return f"refused: {visible(str(canonical))} lies inside the memory store {visible(str(store))}"
     return None
 
 
@@ -142,7 +145,7 @@ def _independent_lines(registry: Registry, canonical: Path, project_id: ProjectI
     if not nested:
         return ""
     return (f"  {INDEPENDENT_NOTE}\n"
-            + "".join(f"    {pid}: {single_line(r)}\n" for pid, r in nested))
+            + "".join(f"    {pid}: {visible(r)}\n" for pid, r in nested))
 
 
 def _bind_command(command: str, project_id: ProjectId, *, create: bool, canonical: Path,
@@ -155,8 +158,8 @@ def _bind_command(command: str, project_id: ProjectId, *, create: bool, canonica
     try:
         registry = load_registry(store)
     except RegistryInvalid as err:
-        stdout.write(f"refused: the registry is invalid ({err.location}: {err.reason}); "
-                     "run memriver project explain\n")
+        stdout.write(f"refused: the registry is invalid ({visible(err.location)}: "
+                     f"{visible(err.reason)}); run memriver project explain\n")
         return 2
     existing = next((p for p in registry.projects if p.id == project_id), None)
     for other in registry.projects:
@@ -168,7 +171,7 @@ def _bind_command(command: str, project_id: ProjectId, *, create: bool, canonica
                 stdout.write(CANNOT_VERIFY.format(what="registered roots") + "\n")
                 return 2
             if same:
-                stdout.write(f"refused: {canonical} is already bound to project {other.id}\n")
+                stdout.write(f"refused: {visible(str(canonical))} is already bound to project {other.id}\n")
                 return 2
     if existing is not None:
         for r in existing.roots:
@@ -177,19 +180,19 @@ def _bind_command(command: str, project_id: ProjectId, *, create: bool, canonica
                 stdout.write(CANNOT_VERIFY.format(what="registered roots") + "\n")
                 return 2
             if same:
-                stdout.write(f"{canonical} is already bound to {project_id}; nothing to do\n")
+                stdout.write(f"{visible(str(canonical))} is already bound to {project_id}; nothing to do\n")
                 return 0
     independent = _independent_lines(registry, canonical, project_id)
     if independent is None:
         stdout.write(CANNOT_VERIFY.format(what="registered roots") + "\n")
         return 2
     roots_line = ("" if existing is None or not existing.roots
-                  else "  roots:   " + ", ".join(single_line(r) for r in existing.roots) + "\n")
+                  else "  roots:   " + ", ".join(visible(r) for r in existing.roots) + "\n")
     plan = (f"memriver project {command}\n"
-            f"  store:   {store}\n"
+            f"  store:   {visible(str(store))}\n"
             f"  project: {project_id}  ({'new' if create else 'existing'})\n"
             f"{roots_line}"
-            f"  root:    {canonical}\n"
+            f"  root:    {visible(str(canonical))}\n"
             f"  {SUBTREE_NOTE}\n"
             f"  {_git_count_line(canonical)}\n"
             f"{independent}")
@@ -201,7 +204,7 @@ def _bind_command(command: str, project_id: ProjectId, *, create: bool, canonica
     if not _plan_still_valid(canonical, store, root=root, home=home):
         stdout.write(OUT_OF_DATE + "\n")
         return 2
-    for _attempt in range(5):
+    for _attempt in range(ID_ATTEMPTS):
         try:
             bind(store, project_id, str(canonical), create=create)
             break
@@ -212,15 +215,16 @@ def _bind_command(command: str, project_id: ProjectId, *, create: bool, canonica
             stdout.write(f"refused: {err}\n")
             return 2
         except RegistryInvalid as err:
-            stdout.write(f"refused: the registry is invalid ({err.location}: {err.reason})\n")
+            stdout.write(f"refused: the registry is invalid ({visible(err.location)}: "
+                         f"{visible(err.reason)})\n")
             return 2
         except StorageFailure:
             stdout.write(STORE_FAILURE + "\n")
             return 2
     else:
-        stdout.write("refused: could not allocate a project id; run the command again\n")
+        stdout.write(NO_FREE_ID + "\n")
         return 2
-    stdout.write(f"bound {canonical} to {project_id}\n{RESTART_NOTE}\n")
+    stdout.write(f"bound {visible(str(canonical))} to {project_id}\n{RESTART_NOTE}\n")
     return 0
 
 
@@ -231,9 +235,15 @@ def run_init(directory: Path | None, *, root: Path | None, yes: bool, stdin_is_t
     if isinstance(canonical, str):
         stdout.write(canonical + "\n")
         return 2
-    project_id = new_project_id(canonical.name)
-    while project_exists(store, project_id):
+    # a free id is picked here so the plan can show it; bind() re-checks under
+    # the lock and retries the same bounded number of times on a collision
+    for _attempt in range(ID_ATTEMPTS):
         project_id = new_project_id(canonical.name)
+        if not project_exists(store, project_id):
+            break
+    else:
+        stdout.write(NO_FREE_ID + "\n")
+        return 2
     return _bind_command("init", project_id, create=True, canonical=canonical, store=store,
                          root=root, yes=yes, stdin_is_tty=stdin_is_tty, input_fn=input_fn,
                          stdout=stdout, home=home)
@@ -276,13 +286,13 @@ def run_unbind(project_id: str, directory: Path, *, root: Path | None, yes: bool
         # it targets the project the user named -- err.location is where the
         # clash was noticed, which for a duplicate root is usually the *other*,
         # healthy project
+        invalid = f"refused: the registry is invalid ({visible(err.location)}: {visible(err.reason)})"
         if err.reason == "root is already bound to another project":
-            stdout.write(f"refused: the registry is invalid ({err.location}: {err.reason}); "
-                         f"edit {store_root / 'projects' / pid / 'project.toml'} by hand and "
-                         f"remove the root {single_line(literal)}, then run memriver project explain\n")
+            stdout.write(f"{invalid}; edit {visible(str(store_root / 'projects' / pid / 'project.toml'))} "
+                         f"by hand and remove the root {visible(literal)}, "
+                         "then run memriver project explain\n")
         else:
-            stdout.write(f"refused: the registry is invalid ({err.location}: {err.reason}); "
-                         "fix that file by hand, then run memriver project explain\n")
+            stdout.write(f"{invalid}; fix that file by hand, then run memriver project explain\n")
         return 2
     project = next((p for p in registry.projects if p.id == pid), None)
     roots = project.roots if project is not None else ()
@@ -297,7 +307,7 @@ def run_unbind(project_id: str, directory: Path, *, root: Path | None, yes: bool
             resolved = None
         key = resolved if resolved in roots else None
     if key is None:
-        stdout.write(f"refused: {literal} is not bound to {pid}\n")
+        stdout.write(f"refused: {visible(literal)} is not bound to {pid}\n")
         return 2
     after = tuple(r for r in roots if r != key)
     next_registry = Registry(tuple(RegisteredProject(pid, after) if p.id == pid else p
@@ -306,10 +316,10 @@ def run_unbind(project_id: str, directory: Path, *, root: Path | None, yes: bool
     afterwards_line = (f"registered {afterwards.project_id}" if afterwards.state == "registered"
                        else afterwards.state)
     plan = (f"memriver project unbind\n"
-            f"  store:   {store_root}\n"
+            f"  store:   {visible(str(store_root))}\n"
             f"  project: {pid}\n"
-            f"  roots before: {', '.join(single_line(r) for r in roots)}\n"
-            f"  roots after:  {', '.join(single_line(r) for r in after) or '(none)'}\n"
+            f"  roots before: {', '.join(visible(r) for r in roots)}\n"
+            f"  roots after:  {', '.join(visible(r) for r in after) or '(none)'}\n"
             f"  the current directory resolves afterwards: {afterwards_line}\n")
     code = _confirm(plan, yes=yes, stdin_is_tty=stdin_is_tty, input_fn=input_fn, stdout=stdout)
     if code is not None:
@@ -320,12 +330,13 @@ def run_unbind(project_id: str, directory: Path, *, root: Path | None, yes: bool
     try:
         unbind(store_root, pid, key)
     except (ValueError, RegistryInvalid) as err:
-        stdout.write(f"refused: {err}\n")
+        # a RegistryInvalid carries the location it was noticed at
+        stdout.write(f"refused: {visible(str(err))}\n")
         return 2
     except StorageFailure:
         stdout.write(STORE_FAILURE + "\n")
         return 2
-    stdout.write(f"unbound {key} from {pid}\n{RESTART_NOTE}\n")
+    stdout.write(f"unbound {visible(key)} from {pid}\n{RESTART_NOTE}\n")
     return 0
 
 
@@ -338,15 +349,16 @@ def run_explain(*, root: Path | None, project_dir: Path | None, stdout, cwd: Pat
         canonical = str(start.resolve(strict=True))
     except (OSError, RuntimeError, ValueError):
         canonical = str(start)
-    lines = [f"store: {store_root}", f"cwd: {canonical}", f"state: {resolution.state}"]
+    lines = [f"store: {visible(str(store_root))}", f"cwd: {visible(canonical)}",
+             f"state: {resolution.state}"]
     if resolution.state == "registered":
         lines += [f"project: {resolution.project_id}",
-                  f"root: {single_line(resolution.root or '')}",
+                  f"root: {visible(resolution.root or '')}",
                   f"scopes: global, project:{resolution.project_id}",
                   f"writes: project:{resolution.project_id}"]
     else:
         if resolution.state == "degraded":
-            lines.append(f"diagnostic: {single_line(resolution.diagnostic or '')}")
+            lines.append(f"diagnostic: {visible(resolution.diagnostic or '')}")
         lines += ["scopes: global", "writes: none"]
     stdout.write("\n".join(lines) + "\n")
     return 1 if resolution.state == "degraded" else 0

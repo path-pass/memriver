@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import os
 import stat
-import unicodedata
 from typing import IO, TYPE_CHECKING
 
 from .core_logging import quiet_core_logging
+from .project_context import visible
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -39,23 +39,11 @@ _EXIT_CODES = {"uninitialized": 0, "empty": 0, "healthy": 0, "degraded": 1}
 # scopes and location hints are derived from directory and file names in the
 # store, which a user can hand-edit to contain a newline (forging a second
 # finding line) or an ANSI escape (a raw terminal control sequence); the JSON
-# renderer needs no such guard -- json.dumps already escapes both.
-#
-# Categorised rather than enumerated, because a code-point list keeps missing
-# things a real store name carries: Cc/Cf are the C0, C1 and format controls
-# (U+202E RIGHT-TO-LEFT OVERRIDE reorders the line a terminal draws without
-# being a control character), Zl/Zp the line and paragraph separators, and Cs
-# the lone surrogates that a filename no codec accepts arrives as -- those
-# turn back into their original raw byte the moment stdout, which uses
-# surrogateescape on a terminal, encodes them.
-_INVISIBLE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
-
-
+# renderer needs no such guard -- json.dumps already escapes both. The
+# neutraliser itself is project_context.visible, shared with the project
+# commands so that every management surface prints the same thing.
 def _visible(value: str) -> str:
-    return "".join(
-        " " if unicodedata.category(char) in _INVISIBLE_CATEGORIES else char
-        for char in value
-    )
+    return visible(value)
 
 
 def _finding_to_dict(finding: DiagnosticFinding) -> dict:

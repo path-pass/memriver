@@ -23,6 +23,7 @@ from memriver.project_context import (
     resolve_project,
     root_integrity,
     unbind,
+    visible,
 )
 from memriver_core.models import AccessContext, ProjectId
 
@@ -133,6 +134,52 @@ def test_project_file_that_is_a_symlink_is_never_followed(tmp_path):
     with pytest.raises(RegistryInvalid) as info:
         load_registry(tmp_path)
     assert info.value.reason == "project file could not be read"
+
+
+def _call_with_timeout(fn, *args, seconds: float = 5.0, unblock: Path | None = None):
+    """Run ``fn(*args)`` on a thread; a call that does not return in ``seconds`` fails.
+
+    A regression that opens a FIFO would block the caller forever, which
+    would hang pytest instead of failing one test. On timeout the write end
+    of ``unblock`` is opened and closed so the stuck reader sees EOF and the
+    thread can finish; the test then fails with a timeout, not a hang.
+    """
+    outcome: dict[str, object] = {}
+
+    def run() -> None:
+        try:
+            outcome["value"] = fn(*args)
+        except BaseException as exc:  # noqa: BLE001 -- re-raised on the test thread
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(seconds)
+    if worker.is_alive():
+        if unblock is not None:
+            os.close(os.open(unblock, os.O_WRONLY | os.O_NONBLOCK))
+            worker.join(seconds)
+        pytest.fail(f"{fn.__name__} did not return within {seconds}s: it blocked on the file")
+    if "error" in outcome:
+        raise outcome["error"]  # type: ignore[misc]
+    return outcome["value"]
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFOs only")
+def test_project_file_that_is_a_fifo_is_refused_before_it_is_opened(tmp_path):
+    # opening a FIFO with no writer blocks forever: the loader must refuse
+    # anything that is not a regular file from lstat alone, before any open
+    d = tmp_path / "projects" / A
+    d.mkdir(parents=True)
+    fifo = d / "project.toml"
+    os.mkfifo(fifo)
+    with pytest.raises(RegistryInvalid) as info:
+        _call_with_timeout(load_registry, tmp_path, unblock=fifo)
+    assert (info.value.location, info.value.reason) == (
+        f"projects/{A}/project.toml", "project file could not be read")
+    res = _call_with_timeout(resolve, tmp_path, tmp_path, unblock=fifo)
+    assert res.state == "degraded"
+    assert res.diagnostic == f"projects/{A}/project.toml: project file could not be read"
 
 
 def test_dangling_project_file_symlink_is_unreadable_not_missing(tmp_path):
@@ -413,6 +460,16 @@ def test_header_neutralizes_control_characters_and_truncates():
     assert "\n" not in line and " " not in line
     assert line.startswith(f"project: {A} (root /x/ evil a")
     assert len(line) <= len(f"project: {A} (root ") + 120 + 1
+
+
+def test_visible_replaces_controls_one_for_one_and_keeps_ordinary_spaces():
+    # the management surfaces print registry-derived strings verbatim: every
+    # control character becomes one space, ordinary spaces are left alone
+    hostile = "two  spaces\x00\x1b[31m\n\x85\u2028\u2029end"
+    rendered = visible(hostile)
+    assert rendered == "two  spaces  [31m    end"   # NUL, ESC, LF, NEL, LS, PS: one space each
+    assert len(rendered) == len(hostile)
+    assert visible("  lead and  inner  and trail  ") == "  lead and  inner  and trail  "
 
 
 # --- registry writes ---

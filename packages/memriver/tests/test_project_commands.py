@@ -201,6 +201,34 @@ def test_explain_diagnostic_never_forges_a_fake_root_line(env, monkeypatch):
     assert "/forged" in text
 
 
+def test_init_of_a_directory_named_with_a_newline_never_forges_a_line(env):
+    # the target path itself is printed in the plan and the confirmation, so
+    # a directory name carrying a newline must not start a second output line
+    target = env["work"] / "bad\nFORGED-LINE"
+    target.mkdir()
+
+    code, out = _init(env, target, yes=True)
+
+    assert code == 0
+    assert not any(line.startswith("FORGED-LINE") for line in out.splitlines())
+    assert "bad FORGED-LINE" in out
+
+
+def test_explain_keeps_consecutive_spaces_in_a_registered_root(env):
+    target = env["work"] / "two  spaces"
+    target.mkdir()
+    canonical = str(target.resolve())
+    bind(env["store"], PID, canonical, create=True)
+
+    out = io.StringIO()
+    code = run_explain(root=env["store"], project_dir=target, stdout=out, cwd=env["work"],
+                       home=env["home"])
+
+    assert code == 0
+    assert f"root: {canonical}\n" in out.getvalue()
+    assert canonical.endswith("two  spaces")
+
+
 def test_adopt_existing_unbound_project_and_idempotence(env):
     (env["store"] / "projects" / "old-abc123" / "entries").mkdir(parents=True)
     code, out = _adopt(env, "old-abc123", env["work"], yes=True)
@@ -368,6 +396,16 @@ def test_init_gives_up_after_five_id_collisions(env, monkeypatch):
     code, out = _init(env, yes=True)
     assert code == 2
     assert "refused: could not allocate a project id; run the command again" in out
+
+
+def test_init_gives_up_when_every_pre_checked_id_is_taken(env, monkeypatch):
+    # the pre-check loop before the plan must be bounded like the locked retry:
+    # a store where every candidate id exists must end in a refusal, not a spin
+    monkeypatch.setattr("memriver.project_commands.project_exists", lambda *a, **kw: True)
+    code, out = _init(env, yes=True)
+    assert code == 2
+    assert "refused: could not allocate a project id; run the command again" in out
+    assert not (env["store"] / "projects").exists()
 
 
 def test_adopt_makes_old_entries_readable_through_a_server(env):
