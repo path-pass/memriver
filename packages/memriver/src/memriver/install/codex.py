@@ -130,7 +130,6 @@ def operations(
             kind="toml-table",
             expected=False,
             key_path=("features", "memories"),
-            optional=True,
             harness_owned=True,
         ))
     return tuple(ops)

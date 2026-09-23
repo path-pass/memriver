@@ -459,7 +459,7 @@ def test_change_summary_names_the_harness_for_a_key_memriver_does_not_own():
     """``env.CLAUDE_CODE_DISABLE_AUTO_MEMORY`` and ``features.memories`` are the
     harness's own settings that memriver turns off, so the takeover line must
     not call the old value a memriver entry."""
-    op = operation("json-object", "1", optional=True, harness_owned=True,
+    op = operation("json-object", "1", harness_owned=True,
                    key_path=("env", "CLAUDE_CODE_DISABLE_AUTO_MEMORY"))
     result = json_object_merge('{"env":{"CLAUDE_CODE_DISABLE_AUTO_MEMORY":"0"}}',
                                op.key_path, op.expected)

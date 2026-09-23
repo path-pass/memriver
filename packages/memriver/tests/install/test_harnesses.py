@@ -201,7 +201,7 @@ def test_kiro_operation_payloads(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("env", "settings", "expected_optional"),
+    ("env", "settings", "expected_offer"),
     [
         ({"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}, {}, False),
         ({}, {"autoMemoryEnabled": False}, False),
@@ -209,21 +209,18 @@ def test_kiro_operation_payloads(tmp_path):
         ({"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "0"}, {}, True),
     ],
 )
-def test_claude_native_memory_offer(env, settings, expected_optional):
+def test_claude_native_memory_offer(env, settings, expected_offer):
     snapshots = claude_snapshots(settings_json=settings)
     operations = claude_code.operations(snapshots, env)
-    optional = [operation for operation in operations if operation.optional]
-    assert bool(optional) is expected_optional
-    if optional:
-        assert "disable built-in auto memory" in optional[0].label
-        assert optional[0].id not in {
-            "claude-code:mcp", "claude-code:hooks-session-start",
-            "claude-code:hooks-stop",
-        }
+    native = [operation for operation in operations
+                if operation.id.endswith(":native-memory")]
+    assert bool(native) is expected_offer
+    if native:
+        assert "disable built-in auto memory" in native[0].label
 
 
 @pytest.mark.parametrize(
-    ("config", "expected_optional"),
+    ("config", "expected_offer"),
     [
         ({"features": {"memories": True}}, True),
         ({"features": {"memories": False}}, False),
@@ -231,16 +228,17 @@ def test_claude_native_memory_offer(env, settings, expected_optional):
         (None, False),
     ],
 )
-def test_codex_native_memory_offer(config, expected_optional):
+def test_codex_native_memory_offer(config, expected_offer):
     snapshots = codex_snapshots(config=config)
     operations = codex.operations(snapshots, {})
-    optional = [operation for operation in operations if operation.optional]
-    assert bool(optional) is expected_optional
-    if optional:
-        assert "disable built-in auto memory" in optional[0].label
-        assert optional[0].kind == "toml-table"
-        assert optional[0].key_path == ("features", "memories")
-        assert optional[0].expected is False
+    native = [operation for operation in operations
+                if operation.id.endswith(":native-memory")]
+    assert bool(native) is expected_offer
+    if native:
+        assert "disable built-in auto memory" in native[0].label
+        assert native[0].kind == "toml-table"
+        assert native[0].key_path == ("features", "memories")
+        assert native[0].expected is False
 
 
 # --- planning never touches the filesystem ----------------------------------
