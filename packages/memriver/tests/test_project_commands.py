@@ -9,8 +9,8 @@ from memriver.project_commands import run_adopt, run_explain, run_init, run_unbi
 from memriver.project_context import bind, load_registry, resolve
 from memriver_core import ProjectNotFound
 from memriver_core.bootstrap import build_service
-from memriver_core.config import Settings
 from memriver_core.models import ID_RE, ReadWriteSet, new_id
+from memriver_core.settings import Settings
 
 
 def _tree(directory: Path) -> dict[str, bytes | None]:

@@ -21,8 +21,8 @@ from memriver.doctor import run_doctor
 from memriver.project_context import bind
 from memriver_core import StorageFailure
 from memriver_core.bootstrap import build_service
-from memriver_core.config import Settings
 from memriver_core.models import DiagnosticFinding, DiagnosticsReport
+from memriver_core.settings import Settings
 
 P = "aaaaaaaaaa"
 
@@ -196,7 +196,7 @@ def test_inaccessible_store_with_json_emits_a_json_error_object(monkeypatch, tmp
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
 def test_inaccessible_root_leaks_no_logging_line_to_real_stderr(tmp_path, capsys):
     """CLI-boundary regression against a REAL store, not the fake service:
-    memriver_core's own stdlib logging (e.g. an unreadable config.toml) must
+    memriver_core's own stdlib logging (e.g. an unreadable settings.toml) must
     not slip onto the real process stderr alongside doctor's own output --
     logging.lastResort writes straight to sys.stderr, bypassing the `stderr`
     IO parameter entirely. A root with every permission removed cannot be

@@ -11,8 +11,8 @@ from memriver_core import (
     ProjectUnavailable,
 )
 from memriver_core.bootstrap import build_service
-from memriver_core.config import Settings
 from memriver_core.models import ID_RE, Memory
+from memriver_core.settings import Settings
 
 from .project_context import resolve
 from .protocol_text import INSTRUCTIONS

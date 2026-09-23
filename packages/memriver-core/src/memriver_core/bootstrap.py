@@ -7,9 +7,8 @@ from pathlib import Path
 from .application.diagnostics import DiagnosticsService
 
 # EMPTY_INDEX is re-exported (not composed) here: bootstrap is the one
-# memriver_core surface, alongside config/models, that a transport may import.
+# memriver_core surface, alongside settings/models, that a transport may import.
 from .application.service import EMPTY_INDEX, MemoryService
-from .config import DEFAULT_MAX_BODY_CHARS, Settings
 from .content_policy.secret_scanner import SecretScanner
 from .repository.filesystem import (
     FileMemoryStore,
@@ -22,6 +21,7 @@ from .repository.filesystem import (
 # safe write (symlinked levels refused, 0700 dirs, 0600 files, atomic replace).
 from .repository.filesystem.files import replace_file
 from .repository.filesystem.locking import store_lock
+from .settings import DEFAULT_MAX_BODY_CHARS, Settings
 
 __all__ = [
     "EMPTY_INDEX", "build_diagnostics_service", "build_service", "replace_file", "store_lock",

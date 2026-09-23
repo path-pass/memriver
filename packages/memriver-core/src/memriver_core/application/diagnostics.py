@@ -71,7 +71,7 @@ def _stale_cutoff(now_dt: datetime, stale_days: int) -> datetime:
         # `timedelta(days=...)` itself overflows, or the subtraction pushes
         # past `datetime.min`). datetime.min is already earlier than any
         # representable timestamp, so nothing can be staler than it -- no new
-        # config, no product cap, just the honest bound.
+        # setting, no product cap, just the honest bound.
         return datetime.min.replace(tzinfo=UTC)
 
 

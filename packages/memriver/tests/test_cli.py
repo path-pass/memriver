@@ -15,7 +15,7 @@ from memriver.hooks import HookResult
 from memriver.project_context import bind
 from memriver.protocol_text import STOP_NUDGE
 from memriver_core.bootstrap import build_service
-from memriver_core.config import Settings
+from memriver_core.settings import Settings
 
 PROTOCOL_VERSION = "2025-06-18"
 
@@ -248,11 +248,11 @@ def test_project_scope_defaults_to_working_directory(tmp_path):
     assert len(_entry_files(root, project_id)) == 1
 
 
-def test_config_file_in_root_is_honoured_end_to_end(tmp_path):
-    """<root>/config.toml tunes the running server, not just load_settings()."""
+def test_settings_file_in_root_is_honoured_end_to_end(tmp_path):
+    """<root>/settings.toml tunes the running server, not just load_settings()."""
     root = tmp_path / "mem"
     root.mkdir()
-    (root / "config.toml").write_text("max_body_chars = 10\n", encoding="utf-8")
+    (root / "settings.toml").write_text("max_body_chars = 10\n", encoding="utf-8")
     git_repo = _git_repo(tmp_path, "configured-repo")
     project_id = _register(root, git_repo)
 
@@ -429,14 +429,14 @@ def test_loader_warnings_go_to_stderr_even_behind_a_stdout_root_handler(
     try:
         with isolated_memriver_loggers():
             assert cli.main(["doctor", "--root", str(tmp_path)]) == 0
-            logging.getLogger("memriver_core.config.loader").warning(
-                "config.toml could not be read")
+            logging.getLogger("memriver_core.settings").warning(
+                "settings.toml could not be read")
     finally:
         logging.getLogger().removeHandler(root_handler)
 
     captured = capsys.readouterr()
-    assert "config.toml could not be read" not in captured.out
-    assert "config.toml could not be read" in captured.err
+    assert "settings.toml could not be read" not in captured.out
+    assert "settings.toml could not be read" in captured.err
 
 
 def test_configuring_the_memriver_loggers_twice_does_not_stack_handlers():
@@ -464,12 +464,12 @@ def test_configure_logging_replaces_a_preattached_stdout_handler(tmp_path, capsy
             logger.addHandler(logging.StreamHandler(sys.stdout))
 
         assert cli.main(["doctor", "--root", str(tmp_path)]) == 0
-        logging.getLogger("memriver_core.config.loader").warning(
-            "config.toml could not be read")
+        logging.getLogger("memriver_core.settings").warning(
+            "settings.toml could not be read")
 
     captured = capsys.readouterr()
-    assert "config.toml could not be read" not in captured.out
-    assert "config.toml could not be read" in captured.err
+    assert "settings.toml could not be read" not in captured.out
+    assert "settings.toml could not be read" in captured.err
 
 
 def test_configure_logging_replaces_a_preattached_null_handler(tmp_path, capsys):
@@ -484,12 +484,12 @@ def test_configure_logging_replaces_a_preattached_null_handler(tmp_path, capsys)
             logger.addHandler(logging.NullHandler())
 
         assert cli.main(["doctor", "--root", str(tmp_path)]) == 0
-        logging.getLogger("memriver_core.config.loader").warning(
-            "config.toml could not be read")
+        logging.getLogger("memriver_core.settings").warning(
+            "settings.toml could not be read")
 
     captured = capsys.readouterr()
-    assert "config.toml could not be read" not in captured.out
-    assert "config.toml could not be read" in captured.err
+    assert "settings.toml could not be read" not in captured.out
+    assert "settings.toml could not be read" in captured.err
 
 
 # --- install: the CLI hands the store step to the installer -----------------

@@ -25,8 +25,8 @@ from memriver.project_context import (
 )
 from memriver_core import StorageFailure
 from memriver_core.bootstrap import build_service
-from memriver_core.config import Settings
 from memriver_core.models import new_id
+from memriver_core.settings import Settings
 
 A = "aaaaaaaaaa"
 B = "bbbbbbbbbb"

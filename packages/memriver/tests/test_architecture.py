@@ -1,7 +1,7 @@
 """Dependency-rule enforcement for the umbrella package.
 
 ``memriver`` is a composition root of its own: it may depend on
-``memriver_core``'s public root facade and its ``bootstrap``/``config``/
+``memriver_core``'s public root facade and its ``bootstrap``/``settings``/
 ``models`` surface, but never reaches into ``application`` or ``repository``
 internals directly, and ``memriver.install`` (a future task) may not import
 ``memriver_core`` at all -- it drives the CLI-facing planning/rendering
@@ -91,7 +91,7 @@ def test_install_modules_import_no_memriver_core_symbol_at_all():
         offenders = [t for t in _imported_modules(module) if _under(t, "memriver_core")]
         assert not offenders, (
             f"{module} imports memriver_core ({offenders}); install must never import "
-            "memriver_core, including otherwise-public bootstrap/config/models"
+            "memriver_core, including otherwise-public bootstrap/settings/models"
         )
 
 

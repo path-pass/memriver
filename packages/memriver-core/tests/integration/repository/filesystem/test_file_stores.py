@@ -319,8 +319,8 @@ def test_a_manifest_write_failure_is_final_and_leaves_one_candidate(tmp_path, mo
     is written, a failing manifest write -- even FileExistsError -- is
     StorageFailure, no second candidate project."""
     from memriver_core.bootstrap import build_service
-    from memriver_core.config import Settings
     from memriver_core.repository.filesystem import project_store as module
+    from memriver_core.settings import Settings
 
     root = tmp_path / "store"
     real_write_new = module.write_new

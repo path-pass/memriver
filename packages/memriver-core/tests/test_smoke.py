@@ -3,10 +3,10 @@
 import memriver_core
 from memriver_core.application.service import MemoryService
 from memriver_core.bootstrap import build_service
-from memriver_core.config import Settings
 from memriver_core.content_policy.secret_scanner import SecretScanner
 from memriver_core.models import Memory
 from memriver_core.repository.filesystem import FileMemoryStore, FileProjectStore
+from memriver_core.settings import Settings
 
 
 def test_version():

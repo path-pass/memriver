@@ -7,9 +7,9 @@ from fastmcp.exceptions import ToolError
 from memriver.project_context import bind
 from memriver.server import build_server
 from memriver_core.bootstrap import build_service
-from memriver_core.config import Settings
 from memriver_core.models import Memory, new_id
 from memriver_core.repository.filesystem.markdown_codec import encode
+from memriver_core.settings import Settings
 
 SOURCE = {"harness": "test", "method": "agent"}
 GLOBAL_READ_ONLY = ("global memories are read-only to agents; no change was made. Tell the user; "

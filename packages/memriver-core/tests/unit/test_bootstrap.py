@@ -5,12 +5,12 @@ from __future__ import annotations
 from memriver_core import bootstrap
 from memriver_core.application.diagnostics import DiagnosticsService
 from memriver_core.application.service import MemoryService
-from memriver_core.config import DEFAULT_MAX_BODY_CHARS, Settings
 from memriver_core.repository.filesystem import (
     FileMemoryStore,
     FileProjectStore,
     FilesystemStoreInspector,
 )
+from memriver_core.settings import DEFAULT_MAX_BODY_CHARS, Settings
 
 
 def test_uses_the_settings_root_by_default(tmp_path):

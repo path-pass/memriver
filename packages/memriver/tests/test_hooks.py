@@ -37,9 +37,9 @@ from memriver.protocol_text import (
 from memriver.session import open_session
 from memriver_core import bootstrap
 from memriver_core.bootstrap import build_service
-from memriver_core.config import Settings
 from memriver_core.models import Memory, Project, ReadWriteSet, new_id
 from memriver_core.repository.filesystem.markdown_codec import encode
+from memriver_core.settings import Settings
 
 INDEX_LINE = "- [user] likes-tea: drinks oolong (2026-01-01)"
 
@@ -590,7 +590,7 @@ def test_an_unreadable_root_never_fails_the_session(tmp_path, capsys):
                                        "read; ask the user to run memriver doctor")
     assert "(no memories yet)" in text
     # CLI-boundary regression: memriver_core's own stdlib logging (e.g. an
-    # unreadable config.toml) must not slip onto the real process stderr --
+    # unreadable settings.toml) must not slip onto the real process stderr --
     # logging.lastResort writes straight to sys.stderr, bypassing
     # HookResult.stderr entirely.
     assert capsys.readouterr().err == ""

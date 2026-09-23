@@ -47,7 +47,7 @@ GLOBAL_REFUSAL = "refused: the global project cannot be bound to a directory"
 def _service(store: Path):
     """The core facade over this store. Building it reads settings, never the disk."""
     from memriver_core.bootstrap import build_service
-    from memriver_core.config import Settings
+    from memriver_core.settings import Settings
 
     try:
         return build_service(Settings(root=store), root=store)
@@ -57,7 +57,7 @@ def _service(store: Path):
 
 def _store_root(root: Path | None, home: Path) -> Path:
     """The store path this command will use: resolved once, compared again later."""
-    from memriver_core.config import storage_root
+    from memriver_core.settings import storage_root
 
     given = Path(root) if root is not None else storage_root(home=home)
     try:

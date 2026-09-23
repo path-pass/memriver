@@ -24,9 +24,9 @@ from memriver_core import (
 )
 from memriver_core.application.service import MemoryService
 from memriver_core.bootstrap import build_service
-from memriver_core.config import DEFAULT_MAX_BODY_CHARS, Settings
 from memriver_core.content_policy.secret_scanner import SecretScanner
 from memriver_core.models import Project
+from memriver_core.settings import DEFAULT_MAX_BODY_CHARS, Settings
 
 GLOBAL_READ_ONLY = ("global memories are read-only to agents; no change was made. Tell the user; "
                     "do not retry through another entry or edit the store directly.")

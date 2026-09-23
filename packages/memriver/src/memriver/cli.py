@@ -29,7 +29,7 @@ def _add_store_options(parser: argparse.ArgumentParser, *,
                        project_dir_help: str) -> None:
     parser.add_argument("--root", type=Path, default=None,
                         help="storage root, which also holds the optional "
-                             "config.toml (default: $MEMRIVER_ROOT or ~/agent-memory)")
+                             "settings.toml (default: $MEMRIVER_ROOT or ~/agent-memory)")
     parser.add_argument("--project-dir", type=Path, default=project_dir_default,
                         help=project_dir_help)
 
@@ -183,7 +183,7 @@ def _normalize_legacy_serve(argv: list[str]) -> list[str]:
 
 
 def _serve(args: argparse.Namespace) -> int:
-    from memriver_core.config import load_settings
+    from memriver_core.settings import load_settings
     from pydantic import ValidationError
 
     from .server import build_server
@@ -191,7 +191,7 @@ def _serve(args: argparse.Namespace) -> int:
     try:
         settings = load_settings(root_override=args.root)
     except ValidationError as err:
-        # an invalid config *file* is warned about and ignored; only a bad
+        # an invalid settings *file* is warned about and ignored; only a bad
         # MEMRIVER_* environment variable reaches here, and that is worth
         # failing on -- but as a readable message, not a bare traceback
         raise SystemExit(f"memriver: invalid MEMRIVER_* environment setting\n{err}")
@@ -249,7 +249,7 @@ def _store_step():
     imports memriver_core; building it reads the store and writes nothing.
     """
     from memriver_core.bootstrap import build_service
-    from memriver_core.config import load_settings
+    from memriver_core.settings import load_settings
 
     from .core_logging import quiet_core_logging
     from .install import StoreStep
@@ -327,7 +327,7 @@ def _configure_logging() -> None:
     """Pin memriver's own loggers to stderr, wherever the root logger points.
 
     Under stdio transport, stdout is the JSON-RPC/hook channel and stderr is
-    the only place a loader warning (an unreadable config.toml, an unknown
+    the only place a loader warning (an unreadable settings.toml, an unknown
     key) can surface. `logging.basicConfig` cannot promise that: it is a no-op
     once the root logger has a handler, so a process that embeds `main()`
     after configuring logging to stdout would leak those warnings into the

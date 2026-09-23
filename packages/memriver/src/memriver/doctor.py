@@ -121,7 +121,7 @@ def run_doctor(*, root: Path | None, json_output: bool, stale_days: int,
     # lazy-import convention for the memriver_core stack
     from memriver_core import ProjectNotFound, StorageFailure
     from memriver_core.bootstrap import build_diagnostics_service, build_service
-    from memriver_core.config import load_settings
+    from memriver_core.settings import load_settings
 
     from .project_context import RegistryInvalid, load_registry, root_integrity
 

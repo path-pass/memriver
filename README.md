@@ -131,7 +131,7 @@ Known limits:
 | `memory_delete(memory_id)` | Remove a memory that is no longer true or wanted; refused for global memories |
 
 Every write passes the content policy (secret-shaped content is refused, the
-value is never echoed back) and the size limits from *Configuration*. An
+value is never echoed back) and the size limits from *Settings*. An
 operational failure inside a tool comes back as a path-free error message
 rather than an exception through the transport; a call that does not match a
 tool's schema — an unknown argument, a missing one, a wrong type — is rejected
@@ -230,7 +230,7 @@ id); pass it to pin a directory.
   projects/<id>.toml         # one project: name = "..."
   memories/<id>.md           # one memory; its frontmatter names its project_id
   registry/<id>.toml         # a project's registered directories: roots = [...]
-  config.toml                # optional, see Configuration
+  settings.toml              # optional, see Settings
 ```
 
 Every id is 10 random lowercase characters memriver generates (Crockford base32:
@@ -265,17 +265,17 @@ After rebuilding the wheels, run
 `uvx --refresh memriver --help` once so `uvx` picks up the new build instead of
 its cached one. `install` prints a note when `uvx` itself is not on `PATH`.
 
-## Configuration
+## Settings
 
 Settings are read from `--root` / `MEMRIVER_*` environment variables and an
-optional `<root>/config.toml`, in that order of precedence. All four file
+optional `<root>/settings.toml`, in that order of precedence. All four file
 settings are positive integers; an unknown key, an unparsable file or an invalid
 value is warned about and the file is ignored, so a typo can never stop the
 server from starting (a bad `MEMRIVER_*` variable does fail, with a readable
 message):
 
 ```toml
-# ~/agent-memory/config.toml
+# ~/agent-memory/settings.toml
 max_body_chars = 8000       # largest body memory_write accepts
 search_limit_default = 5    # memory_search limit when the caller omits it
 search_limit_max = 50       # ceiling applied to any caller-supplied limit

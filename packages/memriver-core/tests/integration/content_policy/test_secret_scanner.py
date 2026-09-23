@@ -4,7 +4,7 @@
 that replaces `gate.check_content`; `ContentRejected` replaces `GateError`.
 `max_chars` has no default here (unlike the old `check_content`), so every
 call below passes it explicitly -- `BODY_LIMIT` matches the value
-`memriver_core.config.DEFAULT_MAX_BODY_CHARS` carries today.
+`memriver_core.settings.DEFAULT_MAX_BODY_CHARS` carries today.
 """
 import logging
 import re

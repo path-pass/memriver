@@ -3,7 +3,7 @@
 MemoryStore owns single-memory actions and ProjectStore owns collections;
 this facade only sequences policy checks, builds read/write sets and renders
 the index. Nothing here knows about files, frontmatter, git, or
-configuration.
+settings.
 """
 
 from __future__ import annotations

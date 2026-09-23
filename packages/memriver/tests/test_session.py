@@ -3,8 +3,8 @@ from pathlib import Path
 from memriver.project_context import ProjectResolution, bind, header_field, resolve
 from memriver.session import NONE_HEADER, STORE_UNREADABLE_HEADER, open_session
 from memriver_core.bootstrap import build_service
-from memriver_core.config import Settings
 from memriver_core.models import ReadWriteSet, new_id
+from memriver_core.settings import Settings
 
 
 def _service(store: Path):

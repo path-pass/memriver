@@ -14,7 +14,7 @@ shared, because that is ours.
 
 *Stop stays light.* The Stop path only needs to know whether the current
 directory belongs to a registered project, so it resolves that through
-``project_context`` and ``memriver_core.config`` alone: it never builds the
+``project_context`` and ``memriver_core.settings`` alone: it never builds the
 service stack, never takes the store lock, and never creates the store.
 """
 
@@ -152,9 +152,9 @@ def _stop(harness: Harness, payload_text: str, *, root: Path | None,
         if not (isinstance(payload, dict)
                 and payload.get("stop_hook_active") is False):
             return HookResult()
-        # config only (pydantic-settings), never bootstrap: the Stop path must
+        # settings only (pydantic-settings), never bootstrap: the Stop path must
         # stay light and must not create the store or take the lock
-        from memriver_core.config import storage_root
+        from memriver_core.settings import storage_root
 
         from .project_context import resolve
 
@@ -206,7 +206,7 @@ def _read_index(root: Path | None, project_dir: Path) -> str:
     # imported here, not at module scope: Stop fires at the end of every turn
     # and must not pay for loading the settings/service stack it never uses
     from memriver_core.bootstrap import build_service
-    from memriver_core.config import load_settings
+    from memriver_core.settings import load_settings
 
     from .project_context import resolve
     from .session import open_session
