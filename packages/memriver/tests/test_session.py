@@ -4,7 +4,7 @@ from memriver.project_context import ProjectResolution, bind, header_field, reso
 from memriver.session import NONE_HEADER, STORE_UNREADABLE_HEADER, open_session
 from memriver_core.bootstrap import build_service
 from memriver_core.config import Settings
-from memriver_core.models import AccessContext, new_id
+from memriver_core.models import ReadWriteSet, new_id
 
 
 def _service(store: Path):
@@ -22,7 +22,7 @@ def test_a_registered_existing_project_names_itself_and_reads_global(tmp_path):
     # the root field is capped like every header field; a long macOS TMPDIR is
     # longer than the cap, so the expectation goes through the same function
     assert session.header == f"project: demo [{project.id}] (root {header_field(str(work.resolve()))})"
-    assert session.ctx == AccessContext(project_id=project.id, global_project_id=global_id)
+    assert session.read_write_set == ReadWriteSet(project_id=project.id, global_project_id=global_id)
     assert session.state == "registered"
     assert session.project == project
 
@@ -35,7 +35,7 @@ def test_a_registered_id_missing_from_the_store_is_unavailable_and_writes_nothin
     session = open_session(service, ProjectResolution("registered", missing, "/x", None))
     assert session.header == (f"project: unavailable — registered project {missing} does not "
                               "exist; ask the user to run memriver project explain")
-    assert session.ctx == AccessContext(project_id=None, global_project_id=global_id)
+    assert session.read_write_set == ReadWriteSet(project_id=None, global_project_id=global_id)
     assert session.state == "missing"
 
 
@@ -45,16 +45,16 @@ def test_a_project_that_vanishes_between_the_two_reads_is_missing_without_write_
     project_id, global_id = new_id(), new_id()
 
     class Racing:
-        def access_context(self, requested):
-            return AccessContext(project_id=requested, global_project_id=global_id)
+        def read_write_set(self, requested):
+            return ReadWriteSet(project_id=requested, global_project_id=global_id)
 
         def read_project(self, requested):
             raise ProjectNotFound(requested)
 
     session = open_session(Racing(), ProjectResolution("registered", project_id, "/x", None))
     assert session.state == "missing"
-    assert session.ctx == AccessContext(project_id=None, global_project_id=global_id)
-    assert session.ctx.writable() == frozenset()
+    assert session.read_write_set == ReadWriteSet(project_id=None, global_project_id=global_id)
+    assert session.read_write_set.writable() == frozenset()
     assert "does not exist" in session.header
 
 
@@ -66,16 +66,16 @@ def test_no_project_and_degraded_headers(tmp_path):
                                                        "registry/x.toml: bad"))
     assert degraded.header == ("project: unavailable — registry invalid (registry/x.toml: bad); "
                                "ask the user to run memriver project explain")
-    assert degraded.ctx == AccessContext(project_id=None, global_project_id=None)
+    assert degraded.read_write_set == ReadWriteSet(project_id=None, global_project_id=None)
 
 
-def test_an_invalid_manifest_degrades_to_an_empty_context_instead_of_failing(tmp_path):
+def test_an_invalid_manifest_degrades_to_an_empty_read_write_set_instead_of_failing(tmp_path):
     store = tmp_path / "store"
     store.mkdir()
     (store / "store.toml").write_text("global_project = 'nope'\n")
     session = open_session(_service(store), ProjectResolution("registered", new_id(), "/x", None))
     assert session.header == STORE_UNREADABLE_HEADER
-    assert session.ctx == AccessContext(project_id=None, global_project_id=None)
+    assert session.read_write_set == ReadWriteSet(project_id=None, global_project_id=None)
     assert session.state == "unavailable"
 
 

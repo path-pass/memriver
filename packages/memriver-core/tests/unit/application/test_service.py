@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 from memriver_core.application.service import EMPTY_INDEX, MemoryService
-from memriver_core.models import ID_RE, AccessContext, Memory, Project
+from memriver_core.models import ID_RE, Memory, Project, ReadWriteSet
 from memriver_core.models.errors import (
     ContentRejected,
     GlobalReadOnly,
@@ -17,8 +17,8 @@ from memriver_core.models.errors import (
 
 P = "aaaaaaaaaa"
 G = "gggggggggg"
-CTX = AccessContext(project_id=P, global_project_id=G)
-NO_PROJECT = AccessContext(project_id=None, global_project_id=G)
+READ_WRITE_SET = ReadWriteSet(project_id=P, global_project_id=G)
+NO_PROJECT = ReadWriteSet(project_id=None, global_project_id=G)
 
 
 class FakeContentPolicy:
@@ -71,9 +71,9 @@ class FakeProjectStore:
             self.global_id = "nnnnnnnnnn"
         return self.global_id
 
-    def search(self, project_id, ctx, *, query, limit):
+    def search(self, project_id, read_write_set, *, query, limit):
         self.search_calls.append((project_id, query, limit))
-        if project_id not in ctx.readable():
+        if project_id not in read_write_set.readable():
             return []
         hits = [m for m in self.memories if m.project_id == project_id
                 and (query is None or query.lower() in m.body.lower())]
@@ -88,23 +88,23 @@ class FakeMemoryStore:
         self.failures: list[Exception] = []     # raised, in order, by record
         self.attempted_ids: list[str] = []
 
-    def record(self, memory, ctx):
+    def record(self, memory, read_write_set):
         self.attempted_ids.append(memory.id)
         if self.failures:
             raise self.failures.pop(0)
-        self.calls.append(("record", memory.project_id, ctx))
+        self.calls.append(("record", memory.project_id, read_write_set))
         self.project_store.memories.append(memory)
 
-    def read(self, memory_id, ctx):
-        self.calls.append(("read", memory_id, ctx))
+    def read(self, memory_id, read_write_set):
+        self.calls.append(("read", memory_id, read_write_set))
         raise MemoryNotFound(memory_id)
 
-    def update(self, memory_id, ctx, *, body, description):
+    def update(self, memory_id, read_write_set, *, body, description):
         self.calls.append(("update", memory_id, body, description))
         raise GlobalReadOnly()
 
-    def delete(self, memory_id, ctx):
-        self.calls.append(("delete", memory_id, ctx))
+    def delete(self, memory_id, read_write_set):
+        self.calls.append(("delete", memory_id, read_write_set))
 
 
 def _service(project_store=None, *, budget=100, limit_default=5, limit_max=50):
@@ -124,42 +124,42 @@ def _memory(project_id, body, updated, description=""):
     return m
 
 
-# --- access_context -------------------------------------------------------
+# --- read_write_set -------------------------------------------------------
 
-def test_access_context_for_an_existing_project():
+def test_read_write_set_for_an_existing_project():
     service, *_ = _service()
-    assert service.access_context(P) == CTX
+    assert service.read_write_set(P) == READ_WRITE_SET
 
 
 @pytest.mark.parametrize("project_id", [None, G, "not-an-id", "zzzzzzzzzz"])
-def test_access_context_drops_anything_but_an_existing_non_global_project(project_id):
+def test_read_write_set_drops_anything_but_an_existing_non_global_project(project_id):
     service, *_ = _service()
-    assert service.access_context(project_id) == NO_PROJECT
+    assert service.read_write_set(project_id) == NO_PROJECT
 
 
-def test_access_context_of_an_uninitialized_store_has_no_global():
+def test_read_write_set_of_an_uninitialized_store_has_no_global():
     service, *_ = _service(FakeProjectStore([Project(id=P, name="demo")], global_id=None))
-    assert service.access_context(P) == AccessContext(project_id=P, global_project_id=None)
+    assert service.read_write_set(P) == ReadWriteSet(project_id=P, global_project_id=None)
 
 
 # --- record -----------------------------------------------------------------
 
-def test_record_targets_the_context_project_with_a_generated_id():
+def test_record_targets_the_read_write_set_project_with_a_generated_id():
     service, memory_store, *_ = _service()
     memory = service.record(content="uv manages python", type="project", sync=False,
-                            harness="claude-code", description="cue", ctx=CTX)
+                            harness="claude-code", description="cue", read_write_set=READ_WRITE_SET)
     assert ID_RE.fullmatch(memory.id)
     assert (memory.project_id, memory.sync, memory.description) == (P, False, "cue")
     assert memory.source == {"harness": "claude-code", "method": "agent"}
     assert memory.trust == "agent"
-    assert memory_store.calls == [("record", P, CTX)]
+    assert memory_store.calls == [("record", P, READ_WRITE_SET)]
 
 
 def test_record_without_a_project_is_refused_before_any_check():
     service, memory_store, _, policy = _service()
     with pytest.raises(ProjectUnavailable):
         service.record(content="x", type="user", sync=True, harness="h", description="",
-                       ctx=NO_PROJECT)
+                       read_write_set=NO_PROJECT)
     assert memory_store.calls == [] and policy.calls == []
 
 
@@ -171,7 +171,7 @@ def test_record_without_a_project_is_refused_before_any_check():
 def test_record_runs_the_content_policy_on_every_stored_text(field, kwargs):
     service, memory_store, *_ = _service()
     args = {"content": "fine", "type": "user", "sync": True, "harness": "h",
-            "description": "", "ctx": CTX, **kwargs}
+            "description": "", "read_write_set": READ_WRITE_SET, **kwargs}
     with pytest.raises(ContentRejected):
         service.record(**args)
     assert memory_store.calls == []
@@ -182,35 +182,35 @@ def test_record_refuses_a_malformed_harness(harness):
     service, *_ = _service()
     with pytest.raises(ContentRejected):
         service.record(content="c", type="user", sync=True, harness=harness,
-                       description="", ctx=CTX)
+                       description="", read_write_set=READ_WRITE_SET)
 
 
 def test_record_takes_no_name_argument():
     service, *_ = _service()
     with pytest.raises(TypeError):
         service.record(content="c", type="user", sync=True, harness="h", description="",
-                       ctx=CTX, name="n")  # type: ignore[call-arg]
+                       read_write_set=READ_WRITE_SET, name="n")  # type: ignore[call-arg]
 
 
 # --- read / update / delete ---------------------------------------------------
 
-def test_read_update_delete_delegate_with_the_context():
+def test_read_update_delete_delegate_with_the_read_write_set():
     service, memory_store, *_ = _service()
     with pytest.raises(MemoryNotFound):
-        service.read("X", CTX)
+        service.read("X", READ_WRITE_SET)
     with pytest.raises(GlobalReadOnly):
-        service.update("X", "new body", CTX, description=None)
-    service.delete("X", CTX)
-    assert memory_store.calls == [("read", "X", CTX), ("update", "X", "new body", None),
-                                  ("delete", "X", CTX)]
+        service.update("X", "new body", READ_WRITE_SET, description=None)
+    service.delete("X", READ_WRITE_SET)
+    assert memory_store.calls == [("read", "X", READ_WRITE_SET), ("update", "X", "new body", None),
+                                  ("delete", "X", READ_WRITE_SET)]
 
 
 def test_update_runs_the_content_policy_first():
     service, memory_store, *_ = _service()
     with pytest.raises(ContentRejected):
-        service.update("X", "ghp_abc", CTX)
+        service.update("X", "ghp_abc", READ_WRITE_SET)
     with pytest.raises(ContentRejected):
-        service.update("X", "fine", CTX, description="ghp_abc")
+        service.update("X", "fine", READ_WRITE_SET, description="ghp_abc")
     assert memory_store.calls == []
 
 
@@ -239,7 +239,7 @@ def test_ensure_global_delegates():
 
 def _record(service):
     return service.record(content="fact", type="user", sync=True, harness="h",
-                          description="", ctx=CTX)
+                          description="", read_write_set=READ_WRITE_SET)
 
 
 def test_record_surfaces_a_collision_as_storage_failure_after_one_call():
@@ -280,7 +280,7 @@ def test_create_project_and_ensure_global_surface_a_collision_the_same_way():
 def test_one_clamp_normalizes_every_limit(asked, normalized):
     service, _, project_store, _ = _service()
     assert service.normalize_search_limit(asked) == normalized
-    service.search(P, "q", CTX, asked)
+    service.search(P, "q", READ_WRITE_SET, asked)
     assert project_store.search_calls == [(P, "q", normalized)]
 
 
@@ -288,8 +288,8 @@ def test_one_clamp_normalizes_every_limit(asked, normalized):
 
 def test_empty_index_is_the_sentinel():
     service, *_ = _service()
-    assert service.index(CTX) == EMPTY_INDEX
-    assert service.index(AccessContext(project_id=None, global_project_id=None)) == EMPTY_INDEX
+    assert service.index(READ_WRITE_SET) == EMPTY_INDEX
+    assert service.index(ReadWriteSet(project_id=None, global_project_id=None)) == EMPTY_INDEX
 
 
 def test_index_lists_the_project_then_global_with_a_global_tag():
@@ -297,7 +297,7 @@ def test_index_lists_the_project_then_global_with_a_global_tag():
     mine = _memory(P, "mine body", "2026-09-01T00:00:00.000000Z", description="my cue")
     shared = _memory(G, "global body\nsecond line", "2026-09-05T00:00:00.000000Z")
     project_store.memories += [mine, shared]
-    assert service.index(CTX).splitlines() == [
+    assert service.index(READ_WRITE_SET).splitlines() == [
         f"- [user] {mine.id}: my cue (2026-09-01)",
         f"- [user, global] {shared.id}: global body (2026-09-05)",
     ]
@@ -305,7 +305,7 @@ def test_index_lists_the_project_then_global_with_a_global_tag():
 
 def test_index_uses_two_single_project_searches():
     service, _, project_store, _ = _service()
-    service.index(CTX)
+    service.index(READ_WRITE_SET)
     assert project_store.search_calls == [(P, None, None), (G, None, None)]
 
 
@@ -321,7 +321,7 @@ def test_index_fills_one_budget_project_first_and_counts_what_it_dropped():
     project_store.memories += [_memory(P, f"p{i}", f"2026-09-0{i}T00:00:00.000000Z")
                                for i in range(1, 5)]
     project_store.memories += [_memory(G, "g", "2026-09-09T00:00:00.000000Z")]
-    lines = service.index(CTX).splitlines()
+    lines = service.index(READ_WRITE_SET).splitlines()
     assert [line.split(": ", 1)[1] for line in lines[:3]] == \
         ["p4 (2026-09-04)", "p3 (2026-09-03)", "p2 (2026-09-02)"]
     assert lines[3] == "… (2 more entries omitted; use memory_search)"
@@ -331,7 +331,7 @@ def test_index_lines_are_single_line_and_capped():
     service, _, project_store, _ = _service()
     project_store.memories.append(_memory(P, "x", "2026-09-01T00:00:00.000000Z",
                                           description="line\none " + "y" * 100))
-    line = service.index(CTX)
+    line = service.index(READ_WRITE_SET)
     assert "\n" not in line
     assert len(line.split(": ", 1)[1].rsplit(" (", 1)[0]) == 60
 

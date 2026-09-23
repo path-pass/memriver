@@ -1,4 +1,3 @@
-from .access import AccessContext
 from .helpers import (
     ID_ALPHABET,
     ID_LENGTH,
@@ -10,6 +9,7 @@ from .helpers import (
 )
 from .memory import Memory, MemoryType, Trust
 from .project import PROJECT_NAME_MAX_CHARS, Project, project_name
+from .read_write_set import ReadWriteSet
 from .store_diagnostics import (
     DiagnosticFinding,
     DiagnosticsReport,
@@ -24,7 +24,6 @@ __all__ = [
     "ID_LENGTH",
     "ID_RE",
     "PROJECT_NAME_MAX_CHARS",
-    "AccessContext",
     "DiagnosticFinding",
     "DiagnosticsReport",
     "DiagnosticsState",
@@ -32,6 +31,7 @@ __all__ = [
     "Memory",
     "MemoryType",
     "Project",
+    "ReadWriteSet",
     "StoreFinding",
     "StoreReport",
     "Trust",

@@ -38,7 +38,7 @@ from memriver.session import open_session
 from memriver_core import bootstrap
 from memriver_core.bootstrap import build_service
 from memriver_core.config import Settings
-from memriver_core.models import AccessContext, Memory, Project, new_id
+from memriver_core.models import Memory, Project, ReadWriteSet, new_id
 from memriver_core.repository.filesystem.markdown_codec import encode
 
 INDEX_LINE = "- [user] likes-tea: drinks oolong (2026-01-01)"
@@ -98,20 +98,20 @@ def _registered_header(store, cwd) -> str:
 
 
 class FakeService:
-    """Records what the hook asked for, so the resolved context is observable."""
+    """Records what the hook asked for, so the resolved read/write set is observable."""
 
     def __init__(self, index_text: str):
         self.index_text = index_text
-        self.contexts: list[AccessContext] = []
+        self.read_write_sets: list[ReadWriteSet] = []
 
-    def access_context(self, project_id):
-        return AccessContext(project_id=project_id, global_project_id=GLOBAL_ID)
+    def read_write_set(self, project_id):
+        return ReadWriteSet(project_id=project_id, global_project_id=GLOBAL_ID)
 
     def read_project(self, project_id):
         return Project(id=project_id, name="demo")
 
-    def index(self, ctx: AccessContext) -> str:
-        self.contexts.append(ctx)
+    def index(self, read_write_set: ReadWriteSet) -> str:
+        self.read_write_sets.append(read_write_set)
         return self.index_text
 
 
@@ -424,7 +424,7 @@ def test_project_dir_option_beats_payload_cwd_and_fallback(tmp_path, fake_servic
     session_start("claude-code", {"cwd": str(a_directory(tmp_path, "payload"))},
                   root=store, project_dir=chosen,
                   cwd=a_directory(tmp_path, "fallback"))
-    assert service.contexts[-1].project_id == expected
+    assert service.read_write_sets[-1].project_id == expected
 
 
 def test_payload_cwd_beats_the_supplied_fallback(tmp_path, fake_service):
@@ -434,7 +434,7 @@ def test_payload_cwd_beats_the_supplied_fallback(tmp_path, fake_service):
     expected = _bind_new(store, payload_dir)
     session_start("claude-code", {"cwd": str(payload_dir)}, root=store,
                   cwd=a_directory(tmp_path, "fallback"))
-    assert service.contexts[-1].project_id == expected
+    assert service.read_write_sets[-1].project_id == expected
 
 
 @pytest.mark.parametrize("payload_cwd", [{}, {"cwd": 17}, {"cwd": None}])
@@ -446,13 +446,13 @@ def test_fallback_cwd_is_used_when_the_payload_has_no_string_cwd(payload_cwd,
     fallback = a_directory(tmp_path, "fallback")
     expected = _bind_new(store, fallback)
     session_start("claude-code", payload_cwd, root=store, cwd=fallback)
-    assert service.contexts[-1].project_id == expected
+    assert service.read_write_sets[-1].project_id == expected
 
 
 def test_an_unregistered_directory_is_global_only(tmp_path, fake_service):
     service = fake_service()
     session_start("claude-code", {"cwd": str(tmp_path)}, root=tmp_path / "root")
-    assert service.contexts[-1].project_id is None
+    assert service.read_write_sets[-1].project_id is None
 
 
 # --- session-start failure shapes ----------------------------------------

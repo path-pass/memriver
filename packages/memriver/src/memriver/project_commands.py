@@ -415,9 +415,9 @@ def run_explain(*, root: Path | None, project_dir: Path | None, stdout, cwd: Pat
     try:
         session = open_session(_service(store_root), resolution)
     except StorageFailure:          # settings could not even be built
-        from memriver_core.models import AccessContext
+        from memriver_core.models import ReadWriteSet
 
-        session = Session("", AccessContext(project_id=None, global_project_id=None),
+        session = Session("", ReadWriteSet(project_id=None, global_project_id=None),
                           "unavailable")
     lines = [f"store: {visible(str(store_root))}", f"cwd: {visible(canonical)}",
              f"state: {resolution.state}"]
@@ -437,11 +437,11 @@ def run_explain(*, root: Path | None, project_dir: Path | None, stdout, cwd: Pat
             lines.append(f"project: {resolution.project_id}")
         lines.append("diagnostic: the memory store could not be read")
         code = 1
-    ctx = session.ctx
-    reads = [ctx.project_id] if ctx.project_id else []
-    if ctx.global_project_id:
+    read_write_set = session.read_write_set
+    reads = [read_write_set.project_id] if read_write_set.project_id else []
+    if read_write_set.global_project_id:
         reads.append("global")
-    writes = sorted(ctx.writable())
+    writes = sorted(read_write_set.writable())
     lines += [f"reads: {', '.join(reads) or 'none'}", f"writes: {', '.join(writes) or 'none'}"]
     stdout.write("\n".join(lines) + "\n")
     return code

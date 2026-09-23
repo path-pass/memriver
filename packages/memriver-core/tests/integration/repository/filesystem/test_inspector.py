@@ -3,7 +3,7 @@ import stat
 import time
 
 import pytest
-from memriver_core.models import AccessContext, Memory, Project, new_id
+from memriver_core.models import Memory, Project, ReadWriteSet, new_id
 from memriver_core.models.errors import StorageFailure
 from memriver_core.repository.filesystem import (
     FileMemoryStore,
@@ -43,7 +43,7 @@ def test_a_healthy_store_lists_projects_and_memories(tmp_path):
     root, project_store, global_id, project_id = _initialized(tmp_path)
     memory = Memory.new(body="b", type="user", project_id=project_id, source=SOURCE)
     FileMemoryStore(root, project_store).record(
-        memory, AccessContext(project_id=project_id, global_project_id=global_id))
+        memory, ReadWriteSet(project_id=project_id, global_project_id=global_id))
     report = FilesystemStoreInspector(root).inspect()
     assert report.initialized is True
     assert set(report.projects) == {global_id, project_id}

@@ -2,7 +2,7 @@ import threading
 import time
 
 import pytest
-from memriver_core.models import AccessContext, Memory, Project
+from memriver_core.models import Memory, Project, ReadWriteSet
 from memriver_core.models.errors import StorageFailure
 from memriver_core.repository.filesystem import FileMemoryStore, FileProjectStore
 from memriver_core.repository.filesystem import memory_store as memory_store_module
@@ -15,8 +15,8 @@ def _world(root):
     project = Project.new("mine")
     project_store.create(project)
     memory_store = FileMemoryStore(root, project_store)
-    return memory_store, project_store, AccessContext(project_id=project.id,
-                                                      global_project_id=global_id)
+    return memory_store, project_store, ReadWriteSet(project_id=project.id,
+                                                     global_project_id=global_id)
 
 
 def _race(target, args_list):
@@ -63,7 +63,7 @@ def test_store_lock_lets_a_non_oserror_from_inside_the_block_propagate(tmp_path)
 def test_record_holds_the_lock_from_the_project_check_to_the_write(tmp_path, monkeypatch):
     # the project check opens the critical section and the write closes it; a peer entering the check while another thread is still
     # writing means the lock does not span the sequence
-    memory_store, project_store, ctx = _world(tmp_path / "store")
+    memory_store, project_store, read_write_set = _world(tmp_path / "store")
     active = max_active = 0
     counter = threading.Lock()
     real_read, real_write = project_store.read, memory_store_module.write_new
@@ -86,16 +86,16 @@ def test_record_holds_the_lock_from_the_project_check_to_the_write(tmp_path, mon
 
     monkeypatch.setattr(project_store, "read", observed_read)
     monkeypatch.setattr(memory_store_module, "write_new", observed_write)
-    memories = [Memory.new(body=n, type="user", project_id=ctx.project_id, source={})
+    memories = [Memory.new(body=n, type="user", project_id=read_write_set.project_id, source={})
                 for n in ("a", "b")]
-    assert _race(memory_store.record, [(m, ctx) for m in memories]) == []
+    assert _race(memory_store.record, [(m, read_write_set) for m in memories]) == []
     assert max_active == 1
 
 
 def test_update_serializes_concurrent_writers(tmp_path, monkeypatch):
-    memory_store, _, ctx = _world(tmp_path / "store")
-    memory = Memory.new(body="base", type="user", project_id=ctx.project_id, source={})
-    memory_store.record(memory, ctx)
+    memory_store, _, read_write_set = _world(tmp_path / "store")
+    memory = Memory.new(body="base", type="user", project_id=read_write_set.project_id, source={})
+    memory_store.record(memory, read_write_set)
     active = max_active = 0
     counter = threading.Lock()
     real_replace = memory_store_module.replace_file
@@ -113,7 +113,7 @@ def test_update_serializes_concurrent_writers(tmp_path, monkeypatch):
                 active -= 1
 
     monkeypatch.setattr(memory_store_module, "replace_file", observed_replace)
-    assert _race(lambda body: memory_store.update(memory.id, ctx, body=body, description=None),
+    assert _race(lambda body: memory_store.update(memory.id, read_write_set, body=body, description=None),
                  [("a",), ("b",)]) == []
     assert max_active == 1
-    assert memory_store.read(memory.id, ctx).body in {"a", "b"}
+    assert memory_store.read(memory.id, read_write_set).body in {"a", "b"}

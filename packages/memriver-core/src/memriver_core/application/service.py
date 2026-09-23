@@ -1,7 +1,7 @@
 """The application facade: orchestrates the two stores, the content policy and the limits.
 
 MemoryStore owns single-memory actions and ProjectStore owns collections;
-this facade only sequences policy checks, builds access contexts and renders
+this facade only sequences policy checks, builds read/write sets and renders
 the index. Nothing here knows about files, frontmatter, git, or
 configuration.
 """
@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from memriver_core.models import ID_RE, AccessContext, Memory, Project, single_line
+from memriver_core.models import ID_RE, Memory, Project, ReadWriteSet, single_line
 from memriver_core.models.errors import (
     ContentRejected,
     IdCollision,
@@ -66,8 +66,8 @@ class MemoryService:
 
     # --- sessions and projects ---
 
-    def access_context(self, project_id: str | None) -> AccessContext:
-        """The context a session may act in; only an existing, non-global project is kept."""
+    def read_write_set(self, project_id: str | None) -> ReadWriteSet:
+        """The read/write set a session may act in; only an existing, non-global project is kept."""
         global_project_id = self._project_store.global_project_id()
         kept = None
         if project_id is not None and project_id != global_project_id \
@@ -77,7 +77,7 @@ class MemoryService:
                 kept = project_id
             except ProjectNotFound:
                 kept = None
-        return AccessContext(project_id=kept, global_project_id=global_project_id)
+        return ReadWriteSet(project_id=kept, global_project_id=global_project_id)
 
     def global_project_id(self) -> str | None:
         return self._project_store.global_project_id()
@@ -104,11 +104,11 @@ class MemoryService:
     # --- single memories ---
 
     def record(self, *, content: str, type: str, sync: bool, harness: str,
-               description: str, ctx: AccessContext) -> Memory:
-        if ctx.project_id is None:
+               description: str, read_write_set: ReadWriteSet) -> Memory:
+        if read_write_set.project_id is None:
             # path-free on purpose, and one message for every cause: the
             # transport resolved the project, so it says why there is none
-            raise ProjectUnavailable("no writable project in this context")
+            raise ProjectUnavailable("no writable project in this session")
         if not _HARNESS_RE.fullmatch(harness):
             raise ContentRejected("invalid harness identifier "
                                   "(allowed: letters, digits, ., _, -, max 64 chars)")
@@ -118,27 +118,28 @@ class MemoryService:
         # non-empty since it is optional and the policy refuses ""
         if description.strip():
             self._content_policy.check(description, self._metadata_max_chars)
-        memory = Memory.new(body=content, type=type, project_id=ctx.project_id, sync=sync,
-                           description=description,
+        memory = Memory.new(body=content, type=type, project_id=read_write_set.project_id,
+                           sync=sync, description=description,
                            source={"harness": harness, "method": "agent"})
         try:
-            self._memory_store.record(memory, ctx)
+            self._memory_store.record(memory, read_write_set)
         except IdCollision as err:
             raise StorageFailure from err
         return memory
 
-    def read(self, memory_id: str, ctx: AccessContext) -> Memory:
-        return self._memory_store.read(memory_id, ctx)
+    def read(self, memory_id: str, read_write_set: ReadWriteSet) -> Memory:
+        return self._memory_store.read(memory_id, read_write_set)
 
-    def update(self, memory_id: str, content: str, ctx: AccessContext,
+    def update(self, memory_id: str, content: str, read_write_set: ReadWriteSet,
                description: str | None = None) -> Memory:
         self._content_policy.check(content, self._max_body_chars)
         if description is not None and description.strip():
             self._content_policy.check(description, self._metadata_max_chars)
-        return self._memory_store.update(memory_id, ctx, body=content, description=description)
+        return self._memory_store.update(memory_id, read_write_set, body=content,
+                                         description=description)
 
-    def delete(self, memory_id: str, ctx: AccessContext) -> None:
-        self._memory_store.delete(memory_id, ctx)
+    def delete(self, memory_id: str, read_write_set: ReadWriteSet) -> None:
+        self._memory_store.delete(memory_id, read_write_set)
 
     # --- collections ---
 
@@ -147,18 +148,20 @@ class MemoryService:
         limit = self._search_limit_default if limit is None else limit
         return max(1, min(limit, self._search_limit_max))
 
-    def search(self, project_id: str, query: str, ctx: AccessContext,
+    def search(self, project_id: str, query: str, read_write_set: ReadWriteSet,
                limit: int | None = None) -> list[Memory]:
         # the store answers exactly what it is asked for; clamping is ours
-        return self._project_store.search(project_id, ctx, query=query,
+        return self._project_store.search(project_id, read_write_set, query=query,
                                           limit=self.normalize_search_limit(limit))
 
-    def index(self, ctx: AccessContext) -> str:
+    def index(self, read_write_set: ReadWriteSet) -> str:
         """The current project's entries, then global's, in one line budget."""
         sections = [(project_id, tag) for project_id, tag in
-                    ((ctx.project_id, ""), (ctx.global_project_id, ", global"))
+                    ((read_write_set.project_id, ""),
+                     (read_write_set.global_project_id, ", global"))
                     if project_id is not None]
-        listed = [(tag, self._project_store.search(project_id, ctx, query=None, limit=None))
+        listed = [(tag, self._project_store.search(project_id, read_write_set,
+                                                   query=None, limit=None))
                   for project_id, tag in sections]
         total = sum(len(memories) for _, memories in listed)
         if total == 0:

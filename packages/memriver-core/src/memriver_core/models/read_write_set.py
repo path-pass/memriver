@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
-class AccessContext:
+class ReadWriteSet:
     """Which projects one caller may read and write.
 
     Built only by the application facade from a resolved session, never from
@@ -19,7 +19,7 @@ class AccessContext:
 
     def writable(self) -> frozenset[str]:
         # global is read-only to every agent-facing caller, whatever the
-        # context claims
+        # set claims
         if self.project_id is None or self.project_id == self.global_project_id:
             return frozenset()
         return frozenset({self.project_id})

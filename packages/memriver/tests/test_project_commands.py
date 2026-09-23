@@ -10,7 +10,7 @@ from memriver.project_context import bind, load_registry, resolve
 from memriver_core import ProjectNotFound
 from memriver_core.bootstrap import build_service
 from memriver_core.config import Settings
-from memriver_core.models import ID_RE, AccessContext, new_id
+from memriver_core.models import ID_RE, ReadWriteSet, new_id
 
 
 def _tree(directory: Path) -> dict[str, bytes | None]:
@@ -530,8 +530,9 @@ def test_adopting_a_second_directory_makes_the_project_memories_readable_there(e
     global_id = service.ensure_global()
     pid = _project(env)
     memory = service.record(content="kept fact", type="project", sync=True, harness="t",
-                            description="", ctx=AccessContext(project_id=pid,
-                                                              global_project_id=global_id))
+                            description="",
+                            read_write_set=ReadWriteSet(project_id=pid,
+                                                        global_project_id=global_id))
     code, _ = _adopt(env, pid, env["work"] / "frontend", yes=True)
     assert code == 0
     server = build_server(root=env["store"], project_dir=env["work"] / "frontend")

@@ -6,7 +6,7 @@ import json
 import tomllib
 from pathlib import Path
 
-from memriver_core.models import ID_RE, AccessContext, Memory, Project, project_name
+from memriver_core.models import ID_RE, Memory, Project, ReadWriteSet, project_name
 from memriver_core.models.errors import (
     IdCollision,
     ProjectNotFound,
@@ -108,9 +108,9 @@ class FileProjectStore:
                 raise StorageFailure from err
             return project.id
 
-    def search(self, project_id: str, ctx: AccessContext, *, query: str | None,
+    def search(self, project_id: str, read_write_set: ReadWriteSet, *, query: str | None,
                limit: int | None) -> list[Memory]:
-        if project_id not in ctx.readable():
+        if project_id not in read_write_set.readable():
             return []
         try:
             self.read(project_id)       # a damaged project file is StorageFailure

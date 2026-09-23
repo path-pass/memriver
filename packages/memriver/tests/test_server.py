@@ -168,7 +168,7 @@ async def test_a_damaged_file_is_reported_as_damage_per_operation(server, world)
 
 
 @pytest.mark.parametrize("fixture", ["registered", "unregistered"])
-async def test_global_memories_cannot_be_changed_from_any_context(tmp_path, world, fixture):
+async def test_global_memories_cannot_be_changed_from_any_session(tmp_path, world, fixture):
     shared = _global_memory(world)
     directory = world["dir"] if fixture == "registered" else tmp_path
     srv = build_server(root=world["store"], project_dir=directory)

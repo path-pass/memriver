@@ -216,7 +216,7 @@ def _read_index(root: Path | None, project_dir: Path) -> str:
         service = build_service(settings, root=settings.root)
         # the same seam the MCP server uses: same directory, same header and body
         session = open_session(service, resolve(settings.root, project_dir))
-        body = service.index(session.ctx)
+        body = service.index(session.read_write_set)
     return session.header + "\n" + body
 
 

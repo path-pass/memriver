@@ -56,7 +56,7 @@ def test_write_mapping(err, expected):
     ("unavailable", "the memory store could not be read"),
 ])
 def test_write_without_a_project_states_the_session_not_a_path(state, fragment):
-    result = _map_error("write", ProjectUnavailable("no writable project in this context"),
+    result = _map_error("write", ProjectUnavailable("no writable project in this session"),
                         session_state=state)
     assert fragment in result["error"] and "No memory was saved" in result["error"]
     assert "/" not in result["error"].replace("memriver project", "")
@@ -123,17 +123,17 @@ class OtherBackend:
     def ensure_global(self):
         return self.global_id
 
-    def search(self, project_id, ctx, *, query, limit):
+    def search(self, project_id, read_write_set, *, query, limit):
         raise self.error
 
     # MemoryStore
-    def record(self, memory, ctx):
+    def record(self, memory, read_write_set):
         raise self.error
 
-    def update(self, memory_id, ctx, *, body, description):
+    def update(self, memory_id, read_write_set, *, body, description):
         raise self.error
 
-    def delete(self, memory_id, ctx):
+    def delete(self, memory_id, read_write_set):
         raise self.error
 
 
@@ -141,16 +141,16 @@ class OtherMemoryStore:
     def __init__(self, backend: OtherBackend) -> None:
         self.backend = backend
 
-    def record(self, memory, ctx):
+    def record(self, memory, read_write_set):
         raise self.backend.error
 
-    def read(self, memory_id, ctx):
+    def read(self, memory_id, read_write_set):
         raise self.backend.error
 
-    def update(self, memory_id, ctx, *, body, description):
+    def update(self, memory_id, read_write_set, *, body, description):
         raise self.backend.error
 
-    def delete(self, memory_id, ctx):
+    def delete(self, memory_id, read_write_set):
         raise self.backend.error
 
 

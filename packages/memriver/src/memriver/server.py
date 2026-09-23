@@ -27,7 +27,7 @@ Operation = Literal["read", "write", "update", "delete", "list"]
 
 _COULD_NOT_READ_STORE = "could not read the memory store"
 
-# The global project is readable from every context and writable from none, so
+# The global project is readable in every read/write set and writable in none, so
 # one refusal covers update and delete: it tells the agent to stop rather than
 # look for another way in.
 _GLOBAL_READ_ONLY = ("global memories are read-only to agents; no change was made. Tell "
@@ -119,7 +119,7 @@ def build_server(root: Path, project_dir: Path,
     # the life of the server, and the header cannot drift between calls. The
     # hook resolves on every call, so the two can still disagree (documented).
     session = open_session(service, resolve(root, project_dir))
-    ctx = session.ctx
+    read_write_set = session.read_write_set
 
     mcp = FastMCP("memriver", instructions=INSTRUCTIONS)
 
@@ -132,7 +132,7 @@ def build_server(root: Path, project_dir: Path,
         """The session's project on the first line, then a compact index of the
         current project's memories followed by global's."""
         try:
-            return session.header + "\n" + service.index(ctx)
+            return session.header + "\n" + service.index(read_write_set)
         except Exception as err:  # noqa: BLE001
             return _map_error("list", err)["error"]
 
@@ -140,7 +140,7 @@ def build_server(root: Path, project_dir: Path,
     async def memory_read(memory_id: str) -> dict:
         """Read one memory in full by id."""
         try:
-            return _full(service.read(memory_id, ctx))
+            return _full(service.read(memory_id, read_write_set))
         except Exception as err:  # noqa: BLE001
             return _map_error("read", err, memory_id=memory_id)
 
@@ -153,11 +153,11 @@ def build_server(root: Path, project_dir: Path,
             # a spent budget skips global rather than being clamped back to 1
             remaining = service.normalize_search_limit(limit)
             hits: list[dict] = []
-            for collection, project_id in (("project", ctx.project_id),
-                                           ("global", ctx.global_project_id)):
+            for collection, project_id in (("project", read_write_set.project_id),
+                                           ("global", read_write_set.global_project_id)):
                 if project_id is None or remaining == 0:
                     continue
-                found = service.search(project_id, query, ctx, remaining)
+                found = service.search(project_id, query, read_write_set, remaining)
                 hits += [_hit(m, collection) for m in found]
                 remaining -= len(found)
             return hits
@@ -177,7 +177,7 @@ def build_server(root: Path, project_dir: Path,
         session recall this?"""
         try:
             memory = service.record(content=content, type=type, sync=sync, harness=harness,
-                                    description=description, ctx=ctx)
+                                    description=description, read_write_set=read_write_set)
         except Exception as err:  # noqa: BLE001
             return _map_error("write", err, session_state=session.state)
         return {"id": memory.id, "project_id": memory.project_id}
@@ -190,7 +190,7 @@ def build_server(root: Path, project_dir: Path,
         description: omit to keep the existing one; pass a string to replace
         it, or "" to clear it."""
         try:
-            memory = service.update(memory_id, content, ctx, description=description)
+            memory = service.update(memory_id, content, read_write_set, description=description)
         except Exception as err:  # noqa: BLE001
             return _map_error("update", err, memory_id=memory_id)
         return {"id": memory.id, "updated": memory.updated}
@@ -200,7 +200,7 @@ def build_server(root: Path, project_dir: Path,
         """Delete a memory that is no longer true or no longer wanted.
         Global entries are read-only; the call is refused."""
         try:
-            service.delete(memory_id, ctx)
+            service.delete(memory_id, read_write_set)
         except Exception as err:  # noqa: BLE001
             return _map_error("delete", err, memory_id=memory_id)
         return {"deleted": memory_id}

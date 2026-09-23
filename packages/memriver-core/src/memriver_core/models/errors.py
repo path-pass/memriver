@@ -58,7 +58,7 @@ class IdCollision(MemoryError):
 class ContentRejected(MemoryError): ...      # from ContentPolicy; the message is the rule
 
 
-class ProjectUnavailable(MemoryError): ...   # no writable project in this context
+class ProjectUnavailable(MemoryError): ...   # no writable project in this session
 
 
 class GlobalReadOnly(MemoryError):
