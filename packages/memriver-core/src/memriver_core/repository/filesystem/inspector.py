@@ -1,6 +1,6 @@
 """Whole-store administrative inspection of the filesystem store.
 
-The ordinary read paths are scoped and forgiving: they silently skip what
+The ordinary read paths are access-checked and forgiving: they silently skip what
 they cannot trust, which is right for serving a client and wrong for a
 doctor. This inspector walks the same layout and *keeps* what reads drop, so
 every skipped file is reported once, with a store-relative location and a

@@ -28,25 +28,43 @@ markdown file per fact with YAML frontmatter (`name`, `description`,
 2. For every `*.md` file except `MEMORY.md`, split the YAML frontmatter from
    the body. One file = one `memory_write` call:
    - `content`: the body exactly as stored — same language, formatting, and
-     `[[links]]`. Never paraphrase, translate, merge, split, or "improve" it.
-   - `name`: the frontmatter `name` (fallback: the filename stem). Keeping
-     the original name keeps `[[name]]` cross-references resolvable.
-   - `description`: the frontmatter `description`, verbatim.
+     `[[links]]`. Never paraphrase, translate, merge, split, or "improve" it
+     (the store strips only leading and trailing whitespace from the saved
+     body; it is not otherwise rewritten).
+   - `description`: the frontmatter `description`, verbatim (the store
+     strips its leading and trailing whitespace too).
    - `type`: `metadata.type` when it is one of user/feedback/project/reference;
      anything else falls back to `project` — note the fallback in the report.
    - `harness`: `"claude-code"`. Leave `sync` at its default.
 
-   Every entry is written to the current project; there is no scope to choose.
-3. `memory_index()` again; confirm every migrated name appears.
+   memriver assigns every memory a new id, so the source file's `name` is not
+   kept and `[[name]]` cross-references between source files will not resolve
+   inside memriver; say so in the report. Every entry is written to the
+   current project. Keep the `{id, project_id}` a successful `memory_write`
+   returns for every file you write — step 3 needs it.
+3. For every file written in step 2, `memory_read(id)` and check that
+   `project_id` is the current project and the returned `body`/`description`
+   match the source content (compare after stripping leading/trailing
+   whitespace from the source, the same normalization the store already
+   applies). This read is the acceptance check for that file: a call that
+   errors or a mismatch means the file is not confirmed migrated — report it,
+   never assume success from `memory_write` alone. Do not use `memory_index()`
+   for this: its description is truncated to 60 characters and the whole
+   listing is capped by a line budget, so a genuinely written entry can still
+   be missing from it. `memory_index()` is only useful as the step 1 overview.
 4. Report a table: migrated / skipped / rejected, each with its reason.
 
-## Collisions and rejections
+## Duplicates and rejections
 
-- Name already taken: `memory_read` it. Same body → already migrated, skip.
+- Already present: before writing a file, use the index (same description)
+  or `memory_search` (a distinctive phrase of the body) only to find
+  candidates, then `memory_read` each candidate and compare its full body with
+  the file -- never judge equality from an index cue or a search snippet, and
+  compare after stripping leading/trailing whitespace from the file's body
+  (the store already strips it, so comparing the raw file byte-for-byte can
+  flag a real match as different). Same body → already migrated, skip.
   Different body → report both versions to the user and touch nothing; never
-  `memory_update` over an existing entry during migration.
-- `name … already used by a read-only global memory` — report it as *not
-  migrated (global)*; never update the global entry.
+  `memory_update` an existing entry during migration.
 - `memory_write` rejects the content (secret-shaped text): report the file
   and move on. Do not rephrase content to get past the policy.
 - File without parseable frontmatter: skip and report. `MEMORY.md` itself is
@@ -59,17 +77,17 @@ markdown file per fact with YAML frontmatter (`name`, `description`,
   the migration's.
 - Original `modified` timestamps are not carried over (memriver stamps its
   own); say so in the report instead of encoding dates into bodies.
-- If memriver reports `no writable project: this directory is not registered`,
-  stop and tell the user to run `memriver project init`; if it reports `the
-  project registry is invalid`, tell them to run `memriver project explain`.
-  Never run either yourself.
+- If memriver reports `no writable project`, stop and tell the user what the
+  message asks for (`memriver project init`, `memriver project explain` or
+  `memriver doctor`). Never run any of them yourself.
 
 ## Common mistakes
 
 | Mistake | Correct behavior |
 |---|---|
 | Rewriting or translating bodies "for clarity" | Copy the body exactly as stored |
-| Splitting one file into several memories, or renaming ids | One file = one memory under its original name |
+| Splitting one file into several memories | One file = one memory |
 | Deleting source files or trimming MEMORY.md after success | The source stays untouched |
-| `memory_update` on a name collision | Read, compare, then skip or escalate — never overwrite |
-| Passing a `scope`, or routing "cross-project" facts to global | Every migrated file becomes a memory in the current project; global is read-only to agents |
+| `memory_update` over an entry that already exists | Read, compare, then skip or escalate — never overwrite |
+| Trusting `memory_index()` as proof a file was migrated | `memory_read(id)` each written file; the index is an overview only, truncated per entry and capped in total |
+| Routing "cross-project" facts to global | Every migrated file becomes a memory in the current project; global is read-only to agents |

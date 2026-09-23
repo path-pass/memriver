@@ -13,8 +13,8 @@ def store_lock(root: Path) -> Iterator[None]:
     """Hold the store-wide exclusive lock for the duration of the block.
 
     Several processes may share one root, so a caller doing its own
-    read-check-write over memories (e.g. a name-collision check before
-    write) should wrap it here to serialize against peers.
+    read-check-write over memories (e.g. an id-exclusive create) should
+    wrap it here to serialize against peers.
     Not reentrant: `FileMemoryStore.update`/`delete`/`record` and
     `FileProjectStore.create`/`ensure_global` take this lock internally, so
     calling any of them from inside a `store_lock` block deadlocks. Reads
