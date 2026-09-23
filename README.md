@@ -79,9 +79,10 @@ missing, `memriver doctor` shows what the store actually holds.
 
 A project is a directory you registered. Nothing else confers project
 identity -- not a `.git` directory, not a marker file -- and the `memriver
-project` commands never write anything inside a project directory; the
-registry lives in the store. (Installing Cursor or Kiro still writes their
-static instruction file at the git root, as the install table shows.)
+project` commands never write anything inside a project directory; each
+project's directory binding lives on its row in the store. (Installing Cursor
+or Kiro still writes their static instruction file at the git root, as the
+install table shows.)
 
 ```bash
 uvx memriver project init                 # register the current directory
@@ -250,8 +251,8 @@ The MCP client's working directory determines project attribution: `--project`
 runs memriver from this checkout while keeping that directory, so memories land
 under the project you are actually working in (use `--directory` and every
 session would resolve against memriver's own checkout). `--project-dir` on the
-`memriver` command is where project discovery starts (the registry decides the
-id); pass it to pin a directory.
+`memriver` command is where project discovery starts (the nearest directory
+bound to a project decides the id); pass it to pin a directory.
 
 ## Storage layout
 

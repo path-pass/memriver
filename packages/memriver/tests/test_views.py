@@ -258,9 +258,16 @@ def test_delete_needs_the_current_version(world):
     assert code == 2 and "changed since version 5" in out
 
 
-def test_delete_from_outside_the_project_finds_nothing(world, tmp_path):
-    code, out = _delete(world, version=1, cwd=tmp_path)
-    assert code == 2 and "no such memory" in out
+def test_delete_from_outside_the_project_names_the_owning_project(world, tmp_path):
+    out = io.StringIO()
+    code = run_delete(world["memory"].id, version=1, hard=False, yes=False, root=world["store"],
+                      stdin_is_tty=True, input_fn=_never_called, stdout=out, cwd=tmp_path,
+                      home=world["home"])
+    assert code == 2
+    assert out.getvalue() == (
+        f"refused: {world['memory'].id} belongs to project {world['project'].id}, not this "
+        "directory's project; run memriver delete from that project's directory\n")
+    assert world["service"].show(world["memory"].id).version == 1
 
 
 def test_delete_declined_changes_nothing(world):

@@ -233,7 +233,9 @@ def run_delete(memory_id: str, *, version: int, hard: bool, yes: bool, root: Pat
         stdout.write("refused: global memories cannot be deleted here\n")
         return 2
     if memory.project_id not in read_write_set.writable():
-        stdout.write(f"no such memory: {visible(memory_id[:255])}\n")
+        # `memriver show` displays it, so "no such memory" would mislead a human
+        stdout.write(f"refused: {memory.id} belongs to project {memory.project_id}, not this "
+                     "directory's project; run memriver delete from that project's directory\n")
         return 2
     plan = (f"memriver delete: {memory.id} [{memory.type}] in project {memory.project_id}: "
             f"{_cue(memory)}  ({'hard' if hard else 'soft'})")

@@ -156,7 +156,7 @@ they see every project including global, `show --deleted` can surface a
 soft-deleted row and its `deleted_at`, and none of them go through a
 `ReadWriteSet` the way a session does. `memriver delete` is the one
 per-memory write path outside MCP (project `init`/`adopt`/`unbind`, `install`
-and `uninstall --purge-data` write too, but to the project registry or the
+and `uninstall --purge-data` write too, but to the project rows or the
 whole store, never to one memory's content); `delete` is scoped to the
 current directory's project exactly like an agent, so global stays
 undeletable there too.

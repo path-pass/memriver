@@ -324,3 +324,33 @@ def test_inspection_never_writes(world):
     before = (world["store"] / "memriver.db").read_bytes()
     SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
     assert (world["store"] / "memriver.db").read_bytes() == before
+
+
+def test_directory_checks_run_after_the_read_transaction(world, monkeypatch):
+    """A hung mount under root_state must not hold the read lock: a writer commits meanwhile."""
+    from memriver_core.repository import directories
+
+    real_root_state = directories.root_state
+    peer: list[str] = []
+
+    def root_state_while_a_peer_commits(root):
+        memory = _memory(world["project"], "landed during the directory checks")
+        try:
+            with closing(sqlite3.connect(world["store"] / "memriver.db", timeout=0.1)) as other, \
+                    other:
+                other.execute(f"INSERT INTO memories ({MEMORY_COLUMNS}) "
+                              "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                              (memory.id, memory.project_id, memory.type, "t", "agent",
+                               memory.trust, 1, "", memory.body, memory.created,
+                               memory.updated, 1, None))
+            peer.append("committed")
+        except sqlite3.OperationalError:
+            peer.append("blocked")
+        return real_root_state(root)
+
+    monkeypatch.setattr(directories, "root_state", root_state_while_a_peer_commits)
+    report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+    assert peer == ["committed"]
+    # the report is still the snapshot read before the peer's commit
+    assert {p.id: p.active_memories for p in report.projects}[world["project"]] == 0
+    assert report.entries == ()

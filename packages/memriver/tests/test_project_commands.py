@@ -137,6 +137,18 @@ def test_init_aborts_on_no_and_refuses_non_tty_without_yes(env):
     assert code == 0
 
 
+def test_init_prompt_eof_aborts_without_a_traceback(env):
+    def _eof(_):
+        raise EOFError
+
+    out = io.StringIO()
+    code = run_init(None, name=None, root=env["store"], yes=False, stdin_is_tty=True,
+                    input_fn=_eof, stdout=out, cwd=env["work"], home=env["home"])
+    assert code == 1
+    assert out.getvalue().endswith("aborted; nothing was written\n")
+    assert _nothing_created(env)
+
+
 @pytest.mark.parametrize("target", ["/", "{home}", "{home_parent}"])
 def test_init_refuses_root_home_and_home_ancestors(env, target):
     env["home"].mkdir(parents=True, exist_ok=True)

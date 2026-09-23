@@ -4,6 +4,7 @@ Nothing here knows how a store keeps anything. To add a backend, write a
 `BackendHarness` and put a single entry in `BACKENDS`: no test changes.
 """
 
+import shutil
 import sqlite3
 import threading
 from collections.abc import Callable
@@ -208,6 +209,14 @@ def test_record_into_a_missing_project_is_refused_even_with_a_matching_read_writ
     read_write_set = ReadWriteSet(project_id=missing, global_project_id=world["global"])
     with pytest.raises(ProjectUnavailable):
         world["memory_store"].record(_m(missing), read_write_set)
+
+
+def test_record_into_a_removed_store_is_refused_and_never_recreates_it(root, world):
+    # a still-running server after `uninstall --purge-data`
+    shutil.rmtree(root)
+    with pytest.raises(ProjectUnavailable):
+        world["memory_store"].record(_m(world["mine"]), world["read_write_set"])
+    assert not root.exists()
 
 
 def test_record_never_replaces_an_existing_id_even_a_deleted_one(world):

@@ -270,6 +270,11 @@ class MemoryService:
         return self._memory_store.read_any(memory_id, include_deleted=include_deleted)
 
     def list_memories(self, project_id: str | None = None) -> list[tuple[Project, list[Memory]]]:
+        """Every project (or one) with its active memories, for the human views.
+
+        Each project is read in its own transaction, so a multi-project listing
+        or export is not a single cross-project snapshot.
+        """
         projects = self._project_store.list_projects() if project_id is None \
             else [self._project_store.read(project_id)]
         return [(project, self._project_store.search(project.id, None, query=None, limit=None))
@@ -277,6 +282,11 @@ class MemoryService:
 
     def search_all(self, query: str, project_id: str | None = None,
                    limit: int | None = None) -> list[Memory]:
+        """Matches across every project (or one), newest first.
+
+        Each project is read in its own transaction, so a multi-project search
+        is not a single cross-project snapshot.
+        """
         projects = self._project_store.list_projects() if project_id is None \
             else [self._project_store.read(project_id)]
         hits = [m for project in projects

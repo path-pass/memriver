@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import stat
+from dataclasses import replace
 from pathlib import Path
 
 from memriver_core.models import (
@@ -129,7 +130,7 @@ class SqliteStoreInspector:
             # entries all come from the same snapshot
             conn.execute("BEGIN")
             try:
-                return self._inspect(conn, findings)
+                snapshot = self._inspect(conn, findings)
             finally:
                 if conn.in_transaction:
                     conn.execute("ROLLBACK")
@@ -137,8 +138,18 @@ class SqliteStoreInspector:
             raise StorageFailure from err
         finally:
             conn.close()
+        if isinstance(snapshot, StoreReport):
+            return snapshot
+        # the directory checks stat the filesystem, so they run only after the
+        # ROLLBACK: a hung network mount must not hold the read lock and block writers
+        initialized, entries, rows = snapshot
+        projects = _classify_roots(rows, findings)
+        return StoreReport(initialized=initialized, entries=tuple(entries),
+                           projects=tuple(projects), findings=_sorted_findings(findings))
 
-    def _inspect(self, conn: sqlite3.Connection, findings: list[StoreFinding]) -> StoreReport:
+    def _inspect(self, conn: sqlite3.Connection, findings: list[StoreFinding]
+                 ) -> StoreReport | tuple[bool, list[InspectedMemory], list[InspectedProject]]:
+        """A finished report for an empty or unknown store, else the snapshot's rows."""
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         tables = conn.execute("SELECT count(*) FROM sqlite_master").fetchone()[0]
         if version == 0 and tables == 0:
@@ -159,7 +170,7 @@ class SqliteStoreInspector:
             shaped = _shaped_id(memory_id)
             findings.append(_finding("orphan", f"memories/{shaped}" if shaped else "memories",
                                      memory_id=shaped))
-        projects, initialized = self._projects(conn, findings)
+        rows, initialized = self._projects(conn, findings)
         entries: list[InspectedMemory] = []
         # every row is validated, deleted ones too; only active valid rows are entries
         for row in conn.execute(f"SELECT {MEMORY_COLUMNS} FROM memories ORDER BY id"):
@@ -177,11 +188,12 @@ class SqliteStoreInspector:
             if memory.deleted_at is None:
                 entries.append(InspectedMemory(memory=memory,
                                                location_hint=f"memories/{memory.id}"))
-        return StoreReport(initialized=initialized, entries=tuple(entries),
-                           projects=tuple(projects), findings=_sorted_findings(findings))
+        return initialized, entries, rows
 
     def _projects(self, conn: sqlite3.Connection,
                   findings: list[StoreFinding]) -> tuple[list[InspectedProject], bool]:
+        """Every valid project row with its counts; root_state is filled in later
+        by `_classify_roots`, outside the transaction ("unbound" until then)."""
         counts = {(project_id, deleted): n for project_id, deleted, n in conn.execute(
             "SELECT project_id, deleted_at IS NOT NULL, count(*) FROM memories "
             "GROUP BY project_id, deleted_at IS NOT NULL")}
@@ -198,43 +210,51 @@ class SqliteStoreInspector:
                                          project_id=shaped))
                 continue
             initialized = initialized or is_global
-            if project.root is None:
-                state = "unbound"
-            else:
-                state = directories.root_state(project.root)
-                if state == "not-canonical":
-                    findings.append(_finding("non-canonical-root", f"projects/{project.id}",
-                                             project_id=project.id))
-                elif state == "unverifiable":
-                    findings.append(_finding("unverifiable-root", f"projects/{project.id}",
-                                             project_id=project.id))
             projects.append(InspectedProject(
                 id=project.id, name=project.name, root=project.root, is_global=is_global,
-                root_state=state, active_memories=counts.get((project.id, 0), 0),
+                root_state="unbound", active_memories=counts.get((project.id, 0), 0),
                 deleted_memories=counts.get((project.id, 1), 0)))
-        # the resolver pools exact and alias matches; a physical alias between two
-        # projects' roots degrades it, so doctor must name it. A root already
-        # unverifiable on its own has already been reported once above; pairing
-        # it further would blame a healthy neighbour and could double-report it,
-        # so such a project sits out every pair, and a pair that only turns
-        # unverifiable on the comparison itself is filed once per project, ever.
-        bound = [p for p in projects if p.root is not None]
-        already_unverifiable: set[str] = set()
-        for index, first in enumerate(bound):
-            if first.root_state == "unverifiable":
-                continue
-            for second in bound[index + 1:]:
-                if second.root_state == "unverifiable":
-                    continue
-                same = directories.same_directory(first.root, second.root)
-                if same is None:
-                    for project in (first, second):
-                        if project.id not in already_unverifiable:
-                            findings.append(_finding("unverifiable-root",
-                                                     f"projects/{project.id}",
-                                                     project_id=project.id))
-                            already_unverifiable.add(project.id)
-                elif same:
-                    findings.append(_finding("root-conflict", f"projects/{second.id}",
-                                             project_id=second.id))
         return projects, initialized
+
+
+def _classify_roots(rows: list[InspectedProject],
+                    findings: list[StoreFinding]) -> list[InspectedProject]:
+    """Each bound root's state and every pairwise alias, from the filesystem."""
+    projects: list[InspectedProject] = []
+    for project in rows:
+        if project.root is not None:
+            state = directories.root_state(project.root)
+            if state == "not-canonical":
+                findings.append(_finding("non-canonical-root", f"projects/{project.id}",
+                                         project_id=project.id))
+            elif state == "unverifiable":
+                findings.append(_finding("unverifiable-root", f"projects/{project.id}",
+                                         project_id=project.id))
+            project = replace(project, root_state=state)
+        projects.append(project)
+    # the resolver pools exact and alias matches; a physical alias between two
+    # projects' roots degrades it, so doctor must name it. A root already
+    # unverifiable on its own has already been reported once above; pairing
+    # it further would blame a healthy neighbour and could double-report it,
+    # so such a project sits out every pair, and a pair that only turns
+    # unverifiable on the comparison itself is filed once per project, ever.
+    bound = [p for p in projects if p.root is not None]
+    already_unverifiable: set[str] = set()
+    for index, first in enumerate(bound):
+        if first.root_state == "unverifiable":
+            continue
+        for second in bound[index + 1:]:
+            if second.root_state == "unverifiable":
+                continue
+            same = directories.same_directory(first.root, second.root)
+            if same is None:
+                for project in (first, second):
+                    if project.id not in already_unverifiable:
+                        findings.append(_finding("unverifiable-root",
+                                                 f"projects/{project.id}",
+                                                 project_id=project.id))
+                        already_unverifiable.add(project.id)
+            elif same:
+                findings.append(_finding("root-conflict", f"projects/{second.id}",
+                                         project_id=second.id))
+    return projects

@@ -101,7 +101,11 @@ def _confirm(plan: str, *, yes: bool, stdin_is_tty: bool,
     if not stdin_is_tty:
         stdout.write("refused: stdin is not a terminal; pass --yes to confirm non-interactively\n")
         return 2
-    if input_fn("Proceed? [y/N] ").strip().lower() not in ("y", "yes"):
+    try:
+        answer = input_fn("Proceed? [y/N] ")
+    except EOFError:        # Ctrl-D at the prompt declines
+        answer = ""
+    if answer.strip().lower() not in ("y", "yes"):
         stdout.write("aborted; nothing was written\n")
         return 1
     return None

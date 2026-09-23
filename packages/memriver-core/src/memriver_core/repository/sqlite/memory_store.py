@@ -71,6 +71,9 @@ class SqliteMemoryStore:
             raise ProjectUnavailable(_NO_WRITABLE_PROJECT)
         if not _addressable(memory.id):
             raise ValueError("invalid memory id")
+        # like update/delete: a removed store is never recreated by a write
+        if not self._database.exists():
+            raise ProjectUnavailable(_NO_WRITABLE_PROJECT)
         with self._database.write() as conn:
             if conn.execute("SELECT 1 FROM projects WHERE id = ?",
                             (memory.project_id,)).fetchone() is None:
