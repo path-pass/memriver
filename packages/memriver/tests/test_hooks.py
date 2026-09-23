@@ -666,7 +666,7 @@ def test_stop_is_silent_under_a_degraded_registry_and_never_fails(tmp_path):
 
 
 def test_stop_never_imports_the_service_stack(tmp_path, registered):
-    # importing memriver_core now loads only memriver_core.models (the error
+    # importing memriver_core loads only memriver_core.models (the error
     # taxonomy lives at memriver_core.models.errors); application, bootstrap,
     # the repository and the secret scanner must all stay out
     script = (

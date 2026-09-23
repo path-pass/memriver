@@ -18,7 +18,7 @@ from .project_context import resolve
 from .protocol_text import INSTRUCTIONS
 from .session import open_session
 
-# read, update, delete and write map the same application errors to different
+# read, update, delete and write map the same core errors to different
 # client-visible strings, so the exception type alone cannot decide the
 # response -- every call site passes the operation it is translating for.
 # "list" covers memory_index/memory_search: neither names a single entry, so

@@ -111,17 +111,14 @@ FORBIDDEN = [
     ("memriver_core.application", "pathlib"),
     # a protocol never knows its implementation
     ("memriver_core.repository.protocol", "memriver_core.repository.filesystem"),
-    ("memriver_core.repository.protocol", "memriver_core.application"),
     ("memriver_core.repository.protocol", "memriver_core.config"),
     ("memriver_core.content_policy.protocol",
      "memriver_core.content_policy.secret_scanner"),
-    ("memriver_core.content_policy.protocol", "memriver_core.application"),
     ("memriver_core.content_policy.protocol", "memriver_core.config"),
-    # implementations may use the error taxonomy (now in models), never the
-    # application layer at all, nor config
-    ("memriver_core.repository.filesystem", "memriver_core.application"),
+    # implementations use the error taxonomy in models; never application or config
+    ("memriver_core.repository", "memriver_core.application"),
     ("memriver_core.repository.filesystem", "memriver_core.config"),
-    ("memriver_core.content_policy.secret_scanner", "memriver_core.application"),
+    ("memriver_core.content_policy", "memriver_core.application"),
     ("memriver_core.content_policy.secret_scanner", "memriver_core.config"),
 ]
 
