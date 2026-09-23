@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .memory import new_id, single_line
+from .helpers import new_id, single_line
 
 # the same budget the project header gives any other single field
 PROJECT_NAME_MAX_CHARS = 120

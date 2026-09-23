@@ -1,16 +1,6 @@
 from .access import AccessContext
-from .memory import (
-    ID_ALPHABET,
-    ID_LENGTH,
-    ID_RE,
-    Memory,
-    MemoryType,
-    Trust,
-    new_id,
-    now,
-    now_strictly_after,
-    single_line,
-)
+from .helpers import ID_ALPHABET, ID_LENGTH, ID_RE, new_id, single_line
+from .memory import Memory, MemoryType, Trust, now, now_strictly_after
 from .project import PROJECT_NAME_MAX_CHARS, Project, project_name
 from .store_diagnostics import (
     DiagnosticFinding,

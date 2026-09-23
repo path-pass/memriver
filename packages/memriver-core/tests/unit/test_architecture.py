@@ -91,6 +91,11 @@ def _modules_under(package: str) -> list[str]:
 # --- the forbidden-edge table (one row per spec rule) ------------------------
 
 FORBIDDEN = [
+    # Memory and Project share models.helpers and never import each other
+    ("memriver_core.models.project", "memriver_core.models.memory"),
+    ("memriver_core.models.memory", "memriver_core.models.project"),
+    ("memriver_core.models.helpers", "memriver_core.models.memory"),
+    ("memriver_core.models.helpers", "memriver_core.models.project"),
     # models import the standard library only
     ("memriver_core.models", "memriver_core.application"),
     ("memriver_core.models", "memriver_core.repository"),
