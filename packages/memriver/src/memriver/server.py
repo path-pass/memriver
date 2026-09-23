@@ -12,7 +12,7 @@ from memriver_core import (
 )
 from memriver_core.bootstrap import build_service
 from memriver_core.config import Settings
-from memriver_core.models import Memory
+from memriver_core.models import ID_RE, Memory
 
 from .project_context import resolve
 from .protocol_text import INSTRUCTIONS
@@ -69,20 +69,25 @@ def _map_error(operation: Operation, err: Exception, *, memory_id: str | None = 
     if operation == "write":
         if isinstance(err, ProjectUnavailable):
             return {"error": _NO_PROJECT.get(session_state or "none", _NO_PROJECT["none"])}
-        if isinstance(err, ContentRejected | ValueError):
+        # a codec failure (a lone surrogate) is a ValueError whose message is
+        # the codec's, not policy copy
+        if isinstance(err, ContentRejected | ValueError) and not isinstance(err, UnicodeError):
             # policy copy is authored in the core and never echoes the value;
             # ValueError reaches here from the model constructors
             return {"error": str(err)}
         return {"error": "could not write entry"}
-    if isinstance(err, MemoryNotFound):
-        return {"error": f"no such entry: {memory_id}"}
     if isinstance(err, ContentRejected):
         return {"error": str(err)}
+    # the id is the caller's string: echo it only when it is a well-formed id,
+    # so newlines, injected text or unencodable characters never come back
+    suffix = f": {memory_id}" if memory_id is not None and ID_RE.fullmatch(memory_id) else ""
+    if isinstance(err, MemoryNotFound):
+        return {"error": f"no such entry{suffix}"}
     if operation == "read":
-        return {"error": f"could not read entry: {memory_id}"}
+        return {"error": f"could not read entry{suffix}"}
     if operation == "update":
-        return {"error": f"could not update entry: {memory_id}"}
-    return {"error": f"could not delete entry: {memory_id}"}
+        return {"error": f"could not update entry{suffix}"}
+    return {"error": f"could not delete entry{suffix}"}
 
 
 def _full(memory: Memory) -> dict:

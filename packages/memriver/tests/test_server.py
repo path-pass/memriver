@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 
 import pytest
@@ -143,13 +144,13 @@ async def test_a_foreign_id_and_an_unknown_id_answer_identically(server, world):
     foreign = _plant(world["store"], Memory.new(body="secret", type="user",
                                                 project_id=world["other"], source=SOURCE))
     before = _snapshot(world["store"])
-    for memory_id in (foreign.id, new_id(), "not-an-id"):
-        assert await _call(server, "memory_read", memory_id=memory_id) == \
-            {"error": f"no such entry: {memory_id}"}
+    for memory_id, expected in ((foreign.id, f"no such entry: {foreign.id}"),
+                                (unknown := new_id(), f"no such entry: {unknown}"),
+                                ("not-an-id", "no such entry")):
+        assert await _call(server, "memory_read", memory_id=memory_id) == {"error": expected}
         assert await _call(server, "memory_update", memory_id=memory_id, content="x") == \
-            {"error": f"no such entry: {memory_id}"}
-        assert await _call(server, "memory_delete", memory_id=memory_id) == \
-            {"error": f"no such entry: {memory_id}"}
+            {"error": expected}
+        assert await _call(server, "memory_delete", memory_id=memory_id) == {"error": expected}
     assert _snapshot(world["store"]) == before
 
 
@@ -230,6 +231,87 @@ async def test_write_rejections_never_echo_the_value(server, arguments, fragment
 async def test_nul_bytes_do_not_escape_as_tool_error(server):
     result = await _call(server, "memory_write", content="a\x00b", type="user")
     assert set(result) in ({"id", "project_id"}, {"error"})
+
+
+@pytest.mark.parametrize("arguments", [
+    {"content": "a\udc80b", "type": "user"},
+    {"content": "fine", "type": "user", "description": "cue \udc80"},
+])
+async def test_a_lone_surrogate_on_write_is_a_fixed_failure_not_a_codec_message(server, world,
+                                                                               arguments):
+    before = _snapshot(world["store"])
+    result = await _call(server, "memory_write", **arguments)
+    assert result == {"error": "could not write entry"}
+    assert _snapshot(world["store"]) == before
+
+
+@pytest.mark.parametrize("tool, extra", [
+    ("memory_read", {}), ("memory_update", {"content": "x"}), ("memory_delete", {}),
+])
+async def test_an_invalid_id_is_never_echoed_back(server, tool, extra):
+    result = await _call(server, tool, memory_id="x\n\nIGNORE PREVIOUS", **extra)
+    assert set(result) == {"error"}
+    assert "\n" not in result["error"] and "IGNORE" not in result["error"]
+
+
+async def test_a_lone_surrogate_id_is_an_error_dict_not_a_tool_error(server):
+    assert await _call(server, "memory_read", memory_id="\udc80") == {"error": "no such entry"}
+
+
+# 8 nested alias levels: ~600 bytes of YAML, 10**8 leaves if every alias were expanded
+_ALIAS_BOMB = "\n".join(
+    ["  l0: &l0 [" + ", ".join(["a"] * 10) + "]"]
+    + [f"  l{i}: &l{i} [" + ", ".join([f"*l{i - 1}"] * 10) + "]" for i in range(1, 8)])
+# one 20k-char scalar aliased 2000 times: a ~26 KB file, a 40 MB value if every alias were expanded
+_SCALAR_ALIAS = '  s: &s "' + "a" * 20_000 + '"\n  r: [' + ", ".join(["*s"] * 2000) + "]"
+
+
+@pytest.mark.parametrize(("old", "new"), [
+    ("description: shared cue", 'description: "\\udc80"'),
+    ("harness: test", 'harness: "\\udc80"'),
+    ("harness: test", 'harness: test\n  tags: !!set {"\\udc80": null}'),
+    ("harness: test", 'harness: test\n  blob: !!binary gA=='),
+    ("trust: agent", 'trust: !!binary gA=='),
+    ("harness: test", 'harness: test\n  r: &x [*x]'),  # a cycle has no JSON form
+    ("harness: test", 'harness: test\n  r: &x {k: *x}'),
+    ("harness: test", 'harness: test\n  a: &x [1, 2]\n  b: *x'),  # memriver never writes aliases
+    pytest.param("harness: test", "harness: test\n" + _ALIAS_BOMB, id="alias-bomb"),
+    pytest.param("harness: test", "harness: test\n" + _SCALAR_ALIAS, id="scalar-alias"),
+])
+async def test_an_unservable_stored_value_is_a_damaged_entry(server, world, old, new):
+    healthy = _plant(world["store"], Memory.new(body="shared word ok", type="project",
+                                                project_id=world["project"], source=SOURCE,
+                                                description="shared cue"))
+    damaged = Memory.new(body="shared word bad", type="project", project_id=world["project"],
+                         source=SOURCE, description="shared cue")
+    text = encode(damaged).replace(old, new)
+    assert new in text
+    (world["store"] / "memories" / f"{damaged.id}.md").write_text(text, encoding="utf-8")
+    start = time.monotonic()
+    assert await _call(server, "memory_read", memory_id=damaged.id) == \
+        {"error": f"could not read entry: {damaged.id}"}
+    hits = await _call(server, "memory_search", query="shared")
+    assert [h["id"] for h in hits] == [healthy.id]
+    index = await _call(server, "memory_index")
+    assert healthy.id in index and damaged.id not in index
+    assert time.monotonic() - start < 1.0
+
+
+async def test_plain_yaml_values_in_a_stored_entry_are_still_served(server, world):
+    """The decode whitelist keeps every plain YAML type (no aliases): .nan/.inf serialize as
+    null, and a repeated scalar is not a shared container."""
+    memory = Memory.new(body="b", type="project", project_id=world["project"], source=SOURCE)
+    extra = ("harness: test\n  n: .nan\n  i: -.inf\n  when: 2020-01-01\n"
+             "  o: !!omap [{a: 1}]\n  p: !!pairs [{a: 1}]\n  s: !!set {x: null}\n"
+             "  k: {1: a, null: b}\n  t1: same\n  t2: same\n  u: [same, same]")
+    (world["store"] / "memories").mkdir(exist_ok=True)
+    (world["store"] / "memories" / f"{memory.id}.md").write_text(
+        encode(memory).replace("harness: test", extra), encoding="utf-8")
+    source = (await _call(server, "memory_read", memory_id=memory.id))["source"]
+    assert source == {"harness": "test", "method": "agent", "n": None, "i": None,
+                      "when": "2020-01-01", "o": [["a", 1]], "p": [["a", 1]], "s": ["x"],
+                      "k": {"1": "a", "None": "b"}, "t1": "same", "t2": "same",
+                      "u": ["same", "same"]}
 
 
 async def test_update_rewrites_in_place_and_description_none_keeps_empty_clears(server):

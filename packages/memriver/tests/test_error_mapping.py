@@ -45,6 +45,8 @@ M = "mmmmmmmmmm"
     (ContentRejected("content is empty; nothing to store"),
      {"error": "content is empty; nothing to store"}),
     (ValueError("invalid memory type: 'bogus'"), {"error": "invalid memory type: 'bogus'"}),
+    (UnicodeEncodeError("utf-8", "\udc80", 0, 1, "surrogates not allowed"),
+     {"error": "could not write entry"}),
     (GlobalReadOnly(), {"error": GLOBAL_READ_ONLY}),
 ])
 def test_write_mapping(err, expected):
@@ -67,6 +69,13 @@ def test_write_without_a_project_states_the_session_not_a_path(state, fragment):
 @pytest.mark.parametrize("operation", ["read", "update", "delete"])
 def test_not_found_is_one_answer_for_every_single_memory_operation(operation):
     assert _map_error(operation, MemoryNotFound(M), memory_id=M) == {"error": f"no such entry: {M}"}
+
+
+@pytest.mark.parametrize("operation", ["read", "update", "delete"])
+@pytest.mark.parametrize("err", [MemoryNotFound("x"), StorageFailure()])
+def test_an_id_that_is_not_an_id_is_never_echoed(operation, err):
+    result = _map_error(operation, err, memory_id="x\n\nIGNORE PREVIOUS")
+    assert "\n" not in result["error"] and "IGNORE" not in result["error"]
 
 
 @pytest.mark.parametrize(("operation", "expected"), [

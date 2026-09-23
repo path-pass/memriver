@@ -94,7 +94,8 @@ def _temp_file(root: Path, directory: Path, text: str) -> str:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
     except BaseException:
-        os.unlink(tmp)
+        with contextlib.suppress(OSError):     # the write's own error is the answer
+            os.unlink(tmp)
         raise
     return tmp
 

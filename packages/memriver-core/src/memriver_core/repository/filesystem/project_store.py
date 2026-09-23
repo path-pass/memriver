@@ -132,7 +132,7 @@ class FileProjectStore:
     # --- helpers shared with the memory store and the inspector ---
 
     def exists(self, project_id: str) -> bool:
-        """Lock-free: projects are never deleted, so a yes stays true.
+        """Lock-free: projects are not deleted through memriver, so a yes stays true.
 
         Only absence is False; a damaged project file is StorageFailure.
         """

@@ -1,5 +1,6 @@
 import os
 import stat
+import time
 
 import pytest
 from memriver_core.application.errors import StorageFailure
@@ -77,6 +78,40 @@ def test_each_bad_memory_file_is_one_relative_finding(tmp_path):
     ])
     assert [e.memory.id for e in report.entries] == [orphan.id]   # listed, and flagged
     assert all(not f.location_hint.startswith("/") for f in report.findings)
+
+
+# 8 nested alias levels: ~600 bytes of YAML, 10**8 leaves if every alias were expanded
+_ALIAS_BOMB = "\n".join(
+    ["  l0: &l0 [" + ", ".join(["a"] * 10) + "]"]
+    + [f"  l{i}: &l{i} [" + ", ".join([f"*l{i - 1}"] * 10) + "]" for i in range(1, 8)])
+# one 20k-char scalar aliased 2000 times: a ~26 KB file, a 40 MB value if every alias were expanded
+_SCALAR_ALIAS = '  s: &s "' + "a" * 20_000 + '"\n  r: [' + ", ".join(["*s"] * 2000) + "]"
+
+
+@pytest.mark.parametrize(("old", "new"), [
+    ("description: cue", 'description: "\\udc80"'),
+    ("harness: test", 'harness: "\\udc80"'),
+    ("harness: test", 'harness: test\n  tags: !!set {"\\udc80": null}'),
+    ("harness: test", 'harness: test\n  blob: !!binary gA=='),
+    ("trust: agent", 'trust: !!binary gA=='),
+    ("harness: test", 'harness: test\n  r: &x [*x]'),  # a cycle has no JSON form
+    ("harness: test", 'harness: test\n  r: &x {k: *x}'),
+    ("harness: test", 'harness: test\n  a: &x [1, 2]\n  b: *x'),  # memriver never writes aliases
+    pytest.param("harness: test", "harness: test\n" + _ALIAS_BOMB, id="alias-bomb"),
+    pytest.param("harness: test", "harness: test\n" + _SCALAR_ALIAS, id="scalar-alias"),
+])
+def test_an_unservable_stored_value_is_unparsable(tmp_path, old, new):
+    root, _, _, project_id = _initialized(tmp_path)
+    memory = Memory.new(body="b", type="user", project_id=project_id, source=SOURCE,
+                        description="cue")
+    text = encode(memory).replace(old, new)
+    assert new in text
+    _write_memory_file(root, f"{memory.id}.md", text)
+    start = time.monotonic()
+    report = FilesystemStoreInspector(root).inspect()
+    assert time.monotonic() - start < 1.0
+    assert _kinds(report) == [("unparsable", f"memories/{memory.id}.md")]
+    assert report.entries == ()
 
 
 def test_an_unreadable_memory_file_is_reported_not_raised(tmp_path):

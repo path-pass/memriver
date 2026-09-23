@@ -193,6 +193,35 @@ def test_a_write_failure_on_a_located_memory_is_a_storage_failure(world, monkeyp
         memory_store.update(memory.id, ctx, body="x", description=None)
 
 
+def _shared_source_memory(project_id):
+    shared = ["a", "b"]
+    return Memory.new(body="b", type="project", project_id=project_id,
+                      source={"first": shared, "second": shared})
+
+
+def test_a_memory_the_reader_would_refuse_is_never_recorded(world):
+    root, memory_store, _, project_id, _, ctx = world
+    with pytest.raises(ValueError):
+        memory_store.record(_shared_source_memory(project_id), ctx)
+    assert not (root / "memories").exists() or not any((root / "memories").iterdir())
+
+
+def test_an_update_the_reader_would_refuse_leaves_the_file_byte_for_byte(world, monkeypatch):
+    root, memory_store, _, project_id, _, ctx = world
+    memory = _m(project_id)
+    memory_store.record(memory, ctx)
+    path = root / "memories" / f"{memory.id}.md"
+    before = path.read_bytes()
+    # not reachable through update's parameters today (a decoded source is a
+    # tree); stands in for any future field that could share a container
+    unstorable = _shared_source_memory(project_id)
+    unstorable.id = memory.id
+    monkeypatch.setattr(memory_store, "read", lambda *_args: unstorable)
+    with pytest.raises(ValueError):
+        memory_store.update(memory.id, ctx, body="x", description=None)
+    assert path.read_bytes() == before
+
+
 @pytest.mark.parametrize("content", ["name = 'x'\n", "global_project = 3\n",
                                      "global_project = 'nope'\n", "not toml [\n"])
 def test_an_invalid_manifest_is_a_storage_failure_and_ensure_global_writes_nothing(tmp_path, content):
@@ -490,3 +519,14 @@ def test_a_failed_replace_is_not_masked_by_a_failed_cleanup(tmp_path, monkeypatc
     monkeypatch.setattr(files.os, "unlink", fail)
     with pytest.raises(ReplaceFailed):
         files.replace_file(tmp_path, tmp_path / "x.md", "text")
+
+
+def test_a_failed_temp_write_is_not_masked_by_a_failed_cleanup(tmp_path, monkeypatch):
+    from memriver_core.repository.filesystem import files
+
+    def fail(*_args, **_kwargs):
+        raise PermissionError(13, "cleanup denied")
+
+    monkeypatch.setattr(files.os, "unlink", fail)
+    with pytest.raises(UnicodeEncodeError):       # a lone surrogate cannot be written as UTF-8
+        files.write_new(tmp_path, tmp_path / "x.md", "a\udc80b")

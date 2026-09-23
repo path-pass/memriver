@@ -805,7 +805,6 @@ def run_install(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
                   command_name="install")
 
 
-
 def run_config_uninstall(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
                          home: Path, cwd: Path, env: Mapping[str, str],
                          input_fn: Callable[[str], str], stdout: TextIO,
