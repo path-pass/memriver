@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-import logging
-import os
-from collections.abc import Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from memriver_core.models import ID_RE, AccessContext, Memory, now_strictly_after
 from memriver_core.models.errors import (
@@ -18,81 +14,17 @@ from memriver_core.models.errors import (
     StorageFailure,
 )
 
-from .files import (
-    MEMORIES_DIRNAME,
-    container_exists,
-    memory_path,
-    read_regular_text,
-    replace_file,
-    write_new,
-)
+from ..protocol import ProjectStore
+from .files import memory_path, replace_file, write_new
 from .locking import store_lock
-from .markdown_codec import decode, encode
-
-if TYPE_CHECKING:
-    from .project_store import FileProjectStore
-
-logger = logging.getLogger(__name__)
+from .markdown_codec import encode
+from .memory_files import load_memory
 
 _NO_WRITABLE_PROJECT = "no writable project in this context"
 
 
-def _load(root: Path, memory_id: str) -> Memory | None:
-    """The memory stored under `memory_id`; None when nothing is stored there.
-
-    A malformed id and an absent file are "nothing". A file that is present
-    but unusable -- not a regular file, unreadable, undecodable, or naming a
-    different id -- is StorageFailure: damage is reported as damage, never
-    disguised as absence (`doctor` names the file). An unsafe `memories/`
-    container is StorageFailure too.
-    """
-    if not ID_RE.fullmatch(memory_id):
-        return None
-    try:
-        if not container_exists(root, MEMORIES_DIRNAME):
-            return None
-        text = read_regular_text(memory_path(root, memory_id))
-    except (OSError, UnicodeDecodeError) as err:
-        raise StorageFailure from err
-    if text is None:
-        return None
-    try:
-        memory = decode(text)
-    except Exception as err:
-        raise StorageFailure from err
-    if memory.id != memory_id:
-        raise StorageFailure
-    return memory
-
-
-def iter_memories(root: Path) -> Iterator[Memory]:
-    """Every usable memory in the store, in file-name order.
-
-    One damaged file does not fail a scan: it is skipped with a path-free log
-    line and `doctor` reports it. An unsafe or unlistable `memories/`
-    directory fails the whole scan with StorageFailure.
-    """
-    try:
-        if not container_exists(root, MEMORIES_DIRNAME):
-            return
-        names = sorted(entry.name for entry in os.scandir(root / MEMORIES_DIRNAME))
-    except OSError as err:
-        raise StorageFailure from err
-    for name in names:
-        memory_id = name[: -len(".md")] if name.endswith(".md") else ""
-        if not ID_RE.fullmatch(memory_id):
-            continue
-        try:
-            memory = _load(root, memory_id)
-        except StorageFailure:
-            logger.warning("skipping unusable memory file %s", memory_id)
-            continue
-        if memory is not None:
-            yield memory
-
-
 class FileMemoryStore:
-    def __init__(self, root: Path, project_store: FileProjectStore) -> None:
+    def __init__(self, root: Path, project_store: ProjectStore) -> None:
         self.root = Path(root)
         self._project_store = project_store
 
@@ -117,7 +49,7 @@ class FileMemoryStore:
                 raise StorageFailure from err
 
     def read(self, memory_id: str, ctx: AccessContext) -> Memory:
-        memory = _load(self.root, memory_id)
+        memory = load_memory(self.root, memory_id)
         if memory is None or memory.project_id not in ctx.readable():
             raise MemoryNotFound(memory_id)
         # the project is re-checked at action time, not only when the context

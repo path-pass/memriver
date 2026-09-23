@@ -125,6 +125,16 @@ FORBIDDEN = [
     ("memriver_core.repository.filesystem", "memriver_core.config"),
     ("memriver_core.content_policy", "memriver_core.application"),
     ("memriver_core.content_policy.secret_scanner", "memriver_core.config"),
+    # the two filesystem stores share memory_files and never import each other
+    ("memriver_core.repository.filesystem.memory_store",
+     "memriver_core.repository.filesystem.project_store"),
+    ("memriver_core.repository.filesystem.project_store",
+     "memriver_core.repository.filesystem.memory_store"),
+    # memory_files sits below both stores; it never imports either back
+    ("memriver_core.repository.filesystem.memory_files",
+     "memriver_core.repository.filesystem.memory_store"),
+    ("memriver_core.repository.filesystem.memory_files",
+     "memriver_core.repository.filesystem.project_store"),
 ]
 
 
@@ -167,6 +177,10 @@ ALLOWED_NON_STDLIB = {
     # content_policy.protocol: stdlib only today (spec section 3) — keep it
     # that tight rather than pre-granting models it doesn't use yet.
     "memriver_core.content_policy.protocol": set(),
+    # repository.filesystem.files: stdlib only -- the store-layout/file
+    # primitives both filesystem stores share must never grow a memriver_core
+    # dependency of their own.
+    "memriver_core.repository.filesystem.files": set(),
 }
 
 

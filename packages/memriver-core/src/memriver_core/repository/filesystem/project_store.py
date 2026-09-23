@@ -22,7 +22,7 @@ from .files import (
     write_new,
 )
 from .locking import store_lock
-from .memory_store import iter_memories
+from .memory_files import iter_memories
 
 GLOBAL_PROJECT_NAME = "global"
 
