@@ -24,11 +24,7 @@ from memriver_core import (
 )
 from memriver_core.application.service import MemoryService
 from memriver_core.bootstrap import build_service
-from memriver_core.config import (
-    DEFAULT_MAX_BODY_CHARS,
-    ID_GENERATION_ATTEMPTS,
-    Settings,
-)
+from memriver_core.config import DEFAULT_MAX_BODY_CHARS, Settings
 from memriver_core.content_policy.secret_scanner import SecretScanner
 from memriver_core.models import Project
 
@@ -177,8 +173,7 @@ def other_backend_server(tmp_path, monkeypatch):
                                  metadata_max_chars=DEFAULT_MAX_BODY_CHARS,
                                  search_limit_default=settings.search_limit_default,
                                  search_limit_max=settings.search_limit_max,
-                                 index_budget_lines=settings.index_budget_lines,
-                                 id_generation_attempts=ID_GENERATION_ATTEMPTS)
+                                 index_budget_lines=settings.index_budget_lines)
 
         monkeypatch.setattr(server_module, "build_service", build_service_over_other)
         return build_server(root=store, project_dir=directory)

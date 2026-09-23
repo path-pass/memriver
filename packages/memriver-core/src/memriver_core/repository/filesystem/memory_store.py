@@ -43,7 +43,8 @@ class FileMemoryStore:
             try:
                 write_new(self.root, memory_path(self.root, memory.id), encode(memory))
             except FileExistsError:
-                # the id is taken: nothing was written; the facade draws again
+                # the id is taken: nothing was written; the facade reports it
+                # as StorageFailure
                 raise IdCollision(memory.id) from None
             except OSError as err:
                 raise StorageFailure from err

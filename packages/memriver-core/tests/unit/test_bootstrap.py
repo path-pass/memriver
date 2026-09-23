@@ -5,11 +5,7 @@ from __future__ import annotations
 from memriver_core import bootstrap
 from memriver_core.application.diagnostics import DiagnosticsService
 from memriver_core.application.service import MemoryService
-from memriver_core.config import (
-    DEFAULT_MAX_BODY_CHARS,
-    ID_GENERATION_ATTEMPTS,
-    Settings,
-)
+from memriver_core.config import DEFAULT_MAX_BODY_CHARS, Settings
 from memriver_core.repository.filesystem import (
     FileMemoryStore,
     FileProjectStore,
@@ -36,16 +32,14 @@ def test_the_memory_store_checks_projects_through_the_same_project_store(tmp_pat
     assert service._memory_store._project_store is service._project_store
 
 
-def test_injects_the_configured_limits_and_the_fixed_internal_ones(tmp_path):
+def test_injects_the_configured_limits(tmp_path):
     settings = Settings(root=tmp_path, max_body_chars=10, search_limit_default=3,
                         search_limit_max=7, index_budget_lines=9)
     service = bootstrap.build_service(settings)
     assert (service._max_body_chars, service._metadata_max_chars,
             service._search_limit_default, service._search_limit_max,
-            service._index_budget_lines, service._id_generation_attempts) == \
-        (10, DEFAULT_MAX_BODY_CHARS, 3, 7, 9, ID_GENERATION_ATTEMPTS)
-    assert ID_GENERATION_ATTEMPTS == 5
-    assert "id_generation_attempts" not in Settings.model_fields
+            service._index_budget_lines) == \
+        (10, DEFAULT_MAX_BODY_CHARS, 3, 7, 9)
 
 
 def test_returns_the_facade(tmp_path):

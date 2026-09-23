@@ -45,6 +45,7 @@ class FakeProjectStore:
         self.search_calls: list[tuple] = []
         self.failures: list[Exception] = []     # raised, in order, by create/ensure_global
         self.attempted_ids: list[str] = []
+        self.ensure_global_calls = 0
 
     def _next_failure(self):
         if self.failures:
@@ -64,6 +65,7 @@ class FakeProjectStore:
         return self.global_id
 
     def ensure_global(self):
+        self.ensure_global_calls += 1
         self._next_failure()
         if self.global_id is None:
             self.global_id = "nnnnnnnnnn"
@@ -105,17 +107,13 @@ class FakeMemoryStore:
         self.calls.append(("delete", memory_id, ctx))
 
 
-ATTEMPTS = 5
-
-
 def _service(project_store=None, *, budget=100, limit_default=5, limit_max=50):
     project_store = project_store or FakeProjectStore([Project(id=P, name="demo")])
     memory_store = FakeMemoryStore(project_store)
     policy = FakeContentPolicy()
     service = MemoryService(memory_store, project_store, policy, max_body_chars=100,
                             metadata_max_chars=200, search_limit_default=limit_default,
-                            search_limit_max=limit_max, index_budget_lines=budget,
-                            id_generation_attempts=ATTEMPTS)
+                            search_limit_max=limit_max, index_budget_lines=budget)
     return service, memory_store, project_store, policy
 
 
@@ -237,31 +235,23 @@ def test_ensure_global_delegates():
     assert service.global_project_id() == "nnnnnnnnnn"
 
 
-# --- fresh ids on collision --------------------------------------------------
+# --- a collision surfaces as StorageFailure, on the first store call ---------
 
 def _record(service):
     return service.record(content="fact", type="user", sync=True, harness="h",
                           description="", ctx=CTX)
 
 
-def test_record_draws_a_fresh_id_after_a_collision():
+def test_record_surfaces_a_collision_as_storage_failure_after_one_call():
     service, memory_store, *_ = _service()
-    memory_store.failures = [IdCollision("x"), IdCollision("y")]
-    memory = _record(service)
-    assert len(memory_store.attempted_ids) == 3
-    assert len(set(memory_store.attempted_ids)) == 3
-    assert memory.id == memory_store.attempted_ids[-1]
-
-
-def test_record_gives_up_after_the_configured_attempts():
-    service, memory_store, *_ = _service()
-    memory_store.failures = [IdCollision(str(i)) for i in range(ATTEMPTS)]
-    with pytest.raises(StorageFailure):
+    memory_store.failures = [IdCollision("x")]
+    with pytest.raises(StorageFailure) as exc_info:
         _record(service)
-    assert len(memory_store.attempted_ids) == ATTEMPTS
+    assert len(memory_store.attempted_ids) == 1
+    assert isinstance(exc_info.value.__cause__, IdCollision)
 
 
-def test_only_a_collision_is_retried():
+def test_a_non_collision_failure_is_final_on_the_first_call_too():
     service, memory_store, *_ = _service()
     memory_store.failures = [StorageFailure()]
     with pytest.raises(StorageFailure):
@@ -269,16 +259,19 @@ def test_only_a_collision_is_retried():
     assert len(memory_store.attempted_ids) == 1
 
 
-def test_create_project_and_ensure_global_retry_collisions_the_same_way():
+def test_create_project_and_ensure_global_surface_a_collision_the_same_way():
     service, _, project_store, _ = _service(FakeProjectStore([], global_id=None))
     project_store.failures = [IdCollision("x")]
-    project = service.create_project("work")
-    assert len(project_store.attempted_ids) == 2 and project.id == project_store.attempted_ids[-1]
-    project_store.failures = [IdCollision("y"), IdCollision("z")]
-    assert service.ensure_global() == "nnnnnnnnnn"
-    project_store.failures = [IdCollision(str(i)) for i in range(ATTEMPTS)]
-    with pytest.raises(StorageFailure):
-        service.create_project("again")
+    with pytest.raises(StorageFailure) as exc_info:
+        service.create_project("work")
+    assert len(project_store.attempted_ids) == 1
+    assert isinstance(exc_info.value.__cause__, IdCollision)
+
+    project_store.failures = [IdCollision("y")]
+    with pytest.raises(StorageFailure) as exc_info:
+        service.ensure_global()
+    assert project_store.ensure_global_calls == 1
+    assert isinstance(exc_info.value.__cause__, IdCollision)
 
 
 # --- search -------------------------------------------------------------------

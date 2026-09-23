@@ -46,8 +46,8 @@ class IdCollision(MemoryError):
     """A freshly generated id is already taken; nothing was written.
 
     Raised by a store's atomic create and caught by the application facade,
-    which draws a new id and tries again: it never reaches a transport, so it
-    is not part of the public facade.
+    which converts it to StorageFailure on this, its first occurrence: it
+    never reaches a transport, so it is not part of the public facade.
     """
 
     def __init__(self, identifier: str) -> None:

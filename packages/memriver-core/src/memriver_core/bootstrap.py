@@ -9,7 +9,7 @@ from .application.diagnostics import DiagnosticsService
 # EMPTY_INDEX is re-exported (not composed) here: bootstrap is the one
 # memriver_core surface, alongside config/models, that a transport may import.
 from .application.service import EMPTY_INDEX, MemoryService
-from .config import DEFAULT_MAX_BODY_CHARS, ID_GENERATION_ATTEMPTS, Settings
+from .config import DEFAULT_MAX_BODY_CHARS, Settings
 from .content_policy.secret_scanner import SecretScanner
 from .repository.filesystem import (
     FileMemoryStore,
@@ -41,7 +41,6 @@ def build_service(settings: Settings, *, root: Path | None = None) -> MemoryServ
         search_limit_default=settings.search_limit_default,
         search_limit_max=settings.search_limit_max,
         index_budget_lines=settings.index_budget_lines,
-        id_generation_attempts=ID_GENERATION_ATTEMPTS,
     )
 
 

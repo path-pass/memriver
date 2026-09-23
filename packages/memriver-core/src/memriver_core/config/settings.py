@@ -22,12 +22,6 @@ DEFAULT_SEARCH_LIMIT_MAX = 50
 DEFAULT_SEARCH_LIMIT = 5
 DEFAULT_BUDGET_LINES = 100
 
-# Fixed internal limits: named here so there is one place to find them, but
-# not Settings fields -- no user should need to tune them.
-# How many fresh ids the application draws when a store reports that a
-# generated id is taken (50-bit ids make a second draw already rare).
-ID_GENERATION_ATTEMPTS = 5
-
 
 def storage_root(env: Mapping[str, str] | None = None,
                  home: Path | None = None) -> Path:

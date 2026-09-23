@@ -52,8 +52,7 @@ class MemoryService:
     def __init__(self, memory_store: MemoryStore, project_store: ProjectStore,
                  content_policy: ContentPolicy, *, max_body_chars: int,
                  metadata_max_chars: int, search_limit_default: int,
-                 search_limit_max: int, index_budget_lines: int,
-                 id_generation_attempts: int) -> None:
+                 search_limit_max: int, index_budget_lines: int) -> None:
         self._memory_store = memory_store
         self._project_store = project_store
         self._content_policy = content_policy
@@ -64,20 +63,6 @@ class MemoryService:
         self._search_limit_default = search_limit_default
         self._search_limit_max = search_limit_max
         self._index_budget_lines = index_budget_lines
-        # how many fresh ids to draw when a store reports IdCollision; a
-        # fixed internal limit handed in by bootstrap, not a setting
-        self._id_generation_attempts = id_generation_attempts
-
-    def _with_fresh_ids(self, attempt):
-        """Run `attempt()` until it stops colliding; StorageFailure once the
-        attempts are spent. Only IdCollision is retried -- any other failure,
-        StorageFailure included, is final on the first try."""
-        for _ in range(self._id_generation_attempts):
-            try:
-                return attempt()
-            except IdCollision:
-                continue
-        raise StorageFailure
 
     # --- sessions and projects ---
 
@@ -98,17 +83,20 @@ class MemoryService:
         return self._project_store.global_project_id()
 
     def ensure_global(self) -> str:
-        # each attempt takes the store lock afresh and re-reads the manifest,
-        # so a global created by a peer in between is returned, not duplicated
-        return self._with_fresh_ids(self._project_store.ensure_global)
+        # the store takes its lock and re-reads the manifest itself, so a
+        # global created by a peer in between is returned, not duplicated
+        try:
+            return self._project_store.ensure_global()
+        except IdCollision as err:
+            raise StorageFailure from err
 
     def create_project(self, name: str) -> Project:
-        def attempt() -> Project:
-            project = Project.new(name)          # a fresh id every attempt
+        project = Project.new(name)
+        try:
             self._project_store.create(project)
-            return project
-
-        return self._with_fresh_ids(attempt)
+        except IdCollision as err:
+            raise StorageFailure from err
+        return project
 
     def read_project(self, project_id: str) -> Project:
         return self._project_store.read(project_id)
@@ -130,14 +118,14 @@ class MemoryService:
         # non-empty since it is optional and the policy refuses ""
         if description.strip():
             self._content_policy.check(description, self._metadata_max_chars)
-        def attempt() -> Memory:
-            memory = Memory.new(body=content, type=type, project_id=ctx.project_id, sync=sync,
-                                description=description,
-                                source={"harness": harness, "method": "agent"})
+        memory = Memory.new(body=content, type=type, project_id=ctx.project_id, sync=sync,
+                           description=description,
+                           source={"harness": harness, "method": "agent"})
+        try:
             self._memory_store.record(memory, ctx)
-            return memory
-
-        return self._with_fresh_ids(attempt)
+        except IdCollision as err:
+            raise StorageFailure from err
+        return memory
 
     def read(self, memory_id: str, ctx: AccessContext) -> Memory:
         return self._memory_store.read(memory_id, ctx)

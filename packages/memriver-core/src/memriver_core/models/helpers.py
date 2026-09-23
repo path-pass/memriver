@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 # caller. Short on purpose: every id is injected into agent context in the
 # index and copied back into tool calls. The alphabet leaves out i, l, o and
 # u so an id survives being read and retyped. Uniqueness is the stores' job:
-# they refuse an id that is taken, and the facade draws again.
+# they refuse an id that is taken.
 ID_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz"
 ID_LENGTH = 10
 ID_RE = re.compile(r"[0-9a-hjkmnp-tv-z]{10}")

@@ -98,7 +98,8 @@ class FileProjectStore:
             # ponytail: two files, not one transaction; a crash in between
             # leaves an unreferenced empty project and the next run makes a
             # new one. Harmless (an empty project is legal); doctor lists it.
-            # IdCollision propagates with nothing written; the facade retries.
+            # IdCollision propagates with nothing written; the facade turns
+            # it into StorageFailure on this, its only call.
             self._write_project(project)
             try:
                 write_new(self.root, self.root / MANIFEST_FILENAME,

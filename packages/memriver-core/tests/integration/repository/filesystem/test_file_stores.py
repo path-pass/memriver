@@ -317,7 +317,7 @@ def test_a_taken_project_id_is_an_id_collision_for_create_and_ensure_global(tmp_
 def test_a_manifest_write_failure_is_final_and_leaves_one_candidate(tmp_path, monkeypatch, error):
     """Only a taken *project* id is a collision. Once the global project file
     is written, a failing manifest write -- even FileExistsError -- is
-    StorageFailure: no retry, no second candidate project."""
+    StorageFailure, no second candidate project."""
     from memriver_core.bootstrap import build_service
     from memriver_core.config import Settings
     from memriver_core.repository.filesystem import project_store as module
