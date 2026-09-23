@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 from typing import Literal, get_args
 
-from .helpers import ID_RE, new_id
+from .helpers import ID_RE, new_id, now
 
 # Claude Code's auto-memory taxonomy, adopted verbatim (docs/memory-model.md):
 #   user       who the user is: role, expertise, preferences
@@ -22,33 +21,6 @@ MemoryType = Literal["user", "feedback", "project", "reference"]
 #   untrusted-derived  derived from content that entered the context from
 #                      outside: web pages, third-party code, tool output, logs
 Trust = Literal["user", "agent", "untrusted-derived"]
-
-
-def now() -> str:
-    # microseconds, not seconds: `updated` is the recency sort key, and a
-    # same-second update must still advance it
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-
-
-def now_strictly_after(previous: str) -> str:
-    """`now()`, forced past `previous` when the clock has not moved on.
-
-    Resolution alone does not guarantee an advance: the clock's own tick can
-    be coarser than two consecutive writes, and it can step backwards. Since
-    `updated` is the recency sort key, a rewrite that landed on -- or before
-    -- the value it replaces would let the older body sort as the newer one.
-    A `previous` outside the canonical form carries no comparable instant, so
-    there the plain clock reading is all there is; diagnostics reports that
-    value separately.
-    """
-    stamp = now()
-    try:
-        earliest = (datetime.strptime(previous, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=UTC)
-                    + timedelta(microseconds=1)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    except (ValueError, OverflowError):
-        return stamp
-    # both are the same fixed-width form, so lexicographic order is chronological
-    return max(stamp, earliest)
 
 
 @dataclass

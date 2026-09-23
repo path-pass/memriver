@@ -86,7 +86,7 @@ def test_now_emits_microseconds_so_consecutive_calls_can_be_ordered():
 
 def test_now_strictly_after_advances_even_when_the_clock_stands_still(monkeypatch):
     frozen = "2026-09-23T00:00:00.000000Z"
-    monkeypatch.setattr(models.memory, "now", lambda: frozen)
+    monkeypatch.setattr(models.helpers, "now", lambda: frozen)
     assert now_strictly_after(frozen) == "2026-09-23T00:00:00.000001Z"
     assert now_strictly_after("2026-09-24T00:00:00.000000Z") == "2026-09-24T00:00:00.000001Z"
 
