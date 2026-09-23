@@ -444,6 +444,50 @@ def test_search_skips_undecodable_and_unaddressable_files(world):
     assert project_store.search(project_id, ctx, query=None, limit=None) == [good]
 
 
+def test_a_scan_checks_the_memories_container_exactly_once(world, monkeypatch):
+    _root, memory_store, project_store, project_id, _, ctx = world
+    memory_store.record(_m(project_id), ctx)
+    memory_store.record(_m(project_id), ctx)
+    from memriver_core.repository.filesystem import memory_files as module
+
+    real_check = module.data_dir_exists
+    calls = []
+
+    def counting_check(*args, **kwargs):
+        calls.append(1)
+        return real_check(*args, **kwargs)
+
+    monkeypatch.setattr(module, "data_dir_exists", counting_check)
+    project_store.search(project_id, ctx, query=None, limit=None)
+    assert len(calls) == 1
+
+
+def test_a_file_deleted_between_listing_and_read_is_skipped(world, monkeypatch, caplog):
+    _root, memory_store, project_store, project_id, _, ctx = world
+    first = _m(project_id)
+    second = _m(project_id)
+    memory_store.record(first, ctx)
+    memory_store.record(second, ctx)
+    from memriver_core.repository.filesystem import memory_files as module
+
+    real_reader = module._read_memory_file
+    order = sorted(m.id for m in (first, second))
+    doomed = order[1]
+
+    def delete_then_read(root_arg, memory_id):
+        if memory_id == doomed:
+            (root_arg / "memories" / f"{doomed}.md").unlink()
+        return real_reader(root_arg, memory_id)
+
+    monkeypatch.setattr(module, "_read_memory_file", delete_then_read)
+    survivor = first if first.id != doomed else second
+    with caplog.at_level(logging.DEBUG, logger="memriver_core"):
+        result = project_store.search(project_id, ctx, query=None, limit=None)
+    assert result == [survivor]
+    # absent (deleted mid-scan) is not damaged: no "skipping unusable" warning
+    assert not any("skipping unusable memory file" in r.getMessage() for r in caplog.records)
+
+
 def test_a_failed_create_leaves_no_temp_file(world, monkeypatch):
     root, memory_store, _, project_id, _, ctx = world
     from memriver_core.repository.filesystem import files
