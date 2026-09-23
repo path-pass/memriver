@@ -32,6 +32,7 @@ import tomlkit
 from memriver.install import (
     HARNESS_SETTING_TAKEOVER_NOTICE,
     TAKEOVER_NOTICE,
+    StoreStep,
     claude_code,
     cursor,
     run_install,
@@ -46,7 +47,16 @@ from memriver.install.codex import (
     NATIVE_MEMORY_OFF_NOTE as CODEX_NATIVE_MEMORY_OFF_NOTE,
 )
 from memriver.project_context import bind
-from memriver_core.models import ProjectId
+from memriver_core.bootstrap import build_service
+from memriver_core.config import Settings
+
+
+def _bind_new(store: Path, directory: Path, name: str) -> str:
+    service = build_service(Settings(root=store), root=store)
+    project_id = service.create_project(name).id
+    bind(store, service, project_id, str(directory.resolve()))
+    return project_id
+
 
 CODEX_TRUST_TEXT = (
     "Run /hooks in Codex, review the memriver hook definitions, and trust them.\n"
@@ -101,18 +111,20 @@ def refuse_to_read(prompt: str) -> str:
 
 
 class Run:
-    def __init__(self, exit_code: int, stdout: str, answers: Answers | None,
-                 replace: ReplaceSpy) -> None:
+    def __init__(self, exit_code: int, stdout: str, stderr: str,
+                 answers: Answers | None, replace: ReplaceSpy) -> None:
         self.exit_code = exit_code
         self.stdout = stdout
+        self.stderr = stderr
         self.answers = answers
         self.replace = replace
 
 
 def install(harnesses, *, home: Path, cwd: Path, yes: bool = True,
             dry_run: bool = False, env: dict | None = None, replies=None,
-            input_fn=None, replace: ReplaceSpy | None = None) -> Run:
-    out = io.StringIO()
+            input_fn=None, replace: ReplaceSpy | None = None,
+            store_step=None, stdin_is_tty=True) -> Run:
+    out, err = io.StringIO(), io.StringIO()
     replace = replace if replace is not None else ReplaceSpy()
     answers = None
     if input_fn is None:
@@ -120,10 +132,10 @@ def install(harnesses, *, home: Path, cwd: Path, yes: bool = True,
         input_fn = answers
     exit_code = run_install(
         harnesses, yes=yes, dry_run=dry_run, home=home, cwd=cwd,
-        env=env if env is not None else {}, input_fn=input_fn, stdout=out,
-        replace_file=replace,
+        env=env if env is not None else {}, input_fn=input_fn, stdout=out, stderr=err,
+        replace_file=replace, store_step=store_step, stdin_is_tty=stdin_is_tty,
     )
-    return Run(exit_code, out.getvalue(), answers, replace)
+    return Run(exit_code, out.getvalue(), err.getvalue(), answers, replace)
 
 
 def snapshot_tree(root: Path) -> dict:
@@ -328,7 +340,7 @@ def test_a_planning_failure_names_install_as_the_command_to_re_run(setup,
     result = install(harnesses, home=home, cwd=cwd, yes=True)
 
     assert result.exit_code == 1
-    assert result.stdout.rstrip("\n").endswith(remediation), result.stdout
+    assert result.stderr.rstrip("\n").endswith(remediation), result.stderr
 
 
 @pytest.mark.parametrize(
@@ -350,9 +362,9 @@ def test_an_unreadable_target_is_a_planning_failure_not_a_traceback(setup, home,
     result = install(harnesses, home=home, cwd=cwd, yes=True)
 
     assert result.exit_code != 0
-    assert result.stdout.startswith("memriver install: ")
-    assert "Traceback" not in result.stdout
-    assert "codec" not in result.stdout  # no underlying exception text
+    assert result.stderr.startswith("memriver install: ")
+    assert "Traceback" not in result.stderr
+    assert "codec" not in result.stderr  # no underlying exception text
 
 
 def test_deeply_nested_json_is_one_line_not_a_recursion_traceback(home, project):
@@ -362,7 +374,7 @@ def test_deeply_nested_json_is_one_line_not_a_recursion_traceback(home, project)
     result = install(harnesses, home=home, cwd=cwd, yes=True)
 
     assert result.exit_code == 1
-    assert result.stdout == (
+    assert result.stderr == (
         "memriver install: file nests too deeply for memriver to parse; "
         "flatten it and run install again\n"
     )
@@ -382,9 +394,9 @@ def test_an_unreadable_target_leaks_neither_traceback_nor_old_values(tmp_path, h
         target.chmod(0o600)
 
     assert result.exit_code != 0
-    assert "Traceback" not in result.stdout
-    assert SECRET not in result.stdout
-    assert "Permission denied" not in result.stdout
+    assert "Traceback" not in result.stderr
+    assert SECRET not in result.stderr
+    assert "Permission denied" not in result.stderr
     assert snapshot_tree(project) == before_tree
     assert backups(tmp_path) == []
     assert result.replace.calls == []
@@ -397,8 +409,8 @@ def test_a_planning_failure_reports_the_reason_rather_than_a_fake_change(home,
     result = install(["claude-code"], home=home, cwd=project)
 
     assert result.exit_code != 0
-    assert "not valid JSON" in result.stdout
-    assert "installed" not in result.stdout
+    assert "not valid JSON" in result.stderr
+    assert "installed" not in result.stderr
 
 
 def test_incompatible_duplicate_target_declarations_are_rejected(tmp_path, home,
@@ -421,7 +433,7 @@ def test_incompatible_duplicate_target_declarations_are_rejected(tmp_path, home,
     result = install(["claude-code", "cursor"], home=home, cwd=project)
 
     assert result.exit_code != 0
-    assert str(claude_config.path) in result.stdout
+    assert str(claude_config.path) in result.stderr
     assert snapshot_tree(tmp_path) == before_tree
     assert result.replace.calls == []
 
@@ -433,7 +445,7 @@ def test_an_unknown_harness_name_fails_before_any_target_is_read(tmp_path, home,
     result = install(["not-a-harness"], home=home, cwd=project)
 
     assert result.exit_code != 0
-    assert "not-a-harness" in result.stdout
+    assert "not-a-harness" in result.stderr
     assert snapshot_tree(tmp_path) == before_tree
 
 
@@ -544,8 +556,8 @@ def test_a_target_rewritten_between_planning_and_apply_aborts_the_run(home,
 
     assert len(prompts) == 4
     assert result.exit_code == 1
-    assert "file changed since planning" in result.stdout
-    abort = next(line for line in result.stdout.splitlines()
+    assert "file changed since planning" in result.stderr
+    abort = next(line for line in result.stderr.splitlines()
                  if "file changed since planning" in line)
     # the abort line abbreviates like the prompts do; the rollback report below
     # it still prints the absolute backup paths the user needs
@@ -572,7 +584,7 @@ def test_a_target_created_between_planning_and_apply_aborts_the_run(home, projec
 
     assert len(prompts) == 4
     assert result.exit_code == 1
-    assert "file changed since planning" in result.stdout
+    assert "file changed since planning" in result.stderr
     assert settings.read_text() == concurrent
     # ~/.claude.json was created by this run and is removed again on rollback
     assert not (home / ".claude.json").exists()
@@ -594,7 +606,7 @@ def test_a_permission_change_between_planning_and_apply_aborts_the_run(home,
 
     assert len(prompts) == 4
     assert result.exit_code == 1
-    assert "file changed since planning" in result.stdout
+    assert "file changed since planning" in result.stderr
     assert mode_of(settings) == 0o644
 
 
@@ -659,7 +671,7 @@ def test_non_interactive_input_without_yes_fails_before_any_write(tmp_path, home
                      input_fn=refuse_to_read)
 
     assert result.exit_code != 0
-    assert "--yes" in result.stdout
+    assert "--yes" in result.stderr
     assert snapshot_tree(tmp_path) == before_tree
     assert result.replace.calls == []
 
@@ -869,8 +881,8 @@ def test_failure_restores_earlier_targets_and_removes_created_ones(home, project
     assert not (home / ".claude" / "settings.json").exists()
     assert codex_toml.read_bytes() == original_toml
     assert len(backups(home)) == 2  # ~/.claude.json and ~/.codex/config.toml
-    assert "restored" in result.stdout and str(claude_json) in result.stdout
-    assert "removed" in result.stdout
+    assert "restored" in result.stderr and str(claude_json) in result.stderr
+    assert "removed" in result.stderr
 
 
 def test_rollback_removes_the_directories_this_run_created(home, project):
@@ -1133,19 +1145,20 @@ def test_an_interrupt_rolls_the_run_back_and_still_propagates(home, project):
                         mode=0o644)
     codex_toml = write(home / ".codex" / "config.toml", 'model = "gpt"\n')
     original_json, original_toml = claude_json.read_bytes(), codex_toml.read_bytes()
-    out = io.StringIO()
+    out, err = io.StringIO(), io.StringIO()
     replace = ReplaceSpy(fail_at={3}, raises=KeyboardInterrupt)
 
     with pytest.raises(KeyboardInterrupt):
         run_install(["claude-code", "codex"], yes=True, dry_run=False, home=home,
                     cwd=project, env={}, input_fn=refuse_to_read, stdout=out,
-                    replace_file=replace)
+                    stderr=err, replace_file=replace)
 
     assert claude_json.read_bytes() == original_json
     assert mode_of(claude_json) == 0o644
     assert not (home / ".claude" / "settings.json").exists()
     assert codex_toml.read_bytes() == original_toml
-    assert "restored" in out.getvalue() and "removed" in out.getvalue()
+    assert "restored" in err.getvalue() and "removed" in err.getvalue()
+    assert "memriver install failed:" not in out.getvalue()
     assert len(backups(home)) == 2
 
 
@@ -1161,10 +1174,10 @@ def test_a_failed_rollback_reports_the_exact_paths_and_keeps_the_backups(home,
 
     backup = next(b for b in backups(home) if b.name.startswith(".claude.json"))
     assert result.exit_code != 0
-    assert str(claude_json) in result.stdout
-    assert "could not" in result.stdout.lower()
+    assert str(claude_json) in result.stderr
+    assert "could not" in result.stderr.lower()
     assert backup.read_text() == json.dumps({"apiKey": SECRET})
-    assert SECRET not in result.stdout
+    assert SECRET not in result.stderr
 
 
 def test_success_reports_backup_paths_and_restore_commands_never_contents(home,
@@ -1397,7 +1410,7 @@ def test_install_in_unregistered_repo_lands_on_git_root_and_registers_nothing(
 
     assert result.exit_code == 0
     assert (project / STATIC_FILE[harness]).exists()
-    assert not (store / "projects").exists()
+    assert not (store / "projects").exists() and not (store / "registry").exists()
     assert _server_header(store, project / "src").startswith("project: none")
 
 
@@ -1407,15 +1420,14 @@ def test_install_under_registered_parent_lands_in_each_repo(home, tmp_path, harn
     (parent / "frontend" / ".git").mkdir(parents=True)
     (parent / "backend" / ".git").mkdir(parents=True)
     store = home / "agent-memory"
-    bind(store, ProjectId("work-0123456789abcdef"), str(parent.resolve()), create=True)
+    pid = _bind_new(store, parent, "work")
 
     result = install([harness], home=home, cwd=parent / "frontend")
 
     assert result.exit_code == 0
     assert (parent / "frontend" / STATIC_FILE[harness]).exists()
     assert not (parent / STATIC_FILE[harness]).exists()
-    assert _server_header(store, parent / "frontend").startswith(
-        "project: work-0123456789abcdef")
+    assert _server_header(store, parent / "frontend").startswith(f"project: work [{pid}]")
 
 
 @pytest.mark.parametrize("harness", ["cursor", "kiro"])
@@ -1425,16 +1437,14 @@ def test_registered_child_keeps_git_root_install_and_its_own_identity(home, tmp_
     (parent / "frontend" / ".git").mkdir(parents=True)
     (parent / "frontend" / "src").mkdir()
     store = home / "agent-memory"
-    bind(store, ProjectId("work-0123456789abcdef"), str(parent.resolve()), create=True)
-    bind(store, ProjectId("frontend-0123456789abcdef"),
-         str((parent / "frontend").resolve()), create=True)
+    _bind_new(store, parent, "work")
+    child = _bind_new(store, parent / "frontend", "frontend")
 
     result = install([harness], home=home, cwd=parent / "frontend" / "src")
 
     assert result.exit_code == 0
     assert (parent / "frontend" / STATIC_FILE[harness]).exists()
-    assert _server_header(store, parent / "frontend" / "src").startswith(
-        "project: frontend-0123456789abcdef")
+    assert _server_header(store, parent / "frontend" / "src").startswith(f"project: frontend [{child}]")
 
 
 @pytest.mark.parametrize("harness", ["cursor", "kiro"])
@@ -1443,13 +1453,178 @@ def test_install_from_registered_non_git_parent_keeps_the_no_git_root_outcome(
     parent = tmp_path / "work"
     parent.mkdir()
     store = home / "agent-memory"
-    bind(store, ProjectId("work-0123456789abcdef"), str(parent.resolve()), create=True)
+    _bind_new(store, parent, "work")
 
     result = install([harness], home=home, cwd=parent)
 
     # being registered is not being a repository: the same refusal the
     # unregistered no-git-root case gets, and nothing written
     assert result.exit_code == 1
-    assert result.stdout.rstrip("\n").endswith(
-        "run install inside a project or pass one"), result.stdout
+    assert result.stderr.rstrip("\n").endswith(
+        "run install inside a project or pass one"), result.stderr
     assert not (parent / STATIC_FILE[harness]).exists()
+
+
+# --- the memory store is required to continue installation --------------------
+
+STORE_FAILURE_TEXT = ("\nmemriver install: the memory store could not be initialized; "
+                      "no harness configuration was applied. Run memriver doctor.\n")
+
+class FakeStore:
+    """A StoreStep whose apply records when it ran and what existed then."""
+
+    def __init__(self, home: Path, fail: bool = False) -> None:
+        self.home = home
+        self.fail = fail
+        self.applied_with: list[dict] = []
+
+    def step(self) -> StoreStep:
+        return StoreStep(summary="memory store (required): create the global project in /store",
+                         label="memory store in /store", apply=self.apply)
+
+    def apply(self) -> str:
+        self.applied_with.append(snapshot_tree(self.home))
+        if self.fail:
+            raise OSError("disk full at /secret/path")
+        return "memory store: ready (global project aaaaaaaaaa)"
+
+
+def _store_first(prompt: str) -> str:
+    return "y" if prompt.startswith("initialize memory store") else "n"
+
+
+def test_the_store_change_is_shown_with_the_plan_before_the_first_prompt(home, project):
+    store = FakeStore(home)
+    result = install(["claude-code"], home=home, cwd=project, yes=False,
+                     input_fn=_store_first, store_step=store.step())
+    assert result.stdout.index("memory store (required): create the global project in /store") \
+        < result.stdout.index("memory store: ready")
+    assert len(store.applied_with) == 1
+    assert result.stderr == ""
+
+
+def test_the_store_prompt_comes_first_and_makes_cancellation_explicit(home, project):
+    result = install(["claude-code"], home=home, cwd=project, yes=False, replies=["n"],
+                     store_step=FakeStore(home).step())
+    assert result.answers.prompts == ["initialize memory store in /store and continue installation? [y/N] "]
+    assert "memory store (required): create the global project in /store" in \
+        result.answers.output_at_first_prompt
+
+
+def test_the_store_runs_before_any_harness_file_is_written(home, project):
+    before = snapshot_tree(home)
+    store = FakeStore(home)
+    result = install(["claude-code"], home=home, cwd=project, yes=True,
+                     store_step=store.step())
+    assert result.exit_code == 0
+    assert store.applied_with == [before]          # nothing under home changed yet
+    assert snapshot_tree(home) != before           # the harness changes landed after
+
+
+def test_dry_run_shows_the_store_change_and_writes_nothing(home, project):
+    before = snapshot_tree(home)
+    store = FakeStore(home)
+    result = install(["claude-code"], home=home, cwd=project, dry_run=True,
+                     store_step=store.step())
+    assert "memory store (required): create the global project in /store" in result.stdout
+    assert store.applied_with == [] and snapshot_tree(home) == before
+
+
+def test_declining_the_store_applies_no_harness_change(home, project):
+    before = snapshot_tree(home)
+    store = FakeStore(home)
+    result = install(["claude-code"], home=home, cwd=project, yes=False, replies=["n"],
+                     store_step=store.step())
+    assert result.exit_code == 1
+    assert "installation cancelled; memory store not initialized; no file was changed." in result.stdout
+    assert result.stderr == ""
+    assert store.applied_with == [] and snapshot_tree(home) == before
+
+
+def test_piped_input_never_initializes_the_store_but_yes_does(home, project):
+    before = snapshot_tree(home)
+    store = FakeStore(home)
+    result = install(["claude-code"], home=home, cwd=project, yes=False, replies=[],
+                     store_step=store.step(), stdin_is_tty=False)
+    assert result.exit_code == 1 and "re-run with --yes" in result.stderr
+    assert "re-run with --yes" not in result.stdout
+    assert store.applied_with == [] and snapshot_tree(home) == before
+    assert result.answers.prompts == []
+    result = install(["claude-code"], home=home, cwd=project, yes=True,
+                     store_step=store.step(), stdin_is_tty=False)
+    assert result.exit_code == 0 and len(store.applied_with) == 1
+
+
+def test_a_failing_store_applies_no_harness_change(home, project):
+    before = snapshot_tree(home)
+    result = install(["claude-code"], home=home, cwd=project, yes=True,
+                     store_step=FakeStore(home, fail=True).step())
+    assert result.exit_code == 1
+    assert result.stderr == STORE_FAILURE_TEXT
+    assert "could not be initialized" not in result.stdout
+    assert "/secret/path" not in result.stdout + result.stderr
+    assert snapshot_tree(home) == before
+
+
+def test_a_planning_failure_in_the_accepted_edits_leaves_no_store(home, project, monkeypatch):
+    import memriver.install as install_module
+
+    def refuse(*_args, **_kwargs):
+        raise install_module.PlanningError("target changed shape")
+
+    monkeypatch.setattr(install_module, "_rendered", refuse)
+    store = FakeStore(home)
+    result = install(["claude-code"], home=home, cwd=project, yes=True,
+                     store_step=store.step())
+    assert result.exit_code == 1 and store.applied_with == []
+    assert "target changed shape" in result.stderr
+    assert "target changed shape" not in result.stdout
+
+
+def test_store_accepted_but_every_harness_change_declined(home, project):
+    before = snapshot_tree(home)
+    store = FakeStore(home)
+    result = install(["claude-code"], home=home, cwd=project, yes=False,
+                     input_fn=_store_first, store_step=store.step())
+    assert result.exit_code == 0 and len(store.applied_with) == 1
+    assert "no harness change accepted; no harness file was changed." in result.stdout
+    assert snapshot_tree(home) == before
+
+
+def test_only_the_store_pending_is_still_a_change_that_needs_consent(home, project):
+    install(["claude-code"], home=home, cwd=project, yes=True)     # harness up to date
+    store = FakeStore(home)
+    result = install(["claude-code"], home=home, cwd=project, yes=False, replies=["y"],
+                     store_step=store.step())
+    assert "already up to date" not in result.stdout
+    assert result.answers.prompts == ["initialize memory store in /store and continue installation? [y/N] "]
+    assert result.exit_code == 0 and len(store.applied_with) == 1
+
+
+def test_without_a_store_step_an_up_to_date_install_asks_nothing(home, project):
+    install(["claude-code"], home=home, cwd=project, yes=True)
+    result = install(["claude-code"], home=home, cwd=project, yes=False, replies=[])
+    assert "already up to date" in result.stdout and result.answers.prompts == []
+
+
+@pytest.mark.parametrize("failure", ["planning", "apply"])
+def test_install_failures_use_stderr_without_a_store_step(home, project, failure):
+    if failure == "planning":
+        write(home / ".claude.json", "{not json")
+        result = install(["claude-code"], home=home, cwd=project)
+        marker = "memriver install:"
+        assert result.stdout == ""
+    else:
+        result = install(["claude-code"], home=home, cwd=project,
+                         replace=ReplaceSpy(fail_at={1}))
+        marker = "memriver install failed:"
+        assert "backups were kept" in result.stderr
+        assert "backups were kept" not in result.stdout
+    assert result.exit_code == 1
+    assert marker in result.stderr and marker not in result.stdout
+
+
+def test_success_without_a_store_step_keeps_stderr_empty(home, project):
+    result = install(["claude-code"], home=home, cwd=project)
+    assert result.exit_code == 0 and result.stdout
+    assert result.stderr == ""

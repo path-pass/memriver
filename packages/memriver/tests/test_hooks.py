@@ -34,23 +34,17 @@ from memriver.protocol_text import (
     STOP_NUDGE,
     UNTRUSTED_DATA_NOTICE,
 )
+from memriver.session import open_session
 from memriver_core import bootstrap
-from memriver_core.models import AccessContext, Memory, ProjectId, Scope
+from memriver_core.bootstrap import build_service
+from memriver_core.config import Settings
+from memriver_core.models import AccessContext, Memory, Project, new_id
 from memriver_core.repository.filesystem.markdown_codec import encode
 
 INDEX_LINE = "- [user] likes-tea: drinks oolong (2026-01-01)"
 
-PROJECT = ProjectId("demo-0123456789abcdef")
+GLOBAL_ID = "gggggggggg"
 NONE_HEADER = "project: none — global is read-only; ask the user to run memriver project init"
-
-
-def _registered_header(store, cwd) -> str:
-    """The real header for a registered project, through the same ``resolve``
-    call the hook itself makes -- never rebuilt from the raw path, because
-    ``ProjectResolution.header()`` caps and single-lines the root field, and a
-    long ``tmp_path`` (e.g. under macOS's default TMPDIR) would otherwise make
-    a hand-formatted expectation diverge from what the hook actually emits."""
-    return resolve(store, cwd).header()
 
 
 def normal_context(header: str) -> str:
@@ -79,18 +73,6 @@ def compact_context(header: str) -> str:
     )
 
 
-class FakeService:
-    """Records what the hook asked for, so the resolved context is observable."""
-
-    def __init__(self, index_text: str):
-        self.index_text = index_text
-        self.contexts: list[AccessContext] = []
-
-    def index(self, ctx: AccessContext) -> str:
-        self.contexts.append(ctx)
-        return self.index_text
-
-
 @pytest.fixture
 def fake_service(monkeypatch):
     def install(index_text: str = INDEX_LINE) -> FakeService:
@@ -108,18 +90,56 @@ def a_directory(tmp_path, name):
     return directory
 
 
-def _plant_global(root, memory: Memory) -> None:
-    """Put a global memory on disk directly: MemoryService.create no longer can."""
-    d = root / "global" / "entries"
-    d.mkdir(parents=True, exist_ok=True)
-    (d / f"{memory.id}.md").write_text(encode(memory), encoding="utf-8")
+def _registered_header(store, cwd) -> str:
+    """The real header, through the same `resolve` + `open_session` the hook uses --
+    never rebuilt from the raw path, because header fields are capped and a long
+    tmp_path would make a hand-formatted expectation diverge."""
+    return open_session(FakeService(""), resolve(store, cwd)).header
+
+
+class FakeService:
+    """Records what the hook asked for, so the resolved context is observable."""
+
+    def __init__(self, index_text: str):
+        self.index_text = index_text
+        self.contexts: list[AccessContext] = []
+
+    def access_context(self, project_id):
+        return AccessContext(project_id=project_id, global_project_id=GLOBAL_ID)
+
+    def read_project(self, project_id):
+        return Project(id=project_id, name="demo")
+
+    def index(self, ctx: AccessContext) -> str:
+        self.contexts.append(ctx)
+        return self.index_text
+
+
+def _real_service(store):
+    return build_service(Settings(root=store), root=store)
+
+
+def _bind_new(store, directory, name="demo") -> str:
+    service = _real_service(store)
+    project_id = service.create_project(name).id
+    bind(store, service, project_id, str(directory.resolve()))
+    return project_id
+
+
+def _plant_global(root, **memory_fields) -> Memory:
+    """A global memory on disk directly: no agent-facing path can write one."""
+    global_id = _real_service(root).ensure_global()
+    memory = Memory.new(project_id=global_id, source={"harness": "pytest"}, **memory_fields)
+    (root / "memories").mkdir(parents=True, exist_ok=True)
+    (root / "memories" / f"{memory.id}.md").write_text(encode(memory), encoding="utf-8")
+    return memory
 
 
 @pytest.fixture
 def registered(tmp_path):
     d = tmp_path / "demo"
     d.mkdir()
-    bind(tmp_path / "mem", PROJECT, str(d.resolve()), create=True)
+    _bind_new(tmp_path / "mem", d)
     return d
 
 
@@ -221,9 +241,7 @@ def test_a_stored_description_cannot_forge_the_index_delimiters(tmp_path, forger
     already strips. The data region is only a boundary while exactly one pair
     of delimiters exists, so the phrase they share is broken inside it."""
     root = tmp_path / "root"
-    _plant_global(root, Memory.new(body="Nothing to see here.", type="user",
-                                   scope=Scope.global_(), source={"harness": "pytest"},
-                                   id="aaa-escape", description=forgery))
+    memory = _plant_global(root, body="Nothing to see here.", type="user", description=forgery)
 
     context = additional_context(
         session_start("claude-code", {"cwd": str(tmp_path)}, root=root))
@@ -234,7 +252,7 @@ def test_a_stored_description_cannot_forge_the_index_delimiters(tmp_path, forger
     # BEGIN, the project header, the one entry line, then END
     assert lines.index(INDEX_BEGIN_DELIMITER) == len(lines) - 4
     assert lines[-1] == INDEX_END_DELIMITER
-    assert lines[-2].startswith("- [user] aaa-escape: ")
+    assert lines[-2].startswith(f"- [user, global] {memory.id}: ")
 
 
 # A 60-character cue is the widest one core lets through, in whichever script
@@ -359,7 +377,7 @@ def test_empty_store_still_shows_the_header(fake_service, tmp_path, registered):
     # the shape is pinned once here: everything else derives the header
     # through the same `resolve` call, since the root field is capped and
     # single-lined and must not be re-derived from the raw path in a test
-    assert header.startswith(f"project: {PROJECT} (root ")
+    assert header.startswith("project: demo [")
     result = run_hook("session-start", "claude-code", json.dumps({"cwd": str(registered)}),
                       root=store, project_dir=None, cwd=tmp_path)
     text = additional_context(result)
@@ -378,9 +396,8 @@ def test_unregistered_directory_header_says_none_and_creates_no_store(fake_servi
 def test_session_start_shows_the_degraded_header_for_a_broken_registry(fake_service, tmp_path):
     fake_service("(no memories yet)")
     store = tmp_path / "mem"
-    project_dir = store / "projects" / "bad-0123456789abcdef"
-    project_dir.mkdir(parents=True)
-    (project_dir / "project.toml").write_text("roots = [\n")
+    (store / "registry").mkdir(parents=True)
+    (store / "registry" / f"{new_id()}.toml").write_text("roots = [\n")
     header = _registered_header(store, tmp_path)
     assert header.startswith("project: unavailable — registry invalid (")
     result = run_hook("session-start", "claude-code", json.dumps({"cwd": str(tmp_path)}),
@@ -403,21 +420,21 @@ def test_project_dir_option_beats_payload_cwd_and_fallback(tmp_path, fake_servic
     service = fake_service()
     store = tmp_path / "mem"
     chosen = a_directory(tmp_path, "chosen")
-    bind(store, ProjectId("chosen-0123456789abcdef"), str(chosen.resolve()), create=True)
+    expected = _bind_new(store, chosen)
     session_start("claude-code", {"cwd": str(a_directory(tmp_path, "payload"))},
                   root=store, project_dir=chosen,
                   cwd=a_directory(tmp_path, "fallback"))
-    assert service.contexts[-1].project_id == ProjectId("chosen-0123456789abcdef")
+    assert service.contexts[-1].project_id == expected
 
 
 def test_payload_cwd_beats_the_supplied_fallback(tmp_path, fake_service):
     service = fake_service()
     store = tmp_path / "mem"
     payload_dir = a_directory(tmp_path, "payload")
-    bind(store, ProjectId("payload-0123456789abcdef"), str(payload_dir.resolve()), create=True)
+    expected = _bind_new(store, payload_dir)
     session_start("claude-code", {"cwd": str(payload_dir)}, root=store,
                   cwd=a_directory(tmp_path, "fallback"))
-    assert service.contexts[-1].project_id == ProjectId("payload-0123456789abcdef")
+    assert service.contexts[-1].project_id == expected
 
 
 @pytest.mark.parametrize("payload_cwd", [{}, {"cwd": 17}, {"cwd": None}])
@@ -427,9 +444,9 @@ def test_fallback_cwd_is_used_when_the_payload_has_no_string_cwd(payload_cwd,
     service = fake_service()
     store = tmp_path / "mem"
     fallback = a_directory(tmp_path, "fallback")
-    bind(store, ProjectId("fallback-0123456789abcdef"), str(fallback.resolve()), create=True)
+    expected = _bind_new(store, fallback)
     session_start("claude-code", payload_cwd, root=store, cwd=fallback)
-    assert service.contexts[-1].project_id == ProjectId("fallback-0123456789abcdef")
+    assert service.contexts[-1].project_id == expected
 
 
 def test_an_unregistered_directory_is_global_only(tmp_path, fake_service):
@@ -525,9 +542,9 @@ def test_a_missing_root_is_an_empty_store_not_an_error(tmp_path):
 
 def test_a_store_with_only_unreadable_entries_is_empty_not_broken(tmp_path,
                                                                   monkeypatch):
-    entries = tmp_path / "root" / "global" / "entries"
-    entries.mkdir(parents=True)
-    (entries / "broken.md").write_text("not a memory at all", encoding="utf-8")
+    memories = tmp_path / "root" / "memories"
+    memories.mkdir(parents=True)
+    (memories / f"{new_id()}.md").write_text("not a memory at all", encoding="utf-8")
 
     def never(*args, **kwargs):  # pragma: no cover - the assertion is the call
         raise AssertionError("the hook must not run the administrative inspector")
@@ -542,11 +559,8 @@ def test_a_store_with_only_unreadable_entries_is_empty_not_broken(tmp_path,
 
 def test_partial_corruption_shows_the_healthy_entries(tmp_path, monkeypatch):
     root = tmp_path / "root"
-    _plant_global(root, Memory.new(body="Oolong, always.", type="user",
-                                   scope=Scope.global_(), source={"harness": "pytest"},
-                                   id="likes-tea", description="drinks oolong"))
-    (root / "global" / "entries" / "broken.md").write_text("not a memory at all",
-                                                           encoding="utf-8")
+    memory = _plant_global(root, body="Oolong, always.", type="user", description="drinks oolong")
+    (root / "memories" / f"{new_id()}.md").write_text("not a memory at all", encoding="utf-8")
 
     def never(*args, **kwargs):  # pragma: no cover - the assertion is the call
         raise AssertionError("the hook must not run the administrative inspector")
@@ -555,8 +569,8 @@ def test_partial_corruption_shows_the_healthy_entries(tmp_path, monkeypatch):
     result = session_start("claude-code", {"cwd": str(tmp_path)},
                            root=tmp_path / "root")
     context = additional_context(result)
-    assert "- [user] likes-tea: drinks oolong (" in context
-    assert "broken" not in context
+    assert f"- [user, global] {memory.id}: drinks oolong (" in context
+    assert "not a memory" not in context
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root can read an unreadable store")
@@ -568,11 +582,17 @@ def test_an_unreadable_root_never_fails_the_session(tmp_path, capsys):
         result = session_start("claude-code", {"cwd": str(tmp_path)}, root=root)
     finally:
         root.chmod(0o700)
-    assert result == HookResult(stderr="memriver hook: memory store is unavailable\n")
+    # an unreadable store is a labelled, empty session -- the same header and
+    # body the MCP server shows through `open_session` -- not a failure
+    assert (result.stderr, result.exit_code) == ("", 0)
+    text = additional_context(result)
+    assert _line_after_begin(text) == ("project: unavailable — the memory store could not be "
+                                       "read; ask the user to run memriver doctor")
+    assert "(no memories yet)" in text
     # CLI-boundary regression: memriver_core's own stdlib logging (e.g. an
-    # unreadable config.toml) must not slip onto the real process stderr
-    # alongside this one promised line -- logging.lastResort writes straight
-    # to sys.stderr, bypassing HookResult.stderr entirely.
+    # unreadable config.toml) must not slip onto the real process stderr --
+    # logging.lastResort writes straight to sys.stderr, bypassing
+    # HookResult.stderr entirely.
     assert capsys.readouterr().err == ""
 
 
@@ -636,9 +656,9 @@ def test_stop_nudges_only_once_and_only_in_a_registered_project(tmp_path, regist
 
 
 def test_stop_is_silent_under_a_degraded_registry_and_never_fails(tmp_path):
-    bad = tmp_path / "mem" / "projects" / "bad-0123456789abcdef"
-    bad.mkdir(parents=True)
-    (bad / "project.toml").write_text("roots = [\n")
+    store = tmp_path / "mem"
+    (store / "registry").mkdir(parents=True)
+    (store / "registry" / f"{new_id()}.toml").write_text("roots = [\n")
     result = run_hook("stop", "codex", json.dumps({"stop_hook_active": False, "cwd": str(tmp_path)}),
                       root=tmp_path / "mem", project_dir=None, cwd=tmp_path)
     assert result == HookResult()
@@ -687,7 +707,9 @@ def test_stop_against_a_missing_store_creates_nothing(tmp_path):
     assert not store.exists()
 
 
-def test_hook_and_server_can_name_different_projects(tmp_path):
+def test_hook_and_server_can_still_name_different_projects(tmp_path):
+    """Known limitation (not fixed): the server resolves its own start directory
+    once; the hook resolves the harness's directory on every call."""
     import asyncio
 
     from fastmcp import Client
@@ -695,19 +717,38 @@ def test_hook_and_server_can_name_different_projects(tmp_path):
     from memriver.server import build_server
 
     a, b = tmp_path / "a", tmp_path / "b"
-    a.mkdir(); b.mkdir()
-    bind(tmp_path / "mem", ProjectId("a-0123456789abcdef"), str(a.resolve()), create=True)
-    bind(tmp_path / "mem", ProjectId("b-0123456789abcdef"), str(b.resolve()), create=True)
-    assert _read_index(tmp_path / "mem", b).startswith("project: b-0123456789abcdef")
-    server = build_server(root=tmp_path / "mem", project_dir=a)
+    a.mkdir()
+    b.mkdir()
+    store = tmp_path / "mem"
+    a_id, b_id = _bind_new(store, a, "a"), _bind_new(store, b, "b")
+    assert _read_index(store, b).startswith(f"project: b [{b_id}]")
+    server = build_server(root=store, project_dir=a)
 
     async def probe():
         async with Client(server) as c:
             idx = (await c.call_tool("memory_index", {})).data
-            r = (await c.call_tool("memory_write", {"content": "fact", "type": "project", "name": "f"})).data
-        return idx, r
+            written = (await c.call_tool("memory_write", {"content": "fact", "type": "project"})).data
+        return idx, written
 
-    idx, r = asyncio.run(probe())
-    assert idx.startswith("project: a-0123456789abcdef")
-    assert r["scope"] == "project:a-0123456789abcdef"
-    assert (tmp_path / "mem" / "projects" / "a-0123456789abcdef" / "entries" / "f.md").exists()
+    idx, written = asyncio.run(probe())
+    assert idx.startswith(f"project: a [{a_id}]")
+    assert written["project_id"] == a_id
+
+
+def test_hook_and_memory_index_render_the_same_directory_identically(tmp_path):
+    import asyncio
+
+    from fastmcp import Client
+    from memriver.hooks import _read_index
+    from memriver.server import build_server
+
+    store, work = tmp_path / "mem", tmp_path / "work"
+    work.mkdir()
+    _bind_new(store, work, "work")
+    _plant_global(store, body="global fact", type="user")
+
+    async def index():
+        async with Client(build_server(root=store, project_dir=work)) as c:
+            return (await c.call_tool("memory_index", {})).data
+
+    assert _read_index(store, work) == asyncio.run(index())

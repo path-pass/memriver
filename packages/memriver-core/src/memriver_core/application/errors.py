@@ -2,79 +2,67 @@
 
 Two kinds of error live here, and they differ in who owns the words:
 
-- **Storage-boundary errors** -- `MemoryNotFound`, `UnreadableMemory`,
-  `NameTaken`, `StorageFailure` -- carry structured *fields* only. Their
-  `str()` is a developer-facing line for logs and must never reach a client:
-  a transport composes client copy from the operation plus these fields. That
-  is what makes a backend swap invisible -- a second implementation cannot
-  change a byte of what a client sees, nor leak SQL, driver, or path detail
-  through a message it happened to author.
-- **Application/policy errors** -- `ContentRejected`, `InvalidScope`,
-  `ProjectUnavailable`, `GlobalReadOnly` -- carry a message authored inside
-  the core, where the wording *is* the rule being explained and is written to
-  be client-safe (it never echoes the rejected value). Transports may forward
-  these verbatim.
+- **Storage-boundary errors** -- `MemoryNotFound`, `ProjectNotFound`,
+  `IdCollision`, `StorageFailure` -- carry structured *fields* only. Their `str()` is a
+  developer-facing line for logs and must never reach a client: a transport
+  composes client copy from the operation plus these fields, so a second
+  backend cannot change a byte of what a client sees, nor leak SQL, driver or
+  path detail through a message it happened to author.
+- **Application/policy errors** -- `ContentRejected`, `ProjectUnavailable`,
+  `GlobalReadOnly` -- carry a message authored inside the core, where the
+  wording *is* the rule being explained and is written to be client-safe (it
+  never echoes the rejected value). Transports may forward these verbatim.
 """
 
 from __future__ import annotations
-
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from memriver_core.models import Memory
 
 
 class MemoryError(Exception): ...            # base (namespaced; no builtins clash in-package)
 
 
 class MemoryNotFound(MemoryError):
-    """No memory answers to `memory_id` in the caller's visible scopes."""
+    """No memory the caller may read answers to `memory_id`.
+
+    Absent, another project's, and orphaned (its project does not exist) are
+    one answer, so a caller never reads another project's entry. A file that
+    is present but cannot be read or decoded is `StorageFailure` instead:
+    damage is reported as damage, not disguised as absence.
+    """
 
     def __init__(self, memory_id: str) -> None:
         super().__init__(f"memory not found: {memory_id}")
         self.memory_id = memory_id
 
 
-class UnreadableMemory(MemoryError):
-    """`memory_id` is occupied, but the stored item cannot be decoded."""
+class ProjectNotFound(MemoryError):
+    """No project answers to `project_id`."""
 
-    def __init__(self, memory_id: str) -> None:
-        super().__init__(f"unreadable memory: {memory_id}")
-        self.memory_id = memory_id
+    def __init__(self, project_id: str) -> None:
+        super().__init__(f"project not found: {project_id}")
+        self.project_id = project_id
 
 
-class NameTaken(MemoryError):
-    """`memory_id` is already in use; `existing` is the memory holding it.
+class IdCollision(MemoryError):
+    """A freshly generated id is already taken; nothing was written.
 
-    Always populated: a name reservation searches the caller's visible scopes
-    and nothing else, so whatever holds the name is by construction something
-    the caller may already read. There is no refusal left that has to withhold
-    the colliding memory, and no caller may omit it.
+    Raised by a store's atomic create and caught by the application facade,
+    which draws a new id and tries again: it never reaches a transport, so it
+    is not part of the public facade.
     """
 
-    def __init__(self, memory_id: str, existing: Memory) -> None:
-        super().__init__(f"name taken: {memory_id}")
-        self.memory_id = memory_id
-        self.existing = existing
+    def __init__(self, identifier: str) -> None:
+        super().__init__(f"id collision: {identifier}")
+        self.identifier = identifier
 
 
 class ContentRejected(MemoryError): ...      # from ContentPolicy; the message is the rule
 
 
-class InvalidScope(MemoryError): ...
-
-
-class ProjectUnavailable(MemoryError): ...
+class ProjectUnavailable(MemoryError): ...   # no writable project in this context
 
 
 class GlobalReadOnly(MemoryError):
-    """The global scope is read-only to agents; no mutation reaches it.
-
-    Raised by the repository for any create/update/delete whose target is a
-    global entry. The message is the rule, written client-safe, so transports
-    forward it. (The service never aims at global: without a scope input it
-    writes the context project or raises ProjectUnavailable.)
-    """
+    """The global project is read-only to agents; no mutation reaches it."""
 
     def __init__(self) -> None:
         super().__init__("global memories are read-only to agents; no change was made")

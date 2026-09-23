@@ -25,23 +25,25 @@ if TYPE_CHECKING:
 
 # Fixed per spec S6.2; the inaccessible message is stderr-only and path-free.
 _STATE_MESSAGES = {
-    "uninitialized": "store not initialized yet",
+    "uninitialized": "store not initialized yet; run memriver install",
     "empty": "store is initialized and empty",
     "healthy": "store is healthy",
     "degraded": "store has findings",
 }
+_NOT_INITIALIZED_NOTE = "note: store not initialized yet; run memriver install"
 _INACCESSIBLE_MESSAGE = "memriver doctor: memory store is inaccessible"
 # the --json counterpart of _INACCESSIBLE_MESSAGE, without the CLI prefix --
 # this is a value read back by a script, not a line printed to a terminal
 _INACCESSIBLE_JSON_ERROR = "memory store is inaccessible"
 _EXIT_CODES = {"uninitialized": 0, "empty": 0, "healthy": 0, "degraded": 1}
 
-# scopes and location hints are derived from directory and file names in the
-# store, which a user can hand-edit to contain a newline (forging a second
-# finding line) or an ANSI escape (a raw terminal control sequence); the JSON
-# renderer needs no such guard -- json.dumps already escapes both. The
-# neutraliser itself is project_context.visible, shared with the project
-# commands so that every management surface prints the same thing.
+# project ids, location hints and registry roots come from file and directory
+# names in the store, which a user can hand-edit to contain a newline
+# (forging a second finding line) or an ANSI escape (a raw terminal control
+# sequence); the JSON renderer needs no such guard -- json.dumps already
+# escapes both. The neutraliser itself is project_context.visible, shared
+# with the project commands so that every management surface prints the same
+# thing.
 def _visible(value: str) -> str:
     return visible(value)
 
@@ -50,7 +52,7 @@ def _finding_to_dict(finding: DiagnosticFinding) -> dict:
     return {
         "kind": finding.kind,
         "memory_ids": list(finding.memory_ids),
-        "scopes": [scope.to_storage() for scope in finding.scopes],
+        "project_ids": list(finding.project_ids),
         "location_hints": list(finding.location_hints),
         "reason": finding.reason,
         "suggestion": finding.suggestion,
@@ -62,6 +64,7 @@ def _render_json(report: DiagnosticsReport, projects: dict, stdout: IO[str]) -> 
 
     stdout.write(json.dumps({
         "state": report.state,
+        "initialized": report.initialized,
         "findings": [_finding_to_dict(f) for f in report.findings],
         "projects": projects,
     }, indent=2) + "\n")
@@ -69,15 +72,17 @@ def _render_json(report: DiagnosticsReport, projects: dict, stdout: IO[str]) -> 
 
 def _render_human(report: DiagnosticsReport, projects: dict, stdout: IO[str]) -> None:
     stdout.write(_STATE_MESSAGES[report.state] + "\n")
+    if not report.initialized and report.state != "uninitialized":
+        stdout.write(_NOT_INITIALIZED_NOTE + "\n")
     by_kind: dict[str, list[DiagnosticFinding]] = {}
     for finding in report.findings:
         by_kind.setdefault(finding.kind, []).append(finding)
     for kind in sorted(by_kind):
         stdout.write(f"\n{kind}:\n")
         for finding in by_kind[kind]:
-            scopes = ", ".join(_visible(scope.to_storage()) for scope in finding.scopes)
+            project_ids = ", ".join(_visible(pid) for pid in finding.project_ids)
             locations = ", ".join(_visible(hint) for hint in finding.location_hints)
-            stdout.write(f"  - scopes: {scopes}\n")
+            stdout.write(f"  - projects: {project_ids}\n")
             stdout.write(f"    locations: {locations}\n")
             stdout.write(f"    reason: {finding.reason}\n")
             stdout.write(f"    suggestion: {finding.suggestion}\n")
@@ -97,7 +102,8 @@ def _render_projects_section(projects: dict, stdout: IO[str]) -> None:
     stdout.write("\nprojects:\n")
     for project in projects["registered"]:
         n = project["roots"]
-        stdout.write(f"  {project['id']}: {n} {'root' if n == 1 else 'roots'}\n")
+        label = _visible(project["name"]) if project["name"] is not None else "unknown project"
+        stdout.write(f"  {project['id']} ({label}): {n} {'root' if n == 1 else 'roots'}\n")
         for root in project["missing_roots"]:
             stdout.write(f"    missing: {_visible(root)}\n")
         for root in project["unverifiable_roots"]:
@@ -113,7 +119,8 @@ def run_doctor(*, root: Path | None, json_output: bool, stale_days: int,
               stdout: IO[str], stderr: IO[str]) -> int:
     # imported here, not at module scope, to match the rest of the umbrella's
     # lazy-import convention for the memriver_core stack
-    from memriver_core.bootstrap import build_diagnostics_service
+    from memriver_core import ProjectNotFound, StorageFailure
+    from memriver_core.bootstrap import build_diagnostics_service, build_service
     from memriver_core.config import load_settings
 
     from .project_context import RegistryInvalid, load_registry, root_integrity
@@ -147,10 +154,18 @@ def run_doctor(*, root: Path | None, json_output: bool, stale_days: int,
 
     try:
         registry = load_registry(settings.root)
+        service = build_service(settings, root=settings.root)
+
+        def project_label(project_id: str) -> str | None:
+            try:
+                return service.read_project(project_id).name
+            except (ProjectNotFound, StorageFailure):
+                return None
+
         verdicts = {r: classify(r) for p in registry.projects for r in p.roots}
         projects = {
             "registered": [
-                {"id": str(p.id), "roots": len(p.roots),
+                {"id": str(p.id), "name": project_label(str(p.id)), "roots": len(p.roots),
                  "missing_roots": [r for r in p.roots if verdicts[r] == "missing"],
                  "unverifiable_roots": [r for r in p.roots if verdicts[r] == "unverifiable"]}
                 for p in registry.projects],

@@ -3,8 +3,8 @@
 A directory belongs to a project when it is, or lies under, a root that the
 user bound to that project with ``memriver project init``/``adopt``. Nothing
 else confers identity -- not a ``.git`` directory, not a marker file, not a
-path hash. The core still knows a project only as a ``ProjectId``; this
-module is where a working directory becomes one.
+path hash. The registry maps directories to project ids; the Project itself
+(its name, its existence) is core's, reached through the service.
 
 ``find_git_root`` survives for one unrelated job: the Cursor/Kiro installers
 place their static instruction file at the nearest git root.
@@ -13,8 +13,6 @@ place their static instruction file at the nearest git root.
 from __future__ import annotations
 
 import os
-import re
-import secrets
 import stat
 import tempfile
 import tomllib
@@ -24,22 +22,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from memriver_core.models import PROJECT_ID_RE, AccessContext, ProjectId, single_line
+from memriver_core import ProjectNotFound
+from memriver_core.models import ID_RE, single_line
 
-PROJECTS_DIRNAME = "projects"
-REGISTRY_FILENAME = "project.toml"
-_MAX_FILENAME_BYTES = 255
+REGISTRY_DIRNAME = "registry"
+REGISTRY_SUFFIX = ".toml"
 _HEADER_FIELD_CHARS = 120
 
 # fixed, client-safe wording per invalid-registry cause: the TOML message, the
 # offending value and the absolute path never travel with the exception
 REASONS = {
-    "bad-name": "project directory name is not an addressable project id",
-    "unlistable": "project directory could not be read",
-    "unreadable": "project file could not be read",
-    "not-toml": "project file is not valid TOML",
-    "missing-roots": "project file has no roots key",
-    "extra-key": "project file has a key other than roots",
+    "bad-name": "registry file name is not an addressable project id",
+    "unlistable": "registry entry could not be read",
+    "unreadable": "registry file could not be read",
+    "not-toml": "registry file is not valid TOML",
+    "missing-roots": "registry file has no roots key",
+    "extra-key": "registry file has a key other than roots",
     "not-strings": "roots is not an array of strings",
     "not-absolute": "root is not an absolute path",
     "not-addressable": "root is not an addressable path",
@@ -73,7 +71,7 @@ def find_git_root(start: Path) -> Path | None:
 
 @dataclass(frozen=True)
 class RegisteredProject:
-    id: ProjectId
+    id: str
     roots: tuple[str, ...]
 
 
@@ -94,29 +92,20 @@ ResolutionState = Literal["registered", "none", "degraded"]
 
 @dataclass(frozen=True)
 class ProjectResolution:
+    """Which registered project a directory resolves to; nothing about the Project itself."""
+
     state: ResolutionState
-    project_id: ProjectId | None
+    project_id: str | None
     root: str | None
     diagnostic: str | None
-
-    def context(self) -> AccessContext:
-        return AccessContext(project_id=self.project_id)
-
-    def header(self) -> str:
-        if self.state == "registered":
-            return f"project: {self.project_id} (root {_field(self.root or '')})"
-        if self.state == "none":
-            return ("project: none — global is read-only; "
-                    "ask the user to run memriver project init")
-        return (f"project: unavailable — registry invalid ({_field(self.diagnostic or '')}); "
-                "ask the user to run memriver project explain")
 
 
 def _degraded(diagnostic: str) -> ProjectResolution:
     return ProjectResolution("degraded", None, None, diagnostic)
 
 
-def _field(value: str) -> str:
+def header_field(value: str) -> str:
+    """One registry- or store-derived value as it may appear in an agent-facing header."""
     return single_line(value)[:_HEADER_FIELD_CHARS]
 
 
@@ -135,7 +124,7 @@ def visible(text: str) -> str:
 
 
 def valid_project_id(name: str) -> bool:
-    return bool(PROJECT_ID_RE.fullmatch(name)) and len(name.encode()) <= _MAX_FILENAME_BYTES
+    return bool(ID_RE.fullmatch(name))
 
 
 def same_directory(a: str, b: str) -> bool | None:
@@ -175,56 +164,58 @@ def covers(outer: Path | str, inner: Path | str) -> bool | None:
 
 
 def load_registry(store_root: Path) -> Registry:
-    """Every project directory under ``<store>/projects``, fully validated.
+    """Every registry file under ``<store>/registry``, fully validated.
 
-    A missing ``projects/`` directory is an empty registry. Anything that
-    cannot be read or does not have the one accepted shape raises
-    ``RegistryInvalid`` -- the caller must not resolve against a registry it
-    could only partly read, because the unread part may be the nearer root.
+    A missing ``registry/`` is an empty registry. Anything that cannot be read
+    or does not have the one accepted shape raises ``RegistryInvalid`` -- the
+    caller must not resolve against a registry it could only partly read,
+    because the unread part may be the nearer root.
     """
-    projects_dir = store_root / PROJECTS_DIRNAME
+    registry_dir = store_root / REGISTRY_DIRNAME
     try:
-        info = os.lstat(projects_dir)
+        info = os.lstat(registry_dir)
     except FileNotFoundError:
         return Registry(())
     except OSError as err:
-        raise RegistryInvalid(PROJECTS_DIRNAME, REASONS["unlistable"]) from err
+        raise RegistryInvalid(REGISTRY_DIRNAME, REASONS["unlistable"]) from err
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-        # a link or a file where the registry container should be is never
-        # followed and never read as "no projects"
-        raise RegistryInvalid(PROJECTS_DIRNAME, REASONS["unlistable"])
+        # a link or a file where the registry should be is never followed and
+        # never read as "no projects"
+        raise RegistryInvalid(REGISTRY_DIRNAME, REASONS["unlistable"])
     try:
-        children = sorted(os.scandir(projects_dir), key=lambda e: e.name)
+        children = sorted(os.scandir(registry_dir), key=lambda e: e.name)
     except OSError as err:
-        raise RegistryInvalid(PROJECTS_DIRNAME, REASONS["unlistable"]) from err
+        raise RegistryInvalid(REGISTRY_DIRNAME, REASONS["unlistable"]) from err
     projects: list[RegisteredProject] = []
     bound: list[tuple[str, str]] = []          # (root, id) seen so far
     for child in children:
-        location = f"{PROJECTS_DIRNAME}/{child.name}"
+        location = f"{REGISTRY_DIRNAME}/{child.name}"
         try:
             if child.is_symlink():
-                # skipping it could drop the nearer sub-project and hand its
+                # skipping it could drop the nearer project and hand its
                 # directories to a parent: refuse instead
                 raise RegistryInvalid(location, REASONS["unlistable"])
-            if not child.is_dir(follow_symlinks=False):
-                continue                      # a stray file
         except OSError as err:
-            raise RegistryInvalid(PROJECTS_DIRNAME, REASONS["unlistable"]) from err
-        if not valid_project_id(child.name):
+            raise RegistryInvalid(REGISTRY_DIRNAME, REASONS["unlistable"]) from err
+        if not child.name.endswith(REGISTRY_SUFFIX):
+            continue                          # a stray: not a registry file by name
+        project_id = child.name[: -len(REGISTRY_SUFFIX)]
+        if not valid_project_id(project_id):
             raise RegistryInvalid(location, REASONS["bad-name"])
-        file_location = f"{location}/{REGISTRY_FILENAME}"
-        roots = _read_roots(Path(child.path) / REGISTRY_FILENAME, file_location)
+        # a correctly named directory, FIFO, socket or device is refused by
+        # _read_roots, never skipped
+        roots = _read_roots(Path(child.path), location)
         for root in roots:
             for other_root, other_id in bound:
-                if other_id == child.name:
+                if other_id == project_id:
                     continue
                 same = root == other_root or same_directory(root, other_root)
                 if same is None:
-                    raise RegistryInvalid(file_location, REASONS["unverifiable"])
+                    raise RegistryInvalid(location, REASONS["unverifiable"])
                 if same:
-                    raise RegistryInvalid(file_location, REASONS["duplicate-root"])
-            bound.append((root, child.name))
-        projects.append(RegisteredProject(ProjectId(child.name), roots))
+                    raise RegistryInvalid(location, REASONS["duplicate-root"])
+            bound.append((root, project_id))
+        projects.append(RegisteredProject(project_id, roots))
     return Registry(tuple(projects))
 
 
@@ -347,32 +338,21 @@ def resolve(store_root: Path, start: Path) -> ProjectResolution:
 
 # --- registry writes ---
 
-def new_project_id(directory_name: str) -> ProjectId:
-    """``<normalized name>-<16 hex>``, fitted to one 255-byte path component."""
-    suffix = "-" + secrets.token_hex(8)
-    name = re.sub(r"[^a-z0-9]+", "-", directory_name.lower()).strip("-")
-    budget = _MAX_FILENAME_BYTES - len(suffix)
-    name = name.encode()[:budget].decode("utf-8", errors="ignore").rstrip("-") or "project"
-    return ProjectId(f"{name}{suffix}")
+def bind(store_root: Path, service, project_id: str, root: str) -> None:
+    """Append ``root`` to the project's registry file.
 
-
-def project_exists(store_root: Path, project_id: ProjectId) -> bool:
-    return (store_root / PROJECTS_DIRNAME / project_id).is_dir()
-
-
-def bind(store_root: Path, project_id: ProjectId, root: str, *, create: bool) -> None:
-    """Append ``root`` to the project's roots; ``create`` says whether the id is new.
-
-    Re-validates the world under the lock: the id's existence, the root still
-    being the canonical directory the caller confirmed, and the registry state.
+    Re-validates the world under the store lock: the Project exists and is not
+    global (core's answers; service reads never take the lock), the root is
+    still the canonical directory the caller confirmed, and no other project
+    binds it or an alias of it. A StorageFailure from the service propagates.
     """
     def change(current: tuple[str, ...] | None, registry: Registry) -> tuple[str, ...] | None:
-        if create and os.path.lexists(store_root / PROJECTS_DIRNAME / project_id):
-            # lexists, not the registry: a stray file under that name is skipped
-            # by load_registry but would still collide with the directory to create
-            raise ValueError("project id already exists")
-        if not create and current is None:
-            raise ValueError("no such project")
+        try:
+            service.read_project(project_id)
+        except ProjectNotFound:
+            raise ValueError("no such project") from None
+        if project_id == service.global_project_id():
+            raise ValueError("the global project cannot be bound to a directory")
         if not os.path.isdir(root) or os.path.realpath(root) != root:
             raise ValueError("root is not a canonical existing directory")
         for other in registry.projects:
@@ -399,7 +379,7 @@ def _bound_here(root: str, roots: tuple[str, ...]) -> bool:
     return False
 
 
-def unbind(store_root: Path, project_id: ProjectId, root: str) -> None:
+def unbind(store_root: Path, project_id: str, root: str) -> None:
     """Remove every element string-equal to ``root``; the path need not exist.
 
     Other spellings that alias the same directory are left alone, and a
@@ -413,7 +393,7 @@ def unbind(store_root: Path, project_id: ProjectId, root: str) -> None:
     _rewrite(store_root, project_id, change)
 
 
-def _rewrite(store_root: Path, project_id: ProjectId,
+def _rewrite(store_root: Path, project_id: str,
              change: Callable[[tuple[str, ...] | None, Registry], tuple[str, ...] | None]) -> None:
     # imported here so that importing this module (the Stop hook does, every
     # turn) never loads the core service stack that bootstrap pulls in
@@ -427,23 +407,24 @@ def _rewrite(store_root: Path, project_id: ProjectId,
         roots = change(current, registry)
         if roots is None:
             return
-        _write_document(store_root, store_root / PROJECTS_DIRNAME / project_id, roots)
+        _write_document(store_root, store_root / REGISTRY_DIRNAME / f"{project_id}{REGISTRY_SUFFIX}",
+                        roots)
 
 
-def _write_document(store_root: Path, project_dir: Path, roots: tuple[str, ...]) -> None:
+def _write_document(store_root: Path, path: Path, roots: tuple[str, ...]) -> None:
     import tomlkit
 
     document = tomlkit.document()
     document["roots"] = list(roots)
     text = tomlkit.dumps(document)
-    _mkdir_private(store_root, project_dir)
-    fd, tmp = tempfile.mkstemp(dir=project_dir, suffix=".tmp")
+    _mkdir_private(store_root, path.parent)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             # inside the with: a failing fchmod must still close the descriptor
             os.fchmod(f.fileno(), 0o600)
             f.write(text)
-        os.replace(tmp, project_dir / REGISTRY_FILENAME)
+        os.replace(tmp, path)
     except BaseException:
         if os.path.exists(tmp):
             os.unlink(tmp)

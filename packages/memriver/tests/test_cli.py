@@ -14,7 +14,8 @@ from memriver import cli, hooks
 from memriver.hooks import HookResult
 from memriver.project_context import bind
 from memriver.protocol_text import STOP_NUDGE
-from memriver_core.models import ProjectId
+from memriver_core.bootstrap import build_service
+from memriver_core.config import Settings
 
 PROTOCOL_VERSION = "2025-06-18"
 
@@ -105,12 +106,12 @@ def test_install_rejects_combining_harness_and_all():
 
 
 @pytest.mark.parametrize(("argv", "handler", "expected"), [
-    (["project", "init", "--yes"], "_project_init",
-     {"directory": None, "yes": True, "root": None}),
-    (["project", "adopt", "x-0123456789abcdef", "/d"], "_project_adopt",
-     {"project_id": "x-0123456789abcdef", "directory": Path("/d"), "yes": False}),
-    (["project", "unbind", "x-0123456789abcdef", "/d"], "_project_unbind",
-     {"project_id": "x-0123456789abcdef", "directory": Path("/d"), "yes": False}),
+    (["project", "init", "--yes", "--name", "Work"], "_project_init",
+     {"directory": None, "yes": True, "root": None, "name": "Work"}),
+    (["project", "adopt", "aaaaaaaaaa", "/d"], "_project_adopt",
+     {"project_id": "aaaaaaaaaa", "directory": Path("/d"), "yes": False}),
+    (["project", "unbind", "aaaaaaaaaa", "/d"], "_project_unbind",
+     {"project_id": "aaaaaaaaaa", "directory": Path("/d"), "yes": False}),
     (["project", "explain", "--project-dir", "/d"], "_project_explain",
      {"project_dir": Path("/d"), "root": None}),
 ])
@@ -207,19 +208,17 @@ def _git_repo(tmp_path, name: str):
     return git_repo
 
 
-def _register(root, repo) -> ProjectId:
-    """Bind the fixture repo, the way `memriver project init` would.
-
-    A `.git` directory confers no identity any more: without a registered
-    root the server has no project to write to at all.
-    """
-    project_id = ProjectId(f"fixture-{repo.name.replace('_', '-')}")
-    bind(root, project_id, str(repo.resolve()), create=True)
+def _register(root, repo) -> str:
+    """Create a project and bind the fixture repo, the way `memriver project init` would."""
+    service = build_service(Settings(root=root), root=root)
+    project_id = service.create_project(repo.name).id
+    bind(root, service, project_id, str(repo.resolve()))
     return project_id
 
 
 def _entry_files(root, project_id):
-    return sorted((root / "projects" / project_id / "entries").glob("*.md"))
+    return sorted(p for p in (root / "memories").glob("*.md")
+                  if f"project_id: {project_id}" in p.read_text(encoding="utf-8"))
 
 
 def test_project_scope_follows_project_dir_not_cwd(tmp_path):
@@ -491,3 +490,57 @@ def test_configure_logging_replaces_a_preattached_null_handler(tmp_path, capsys)
     captured = capsys.readouterr()
     assert "config.toml could not be read" not in captured.out
     assert "config.toml could not be read" in captured.err
+
+
+# --- install: the CLI hands the store step to the installer -----------------
+
+def test_store_step_is_none_once_global_exists(monkeypatch, tmp_path):
+    monkeypatch.setenv("MEMRIVER_ROOT", str(tmp_path / "store"))
+    build_service(Settings(root=tmp_path / "store"), root=tmp_path / "store").ensure_global()
+    assert cli._store_step() is None
+
+
+def test_store_step_for_an_uninitialized_store_creates_global_only_when_applied(
+        monkeypatch, tmp_path):
+    monkeypatch.setenv("MEMRIVER_ROOT", str(tmp_path / "store"))
+    step = cli._store_step()
+    assert "memory store (required): create the global project in" in step.summary
+    assert not (tmp_path / "store" / "store.toml").exists()     # building it writes nothing
+    line = step.apply()
+    global_id = build_service(Settings(root=tmp_path / "store"),
+                              root=tmp_path / "store").global_project_id()
+    assert line == f"memory store: ready (global project {global_id})"
+
+
+def test_install_passes_the_step_and_the_real_tty_state(monkeypatch, tmp_path):
+    import memriver.install as install_module
+
+    monkeypatch.setenv("MEMRIVER_ROOT", str(tmp_path / "store"))
+    seen: dict = {}
+
+    def fake_run_install(*args, **kwargs):
+        seen.update(kwargs)
+        kwargs["stderr"].write("install-error-channel\n")
+        return 0
+
+    monkeypatch.setattr(install_module, "run_install", fake_run_install)
+    result = invoke_main(["install", "--harness", "codex"], stdin="y\n")
+    assert result.exit_code == 0
+    assert result.stderr == "install-error-channel\n" and result.stdout == ""
+    assert seen["store_step"] is not None
+    assert seen["stdin_is_tty"] is False        # invoke_main pipes stdin
+
+
+def test_install_with_an_unreadable_store_stops_before_touching_any_harness(
+        monkeypatch, tmp_path):
+    import memriver.install as install_module
+
+    (tmp_path / "store").mkdir()
+    (tmp_path / "store" / "store.toml").write_text("global_project = 'nope'\n")
+    monkeypatch.setenv("MEMRIVER_ROOT", str(tmp_path / "store"))
+    ran: list = []
+    monkeypatch.setattr(install_module, "run_install", lambda *a, **kw: ran.append(1) or 0)
+    result = invoke_main(["install", "--harness", "codex", "--yes"], stdin="")
+    assert result.exit_code == 1 and ran == []
+    assert result.stderr == ("memriver install: the memory store could not be read; "
+                             "run memriver doctor\n")

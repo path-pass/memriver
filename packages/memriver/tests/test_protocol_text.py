@@ -32,9 +32,14 @@ def test_protocol_block_has_one_instruction_source():
 def test_instructions_and_protocol_block_carry_the_project_scoped_write_rules():
     assert "Global memories are read-only to agents" in INSTRUCTIONS
     assert "never register or rebind a project on your own" in INSTRUCTIONS
+    assert "memory_read fetches one entry in full by id" in INSTRUCTIONS
+    assert "Ids are assigned by memriver." in INSTRUCTIONS
+    assert "memory_update it\ninstead of adding a duplicate" in INSTRUCTIONS
+    # names and the dream queue are gone from the protocol
+    for gone in ("kebab-case", "name is taken", "memory_dream", "confirmed"):
+        assert gone not in INSTRUCTIONS
     assert ("Call memory_index first; its first line names the session's project "
             "or says none is registered.") in PROTOCOL_BLOCK
-    # the pre-registry "no visible memories" constant must not come back
     assert not hasattr(protocol_text, "EMPTY_VISIBLE")
 
 

@@ -1,20 +1,17 @@
 """The public core surface: the error taxonomy transports catch by name.
 
 Re-exported here so a transport never reaches into ``application.errors``;
-these are the same class objects, not copies, so ``except`` clauses match
-whichever spelling a caller used.
+these are the same class objects, not copies.
 """
 
 from .application.errors import (
     ContentRejected,
     GlobalReadOnly,
-    InvalidScope,
     MemoryError,
     MemoryNotFound,
-    NameTaken,
+    ProjectNotFound,
     ProjectUnavailable,
     StorageFailure,
-    UnreadableMemory,
 )
 
 __version__ = "0.1.0"
@@ -22,12 +19,10 @@ __version__ = "0.1.0"
 __all__ = [
     "ContentRejected",
     "GlobalReadOnly",
-    "InvalidScope",
     "MemoryError",
     "MemoryNotFound",
-    "NameTaken",
+    "ProjectNotFound",
     "ProjectUnavailable",
     "StorageFailure",
-    "UnreadableMemory",
     "__version__",
 ]

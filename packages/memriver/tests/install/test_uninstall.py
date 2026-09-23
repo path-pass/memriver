@@ -58,7 +58,16 @@ from memriver.install.codex import NATIVE_MEMORY_LEFT_NOTE as CODEX_NATIVE_MEMOR
 from memriver.project_context import bind
 from memriver.protocol_text import PROTOCOL_BLOCK
 from memriver.uninstall import run_uninstall as run_full_uninstall
-from memriver_core.models import ProjectId
+from memriver_core.bootstrap import build_service
+from memriver_core.config import Settings
+
+
+def _bind_new(store: Path, directory: Path, name: str) -> str:
+    service = build_service(Settings(root=store), root=store)
+    project_id = service.create_project(name).id
+    bind(store, service, project_id, str(directory.resolve()))
+    return project_id
+
 
 ALL_HARNESSES = ["claude-code", "codex", "cursor", "kiro"]
 
@@ -107,14 +116,16 @@ class Run:
 
 
 def install(harnesses, *, home: Path, cwd: Path, yes: bool = True,
-           env: dict | None = None) -> Run:
-    out = io.StringIO()
+            env: dict | None = None) -> Run:
+    out, err = io.StringIO(), io.StringIO()
     replace = ReplaceSpy()
     exit_code = run_install(
         harnesses, yes=yes, dry_run=False, home=home, cwd=cwd,
         env=env if env is not None else {}, input_fn=refuse_to_read, stdout=out,
-        replace_file=replace,
+        stderr=err, replace_file=replace,
     )
+    assert exit_code == 0, err.getvalue()
+    assert err.getvalue() == ""
     return Run(exit_code, out.getvalue(), None, replace)
 
 
@@ -2216,11 +2227,12 @@ def test_config_uninstall_leaves_the_registry_alone(home, project):
     """Removing a harness configuration is not unregistering a project: the
     registry lives in the store, and only ``memriver project`` writes it."""
     store = home / "agent-memory"
-    bind(store, ProjectId("work-0123456789abcdef"), str(project.resolve()), create=True)
+    pid = _bind_new(store, project, "work")
     install(["cursor"], home=home, cwd=project)
 
     result = uninstall(["cursor"], home=home, cwd=project)
 
     assert result.exit_code == 0
-    assert (store / "projects" / "work-0123456789abcdef" / "project.toml").read_text() \
+    assert (store / "registry" / f"{pid}.toml").read_text() \
         == f'roots = ["{project.resolve()}"]\n'
+    assert build_service(Settings(root=store), root=store).read_project(pid).name == "work"

@@ -14,9 +14,11 @@ def store_lock(root: Path) -> Iterator[None]:
 
     Several processes may share one root, so a caller doing its own
     read-check-write over memories (e.g. a name-collision check before
-    write) should wrap it here to serialize against peers. Not reentrant:
-    `update_body` and `delete` already take this lock internally, so
-    calling either of them from inside a `store_lock` block deadlocks.
+    write) should wrap it here to serialize against peers.
+    Not reentrant: `FileMemoryStore.update`/`delete`/`record` and
+    `FileProjectStore.create`/`ensure_global` take this lock internally, so
+    calling any of them from inside a `store_lock` block deadlocks. Reads
+    never take it.
     fcntl is POSIX-only: no Windows support yet.
 
     Any OSError from the lock lifecycle itself -- creating the root,
@@ -25,8 +27,8 @@ def store_lock(root: Path) -> Iterator[None]:
     and goes no further. Callers must never see a raw platform exception here.
     """
     try:
-        # memory filenames are semantic now; a world/group-readable root lets
-        # other local users enumerate them by listing. Only the root created
+        # a world/group-readable root lets other local users enumerate
+        # memory ids by listing. Only the root created
         # here, not one that already existed -- some callers deliberately
         # lock a directory down to simulate a permission failure, and this
         # must not silently undo that.

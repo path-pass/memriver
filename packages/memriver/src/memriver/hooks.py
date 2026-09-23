@@ -209,12 +209,15 @@ def _read_index(root: Path | None, project_dir: Path) -> str:
     from memriver_core.config import load_settings
 
     from .project_context import resolve
+    from .session import open_session
 
     with quiet_core_logging():
         settings = load_settings(root_override=root)
-        resolution = resolve(settings.root, project_dir)
-        body = build_service(settings, root=settings.root).index(resolution.context())
-    return resolution.header() + "\n" + body
+        service = build_service(settings, root=settings.root)
+        # the same seam the MCP server uses: same directory, same header and body
+        session = open_session(service, resolve(settings.root, project_dir))
+        body = service.index(session.ctx)
+    return session.header + "\n" + body
 
 
 def _neutralize_delimiters(index: str) -> str:

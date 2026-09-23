@@ -139,6 +139,8 @@ def _add_project_commands(commands) -> None:
     init = add("init", "register a new project rooted at a directory")
     init.add_argument("directory", type=Path, nargs="?", default=None,
                       help="project root (default: the current working directory)")
+    init.add_argument("--name", default=None,
+                      help="readable project name (default: the directory's name)")
     init.set_defaults(handler=_project_init)
 
     adopt = add("adopt", "bind a directory to an existing project id")
@@ -225,9 +227,47 @@ def _install(args: argparse.Namespace) -> int:
     # no selector means every harness, so the documented optional grammar has
     # one deterministic meaning rather than a silent no-op
     harnesses = [args.harness] if args.harness else list(HARNESSES)
+    try:
+        store_step = _store_step()
+    except Exception:  # noqa: BLE001 - any cause is one fixed, path-free line
+        # a store that cannot even be read is not initialized behind the
+        # user's back, and no harness is pointed at it
+        sys.stderr.write("memriver install: the memory store could not be read; "
+                         "run memriver doctor\n")
+        return 1
     return run_install(harnesses, yes=args.yes, dry_run=args.dry_run,
                        home=Path.home(), cwd=Path.cwd(), env=os.environ,
-                       input_fn=input, stdout=sys.stdout, replace_file=os.replace)
+                       input_fn=input, stdout=sys.stdout, stderr=sys.stderr,
+                       replace_file=os.replace, store_step=store_step, stdin_is_tty=sys.stdin.isatty())
+
+
+def _store_step():
+    """The memory store's pending initialization, as one change of the install plan.
+
+    None when the global project already exists (nothing to initialize, so
+    nothing to consent to). Built here because the installer package never
+    imports memriver_core; building it reads the store and writes nothing.
+    """
+    from memriver_core.bootstrap import build_service
+    from memriver_core.config import load_settings
+
+    from .core_logging import quiet_core_logging
+    from .install import StoreStep
+    from .project_context import visible
+
+    with quiet_core_logging():
+        settings = load_settings()
+        service = build_service(settings, root=settings.root)
+        if service.global_project_id() is not None:
+            return None
+    where = visible(str(settings.root))
+
+    def apply() -> str:
+        with quiet_core_logging():
+            return f"memory store: ready (global project {service.ensure_global()})"
+
+    return StoreStep(summary=f"memory store (required): create the global project in {where}",
+                     label=f"memory store in {where}", apply=apply)
 
 
 def _uninstall(args: argparse.Namespace) -> int:
@@ -247,7 +287,7 @@ def _uninstall(args: argparse.Namespace) -> int:
 def _project_init(args: argparse.Namespace) -> int:
     from .project_commands import run_init
 
-    return run_init(args.directory, root=args.root, yes=args.yes,
+    return run_init(args.directory, name=args.name, root=args.root, yes=args.yes,
                     stdin_is_tty=sys.stdin.isatty(), input_fn=input,
                     stdout=sys.stdout, cwd=Path.cwd(), home=Path.home())
 

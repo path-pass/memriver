@@ -91,7 +91,7 @@ def _modules_under(package: str) -> list[str]:
 # --- the forbidden-edge table (one row per spec rule) ------------------------
 
 FORBIDDEN = [
-    # models import stdlib and the pure ulid value generator only
+    # models import the standard library only
     ("memriver_core.models", "memriver_core.application"),
     ("memriver_core.models", "memriver_core.repository"),
     ("memriver_core.models", "memriver_core.content_policy"),
@@ -146,8 +146,8 @@ def test_forbidden_import_edge(subject, forbidden):
 STDLIB = set(sys.stdlib_module_names)
 
 ALLOWED_NON_STDLIB = {
-    # models: stdlib + the pure ulid value generator + intra-models only
-    "memriver_core.models": {"ulid", "memriver_core.models"},
+    # models: stdlib + intra-models only
+    "memriver_core.models": {"memriver_core.models"},
     # application: stdlib + models + the two protocols + intra-application
     "memriver_core.application": {
         "memriver_core.models",
@@ -186,14 +186,15 @@ def test_strict_layer_allowlist(layer):
 # --- composition-root rules -------------------------------------------------
 
 # Concrete adapters may only be assembled in bootstrap.py. Reaching one via
-# `import memriver_core.repository.filesystem as fs; fs.FileMemoryRepository()`
+# `import memriver_core.repository.filesystem as fs; fs.FileMemoryStore()`
 # must be caught exactly like `from memriver_core.repository.filesystem import
-# FileMemoryRepository` — so, in addition to the from-import symbol check
+# FileMemoryStore` — so, in addition to the from-import symbol check
 # below, this also checks the normalized module-target set: importing the
 # adapter's module at all, under any alias, from an unauthorized module is
 # itself the violation.
 CONCRETE_ADAPTER_MODULES = {
-    "FileMemoryRepository": "memriver_core.repository.filesystem",
+    "FileMemoryStore": "memriver_core.repository.filesystem",
+    "FileProjectStore": "memriver_core.repository.filesystem",
     "SecretScanner": "memriver_core.content_policy.secret_scanner",
     "FilesystemStoreInspector": "memriver_core.repository.filesystem",
 }
@@ -277,6 +278,12 @@ def test_only_config_and_bootstrap_import_settings(symbol):
         )
 
 
+def test_application_names_the_store_ports_not_the_adapters():
+    imports = _imported_modules("memriver_core.application.service")
+    assert "memriver_core.repository.protocol" in imports
+    assert not any(_under(t, "memriver_core.repository.filesystem") for t in imports)
+
+
 # --- synthetic-source self-tests for the normalization helper ---------------
 #
 # These compile tiny synthetic modules (no files on disk) to prove the walker
@@ -293,15 +300,15 @@ def test_only_config_and_bootstrap_import_settings(symbol):
         # `from pkg import mod` — reaches a module, not a name
         ("from memriver_core.repository import filesystem\n", "memriver_core.bootstrap"),
         # `from pkg.mod import Name`
-        ("from memriver_core.repository.filesystem import FileMemoryRepository\n",
+        ("from memriver_core.repository.filesystem import FileMemoryStore\n",
          "memriver_core.bootstrap"),
         # `from pkg.mod import Name as alias`
-        ("from memriver_core.repository.filesystem import FileMemoryRepository as fmr\n",
+        ("from memriver_core.repository.filesystem import FileMemoryStore as fmr\n",
          "memriver_core.bootstrap"),
         # relative `from . import mod`
         ("from . import filesystem\n", "memriver_core.repository"),
         # relative `from .mod import Name as alias`
-        ("from .filesystem import FileMemoryRepository as w\n", "memriver_core.repository"),
+        ("from .filesystem import FileMemoryStore as w\n", "memriver_core.repository"),
     ],
 )
 def test_imports_from_source_catches_every_bypass_form(source, anchor_package):

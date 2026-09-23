@@ -1,16 +1,40 @@
 import threading
 import time
 
-from memriver_core.models import AccessContext, Memory, ProjectId, Scope
-from memriver_core.repository.filesystem import FileMemoryRepository
+from memriver_core.models import AccessContext, Memory, Project
+from memriver_core.repository.filesystem import FileMemoryStore, FileProjectStore
+from memriver_core.repository.filesystem import memory_store as memory_store_module
 from memriver_core.repository.filesystem.locking import store_lock
 
-# the races below are about the store-wide lock, not about the scope: the
-# repository refuses every global write, so they seed project entries
-MINE = ProjectId("mine-000000")
-SCOPE = Scope.project(MINE)
-CTX = AccessContext(project_id=MINE)
-ENTRIES = f"projects/{MINE}/entries"
+
+def _world(root):
+    project_store = FileProjectStore(root)
+    global_id = project_store.ensure_global()
+    project = Project.new("mine")
+    project_store.create(project)
+    memory_store = FileMemoryStore(root, project_store)
+    return memory_store, project_store, AccessContext(project_id=project.id,
+                                                      global_project_id=global_id)
+
+
+def _race(target, args_list):
+    barrier = threading.Barrier(len(args_list))
+    errors: list[Exception] = []
+
+    def attempt(*args):
+        try:
+            barrier.wait(timeout=5)
+            target(*args)
+        except Exception as err:  # noqa: BLE001
+            errors.append(err)
+
+    threads = [threading.Thread(target=attempt, args=args) for args in args_list]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+    return errors
 
 
 def test_store_lock_creates_the_root_and_its_lock_file(tmp_path):
@@ -20,105 +44,60 @@ def test_store_lock_creates_the_root_and_its_lock_file(tmp_path):
     assert (root / ".lock").exists()
 
 
-def test_create_holds_the_lock_across_check_then_write(tmp_path):
-    # create's collision check and its write must sit inside one lock, or two
-    # writers both see the name free and the loser silently overwrites the
-    # winner. Instrument the whole critical section: _occupied opens it and
-    # _atomic_write closes it, so a peer entering _occupied while another
-    # thread is still writing means the lock does not span the sequence.
-    memory_repository = FileMemoryRepository(tmp_path)
-    active = 0
-    max_active = 0
-    counter_lock = threading.Lock()
-    real_occupied = memory_repository._occupied
-    real_write = memory_repository._atomic_write
+def test_record_holds_the_lock_from_the_project_check_to_the_write(tmp_path, monkeypatch):
+    # the project check opens the critical section and the write closes it; a peer entering the check while another thread is still
+    # writing means the lock does not span the sequence
+    memory_store, project_store, ctx = _world(tmp_path / "store")
+    active = max_active = 0
+    counter = threading.Lock()
+    real_read, real_write = project_store.read, memory_store_module.write_new
 
-    def observed_occupied(memory_id, scopes):
+    def observed_read(project_id):
         nonlocal active, max_active
-        with counter_lock:
+        with counter:
             active += 1
             max_active = max(max_active, active)
-        time.sleep(0.02)  # widen the window so an unserialized peer overlaps
-        return real_occupied(memory_id, scopes)
+        time.sleep(0.02)
+        return real_read(project_id)
 
-    def observed_write(path, text):
+    def observed_write(root, path, text):
         nonlocal active
         try:
-            real_write(path, text)
+            real_write(root, path, text)
         finally:
-            with counter_lock:
+            with counter:
                 active -= 1
 
-    memory_repository._occupied = observed_occupied
-    memory_repository._atomic_write = observed_write
-    barrier = threading.Barrier(2)
-    errors: list[Exception] = []
-
-    def attempt(name: str) -> None:
-        try:
-            barrier.wait(timeout=5)
-            memory_repository.create(Memory.new(
-                body=name, type="user", scope=SCOPE, source={}, id=name), CTX)
-        except Exception as err:  # noqa: BLE001
-            errors.append(err)
-
-    threads = [threading.Thread(target=attempt, args=(n,)) for n in ("a", "b")]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=10)
-        assert not t.is_alive()
-
-    assert errors == []
-    assert max_active == 1  # flock serialized check-then-write, not just write
-    assert {p.stem for p in (tmp_path / ENTRIES).glob("*.md")} == {"a", "b"}
+    monkeypatch.setattr(project_store, "read", observed_read)
+    monkeypatch.setattr(memory_store_module, "write_new", observed_write)
+    memories = [Memory.new(body=n, type="user", project_id=ctx.project_id, source={})
+                for n in ("a", "b")]
+    assert _race(memory_store.record, [(m, ctx) for m in memories]) == []
+    assert max_active == 1
 
 
-def test_update_body_serializes_concurrent_writers(tmp_path):
-    # instrument the critical section directly: end-state assertions alone
-    # can't discriminate a missing lock, because _atomic_write's mkstemp +
-    # os.replace already guarantees a single clean winner either way. Count
-    # concurrent entries into _atomic_write instead -- with the store-wide
-    # flock held for the whole read-modify-write, only one thread can ever
-    # be inside it at a time.
-    memory_repository = FileMemoryRepository(tmp_path)
-    memory_repository.create(Memory.new(
-        body="base", type="user", scope=SCOPE, source={}, id="n"), CTX)
-    active = 0
-    max_active = 0
-    counter_lock = threading.Lock()
-    real_write = memory_repository._atomic_write
+def test_update_serializes_concurrent_writers(tmp_path, monkeypatch):
+    memory_store, _, ctx = _world(tmp_path / "store")
+    memory = Memory.new(body="base", type="user", project_id=ctx.project_id, source={})
+    memory_store.record(memory, ctx)
+    active = max_active = 0
+    counter = threading.Lock()
+    real_replace = memory_store_module.replace_file
 
-    def observed_write(path, text):
+    def observed_replace(root, path, text):
         nonlocal active, max_active
-        with counter_lock:
+        with counter:
             active += 1
             max_active = max(max_active, active)
-        time.sleep(0.02)  # widen the window so an unserialized peer overlaps
+        time.sleep(0.02)
         try:
-            real_write(path, text)
+            real_replace(root, path, text)
         finally:
-            with counter_lock:
+            with counter:
                 active -= 1
 
-    memory_repository._atomic_write = observed_write
-    barrier = threading.Barrier(2)
-    errors: list[Exception] = []
-
-    def attempt(marker: str) -> None:
-        try:
-            barrier.wait(timeout=5)
-            memory_repository.update_body("n", marker, CTX)
-        except Exception as err:  # noqa: BLE001
-            errors.append(err)
-
-    threads = [threading.Thread(target=attempt, args=(m,)) for m in ("a", "b")]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=10)
-        assert not t.is_alive()
-
-    assert errors == []
-    assert max_active == 1  # flock serialized the two critical sections
-    assert memory_repository.get("n", CTX).body in {"a", "b"}
+    monkeypatch.setattr(memory_store_module, "replace_file", observed_replace)
+    assert _race(lambda body: memory_store.update(memory.id, ctx, body=body, description=None),
+                 [("a",), ("b",)]) == []
+    assert max_active == 1
+    assert memory_store.read(memory.id, ctx).body in {"a", "b"}

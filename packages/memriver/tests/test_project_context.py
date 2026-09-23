@@ -17,30 +17,36 @@ from memriver.project_context import (
     covers,
     find_git_root,
     load_registry,
-    new_project_id,
-    project_exists,
     resolve,
     resolve_project,
     root_integrity,
     unbind,
     visible,
 )
-from memriver_core.models import AccessContext, ProjectId
+from memriver_core import StorageFailure
+from memriver_core.bootstrap import build_service
+from memriver_core.config import Settings
+from memriver_core.models import new_id
 
-A = ProjectId("a-0123456789abcdef")
-B = ProjectId("b-0123456789abcdef")
+A = "aaaaaaaaaa"
+B = "bbbbbbbbbb"
 
 
-def _register(store: Path, project_id: str, roots: list[str] | None) -> None:
-    d = store / "projects" / project_id
+def _register(store: Path, project_id: str, roots: list[str]) -> Path:
+    d = store / "registry"
     d.mkdir(parents=True, exist_ok=True)
-    if roots is not None:
-        body = "roots = [" + ", ".join(f'"{r}"' for r in roots) + "]\n"
-        (d / "project.toml").write_text(body, encoding="utf-8")
+    path = d / f"{project_id}.toml"
+    path.write_text("roots = [" + ", ".join(f'"{r}"' for r in roots) + "]\n", encoding="utf-8")
+    return path
 
 
 def _registry(*pairs: tuple[str, list[str]]) -> Registry:
-    return Registry(tuple(RegisteredProject(ProjectId(i), tuple(r)) for i, r in pairs))
+    return Registry(tuple(RegisteredProject(i, tuple(r)) for i, r in pairs))
+
+
+def _service_with(store: Path, *names: str):
+    service = build_service(Settings(root=store), root=store)
+    return service, [service.create_project(name).id for name in names]
 
 
 def _case_insensitive(monkeypatch):
@@ -68,14 +74,14 @@ def test_find_git_root_is_kept_for_installers(tmp_path):
 
 # --- load_registry ---
 
-def test_missing_projects_dir_is_an_empty_registry(tmp_path):
+def test_missing_registry_dir_is_an_empty_registry(tmp_path):
     assert load_registry(tmp_path / "store") == Registry(())
     assert not (tmp_path / "store").exists()
 
 
-def test_project_without_file_is_unbound(tmp_path):
-    _register(tmp_path, "old-abc123", None)
-    assert load_registry(tmp_path).projects == (RegisteredProject(ProjectId("old-abc123"), ()),)
+def test_an_empty_roots_file_is_a_project_with_no_roots(tmp_path):
+    _register(tmp_path, A, [])
+    assert load_registry(tmp_path).projects == (RegisteredProject(A, ()),)
 
 
 def test_bound_project_keeps_roots_as_stored(tmp_path):
@@ -84,65 +90,59 @@ def test_bound_project_keeps_roots_as_stored(tmp_path):
     assert project.roots == ("/x/work", "/y/work")
 
 
+def test_the_pre_release_registry_is_not_read(tmp_path):
+    old = tmp_path / "projects" / "demo-0123456789abcdef"
+    old.mkdir(parents=True)
+    (old / "project.toml").write_text('roots = ["/x/work"]\n')
+    assert load_registry(tmp_path) == Registry(())
+
+
 @pytest.mark.parametrize("body, reason", [
-    ("roots = [\n", "project file is not valid TOML"),
-    ('roots = ["/x"]\nname = "x"\n', "project file has a key other than roots"),
-    # a file with keys but no roots is the missing key, not the extra one
-    ('name = "x"\n', "project file has no roots key"),
+    ("roots = [\n", "registry file is not valid TOML"),
+    ('roots = ["/x"]\nname = "x"\n', "registry file has a key other than roots"),
+    ('name = "x"\n', "registry file has no roots key"),
+    ("", "registry file has no roots key"),
     ('roots = "/x"\n', "roots is not an array of strings"),
     ("roots = [1]\n", "roots is not an array of strings"),
     ('roots = ["relative/path"]\n', "root is not an absolute path"),
     ('roots = ["/x/\\u0000y"]\n', "root is not an addressable path"),
 ])
-def test_invalid_project_file_names_location_and_fixed_reason(tmp_path, body, reason):
-    d = tmp_path / "projects" / A
-    d.mkdir(parents=True)
-    (d / "project.toml").write_text(body, encoding="utf-8")
+def test_invalid_registry_file_names_location_and_fixed_reason(tmp_path, body, reason):
+    (tmp_path / "registry").mkdir()
+    (tmp_path / "registry" / f"{A}.toml").write_text(body, encoding="utf-8")
     with pytest.raises(RegistryInvalid) as info:
         load_registry(tmp_path)
-    assert info.value.location == f"projects/{A}/project.toml"
-    assert info.value.reason == reason
+    assert (info.value.location, info.value.reason) == (f"registry/{A}.toml", reason)
 
 
 def test_invalid_file_error_never_echoes_the_offending_value(tmp_path):
-    d = tmp_path / "projects" / A
-    d.mkdir(parents=True)
-    (d / "project.toml").write_text('roots = ["SENTINEL-relative/path"]\n', encoding="utf-8")
+    (tmp_path / "registry").mkdir()
+    (tmp_path / "registry" / f"{A}.toml").write_text('roots = ["SENTINEL-relative/path"]\n')
     with pytest.raises(RegistryInvalid) as info:
         load_registry(tmp_path)
     assert "SENTINEL" not in str(info.value)
 
 
-def test_project_file_without_a_roots_key_names_the_missing_key(tmp_path):
-    d = tmp_path / "projects" / A
-    d.mkdir(parents=True)
-    (d / "project.toml").write_text("", encoding="utf-8")
-    with pytest.raises(RegistryInvalid) as info:
-        load_registry(tmp_path)
-    assert (info.value.location, info.value.reason) == (
-        f"projects/{A}/project.toml", "project file has no roots key")
-
-
-def test_project_file_that_is_a_symlink_is_never_followed(tmp_path):
-    # a live link out of the store would let anything outside it decide which
-    # directories the project owns
+def test_a_symlinked_registry_file_is_never_followed_live_or_dangling(tmp_path):
     outside = tmp_path / "outside.toml"
-    outside.write_text('roots = ["/x/work"]\n', encoding="utf-8")
-    d = tmp_path / "projects" / A
-    d.mkdir(parents=True)
-    (d / "project.toml").symlink_to(outside)
-    with pytest.raises(RegistryInvalid) as info:
-        load_registry(tmp_path)
-    assert info.value.reason == "project file could not be read"
+    outside.write_text('roots = ["/x/work"]\n')
+    (tmp_path / "registry").mkdir()
+    for target in (outside, tmp_path / "nowhere.toml"):
+        link = tmp_path / "registry" / f"{A}.toml"
+        link.symlink_to(target)
+        with pytest.raises(RegistryInvalid) as info:
+            load_registry(tmp_path)
+        assert (info.value.location, info.value.reason) == (
+            f"registry/{A}.toml", "registry entry could not be read")
+        link.unlink()
 
 
 def _call_with_timeout(fn, *args, seconds: float = 5.0, unblock: Path | None = None):
     """Run ``fn(*args)`` on a thread; a call that does not return in ``seconds`` fails.
 
-    A regression that opens a FIFO would block the caller forever, which
-    would hang pytest instead of failing one test. On timeout the write end
-    of ``unblock`` is opened and closed so the stuck reader sees EOF and the
-    thread can finish; the test then fails with a timeout, not a hang.
+    A regression that opens a FIFO would block the caller forever and hang
+    pytest instead of failing one test. On timeout the write end of
+    ``unblock`` is opened and closed so the stuck reader sees EOF.
     """
     outcome: dict[str, object] = {}
 
@@ -165,51 +165,53 @@ def _call_with_timeout(fn, *args, seconds: float = 5.0, unblock: Path | None = N
     return outcome["value"]
 
 
-@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFOs only")
-def test_project_file_that_is_a_fifo_is_refused_before_it_is_opened(tmp_path):
-    # opening a FIFO with no writer blocks forever: the loader must refuse
-    # anything that is not a regular file from lstat alone, before any open
-    d = tmp_path / "projects" / A
-    d.mkdir(parents=True)
-    fifo = d / "project.toml"
-    os.mkfifo(fifo)
+@pytest.mark.parametrize("kind", ["fifo", "directory", "socket"])
+def test_a_correctly_named_non_regular_registry_file_is_refused_never_skipped(
+        tmp_path, monkeypatch, kind):
+    # skipping it would let resolution fall back to a parent project's root
+    registry = tmp_path / "registry"
+    registry.mkdir()
+    path = registry / f"{A}.toml"
+    if kind == "fifo":
+        os.mkfifo(path)
+    elif kind == "directory":
+        path.mkdir()
+    else:
+        import socket
+        monkeypatch.chdir(registry)             # AF_UNIX paths are short; bind relative
+        server = socket.socket(socket.AF_UNIX)
+        server.bind(f"{A}.toml")
+        server.close()
+    unblock = path if kind == "fifo" else None
     with pytest.raises(RegistryInvalid) as info:
-        _call_with_timeout(load_registry, tmp_path, unblock=fifo)
+        _call_with_timeout(load_registry, tmp_path, unblock=unblock)
     assert (info.value.location, info.value.reason) == (
-        f"projects/{A}/project.toml", "project file could not be read")
-    res = _call_with_timeout(resolve, tmp_path, tmp_path, unblock=fifo)
+        f"registry/{A}.toml", "registry file could not be read")
+    res = _call_with_timeout(resolve, tmp_path, tmp_path, unblock=unblock)
     assert res.state == "degraded"
-    assert res.diagnostic == f"projects/{A}/project.toml: project file could not be read"
+    assert res.diagnostic == f"registry/{A}.toml: registry file could not be read"
 
 
-def test_dangling_project_file_symlink_is_unreadable_not_missing(tmp_path):
-    d = tmp_path / "projects" / A
-    d.mkdir(parents=True)
-    (d / "project.toml").symlink_to(tmp_path / "nowhere.toml")
+def test_registry_dir_that_is_a_symlink_or_a_file_is_invalid_not_empty(tmp_path):
+    (tmp_path / "registry").symlink_to(tmp_path / "nowhere")
     with pytest.raises(RegistryInvalid) as info:
         load_registry(tmp_path)
-    assert info.value.reason == "project file could not be read"
-
-
-def test_projects_dir_that_is_a_symlink_is_invalid_not_empty(tmp_path):
-    (tmp_path / "projects").symlink_to(tmp_path / "nowhere")
-    with pytest.raises(RegistryInvalid) as info:
-        load_registry(tmp_path)
-    assert (info.value.location, info.value.reason) == ("projects", "project directory could not be read")
-    (tmp_path / "projects").unlink()
-    (tmp_path / "projects").write_text("not a directory")
+    assert (info.value.location, info.value.reason) == ("registry", "registry entry could not be read")
+    (tmp_path / "registry").unlink()
+    (tmp_path / "registry").write_text("not a directory")
     with pytest.raises(RegistryInvalid):
         load_registry(tmp_path)
 
 
-def test_project_dir_that_is_a_symlink_is_invalid_not_skipped(tmp_path):
-    real = tmp_path / "elsewhere" / A
-    real.mkdir(parents=True)
-    (tmp_path / "projects").mkdir()
-    (tmp_path / "projects" / A).symlink_to(real)
+@pytest.mark.parametrize("name", ["Bad_Name.toml", "demo-0123456789abcdef.toml",
+                                  "AAAAAAAAAA.toml"])
+def test_a_registry_file_name_that_is_not_an_id_is_invalid(tmp_path, name):
+    (tmp_path / "registry").mkdir()
+    (tmp_path / "registry" / name).write_text("roots = []\n")
     with pytest.raises(RegistryInvalid) as info:
         load_registry(tmp_path)
-    assert (info.value.location, info.value.reason) == (f"projects/{A}", "project directory could not be read")
+    assert (info.value.location, info.value.reason) == (
+        f"registry/{name}", "registry file name is not an addressable project id")
 
 
 def test_unverifiable_comparison_makes_the_registry_invalid(tmp_path, monkeypatch):
@@ -221,21 +223,13 @@ def test_unverifiable_comparison_makes_the_registry_invalid(tmp_path, monkeypatc
     assert info.value.reason == "root could not be checked"
 
 
-def test_bad_directory_name_is_invalid(tmp_path):
-    (tmp_path / "projects" / "Bad_Name").mkdir(parents=True)
-    with pytest.raises(RegistryInvalid) as info:
-        load_registry(tmp_path)
-    assert (info.value.location, info.value.reason) == (
-        "projects/Bad_Name", "project directory name is not an addressable project id")
-
-
 def test_same_root_under_two_ids_is_invalid(tmp_path):
     _register(tmp_path, A, ["/x/work"])
     _register(tmp_path, B, ["/x/work"])
     with pytest.raises(RegistryInvalid) as info:
         load_registry(tmp_path)
-    assert info.value.reason == "root is already bound to another project"
-    assert info.value.location == f"projects/{B}/project.toml"
+    assert (info.value.location, info.value.reason) == (
+        f"registry/{B}.toml", "root is already bound to another project")
 
 
 def test_alias_roots_under_two_ids_are_invalid(tmp_path, monkeypatch):
@@ -258,9 +252,9 @@ def test_alias_roots_under_one_id_are_legal(tmp_path, monkeypatch):
     assert len(project.roots) == 2
 
 
-def test_stray_file_under_projects_is_ignored(tmp_path):
-    (tmp_path / "projects").mkdir()
-    (tmp_path / "projects" / "notes.txt").write_text("x")
+def test_strays_in_the_registry_dir_are_ignored(tmp_path):
+    (tmp_path / "registry" / "subdir").mkdir(parents=True)
+    (tmp_path / "registry" / "notes.txt").write_text("x")
     assert load_registry(tmp_path) == Registry(())
 
 
@@ -282,7 +276,6 @@ def test_unregistered_directory_is_none(tmp_path):
     (tmp_path / "repo" / ".git").mkdir(parents=True)
     res = resolve_project(_registry(), tmp_path / "repo")
     assert res == ProjectResolution(state="none", project_id=None, root=None, diagnostic=None)
-    assert res.context() == AccessContext(project_id=None)
 
 
 def test_case_alias_matches_by_samefile(tmp_path, monkeypatch):
@@ -419,7 +412,6 @@ def test_start_that_is_a_file_or_missing_is_degraded(tmp_path):
         res = resolve_project(_registry(), start)
         assert res.state == "degraded"
         assert res.diagnostic == "working directory could not be resolved"
-        assert res.context() == AccessContext(project_id=None)
 
 
 # --- resolve (never raises) ---
@@ -430,36 +422,15 @@ def test_resolve_survives_a_start_path_the_os_cannot_even_address(tmp_path):
     res = resolve(tmp_path / "store", Path("/SENTINEL\x00cwd"))
     assert res.state == "degraded"
     assert res.diagnostic == "working directory could not be resolved"
-    assert res.context().project_id is None
     assert "SENTINEL" not in res.diagnostic
 
 
 def test_resolve_turns_invalid_registry_into_degraded(tmp_path):
-    d = tmp_path / "store" / "projects" / A
-    d.mkdir(parents=True)
-    (d / "project.toml").write_text("roots = [\n")
+    (tmp_path / "store" / "registry").mkdir(parents=True)
+    (tmp_path / "store" / "registry" / f"{A}.toml").write_text("roots = [\n")
     res = resolve(tmp_path / "store", tmp_path)
     assert res.state == "degraded"
-    assert res.diagnostic == f"projects/{A}/project.toml: project file is not valid TOML"
-
-
-# --- header ---
-
-def test_header_per_state():
-    assert ProjectResolution("registered", A, "/x/work", None).header() == f"project: {A} (root /x/work)"
-    assert ProjectResolution("none", None, None, None).header() \
-        == "project: none — global is read-only; ask the user to run memriver project init"
-    assert ProjectResolution("degraded", None, None, "projects/x/project.toml: bad").header() \
-        == ("project: unavailable — registry invalid (projects/x/project.toml: bad); "
-            "ask the user to run memriver project explain")
-
-
-def test_header_neutralizes_control_characters_and_truncates():
-    res = ProjectResolution("registered", A, "/x/\nevil " + "a" * 200, None)
-    line = res.header()
-    assert "\n" not in line and " " not in line
-    assert line.startswith(f"project: {A} (root /x/ evil a")
-    assert len(line) <= len(f"project: {A} (root ") + 120 + 1
+    assert res.diagnostic == f"registry/{A}.toml: registry file is not valid TOML"
 
 
 def test_visible_replaces_controls_one_for_one_and_keeps_ordinary_spaces():
@@ -474,14 +445,6 @@ def test_visible_replaces_controls_one_for_one_and_keeps_ordinary_spaces():
 
 # --- registry writes ---
 
-def test_new_project_id_shape():
-    pid = new_project_id("My Work.Dir")
-    assert pid.startswith("my-work-dir-") and len(pid) == len("my-work-dir-") + 16
-    assert new_project_id("").startswith("project-")
-    pid = new_project_id("é" * 300)
-    assert len(pid.encode()) <= 255 and pid.startswith("project-")
-
-
 @pytest.fixture
 def dirs(tmp_path):
     """Real, canonical directories to bind: bind refuses paths that do not exist."""
@@ -492,149 +455,139 @@ def dirs(tmp_path):
     return out
 
 
-def test_bind_create_makes_private_dir_and_exact_document(tmp_path, dirs):
+def test_bind_writes_a_private_registry_file_with_the_exact_document(tmp_path, dirs):
     store = tmp_path / "store"
-    bind(store, A, dirs["x-work"], create=True)
-    d = store / "projects" / A
-    assert stat.S_IMODE(d.stat().st_mode) == 0o700
-    assert stat.S_IMODE((d / "project.toml").stat().st_mode) == 0o600
-    assert (d / "project.toml").read_text() == f'roots = ["{dirs["x-work"]}"]\n'
-    bind(store, A, dirs["y-work"], create=False)
-    assert (d / "project.toml").read_text() == f'roots = ["{dirs["x-work"]}", "{dirs["y-work"]}"]\n'
-    assert not (d / "entries").exists()
+    service, (pid,) = _service_with(store, "x")
+    bind(store, service, pid, dirs["x-work"])
+    doc = store / "registry" / f"{pid}.toml"
+    assert stat.S_IMODE(doc.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(doc.stat().st_mode) == 0o600
+    assert doc.read_text() == f'roots = ["{dirs["x-work"]}"]\n'
+    bind(store, service, pid, dirs["y-work"])
+    assert doc.read_text() == f'roots = ["{dirs["x-work"]}", "{dirs["y-work"]}"]\n'
+    assert not (store / "memories").exists()
 
 
-def test_bind_create_and_adopt_existence_rules(tmp_path, dirs):
+def test_bind_refuses_a_missing_project_and_the_global_project(tmp_path, dirs):
+    store = tmp_path / "store"
+    service, _ = _service_with(store)
+    global_id = service.ensure_global()
     with pytest.raises(ValueError, match="no such project"):
-        bind(tmp_path, A, dirs["x-work"], create=False)
-    bind(tmp_path, A, dirs["x-work"], create=True)
-    with pytest.raises(ValueError, match="project id already exists"):
-        bind(tmp_path, A, dirs["y-work"], create=True)
-    (tmp_path / "projects" / "old-abc123" / "entries").mkdir(parents=True)   # entries-only
-    bind(tmp_path, ProjectId("old-abc123"), dirs["z-old"], create=False)
-    assert (tmp_path / "projects" / "old-abc123" / "project.toml").read_text() \
-        == f'roots = ["{dirs["z-old"]}"]\n'
+        bind(store, service, new_id(), dirs["x-work"])
+    with pytest.raises(ValueError, match="the global project cannot be bound"):
+        bind(store, service, global_id, dirs["x-work"])
+    assert not (store / "registry").exists()
+
+
+def test_bind_refuses_when_the_manifest_is_invalid(tmp_path, dirs):
+    store = tmp_path / "store"
+    service, (pid,) = _service_with(store, "x")
+    (store / "store.toml").write_text("global_project = 'nope'\n")
+    with pytest.raises(StorageFailure):
+        bind(store, service, pid, dirs["x-work"])
+    assert not (store / "registry").exists()
 
 
 def test_bind_refuses_a_root_that_vanished_or_was_redirected(tmp_path, dirs):
+    store = tmp_path / "store"
+    service, (pid,) = _service_with(store, "x")
     with pytest.raises(ValueError, match="not a canonical existing directory"):
-        bind(tmp_path, A, str(tmp_path / "never"), create=True)
+        bind(store, service, pid, str(tmp_path / "never"))
     link = tmp_path / "link"
     link.symlink_to(dirs["x-work"])
     with pytest.raises(ValueError, match="not a canonical existing directory"):
-        bind(tmp_path, A, str(link), create=True)
-    assert not (tmp_path / "projects").exists()
+        bind(store, service, pid, str(link))
+    assert not (store / "registry").exists()
 
 
 def test_bind_refuses_when_a_comparison_cannot_be_checked(tmp_path, dirs, monkeypatch):
-    bind(tmp_path, A, dirs["x-work"], create=True)
+    store = tmp_path / "store"
+    service, (a, b) = _service_with(store, "a", "b")
+    bind(store, service, a, dirs["x-work"])
     _unverifiable(monkeypatch)
     with pytest.raises(ValueError, match="could not be checked"):
-        bind(tmp_path, B, dirs["y-work"], create=True)
-    assert not (tmp_path / "projects" / B).exists()
+        bind(store, service, b, dirs["y-work"])
+    assert not (store / "registry" / f"{b}.toml").exists()
 
 
 def test_bind_same_id_alias_is_a_no_op_and_cross_id_is_refused(tmp_path, monkeypatch):
     _case_insensitive(monkeypatch)
     real = tmp_path / "Work"
     real.mkdir()
-    # on a case-sensitive volume the alias spelling must exist too (bind requires an
-    # existing canonical directory); on APFS this mkdir is a no-op on the same directory
     (tmp_path / "work").mkdir(exist_ok=True)
-    bind(tmp_path / "store", A, str(real), create=True)
-    doc = tmp_path / "store" / "projects" / A / "project.toml"
+    store = tmp_path / "store"
+    service, (a, b) = _service_with(store, "a", "b")
+    bind(store, service, a, str(real))
+    doc = store / "registry" / f"{a}.toml"
     before = doc.stat().st_mtime_ns
-    bind(tmp_path / "store", A, str(real), create=False)
-    bind(tmp_path / "store", A, str(tmp_path / "work"), create=False)
+    bind(store, service, a, str(real))
+    bind(store, service, a, str(tmp_path / "work"))
     assert doc.read_text() == f'roots = ["{real}"]\n' and doc.stat().st_mtime_ns == before
     with pytest.raises(ValueError, match="already bound to another project"):
-        bind(tmp_path / "store", B, str(tmp_path / "work"), create=True)
-    assert not (tmp_path / "store" / "projects" / B).exists()
+        bind(store, service, b, str(tmp_path / "work"))
+    assert not (store / "registry" / f"{b}.toml").exists()
 
 
 def test_unbind_removes_one_root_even_if_path_is_gone(tmp_path, dirs):
-    bind(tmp_path, A, dirs["x-work"], create=True)
-    bind(tmp_path, A, dirs["y-work"], create=False)
+    store = tmp_path / "store"
+    service, (pid,) = _service_with(store, "x")
+    bind(store, service, pid, dirs["x-work"])
+    bind(store, service, pid, dirs["y-work"])
     import shutil
-    shutil.rmtree(dirs["x-work"])                          # moved away: the path is gone
-    unbind(tmp_path, A, dirs["x-work"])
-    doc = tmp_path / "projects" / A / "project.toml"
+    shutil.rmtree(dirs["x-work"])
+    unbind(store, pid, dirs["x-work"])
+    doc = store / "registry" / f"{pid}.toml"
     assert doc.read_text() == f'roots = ["{dirs["y-work"]}"]\n'
-    unbind(tmp_path, A, dirs["y-work"])
+    unbind(store, pid, dirs["y-work"])
     assert doc.read_text() == "roots = []\n"
     with pytest.raises(ValueError, match="not bound to this project"):
-        unbind(tmp_path, A, dirs["y-work"])
+        unbind(store, pid, dirs["y-work"])
+
+
+def test_unbind_cleans_up_a_registry_file_whose_project_is_missing(tmp_path, dirs):
+    orphan = new_id()
+    doc = _register(tmp_path, orphan, [dirs["x-work"]])
+    unbind(tmp_path, orphan, dirs["x-work"])
+    assert doc.read_text() == "roots = []\n"
+
+
+def test_unbind_removes_every_copy_of_the_same_root_string(tmp_path, dirs):
+    doc = _register(tmp_path, A, [dirs["x-work"], dirs["x-work"], dirs["y-work"]])
+    unbind(tmp_path, A, dirs["x-work"])
+    assert doc.read_text() == f'roots = ["{dirs["y-work"]}"]\n'
 
 
 def test_bind_refuses_to_write_over_an_invalid_registry(tmp_path, dirs):
-    d = tmp_path / "projects" / B
-    d.mkdir(parents=True)
-    (d / "project.toml").write_text("roots = [\n")
+    store = tmp_path / "store"
+    service, (pid,) = _service_with(store, "x")
+    (store / "registry").mkdir()
+    (store / "registry" / f"{B}.toml").write_text("roots = [\n")
     with pytest.raises(RegistryInvalid):
-        bind(tmp_path, A, dirs["x-work"], create=True)
-    assert not (tmp_path / "projects" / A).exists()
+        bind(store, service, pid, dirs["x-work"])
+    assert not (store / "registry" / f"{pid}.toml").exists()
 
 
 def test_failed_replace_keeps_old_document_and_no_temp_file(tmp_path, dirs, monkeypatch):
-    from memriver_core import StorageFailure
-
-    bind(tmp_path, A, dirs["x-work"], create=True)
-    doc = tmp_path / "projects" / A / "project.toml"
+    store = tmp_path / "store"
+    service, (pid,) = _service_with(store, "x")
+    bind(store, service, pid, dirs["x-work"])
+    doc = store / "registry" / f"{pid}.toml"
 
     def boom(src, dst):
         raise OSError("disk full")
 
     monkeypatch.setattr(project_context.os, "replace", boom)
-    # store_lock wraps every OSError raised inside its block as StorageFailure
-    with pytest.raises(StorageFailure):
-        bind(tmp_path, A, dirs["y-work"], create=False)
+    with pytest.raises(StorageFailure):              # store_lock wraps every OSError
+        bind(store, service, pid, dirs["y-work"])
     assert doc.read_text() == f'roots = ["{dirs["x-work"]}"]\n'
-    assert [p.name for p in doc.parent.iterdir()] == ["project.toml"]
-
-
-def test_concurrent_binds_do_not_lose_updates(tmp_path, dirs):
-    bind(tmp_path, A, dirs["w0"], create=True)
-    errors: list[Exception] = []
-
-    def worker(i: int) -> None:
-        try:
-            bind(tmp_path, A, dirs[f"w{i}"], create=False)
-        except Exception as err:  # noqa: BLE001
-            errors.append(err)
-
-    threads = [threading.Thread(target=worker, args=(i,)) for i in range(1, 9)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    assert errors == []
-    assert set(load_registry(tmp_path).projects[0].roots) == {dirs[f"w{i}"] for i in range(9)}
-
-
-def test_project_exists_counts_unbound_directories(tmp_path):
-    (tmp_path / "projects" / "old-abc123" / "entries").mkdir(parents=True)
-    assert project_exists(tmp_path, ProjectId("old-abc123"))
-    assert not project_exists(tmp_path, A)
-
-
-def test_count_child_git_markers(tmp_path):
-    (tmp_path / "a" / ".git").mkdir(parents=True)
-    (tmp_path / "b").mkdir()
-    (tmp_path / "b" / ".git").write_text("gitdir: elsewhere")
-    (tmp_path / "c" / "deep" / ".git").mkdir(parents=True)
-    (tmp_path / ".git").mkdir()
-    outside = tmp_path.parent / "outside-repo"
-    (outside / ".git").mkdir(parents=True)
-    (tmp_path / "linked").symlink_to(outside)
-    assert count_child_git_markers(tmp_path) == 2
-    assert count_child_git_markers(tmp_path / "missing") is None
+    assert [p.name for p in doc.parent.iterdir()] == [doc.name]
 
 
 def test_failed_chmod_closes_the_descriptor_and_leaves_nothing_behind(tmp_path, dirs, monkeypatch):
-    from memriver_core import StorageFailure
-
-    bind(tmp_path, A, dirs["x-work"], create=True)
-    doc = tmp_path / "projects" / A / "project.toml"
+    store = tmp_path / "store"
+    service, (pid,) = _service_with(store, "x")
+    bind(store, service, pid, dirs["x-work"])
+    doc = store / "registry" / f"{pid}.toml"
     opened: list[int] = []
     true_mkstemp = project_context.tempfile.mkstemp
 
@@ -649,26 +602,42 @@ def test_failed_chmod_closes_the_descriptor_and_leaves_nothing_behind(tmp_path, 
     monkeypatch.setattr(project_context.tempfile, "mkstemp", watched)
     monkeypatch.setattr(project_context.os, "fchmod", boom)
     with pytest.raises(StorageFailure):
-        bind(tmp_path, A, dirs["y-work"], create=False)
+        bind(store, service, pid, dirs["y-work"])
     assert doc.read_text() == f'roots = ["{dirs["x-work"]}"]\n'
-    assert [p.name for p in doc.parent.iterdir()] == ["project.toml"]
-    with pytest.raises(OSError):                           # the descriptor did not leak
+    assert [p.name for p in doc.parent.iterdir()] == [doc.name]
+    with pytest.raises(OSError):
         os.fstat(opened[0])
 
 
-def test_unbind_removes_every_copy_of_the_same_root_string(tmp_path, dirs):
-    # a hand-edited file can hold one spelling twice; other spellings that alias
-    # the same directory are left alone
-    _register(tmp_path, A, [dirs["x-work"], dirs["x-work"], dirs["y-work"]])
-    unbind(tmp_path, A, dirs["x-work"])
-    assert (tmp_path / "projects" / A / "project.toml").read_text() \
-        == f'roots = ["{dirs["y-work"]}"]\n'
+def test_concurrent_binds_do_not_lose_updates(tmp_path, dirs):
+    store = tmp_path / "store"
+    service, (pid,) = _service_with(store, "x")
+    bind(store, service, pid, dirs["w0"])
+    errors: list[Exception] = []
+
+    def worker(i: int) -> None:
+        try:
+            bind(store, service, pid, dirs[f"w{i}"])
+        except Exception as err:  # noqa: BLE001
+            errors.append(err)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(1, 9)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    assert set(load_registry(store).projects[0].roots) == {dirs[f"w{i}"] for i in range(9)}
 
 
-def test_bind_create_refuses_an_id_that_exists_as_anything(tmp_path, dirs):
-    (tmp_path / "projects").mkdir()
-    squatter = tmp_path / "projects" / A
-    squatter.write_text("not a project directory")         # load_registry ignores stray files
-    with pytest.raises(ValueError, match="project id already exists"):
-        bind(tmp_path, A, dirs["x-work"], create=True)
-    assert squatter.read_text() == "not a project directory"
+def test_count_child_git_markers(tmp_path):
+    (tmp_path / "a" / ".git").mkdir(parents=True)
+    (tmp_path / "b").mkdir()
+    (tmp_path / "b" / ".git").write_text("gitdir: elsewhere")
+    (tmp_path / "c" / "deep" / ".git").mkdir(parents=True)
+    (tmp_path / ".git").mkdir()
+    outside = tmp_path.parent / "outside-repo"
+    (outside / ".git").mkdir(parents=True)
+    (tmp_path / "linked").symlink_to(outside)
+    assert count_child_git_markers(tmp_path) == 2
+    assert count_child_git_markers(tmp_path / "missing") is None
