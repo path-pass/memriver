@@ -23,19 +23,19 @@ if TYPE_CHECKING:
     )
     from memriver_core.repository.inspection_protocol import StoreInspector
 
-# Fixed, client-safe wording per backend finding kind (the concrete kinds a
-# filesystem-style inspector reports today; an unrecognized future kind still
-# gets a safe generic suggestion rather than crashing the umbrella check).
+# Fixed, client-safe wording per backend finding kind (the concrete kinds the
+# SQLite inspector reports today; an unrecognized future kind still gets a
+# safe generic suggestion rather than crashing the umbrella check).
 _BACKEND_SUGGESTIONS = {
-    "unreadable-file": "restore read access to the file, or remove it",
-    "unparsable": "fix or remove the memory file so it decodes",
-    "id-stem-mismatch": "rename the memory file so its name matches its stored id",
-    "unaddressable-id": "rename the memory file to its stored id, or remove it",
-    "unknown-project": "restore the missing project file, or remove the memory",
-    "invalid-project": "fix or remove the project file",
-    "invalid-manifest": "fix store.toml so it names the global project's file",
-    "legacy-layout": "this store predates the current layout; memriver does not read or migrate it",
-    "unsafe-container": "replace the link or file with a real directory inside the store",
+    "unknown-schema": "restore the database from a backup made by this memriver version",
+    "unsafe-database": "replace it with the real database file",
+    "integrity": "restore the database from a backup",
+    "orphan": "restore the missing project from a backup; until then the memory stays hidden",
+    "invalid-row": "fix or remove the row",
+    "non-canonical-root": "bind the real directory with memriver project unbind and adopt",
+    "unverifiable-root": "restore access to the directory, then run memriver doctor again",
+    "root-conflict": "unbind one of them with memriver project unbind",
+    "legacy-layout": "migrate it, or remove it once migrated",
 }
 _DEFAULT_BACKEND_SUGGESTION = "inspect this entry manually; its finding kind is unrecognized"
 
@@ -166,4 +166,5 @@ class DiagnosticsService:
         findings.extend(_duplicate_findings(report, jaccard_threshold))
 
         return DiagnosticsReport(state=_derive_state(report, findings),
-                                 findings=tuple(findings), initialized=report.initialized)
+                                 findings=tuple(findings), initialized=report.initialized,
+                                 projects=report.projects)

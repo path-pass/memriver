@@ -14,6 +14,20 @@ class InspectedMemory:
     location_hint: str
 
 
+RootState = Literal["ok", "missing", "not-canonical", "unverifiable", "unbound"]
+
+
+@dataclass(frozen=True)
+class InspectedProject:
+    id: str
+    name: str
+    root: str | None
+    is_global: bool
+    root_state: RootState
+    active_memories: int
+    deleted_memories: int
+
+
 @dataclass(frozen=True)
 class StoreFinding:
     kind: str
@@ -27,7 +41,7 @@ class StoreFinding:
 class StoreReport:
     initialized: bool
     entries: tuple[InspectedMemory, ...]
-    projects: tuple[str, ...]
+    projects: tuple[InspectedProject, ...]
     findings: tuple[StoreFinding, ...]
 
 
@@ -45,6 +59,9 @@ class DiagnosticFinding:
 class DiagnosticsReport:
     state: DiagnosticsState
     findings: tuple[DiagnosticFinding, ...]
-    # a finding outranks "uninitialized" in `state`, so whether the manifest
-    # exists is carried on its own
+    # a finding outranks "uninitialized" in `state`, so whether the global
+    # project exists is carried on its own
     initialized: bool = True
+    # the inspector's projects, passed through so doctor renders them from
+    # the one diagnostics entry
+    projects: tuple[InspectedProject, ...] = ()

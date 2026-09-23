@@ -95,7 +95,7 @@ def test_install_modules_import_no_memriver_core_symbol_at_all():
         )
 
 
-FORBIDDEN_NAMES = ("FilesystemStoreInspector", "DiagnosticsService")
+FORBIDDEN_NAMES = ("SqliteStoreInspector", "DiagnosticsService")
 
 
 def test_umbrella_never_names_the_concrete_inspector_or_diagnostics_service():

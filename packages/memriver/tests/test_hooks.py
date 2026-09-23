@@ -14,8 +14,11 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
+from contextlib import closing
+from pathlib import Path
 
 import pytest
 from memriver import hooks
@@ -27,23 +30,19 @@ from memriver.hooks import (
     encode_codex_stop,
     run_hook,
 )
-from memriver.project_context import bind, resolve
 from memriver.protocol_text import (
     INDEX_BEGIN_DELIMITER,
     INDEX_END_DELIMITER,
     STOP_NUDGE,
     UNTRUSTED_DATA_NOTICE,
 )
-from memriver.session import open_session
 from memriver_core import bootstrap
 from memriver_core.bootstrap import build_service
-from memriver_core.models import Memory, Project, ReadWriteSet, new_id
-from memriver_core.repository.filesystem.markdown_codec import encode
+from memriver_core.models import Memory, ReadWriteSet
 from memriver_core.settings import Settings
 
 INDEX_LINE = "- [user] likes-tea: drinks oolong (2026-01-01)"
 
-GLOBAL_ID = "gggggggggg"
 NONE_HEADER = "project: none — global is read-only; ask the user to run memriver project init"
 
 
@@ -75,10 +74,16 @@ def compact_context(header: str) -> str:
 
 @pytest.fixture
 def fake_service(monkeypatch):
+    real_build = bootstrap.build_service
+
     def install(index_text: str = INDEX_LINE) -> FakeService:
         service = FakeService(index_text)
-        monkeypatch.setattr(bootstrap, "build_service",
-                            lambda settings, *, root=None: service)
+
+        def build(settings, *, root=None, home=None):
+            service.real = real_build(settings, root=root)
+            return service
+
+        monkeypatch.setattr(bootstrap, "build_service", build)
         return service
 
     return install
@@ -91,24 +96,22 @@ def a_directory(tmp_path, name):
 
 
 def _registered_header(store, cwd) -> str:
-    """The real header, through the same `resolve` + `open_session` the hook uses --
-    never rebuilt from the raw path, because header fields are capped and a long
+    """The real header, through the same `open_session` the hook uses -- never
+    rebuilt from the raw path, because header fields are capped and a long
     tmp_path would make a hand-formatted expectation diverge."""
-    return open_session(FakeService(""), resolve(store, cwd)).header
+    return _real_service(store).open_session(str(cwd)).header
 
 
 class FakeService:
-    """Records what the hook asked for, so the resolved read/write set is observable."""
+    """The real session for the directory, a fake index body; records the read/write set."""
 
     def __init__(self, index_text: str):
         self.index_text = index_text
         self.read_write_sets: list[ReadWriteSet] = []
+        self.real = None
 
-    def read_write_set(self, project_id):
-        return ReadWriteSet(project_id=project_id, global_project_id=GLOBAL_ID)
-
-    def read_project(self, project_id):
-        return Project(id=project_id, name="demo")
+    def open_session(self, start: str):
+        return self.real.open_session(start)
 
     def index(self, read_write_set: ReadWriteSet) -> str:
         self.read_write_sets.append(read_write_set)
@@ -121,18 +124,51 @@ def _real_service(store):
 
 def _bind_new(store, directory, name="demo") -> str:
     service = _real_service(store)
-    project_id = service.create_project(name).id
-    bind(store, service, project_id, str(directory.resolve()))
-    return project_id
+    return service.init_project(name, service.plan_root(str(directory))).id
+
+
+MEMORY_COLUMNS = ("id, project_id, type, source_harness, source_method, trust, sync, "
+                  "description, body, created, updated, version, deleted_at")
+
+
+def _plant(store: Path, memory: Memory) -> Memory:
+    """A row written behind the stores' backs, as an outside writer would.
+
+    A raw connection has foreign keys off (SQLite's default), so this can also
+    plant an orphan. The database must already exist (ensure_global made it).
+    """
+    with closing(sqlite3.connect(store / "memriver.db")) as conn, conn:
+        conn.execute(
+            f"INSERT INTO memories ({MEMORY_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (memory.id, memory.project_id, memory.type, memory.source["harness"],
+             memory.source["method"], memory.trust, int(memory.sync), memory.description,
+             memory.body, memory.created, memory.updated, memory.version, memory.deleted_at))
+    return memory
 
 
 def _plant_global(root, **memory_fields) -> Memory:
-    """A global memory on disk directly: no agent-facing path can write one."""
+    """A global memory written directly: no agent-facing path can write one."""
     global_id = _real_service(root).ensure_global()
-    memory = Memory.new(project_id=global_id, source={"harness": "pytest"}, **memory_fields)
-    (root / "memories").mkdir(parents=True, exist_ok=True)
-    (root / "memories" / f"{memory.id}.md").write_text(encode(memory), encoding="utf-8")
-    return memory
+    return _plant(root, Memory.new(project_id=global_id,
+                                   source={"harness": "pytest", "method": "agent"},
+                                   **memory_fields))
+
+
+def _corrupt(store: Path, memory_id: str) -> None:
+    """A row memriver could not have written: the CHECK is bypassed on this connection."""
+    with closing(sqlite3.connect(store / "memriver.db")) as conn, conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute("UPDATE memories SET trust = 'odd' WHERE id = ?", (memory_id,))
+
+
+def _re_point(store, tmp_path) -> Path:
+    """A registered root renamed away, a symlink left in its place: the new location."""
+    work, moved = tmp_path / "work", tmp_path / "moved"
+    work.mkdir()
+    _bind_new(store, work)
+    work.rename(moved)
+    work.symlink_to(moved)
+    return moved
 
 
 @pytest.fixture
@@ -393,14 +429,14 @@ def test_unregistered_directory_header_says_none_and_creates_no_store(fake_servi
     assert not (tmp_path / "mem").exists()
 
 
-def test_session_start_shows_the_degraded_header_for_a_broken_registry(fake_service, tmp_path):
+def test_session_start_shows_the_degraded_header_for_a_re_pointed_root(fake_service, tmp_path):
     fake_service("(no memories yet)")
     store = tmp_path / "mem"
-    (store / "registry").mkdir(parents=True)
-    (store / "registry" / f"{new_id()}.toml").write_text("roots = [\n")
-    header = _registered_header(store, tmp_path)
-    assert header.startswith("project: unavailable — registry invalid (")
-    result = run_hook("session-start", "claude-code", json.dumps({"cwd": str(tmp_path)}),
+    moved = _re_point(store, tmp_path)
+    header = _registered_header(store, moved)
+    assert header.startswith(
+        "project: unavailable — this directory could not be matched to one project")
+    result = run_hook("session-start", "claude-code", json.dumps({"cwd": str(moved)}),
                       root=store, project_dir=None, cwd=tmp_path)
     assert _line_after_begin(additional_context(result)) == header
 
@@ -502,17 +538,14 @@ def test_composition_failures_stay_inside_the_fail_open_boundary(failing, tmp_pa
 
 @pytest.mark.parametrize("failing", ["build", "index"])
 def test_an_unusable_store_is_one_path_free_stderr_line(failing, tmp_path,
-                                                        monkeypatch):
+                                                        monkeypatch, fake_service):
     def boom(*args, **kwargs):
         raise OSError(f"/private/secret/{failing} is on fire")
 
     if failing == "build":
         monkeypatch.setattr(bootstrap, "build_service", boom)
     else:
-        service = FakeService("")
-        monkeypatch.setattr(service, "index", boom)
-        monkeypatch.setattr(bootstrap, "build_service",
-                            lambda settings, *, root=None: service)
+        monkeypatch.setattr(fake_service(""), "index", boom)
     result = session_start("claude-code", {"cwd": str(tmp_path)},
                            root=tmp_path / "root")
     assert result == HookResult(stderr="memriver hook: memory store is unavailable\n")
@@ -542,14 +575,15 @@ def test_a_missing_root_is_an_empty_store_not_an_error(tmp_path):
 
 def test_a_store_with_only_unreadable_entries_is_empty_not_broken(tmp_path,
                                                                   monkeypatch):
-    memories = tmp_path / "root" / "memories"
-    memories.mkdir(parents=True)
-    (memories / f"{new_id()}.md").write_text("not a memory at all", encoding="utf-8")
+    root = tmp_path / "root"
+    for _ in range(2):
+        _corrupt(root, _plant_global(root, body="x", type="user",
+                                     description="not a memory at all").id)
 
     def never(*args, **kwargs):  # pragma: no cover - the assertion is the call
         raise AssertionError("the hook must not run the administrative inspector")
 
-    monkeypatch.setattr(bootstrap, "build_diagnostics_service", never)
+    monkeypatch.setattr(bootstrap.DiagnosticsService, "run", never)
     result = session_start("claude-code", {"cwd": str(tmp_path)},
                            root=tmp_path / "root")
     text = additional_context(result)
@@ -560,12 +594,13 @@ def test_a_store_with_only_unreadable_entries_is_empty_not_broken(tmp_path,
 def test_partial_corruption_shows_the_healthy_entries(tmp_path, monkeypatch):
     root = tmp_path / "root"
     memory = _plant_global(root, body="Oolong, always.", type="user", description="drinks oolong")
-    (root / "memories" / f"{new_id()}.md").write_text("not a memory at all", encoding="utf-8")
+    _corrupt(root, _plant_global(root, body="x", type="user",
+                                 description="not a memory at all").id)
 
     def never(*args, **kwargs):  # pragma: no cover - the assertion is the call
         raise AssertionError("the hook must not run the administrative inspector")
 
-    monkeypatch.setattr(bootstrap, "build_diagnostics_service", never)
+    monkeypatch.setattr(bootstrap.DiagnosticsService, "run", never)
     result = session_start("claude-code", {"cwd": str(tmp_path)},
                            root=tmp_path / "root")
     context = additional_context(result)
@@ -628,14 +663,34 @@ def test_the_first_stop_emits_the_harness_nudge_envelope(harness, encoder, tmp_p
         stdout=json.dumps(encoder(STOP_NUDGE), ensure_ascii=False) + "\n")
 
 
-def test_stop_never_touches_the_store(tmp_path, monkeypatch):
-    def never(*args, **kwargs):  # pragma: no cover - the assertion is the call
-        raise AssertionError("Stop must not build a service or read the store")
-
-    monkeypatch.setattr(bootstrap, "build_service", never)
+def test_stop_never_writes_the_store(tmp_path, registered):
+    database = tmp_path / "mem" / "memriver.db"
+    before = database.read_bytes()
     for payload in ('{"stop_hook_active": false}', '{"stop_hook_active": true}'):
-        run_hook("stop", "claude-code", payload, root=tmp_path / "root",
-                 project_dir=None, cwd=tmp_path)
+        run_hook("stop", "claude-code", payload, root=tmp_path / "mem",
+                 project_dir=None, cwd=registered)
+    assert database.read_bytes() == before
+    assert not (tmp_path / "mem" / "memriver.db-journal").exists()
+    # unchanged bytes could still hide an opened-and-rolled-back write
+    # transaction, so count the openings themselves in a fresh process
+    script = (
+        "import json\n"
+        "from pathlib import Path\n"
+        "from memriver_core.repository.sqlite import database\n"
+        "from memriver.hooks import run_hook\n"
+        "opened = []\n"
+        "real_write = database.Database.write\n"
+        "def counting_write(self, *args, **kwargs):\n"
+        "    opened.append(1)\n"
+        "    return real_write(self, *args, **kwargs)\n"
+        "database.Database.write = counting_write\n"
+        f"result = run_hook('stop', 'claude-code', json.dumps({{'stop_hook_active': False, 'cwd': {str(registered)!r}}}),\n"
+        f"         root=Path({str(tmp_path / 'mem')!r}), project_dir=None, cwd=Path({str(tmp_path)!r}))\n"
+        "print(json.dumps([len(opened), bool(result.stdout)]))\n"
+    )
+    out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
+    # the nudge fired, so the session really was read
+    assert json.loads(out.stdout) == [0, True]
 
 
 @pytest.mark.parametrize("payload, nudged", [
@@ -656,27 +711,24 @@ def test_stop_nudges_only_once_and_only_in_a_registered_project(tmp_path, regist
 
 
 def test_stop_is_silent_under_a_degraded_registry_and_never_fails(tmp_path):
-    store = tmp_path / "mem"
-    (store / "registry").mkdir(parents=True)
-    (store / "registry" / f"{new_id()}.toml").write_text("roots = [\n")
-    result = run_hook("stop", "codex", json.dumps({"stop_hook_active": False, "cwd": str(tmp_path)}),
+    moved = _re_point(tmp_path / "mem", tmp_path)
+    result = run_hook("stop", "codex", json.dumps({"stop_hook_active": False, "cwd": str(moved)}),
                       root=tmp_path / "mem", project_dir=None, cwd=tmp_path)
     assert result == HookResult()
     assert run_hook("stop", "codex", "{not json", root=tmp_path / "mem", project_dir=None, cwd=tmp_path) == HookResult()
 
 
-def test_stop_never_imports_the_service_stack(tmp_path, registered):
-    # importing memriver_core loads only memriver_core.models (the error
-    # taxonomy lives at memriver_core.models.errors); application, bootstrap,
-    # the repository and the secret scanner must all stay out
+def test_stop_stays_light(tmp_path, registered):
+    # Stop opens a read-only session through the facade: the content policy
+    # (the secret scanner and its rules) must never load on this path
     script = (
         "import json, sys\n"
         "from pathlib import Path\n"
         "from memriver.hooks import run_hook\n"
         f"result = run_hook('stop', 'claude-code', json.dumps({{'stop_hook_active': False, 'cwd': {str(registered)!r}}}),\n"
         f"         root=Path({str(tmp_path / 'mem')!r}), project_dir=None, cwd=Path({str(tmp_path)!r}))\n"
-        "bad = [m for m in sys.modules if m.startswith(('memriver_core.application',\n"
-        "       'memriver_core.bootstrap', 'memriver_core.repository', 'detect_secrets'))]\n"
+        "bad = [m for m in sys.modules if m.startswith(\n"
+        "       ('memriver_core.content_policy.secret_scanner', 'detect_secrets'))]\n"
         "print(json.dumps([bad, bool(result.stdout)]))\n"
     )
     out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)

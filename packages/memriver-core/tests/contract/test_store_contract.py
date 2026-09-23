@@ -4,61 +4,71 @@ Nothing here knows how a store keeps anything. To add a backend, write a
 `BackendHarness` and put a single entry in `BACKENDS`: no test changes.
 """
 
+import sqlite3
 import threading
 from collections.abc import Callable
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from memriver_core.models import Memory, Project, ReadWriteSet, new_id
+from memriver_core.models import Memory, Project, ReadWriteSet, new_id, now
 from memriver_core.models.errors import (
     GlobalReadOnly,
     IdCollision,
     MemoryNotFound,
     ProjectNotFound,
     ProjectUnavailable,
+    StorageFailure,
+    VersionConflict,
 )
-from memriver_core.repository.filesystem import FileMemoryStore, FileProjectStore
-from memriver_core.repository.filesystem.markdown_codec import encode
 from memriver_core.repository.protocol import MemoryStore, ProjectStore
+from memriver_core.repository.sqlite import SqliteMemoryStore, SqliteProjectStore
 
 SOURCE = {"harness": "test", "method": "agent"}
+MEMORY_COLUMNS = ("id, project_id, type, source_harness, source_method, trust, sync, "
+                  "description, body, created, updated, version, deleted_at")
 
 
 @dataclass(frozen=True)
 class BackendHarness:
-    """`make` returns an independent (memory_store, project_store) pair over
-    the same storage every time it is called with the same directory -- the
-    seam the concurrency test races against, standing in for two processes.
+    """`make(root, home)` returns an independent (memory_store, project_store)
+    pair over the same storage every time -- the seam the concurrency tests
+    race against, standing in for two processes.
 
     `plant` stores a memory behind the stores' backs: agents can never write
-    global, so a global memory on disk is planted, as hand maintenance does.
-    `remove_project` deletes a project behind the stores' backs, standing in
-    for a hand-deleted project file while a long-lived read/write set still names it.
+    global, so a global memory is planted, as hand maintenance does; it can
+    also plant an orphan. `remove_project` deletes a project behind the
+    stores' backs (an outside writer that ignores foreign keys), while a
+    long-lived read/write set still names it.
     """
 
-    make: Callable[[Path], tuple[MemoryStore, ProjectStore]]
+    make: Callable[[Path, Path], tuple[MemoryStore, ProjectStore]]
     plant: Callable[[Path, Memory], None]
     remove_project: Callable[[Path, str], None]
 
 
-def _make_filesystem(root: Path) -> tuple[MemoryStore, ProjectStore]:
-    project_store = FileProjectStore(root)
-    return FileMemoryStore(root, project_store), project_store
+def _make_sqlite(root: Path, home: Path) -> tuple[MemoryStore, ProjectStore]:
+    return (SqliteMemoryStore(root, busy_timeout_ms=5000),
+            SqliteProjectStore(root, home=home, busy_timeout_ms=5000))
 
 
-def _plant_file(root: Path, memory: Memory) -> None:
-    directory = root / "memories"
-    directory.mkdir(parents=True, exist_ok=True)
-    (directory / f"{memory.id}.md").write_text(encode(memory), encoding="utf-8")
+def _plant_row(root: Path, memory: Memory) -> None:
+    with closing(sqlite3.connect(root / "memriver.db")) as conn, conn:
+        conn.execute(
+            f"INSERT INTO memories ({MEMORY_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (memory.id, memory.project_id, memory.type, memory.source["harness"],
+             memory.source["method"], memory.trust, int(memory.sync), memory.description,
+             memory.body, memory.created, memory.updated, memory.version, memory.deleted_at))
 
 
-def _remove_project_file(root: Path, project_id: str) -> None:
-    (root / "projects" / f"{project_id}.toml").unlink()
+def _remove_project_row(root: Path, project_id: str) -> None:
+    with closing(sqlite3.connect(root / "memriver.db")) as conn, conn:   # foreign keys off
+        conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
 
 
-BACKENDS = {"filesystem": BackendHarness(make=_make_filesystem, plant=_plant_file,
-                                         remove_project=_remove_project_file)}
+BACKENDS = {"sqlite": BackendHarness(make=_make_sqlite, plant=_plant_row,
+                                     remove_project=_remove_project_row)}
 
 
 @pytest.fixture(params=sorted(BACKENDS))
@@ -72,18 +82,30 @@ def root(tmp_path) -> Path:
 
 
 @pytest.fixture
-def stores(backend, root):
-    return backend.make(root)
+def home(tmp_path) -> Path:
+    (tmp_path / "home").mkdir()
+    return tmp_path / "home"
 
 
 @pytest.fixture
-def world(stores):
+def stores(backend, root, home):
+    return backend.make(root, home)
+
+
+def _init(project_store, directory: Path, name: str) -> Project:
+    directory.mkdir(parents=True, exist_ok=True)
+    project = Project.new(name, max_chars=120)
+    project_store.create(project, project_store.plan_root(str(directory), None))
+    return project
+
+
+@pytest.fixture
+def world(stores, tmp_path):
     """Two projects and global, with the three read/write sets a test needs."""
     memory_store, project_store = stores
     global_id = project_store.ensure_global()
-    mine, other = Project.new("mine"), Project.new("other")
-    project_store.create(mine)
-    project_store.create(other)
+    mine = _init(project_store, tmp_path / "mine", "mine")
+    other = _init(project_store, tmp_path / "other", "other")
     return {
         "memory_store": memory_store, "project_store": project_store,
         "global": global_id, "mine": mine.id, "other": other.id,
@@ -98,13 +120,31 @@ def _m(project_id: str, body: str = "内容", description: str = "") -> Memory:
                       description=description)
 
 
+def _record(world, body="内容", description="") -> Memory:
+    memory = _m(world["mine"], body=body, description=description)
+    world["memory_store"].record(memory, world["read_write_set"])
+    return memory
+
+
+def _update(world, memory, body="x", description=None, version=None):
+    return world["memory_store"].update(
+        memory.id, world["read_write_set"], body=body, description=description,
+        expected_version=memory.version if version is None else version)
+
+
+def _delete(world, memory, *, hard=False, version=None, read_write_set=None):
+    return world["memory_store"].delete(
+        memory.id, read_write_set or world["read_write_set"], hard=hard,
+        expected_version=memory.version if version is None else version)
+
+
 # --- ProjectStore: create / read / global ---------------------------------
 
-def test_created_project_reads_back(stores):
+def test_created_project_reads_back_with_its_directory(stores, tmp_path):
     _, project_store = stores
-    project = Project.new("demo")
-    project_store.create(project)
-    assert project_store.read(project.id) == project
+    project = _init(project_store, tmp_path / "demo", "demo")
+    read = project_store.read(project.id)
+    assert (read.id, read.name, read.root) == (project.id, "demo", str((tmp_path / "demo").resolve()))
 
 
 @pytest.mark.parametrize("project_id", ["", "demo", "AAAAAAAAAA", "../x"])
@@ -116,26 +156,18 @@ def test_unknown_or_malformed_project_is_not_found(stores, project_id):
         project_store.read(new_id())
 
 
-def test_create_never_overwrites_an_existing_project(stores):
-    _, project_store = stores
-    project = Project.new("first")
-    project_store.create(project)
-    with pytest.raises(IdCollision):
-        project_store.create(Project(id=project.id, name="second"))
-    assert project_store.read(project.id).name == "first"
-
-
 def test_an_uninitialized_store_has_no_global(stores):
     _, project_store = stores
     assert project_store.global_project_id() is None
 
 
-def test_ensure_global_creates_a_named_project_once(stores):
+def test_ensure_global_creates_a_named_unbound_project_once(stores):
     _, project_store = stores
     first = project_store.ensure_global()
     assert project_store.ensure_global() == first
     assert project_store.global_project_id() == first
-    assert project_store.read(first).name == "global"
+    read = project_store.read(first)
+    assert (read.name, read.root) == ("global", None)
 
 
 def test_ensure_global_keeps_existing_global_memories(backend, root, stores):
@@ -145,14 +177,14 @@ def test_ensure_global_keeps_existing_global_memories(backend, root, stores):
     backend.plant(root, kept)
     assert project_store.ensure_global() == global_id
     read_write_set = ReadWriteSet(project_id=None, global_project_id=global_id)
-    assert [m.id for m in project_store.search(global_id, read_write_set, query=None, limit=None)] == [kept.id]
+    assert [m.id for m in project_store.search(global_id, read_write_set, query=None,
+                                               limit=None)] == [kept.id]
 
 
 # --- MemoryStore: record ----------------------------------------------------
 
 def test_record_then_read_returns_the_same_memory(world):
-    memory = _m(world["mine"], description="cue")
-    world["memory_store"].record(memory, world["read_write_set"])
+    memory = _record(world, description="cue")
     assert world["memory_store"].read(memory.id, world["read_write_set"]) == memory
 
 
@@ -178,13 +210,21 @@ def test_record_into_a_missing_project_is_refused_even_with_a_matching_read_writ
         world["memory_store"].record(_m(missing), read_write_set)
 
 
-def test_record_never_replaces_an_existing_id(world):
-    memory = _m(world["mine"], body="first")
-    world["memory_store"].record(memory, world["read_write_set"])
+def test_record_never_replaces_an_existing_id_even_a_deleted_one(world):
+    memory = _record(world, body="first")
     clash = Memory(**{**memory.__dict__, "body": "second"})
     with pytest.raises(IdCollision):
         world["memory_store"].record(clash, world["read_write_set"])
-    assert world["memory_store"].read(memory.id, world["read_write_set"]).body == "first"
+    _delete(world, memory)
+    with pytest.raises(IdCollision):
+        world["memory_store"].record(clash, world["read_write_set"])
+
+
+def test_recording_a_memory_the_schema_refuses_is_storage_failure_not_a_driver_error(world):
+    bad = Memory(**{**_m(world["mine"]).__dict__, "type": "note"})
+    with pytest.raises(StorageFailure) as excinfo:
+        world["memory_store"].record(bad, world["read_write_set"])
+    assert isinstance(excinfo.value.__cause__, sqlite3.IntegrityError)
 
 
 # --- MemoryStore: read / update / delete ------------------------------------
@@ -215,56 +255,95 @@ def test_an_orphan_memory_is_never_readable(backend, root, world):
 @pytest.mark.parametrize("action", ["read", "update", "delete"])
 def test_a_project_removed_after_the_read_write_set_was_built_hides_its_memories(
         backend, root, world, action):
-    memory = _m(world["mine"])
-    world["memory_store"].record(memory, world["read_write_set"])
+    memory = _record(world)
     backend.remove_project(root, world["mine"])
-    memory_store = world["memory_store"]
     with pytest.raises(MemoryNotFound):
         if action == "read":
-            memory_store.read(memory.id, world["read_write_set"])
+            world["memory_store"].read(memory.id, world["read_write_set"])
         elif action == "update":
-            memory_store.update(memory.id, world["read_write_set"], body="x", description=None)
+            _update(world, memory)
         else:
-            memory_store.delete(memory.id, world["read_write_set"])
-    assert world["project_store"].search(world["mine"], world["read_write_set"], query=None, limit=None) == []
+            _delete(world, memory)
+    assert world["project_store"].search(world["mine"], world["read_write_set"], query=None,
+                                         limit=None) == []
 
 
-def test_update_replaces_content_advances_updated_and_keeps_the_rest(world):
-    memory = _m(world["mine"], body="old", description="cue")
-    world["memory_store"].record(memory, world["read_write_set"])
-    updated = world["memory_store"].update(memory.id, world["read_write_set"], body=" new ", description=None)
-    assert (updated.body, updated.description) == ("new", "cue")
+def test_update_replaces_content_advances_updated_and_version_and_keeps_the_rest(world):
+    memory = _record(world, body="old", description="cue")
+    updated = _update(world, memory, body=" new ")
+    assert (updated.body, updated.description, updated.version) == ("new", "cue", 2)
     assert updated.updated > memory.updated
     for field in ("id", "project_id", "type", "source", "trust", "sync", "created"):
         assert getattr(updated, field) == getattr(memory, field)
     assert world["memory_store"].read(memory.id, world["read_write_set"]) == updated
 
 
-def test_update_with_an_unchanged_body_still_advances_updated(world):
-    memory = _m(world["mine"], body="same")
-    world["memory_store"].record(memory, world["read_write_set"])
-    updated = world["memory_store"].update(memory.id, world["read_write_set"], body="same", description=None)
-    assert updated.updated > memory.updated
+def test_update_with_an_unchanged_body_still_advances_updated_and_version(world):
+    memory = _record(world, body="same")
+    updated = _update(world, memory, body="same")
+    assert updated.updated > memory.updated and updated.version == memory.version + 1
 
 
 def test_update_description_empty_string_clears_it(world):
-    memory = _m(world["mine"], description="cue")
-    world["memory_store"].record(memory, world["read_write_set"])
-    assert world["memory_store"].update(memory.id, world["read_write_set"], body="b",
-                                        description="").description == ""
+    memory = _record(world, description="cue")
+    assert _update(world, memory, body="b", description="").description == ""
+
+
+@pytest.mark.parametrize("action", ["update", "soft-delete", "hard-delete"])
+def test_a_stale_version_is_a_conflict_and_changes_nothing(world, action):
+    memory = _record(world, body="v1")
+    current = _update(world, memory, body="v2")                  # now at version 2
+    with pytest.raises(VersionConflict) as excinfo:
+        if action == "update":
+            _update(world, memory, body="lost", version=1)
+        else:
+            _delete(world, memory, hard=action == "hard-delete", version=1)
+    assert excinfo.value.memory_id == memory.id
+    assert world["memory_store"].read(memory.id, world["read_write_set"]) == current
+
+
+def test_two_writers_with_the_same_version_exactly_one_wins(backend, root, home, world):
+    memory = _record(world, body="v1")
+    other_memory_store, _ = backend.make(root, home)
+    results: list[object] = []
+    barrier = threading.Barrier(2)
+
+    def write(memory_store, body):
+        barrier.wait()
+        try:
+            results.append(memory_store.update(memory.id, world["read_write_set"], body=body,
+                                               description=None, expected_version=1))
+        except VersionConflict as err:
+            results.append(err)
+
+    threads = [threading.Thread(target=write, args=(s, b))
+               for s, b in ((world["memory_store"], "a"), (other_memory_store, "b"))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(type(r).__name__ for r in results) == ["Memory", "VersionConflict"]
+    winner = next(r for r in results if isinstance(r, Memory))
+    assert world["memory_store"].read(memory.id, world["read_write_set"]).body == winner.body
 
 
 @pytest.mark.parametrize("action", ["update", "delete"])
 def test_global_memories_are_read_only(backend, root, world, action):
     fact = _m(world["global"])
     backend.plant(root, fact)
-    memory_store = world["memory_store"]
     with pytest.raises(GlobalReadOnly):
         if action == "update":
-            memory_store.update(fact.id, world["read_write_set"], body="x", description=None)
+            _update(world, fact)
         else:
-            memory_store.delete(fact.id, world["read_write_set"])
-    assert memory_store.read(fact.id, world["read_write_set"]) == fact
+            _delete(world, fact)
+    assert world["memory_store"].read(fact.id, world["read_write_set"]) == fact
+
+
+def test_hard_delete_of_global_is_refused_too(backend, root, world):
+    fact = _m(world["global"])
+    backend.plant(root, fact)
+    with pytest.raises(GlobalReadOnly):
+        _delete(world, fact, hard=True)
 
 
 @pytest.mark.parametrize("action", ["update", "delete"])
@@ -273,38 +352,170 @@ def test_a_foreign_memory_cannot_be_changed_and_is_not_revealed(world, action):
     world["memory_store"].record(foreign, world["other_read_write_set"])
     with pytest.raises(MemoryNotFound):
         if action == "update":
-            world["memory_store"].update(foreign.id, world["read_write_set"], body="x", description=None)
+            _update(world, foreign)
         else:
-            world["memory_store"].delete(foreign.id, world["read_write_set"])
+            _delete(world, foreign)
     assert world["memory_store"].read(foreign.id, world["other_read_write_set"]) == foreign
 
 
-def test_delete_removes_the_memory_but_not_the_project(world):
-    memory = _m(world["mine"])
-    world["memory_store"].record(memory, world["read_write_set"])
-    world["memory_store"].delete(memory.id, world["read_write_set"])
-    with pytest.raises(MemoryNotFound):
-        world["memory_store"].read(memory.id, world["read_write_set"])
+def test_a_soft_delete_hides_the_memory_like_an_absent_id_and_keeps_the_project(world):
+    memory = _record(world)
+    assert _delete(world, memory) == memory.version + 1
+    for call in (lambda: world["memory_store"].read(memory.id, world["read_write_set"]),
+                 lambda: _update(world, memory, version=memory.version + 1),
+                 lambda: _delete(world, memory, version=memory.version + 1)):
+        with pytest.raises(MemoryNotFound):
+            call()
     assert world["project_store"].read(world["mine"]).id == world["mine"]
-    assert world["project_store"].search(world["mine"], world["read_write_set"], query=None, limit=None) == []
+    assert world["project_store"].search(world["mine"], world["read_write_set"], query=None,
+                                         limit=None) == []
+
+
+def test_read_any_sees_a_soft_deleted_memory_only_when_asked(world):
+    memory = _record(world)
+    _delete(world, memory)
+    with pytest.raises(MemoryNotFound):
+        world["memory_store"].read_any(memory.id, include_deleted=False)
+    seen = world["memory_store"].read_any(memory.id, include_deleted=True)
+    assert seen.deleted_at is not None and seen.version == memory.version + 1
+
+
+def test_read_any_reads_every_project_including_global(backend, root, world):
+    fact = _m(world["global"])
+    backend.plant(root, fact)
+    foreign = _m(world["other"])
+    world["memory_store"].record(foreign, world["other_read_write_set"])
+    assert world["memory_store"].read_any(fact.id, include_deleted=False) == fact
+    assert world["memory_store"].read_any(foreign.id, include_deleted=False) == foreign
+
+
+def test_hard_delete_removes_an_active_and_a_soft_deleted_row(world):
+    active = _record(world, body="a")
+    assert _delete(world, active, hard=True) == 0
+    soft = _record(world, body="b")
+    _delete(world, soft)
+    assert _delete(world, soft, hard=True, version=soft.version + 1) == 0
+    for memory in (active, soft):
+        with pytest.raises(MemoryNotFound):
+            world["memory_store"].read_any(memory.id, include_deleted=True)
+
+
+def test_an_invalid_row_is_damage_on_a_direct_read_and_skipped_by_search(backend, root, world):
+    good = _record(world, body="good")
+    bad = _m(world["mine"], body="bad")
+    backend.plant(root, bad)
+    with closing(sqlite3.connect(root / "memriver.db")) as conn, conn:
+        # an outside writer can switch CHECK constraints off; reads must not trust them
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute("UPDATE memories SET trust = 'unheard-of' WHERE id = ?", (bad.id,))
+    with pytest.raises(StorageFailure):
+        world["memory_store"].read(bad.id, world["read_write_set"])
+    assert world["project_store"].search(world["mine"], world["read_write_set"], query=None,
+                                         limit=None) == [good]
+
+
+def test_a_damaged_deleted_row_answers_exactly_like_an_absent_id(root, world):
+    memory = _record(world)
+    _delete(world, memory)
+    with closing(sqlite3.connect(root / "memriver.db")) as conn, conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute("UPDATE memories SET trust = 'odd' WHERE id = ?", (memory.id,))
+    for call in (lambda: world["memory_store"].read(memory.id, world["read_write_set"]),
+                 lambda: _update(world, memory, version=memory.version + 1),
+                 lambda: _delete(world, memory, version=memory.version + 1)):
+        with pytest.raises(MemoryNotFound):
+            call()
+    with pytest.raises(StorageFailure):                    # only the management read sees it
+        world["memory_store"].read_any(memory.id, include_deleted=True)
+
+
+def test_a_damaged_row_of_another_project_answers_exactly_like_an_absent_id(backend, root, world):
+    foreign = _m(world["other"])
+    backend.plant(root, foreign)
+    with closing(sqlite3.connect(root / "memriver.db")) as conn, conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute("UPDATE memories SET trust = 'odd' WHERE id = ?", (foreign.id,))
+    for call in (lambda: world["memory_store"].read(foreign.id, world["read_write_set"]),
+                 lambda: _update(world, foreign),
+                 lambda: _delete(world, foreign)):
+        with pytest.raises(MemoryNotFound):               # knowing an id grants nothing
+            call()
+    with pytest.raises(StorageFailure):                    # only the management read sees it
+        world["memory_store"].read_any(foreign.id, include_deleted=False)
+
+
+def test_an_undecodable_row_of_another_project_answers_exactly_like_an_absent_id(
+        backend, root, world):
+    foreign = _m(world["other"])
+    backend.plant(root, foreign)
+    with closing(sqlite3.connect(root / "memriver.db")) as conn, conn:
+        # STRICT accepts invalid UTF-8 in a TEXT column; the driver fails to decode it
+        conn.execute("UPDATE memories SET body = CAST(X'80' AS TEXT) WHERE id = ?", (foreign.id,))
+    for call in (lambda: world["memory_store"].read(foreign.id, world["read_write_set"]),
+                 lambda: _update(world, foreign),
+                 lambda: _delete(world, foreign),
+                 lambda: _delete(world, foreign, hard=True)):
+        with pytest.raises(MemoryNotFound):
+            call()
+    with pytest.raises(StorageFailure):                    # only the management read sees it
+        world["memory_store"].read_any(foreign.id, include_deleted=False)
+
+
+def test_a_soft_delete_leaves_updated_unchanged(world):
+    memory = _record(world)
+    _delete(world, memory)
+    assert world["memory_store"].read_any(memory.id, include_deleted=True).updated == memory.updated
+
+
+def test_hard_delete_of_another_projects_memory_is_not_found_active_or_soft_deleted(world):
+    active = _m(world["other"], body="a")
+    soft = _m(world["other"], body="b")
+    for memory in (active, soft):
+        world["memory_store"].record(memory, world["other_read_write_set"])
+    world["memory_store"].delete(soft.id, world["other_read_write_set"],
+                                 expected_version=soft.version, hard=False)
+    for memory, version in ((active, active.version), (soft, soft.version + 1)):
+        with pytest.raises(MemoryNotFound):
+            _delete(world, memory, hard=True, version=version)
+        assert world["memory_store"].read_any(memory.id, include_deleted=True).id == memory.id
+
+
+def test_hard_delete_of_a_soft_deleted_global_memory_is_refused(backend, root, world):
+    fact = Memory(**{**_m(world["global"]).__dict__, "version": 2, "deleted_at": now()})
+    backend.plant(root, fact)
+    with pytest.raises(GlobalReadOnly):
+        _delete(world, fact, hard=True)
+    assert world["memory_store"].read_any(fact.id, include_deleted=True) == fact
+
+
+def test_hard_delete_of_a_soft_deleted_row_with_a_stale_version_is_a_conflict(world):
+    memory = _record(world)
+    _delete(world, memory)                                 # now at version 2, deleted
+    with pytest.raises(VersionConflict) as excinfo:
+        _delete(world, memory, hard=True, version=memory.version)
+    assert excinfo.value.memory_id == memory.id
+    assert world["memory_store"].read_any(memory.id, include_deleted=True).version == \
+        memory.version + 1
 
 
 # --- ProjectStore: search ---------------------------------------------------
 
 def test_search_sees_what_the_memory_store_wrote_with_no_second_membership_write(world):
-    memory = _m(world["mine"], body="uv manages python")
-    world["memory_store"].record(memory, world["read_write_set"])
-    hits = world["project_store"].search(world["mine"], world["read_write_set"], query="UV", limit=None)
-    assert hits == [memory]
-    world["memory_store"].update(memory.id, world["read_write_set"], body="pip now", description=None)
-    assert world["project_store"].search(world["mine"], world["read_write_set"], query="uv", limit=None) == []
-    assert world["project_store"].search(world["mine"], world["read_write_set"], query="pip", limit=None)[0].body == "pip now"
+    memory = _record(world, body="uv manages python")
+    assert world["project_store"].search(world["mine"], world["read_write_set"], query="UV",
+                                         limit=None) == [memory]
+    _update(world, memory, body="pip now")
+    project_store = world["project_store"]
+    assert project_store.search(world["mine"], world["read_write_set"], query="uv", limit=None) == []
+    assert project_store.search(world["mine"], world["read_write_set"], query="pip",
+                                limit=None)[0].body == "pip now"
 
 
 def test_search_is_one_project_only(backend, root, world):
-    world["memory_store"].record(_m(world["mine"], body="shared word"), world["read_write_set"])
+    _record(world, body="shared word")
     backend.plant(root, _m(world["global"], body="shared word"))
-    hits = world["project_store"].search(world["mine"], world["read_write_set"], query="shared", limit=None)
+    hits = world["project_store"].search(world["mine"], world["read_write_set"], query="shared",
+                                         limit=None)
     assert {m.project_id for m in hits} == {world["mine"]}
 
 
@@ -319,9 +530,16 @@ def test_search_of_an_unauthorized_or_missing_project_is_empty(backend, root, wo
     assert project_store.search(new_id(), world["read_write_set"], query=None, limit=None) == []
 
 
+def test_the_management_view_searches_any_project(world):
+    foreign = _m(world["other"], body="theirs")
+    world["memory_store"].record(foreign, world["other_read_write_set"])
+    assert world["project_store"].search(world["other"], None, query="theirs",
+                                         limit=None) == [foreign]
+
+
 def test_search_query_none_lists_all_and_empty_query_matches_nothing(world):
     for body in ("a", "b"):
-        world["memory_store"].record(_m(world["mine"], body=body), world["read_write_set"])
+        _record(world, body=body)
     project_store = world["project_store"]
     assert len(project_store.search(world["mine"], world["read_write_set"], query=None, limit=None)) == 2
     assert project_store.search(world["mine"], world["read_write_set"], query="", limit=None) == []
@@ -329,38 +547,56 @@ def test_search_query_none_lists_all_and_empty_query_matches_nothing(world):
 
 
 def test_search_matches_description_and_body_newest_first_with_limit(world):
-    older = _m(world["mine"], body="alpha", description="x")
-    world["memory_store"].record(older, world["read_write_set"])
-    newer = _m(world["mine"], body="y", description="ALPHA cue")
-    world["memory_store"].record(newer, world["read_write_set"])
+    older = _record(world, body="alpha", description="x")
+    newer = _record(world, body="y", description="ALPHA cue")
     project_store = world["project_store"]
-    assert [m.id for m in project_store.search(world["mine"], world["read_write_set"], query="alpha",
-                                               limit=None)] == [newer.id, older.id]
-    assert [m.id for m in project_store.search(world["mine"], world["read_write_set"], query="alpha",
-                                               limit=1)] == [newer.id]
+    assert [m.id for m in project_store.search(world["mine"], world["read_write_set"],
+                                               query="alpha", limit=None)] == [newer.id, older.id]
+    assert [m.id for m in project_store.search(world["mine"], world["read_write_set"],
+                                               query="alpha", limit=1)] == [newer.id]
+
+
+def test_search_folds_case_beyond_ascii(world):
+    memory = _record(world, body="ÄRGER mit Umlauten")
+    assert world["project_store"].search(world["mine"], world["read_write_set"], query="ärger",
+                                         limit=None) == [memory]
 
 
 def test_search_does_not_match_on_the_id(world):
-    memory = _m(world["mine"], body="b")
-    world["memory_store"].record(memory, world["read_write_set"])
+    memory = _record(world, body="b")
     assert world["project_store"].search(world["mine"], world["read_write_set"], query=memory.id,
                                          limit=None) == []
 
 
 # --- concurrency --------------------------------------------------------------
 
-def test_concurrent_records_from_two_instances_all_land(backend, root, world):
-    other_memory_store, _ = backend.make(root)
-    stores = [world["memory_store"], other_memory_store]
+def test_concurrent_records_from_two_instances_all_land(backend, root, home, world):
+    other_memory_store, _ = backend.make(root, home)
+    memory_stores = [world["memory_store"], other_memory_store]
     memories = [_m(world["mine"], body=f"fact {i}") for i in range(20)]
 
     def write(i: int) -> None:
-        stores[i % 2].record(memories[i], world["read_write_set"])
+        memory_stores[i % 2].record(memories[i], world["read_write_set"])
 
     threads = [threading.Thread(target=write, args=(i,)) for i in range(20)]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join()
-    hits = world["project_store"].search(world["mine"], world["read_write_set"], query=None, limit=None)
+    hits = world["project_store"].search(world["mine"], world["read_write_set"], query=None,
+                                         limit=None)
     assert {m.id for m in hits} == {m.id for m in memories}
+
+
+def test_a_missing_store_answers_absence_and_is_never_created_by_reads_or_updates(tmp_path, home):
+    memory_store, project_store = _make_sqlite(tmp_path / "none", home)
+    read_write_set = ReadWriteSet(project_id=new_id(), global_project_id=None)
+    with pytest.raises(MemoryNotFound):
+        memory_store.read(new_id(), read_write_set)
+    with pytest.raises(MemoryNotFound):
+        memory_store.update(new_id(), read_write_set, body="x", description=None,
+                            expected_version=1)
+    with pytest.raises(MemoryNotFound):
+        memory_store.delete(new_id(), read_write_set, expected_version=1, hard=False)
+    assert project_store.search(new_id(), None, query=None, limit=None) == []
+    assert not (tmp_path / "none").exists()

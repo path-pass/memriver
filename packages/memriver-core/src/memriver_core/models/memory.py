@@ -35,6 +35,12 @@ class Memory:
     updated: str
     description: str
     body: str
+    # optimistic concurrency: every update and delete moves it on, and a
+    # write names the version it read (spec §5.1)
+    version: int = 1
+    # set only on the management reads; agent-facing paths never return a
+    # deleted memory (spec §4)
+    deleted_at: str | None = None
 
     @classmethod
     def new(cls, *, body: str, type: str, project_id: str, source: dict,

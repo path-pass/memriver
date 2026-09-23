@@ -46,16 +46,13 @@ from memriver.install.codex import (
 from memriver.install.codex import (
     NATIVE_MEMORY_OFF_NOTE as CODEX_NATIVE_MEMORY_OFF_NOTE,
 )
-from memriver.project_context import bind
 from memriver_core.bootstrap import build_service
 from memriver_core.settings import Settings
 
 
 def _bind_new(store: Path, directory: Path, name: str) -> str:
     service = build_service(Settings(root=store), root=store)
-    project_id = service.create_project(name).id
-    bind(store, service, project_id, str(directory.resolve()))
-    return project_id
+    return service.init_project(name, service.plan_root(str(directory))).id
 
 
 CODEX_TRUST_TEXT = (
@@ -1373,10 +1370,10 @@ def test_installing_all_four_harnesses_writes_every_target(home, project):
     assert tomlkit.parse((home / ".codex" / "config.toml").read_text())["mcp_servers"]
 
 
-# --- install is decoupled from the project registry ---------------------------
+# --- install is decoupled from the project bindings ---------------------------
 #
-# The static file still lands on the nearest git root, and the registry still
-# decides the project identity the MCP server reports. Neither reads the other:
+# The static file still lands on the nearest git root, and the bound directories
+# still decide the project identity the MCP server reports. Neither reads the other:
 # these four cases cross the two axes (registered or not, git root or not) and
 # pin that the outcomes stay independent.
 
@@ -1410,7 +1407,7 @@ def test_install_in_unregistered_repo_lands_on_git_root_and_registers_nothing(
 
     assert result.exit_code == 0
     assert (project / STATIC_FILE[harness]).exists()
-    assert not (store / "projects").exists() and not (store / "registry").exists()
+    assert not (store / "memriver.db").exists()
     assert _server_header(store, project / "src").startswith("project: none")
 
 

@@ -4,8 +4,10 @@ Two rules shape this module.
 
 *Never fail the harness.* A hook that exits non-zero, or writes a traceback to
 stdout, degrades the session it was meant to help. Every path here returns
-exit code 0, and a broken store costs the user one stderr line, never a
-message the agent can read as instructions.
+exit code 0. A store fault the core can degrade (an unreadable store) is
+injected as the labelled "unavailable" session with an empty index; any other
+hook failure costs the user one fixed, path-free stderr line, never a message
+the agent can read as instructions.
 
 *Per-harness envelopes stay separate.* Every event keeps one encoder per
 harness even where both currently build the same object: the schemas are owned
@@ -13,9 +15,10 @@ by two vendors and have diverged before. Composition of the text itself is
 shared, because that is ours.
 
 *Stop stays light.* The Stop path only needs to know whether the current
-directory belongs to a registered project, so it resolves that through
-``project_context`` and ``memriver_core.settings`` alone: it never builds the
-service stack, never takes the store lock, and never creates the store.
+directory belongs to a registered project. It asks the core facade
+(``open_session``), whose read opens the database read-only: it never loads
+the content policy, never writes, never scans memories and never creates the
+store.
 """
 
 from __future__ import annotations
@@ -152,14 +155,15 @@ def _stop(harness: Harness, payload_text: str, *, root: Path | None,
         if not (isinstance(payload, dict)
                 and payload.get("stop_hook_active") is False):
             return HookResult()
-        # settings only (pydantic-settings), never bootstrap: the Stop path must
-        # stay light and must not create the store or take the lock
-        from memriver_core.settings import storage_root
-
-        from .project_context import resolve
+        # the facade's read-only session: no content policy, no write, and a
+        # missing store stays missing
+        from memriver_core.bootstrap import build_service
+        from memriver_core.settings import Settings, storage_root
 
         store_root = Path(root) if root is not None else storage_root()
-        if resolve(store_root, _resolve_dir(payload, project_dir, cwd)).state != "registered":
+        service = build_service(Settings(root=store_root), root=store_root)
+        start = _resolve_dir(payload, project_dir, cwd)
+        if service.open_session(str(start)).state != "registered":
             return HookResult()
         return HookResult(stdout=_emit(_STOP_ENCODERS[harness](STOP_NUDGE)))
     except Exception:  # noqa: BLE001 - a failed nudge is never worth a message
@@ -203,19 +207,16 @@ def _resolve_dir(payload: dict[str, Any], project_dir: Path | None,
 
 
 def _read_index(root: Path | None, project_dir: Path) -> str:
-    # imported here, not at module scope: Stop fires at the end of every turn
-    # and must not pay for loading the settings/service stack it never uses
+    # imported inside the function, not at module scope, so the Stop path
+    # does not pay for SessionStart's dependencies
     from memriver_core.bootstrap import build_service
     from memriver_core.settings import load_settings
-
-    from .project_context import resolve
-    from .session import open_session
 
     with quiet_core_logging():
         settings = load_settings(root_override=root)
         service = build_service(settings, root=settings.root)
-        # the same seam the MCP server uses: same directory, same header and body
-        session = open_session(service, resolve(settings.root, project_dir))
+        # the same session the MCP server opens: same directory, same header and body
+        session = service.open_session(str(project_dir))
         body = service.index(session.read_write_set)
     return session.header + "\n" + body
 

@@ -55,7 +55,6 @@ from memriver.install import (
     toml_table_remove,
 )
 from memriver.install.codex import NATIVE_MEMORY_LEFT_NOTE as CODEX_NATIVE_MEMORY_LEFT
-from memriver.project_context import bind
 from memriver.protocol_text import PROTOCOL_BLOCK
 from memriver.uninstall import run_uninstall as run_full_uninstall
 from memriver_core.bootstrap import build_service
@@ -64,9 +63,7 @@ from memriver_core.settings import Settings
 
 def _bind_new(store: Path, directory: Path, name: str) -> str:
     service = build_service(Settings(root=store), root=store)
-    project_id = service.create_project(name).id
-    bind(store, service, project_id, str(directory.resolve()))
-    return project_id
+    return service.init_project(name, service.plan_root(str(directory))).id
 
 
 ALL_HARNESSES = ["claude-code", "codex", "cursor", "kiro"]
@@ -1421,7 +1418,7 @@ def test_purge_data_reports_a_partial_removal_when_the_walk_fails(home, project,
         error.strerror = "Permission denied"
         raise error
 
-    monkeypatch.setattr("memriver.uninstall._empty_directory", half_removing_walk)
+    monkeypatch.setattr("memriver_core.repository.directories._empty_directory", half_removing_walk)
 
     result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
                             purge_data=True, env={"MEMRIVER_ROOT": str(root)})
@@ -1493,7 +1490,7 @@ def forbid_any_deletion(monkeypatch) -> None:
     def refuse(fd):
         raise AssertionError("a deletion walk was started on a protected target")
 
-    monkeypatch.setattr("memriver.uninstall._empty_directory", refuse)
+    monkeypatch.setattr("memriver_core.repository.directories._empty_directory", refuse)
 
 
 def swap_during_the_walk(monkeypatch, swap, *, at: int = 1) -> None:
@@ -1504,9 +1501,9 @@ def swap_during_the_walk(monkeypatch, swap, *, at: int = 1) -> None:
     has already passed -- and ``at=2`` is its first subdirectory, which is as
     mid-walk as an injection gets.
     """
-    import memriver.uninstall as uninstall_module
+    from memriver_core.repository import directories
 
-    walk = uninstall_module._empty_directory
+    walk = directories._empty_directory
     entered: list[int] = []
 
     def swapping(fd: int, **kwargs) -> None:
@@ -1515,7 +1512,7 @@ def swap_during_the_walk(monkeypatch, swap, *, at: int = 1) -> None:
             swap()
         return walk(fd, **kwargs)
 
-    monkeypatch.setattr("memriver.uninstall._empty_directory", swapping)
+    monkeypatch.setattr("memriver_core.repository.directories._empty_directory", swapping)
 
 
 def storage_root_line(stdout: str) -> str:
@@ -1831,7 +1828,8 @@ def test_the_purge_guard_reports_a_current_directory_it_cannot_resolve(home,
                                                                        tmp_path):
     """The protected bases are resolved too, and a loop in one of them is the
     same readable refusal rather than an exception out of the guard."""
-    from memriver.uninstall import _refuse_purge_target
+    from memriver.uninstall import _refusal_text
+    from memriver_core.repository.directories import _refuse_purge_target
 
     looping = tmp_path / "a"
     other = tmp_path / "b"
@@ -1842,9 +1840,9 @@ def test_the_purge_guard_reports_a_current_directory_it_cannot_resolve(home,
 
     refusal = _refuse_purge_target(store, store, home=home, cwd=looping)
 
-    assert refusal is not None
-    assert f"cannot resolve {looping}" in refusal
-    assert "nothing was removed" in refusal
+    assert (refusal.kind, refusal.path) == ("unresolvable", looping)
+    assert f"cannot resolve {looping}" in _refusal_text(refusal)
+    assert "nothing was removed" in _refusal_text(refusal)
 
 
 def test_purge_data_removes_the_canonical_target_not_the_given_spelling(
@@ -1874,9 +1872,9 @@ def swap_on_first_open(monkeypatch, swap) -> None:
     name-based guard are already behind us, and the open is about to re-traverse
     the path they vetted.
     """
-    import memriver.uninstall as uninstall_module
+    from memriver_core.repository import directories
 
-    real_open = uninstall_module.os.open
+    real_open = directories.os.open
     fired: list[bool] = []
 
     def swapping(path, *args, **kwargs):
@@ -1885,7 +1883,7 @@ def swap_on_first_open(monkeypatch, swap) -> None:
             swap()
         return real_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(uninstall_module.os, "open", swapping)
+    monkeypatch.setattr(directories.os, "open", swapping)
 
 
 def test_purge_data_refuses_an_ancestor_swapped_for_a_symlink_before_the_confirmed_open(
@@ -2220,12 +2218,12 @@ def test_a_removal_summary_never_prints_a_takeover_line(home, project):
     assert HARNESS_SETTING_TAKEOVER_NOTICE not in result.stdout
 
 
-# --- Step 12: uninstall is decoupled from the project registry --------------
+# --- Step 12: uninstall is decoupled from the project bindings --------------
 
 
-def test_config_uninstall_leaves_the_registry_alone(home, project):
-    """Removing a harness configuration is not unregistering a project: the
-    registry lives in the store, and only ``memriver project`` writes it."""
+def test_config_uninstall_leaves_the_binding_alone(home, project):
+    """Removing a harness configuration is not unbinding a project: the
+    binding lives in the store, and only ``memriver project`` writes it."""
     store = home / "agent-memory"
     pid = _bind_new(store, project, "work")
     install(["cursor"], home=home, cwd=project)
@@ -2233,6 +2231,5 @@ def test_config_uninstall_leaves_the_registry_alone(home, project):
     result = uninstall(["cursor"], home=home, cwd=project)
 
     assert result.exit_code == 0
-    assert (store / "registry" / f"{pid}.toml").read_text() \
-        == f'roots = ["{project.resolve()}"]\n'
-    assert build_service(Settings(root=store), root=store).read_project(pid).name == "work"
+    project_row = build_service(Settings(root=store), root=store).read_project(pid)
+    assert (project_row.name, project_row.root) == ("work", str(project.resolve()))

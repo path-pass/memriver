@@ -3,16 +3,17 @@ import io
 import json
 import os
 import select
+import sqlite3
 import subprocess
 import sys
 import time
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 from memriver import cli, hooks
 from memriver.hooks import HookResult
-from memriver.project_context import bind
 from memriver.protocol_text import STOP_NUDGE
 from memriver_core.bootstrap import build_service
 from memriver_core.settings import Settings
@@ -73,16 +74,24 @@ def invoke_main(argv: list[str], stdin: str) -> CliRun:
 
 
 def capture_dispatch(argv: list[str], monkeypatch):
-    """Parse argv through main() with every handler stubbed; return the args."""
+    """Parse argv through main() with every handler stubbed; return the args.
+
+    Each name gets its own recorder (not one shared stub), so a wiring bug --
+    e.g. `show` bound to `_view_list` -- makes `args.handler is
+    getattr(cli, handler)` fail instead of passing vacuously.
+    """
     seen: list = []
 
-    def record(args) -> int:
-        seen.append(args)
-        return 0
+    def make_recorder(name: str):
+        def record(args) -> int:
+            seen.append(args)
+            return 0
+        record.__name__ = name
+        return record
 
-    monkeypatch.setattr(cli, "_serve", record)
-    monkeypatch.setattr(cli, "_hook", record)
-    monkeypatch.setattr(cli, "_install", record)
+    for name in ("_serve", "_hook", "_install", "_view_list", "_view_show", "_view_search",
+                "_view_export", "_view_delete"):
+        monkeypatch.setattr(cli, name, make_recorder(name))
     assert cli.main(list(argv)) == 0
     return seen[0]
 
@@ -117,6 +126,28 @@ def test_install_rejects_combining_harness_and_all():
 ])
 def test_project_subcommands_parse(argv, handler, expected):
     args = cli._build_parser().parse_args(argv)
+    assert args.handler is getattr(cli, handler)
+    assert {key: getattr(args, key) for key in expected} == expected
+
+
+@pytest.mark.parametrize(("argv", "handler", "expected"), [
+    (["list"], "_view_list", {"project": None}),
+    (["list", "--project", "aaaaaaaaaa"], "_view_list", {"project": "aaaaaaaaaa"}),
+    (["show", "mmmmmmmmmm"], "_view_show", {"memory_id": "mmmmmmmmmm", "deleted": False}),
+    (["show", "mmmmmmmmmm", "--deleted"], "_view_show",
+     {"memory_id": "mmmmmmmmmm", "deleted": True}),
+    (["search", "query text"], "_view_search",
+     {"query": "query text", "project": None, "limit": None}),
+    (["search", "query text", "--project", "aaaaaaaaaa", "--limit", "3"], "_view_search",
+     {"query": "query text", "project": "aaaaaaaaaa", "limit": 3}),
+    (["export", "/tmp/out"], "_view_export", {"directory": Path("/tmp/out")}),
+    (["delete", "mmmmmmmmmm", "--version", "2"], "_view_delete",
+     {"memory_id": "mmmmmmmmmm", "version": 2, "hard": False, "yes": False}),
+    (["delete", "mmmmmmmmmm", "--version", "2", "--hard", "--yes"], "_view_delete",
+     {"memory_id": "mmmmmmmmmm", "version": 2, "hard": True, "yes": True}),
+])
+def test_view_subcommands_parse(argv, handler, expected, monkeypatch):
+    args = capture_dispatch(argv, monkeypatch)
     assert args.handler is getattr(cli, handler)
     assert {key: getattr(args, key) for key in expected} == expected
 
@@ -211,14 +242,16 @@ def _git_repo(tmp_path, name: str):
 def _register(root, repo) -> str:
     """Create a project and bind the fixture repo, the way `memriver project init` would."""
     service = build_service(Settings(root=root), root=root)
-    project_id = service.create_project(repo.name).id
-    bind(root, service, project_id, str(repo.resolve()))
-    return project_id
+    return service.init_project(repo.name, service.plan_root(str(repo))).id
 
 
-def _entry_files(root, project_id):
-    return sorted(p for p in (root / "memories").glob("*.md")
-                  if f"project_id: {project_id}" in p.read_text(encoding="utf-8"))
+def _active_memories(root, project_id) -> int:
+    """That project's active memories, counted in the database."""
+    with closing(sqlite3.connect(root / "memriver.db")) as conn:
+        (count,) = conn.execute("SELECT count(*) FROM memories "
+                                "WHERE project_id = ? AND deleted_at IS NULL",
+                                (project_id,)).fetchone()
+    return count
 
 
 def test_project_scope_follows_project_dir_not_cwd(tmp_path):
@@ -233,7 +266,7 @@ def test_project_scope_follows_project_dir_not_cwd(tmp_path):
                                  extra_args=["--project-dir", str(git_repo)],
                                  content="stored for the target repo")
     assert response["result"]["isError"] is False
-    assert len(_entry_files(root, project_id)) == 1
+    assert _active_memories(root, project_id) == 1
 
 
 def test_project_scope_defaults_to_working_directory(tmp_path):
@@ -245,7 +278,7 @@ def test_project_scope_defaults_to_working_directory(tmp_path):
     response = _write_over_stdio(root, cwd=git_repo, extra_args=[],
                                  content="stored for the cwd repo")
     assert response["result"]["isError"] is False
-    assert len(_entry_files(root, project_id)) == 1
+    assert _active_memories(root, project_id) == 1
 
 
 def test_settings_file_in_root_is_honoured_end_to_end(tmp_path):
@@ -260,7 +293,7 @@ def test_settings_file_in_root_is_honoured_end_to_end(tmp_path):
                                  content="x" * 11)
     assert response["result"]["isError"] is False  # tools report, never raise
     assert "too large" in json.dumps(response["result"])
-    assert not _entry_files(root, project_id)
+    assert _active_memories(root, project_id) == 0
 
 
 def test_bad_env_value_reports_readably(tmp_path):
@@ -315,7 +348,7 @@ def test_explicit_serve_starts_the_same_stdio_server(tmp_path):
     response = _write_over_stdio(root, cwd=repo, extra_args=[],
                                  content="served explicitly", command="serve")
     assert response["result"]["isError"] is False
-    assert len(_entry_files(root, project_id)) == 1
+    assert _active_memories(root, project_id) == 1
 
 
 def test_hook_without_project_dir_keeps_the_payload_cwd_fallback_reachable(monkeypatch):
@@ -505,7 +538,7 @@ def test_store_step_for_an_uninitialized_store_creates_global_only_when_applied(
     monkeypatch.setenv("MEMRIVER_ROOT", str(tmp_path / "store"))
     step = cli._store_step()
     assert "memory store (required): create the global project in" in step.summary
-    assert not (tmp_path / "store" / "store.toml").exists()     # building it writes nothing
+    assert not (tmp_path / "store" / "memriver.db").exists()    # building it writes nothing
     line = step.apply()
     global_id = build_service(Settings(root=tmp_path / "store"),
                               root=tmp_path / "store").global_project_id()
@@ -536,7 +569,7 @@ def test_install_with_an_unreadable_store_stops_before_touching_any_harness(
     import memriver.install as install_module
 
     (tmp_path / "store").mkdir()
-    (tmp_path / "store" / "store.toml").write_text("global_project = 'nope'\n")
+    (tmp_path / "store" / "memriver.db").write_bytes(b"not a database")
     monkeypatch.setenv("MEMRIVER_ROOT", str(tmp_path / "store"))
     ran: list = []
     monkeypatch.setattr(install_module, "run_install", lambda *a, **kw: ran.append(1) or 0)

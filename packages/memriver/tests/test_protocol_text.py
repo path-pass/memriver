@@ -35,6 +35,7 @@ def test_instructions_and_protocol_block_carry_the_project_scoped_write_rules():
     assert "memory_read fetches one entry in full by id" in INSTRUCTIONS
     assert "Ids are assigned by memriver." in INSTRUCTIONS
     assert "memory_update it\ninstead of adding a duplicate" in INSTRUCTIONS
+    assert "Both take the version memory_read\nreturned" in INSTRUCTIONS
     # names and the dream queue are gone from the protocol
     for gone in ("kebab-case", "name is taken", "memory_dream", "confirmed"):
         assert gone not in INSTRUCTIONS

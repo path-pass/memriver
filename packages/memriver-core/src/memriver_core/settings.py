@@ -17,10 +17,15 @@ from pydantic import Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 __all__ = [
+    "BUSY_TIMEOUT_MS",
     "DEFAULT_BUDGET_LINES",
     "DEFAULT_MAX_BODY_CHARS",
     "DEFAULT_SEARCH_LIMIT",
     "DEFAULT_SEARCH_LIMIT_MAX",
+    "HEADER_FIELD_CHARS",
+    "INDEX_CUE_CHARS",
+    "PROJECT_NAME_MAX_CHARS",
+    "SEARCH_SNIPPET_CHARS",
     "Settings",
     "load_settings",
     "storage_root",
@@ -31,13 +36,23 @@ log = logging.getLogger(__name__)
 ENV_PREFIX = "MEMRIVER_"
 SETTINGS_FILENAME = "settings.toml"
 
-# Canonical home of every user-configurable behavior default (each backed by
-# a Settings field below). Interface defaults that aren't user-configurable
-# (e.g. the index cue length) live at their own function signatures instead.
+# Canonical home of every user-configurable behavior default, each backed by
+# a Settings field below. The fixed, non-configurable values (e.g. the index
+# cue length) live in the constants block further down instead.
 DEFAULT_MAX_BODY_CHARS = 8000
 DEFAULT_SEARCH_LIMIT_MAX = 50
 DEFAULT_SEARCH_LIMIT = 5
 DEFAULT_BUDGET_LINES = 100
+
+# Fixed values that are not user-configurable but still live here, with every
+# other default (the user's rule: no default constants in feature modules).
+# bootstrap injects them: models, application and repository never import
+# settings.
+INDEX_CUE_CHARS = 60           # one index line's cue
+SEARCH_SNIPPET_CHARS = 60      # one memory_search hit's body snippet
+HEADER_FIELD_CHARS = 120       # one field of the project header
+PROJECT_NAME_MAX_CHARS = 120   # a project name
+BUSY_TIMEOUT_MS = 5000         # SQLite's bounded wait for the write lock
 
 
 def storage_root(env: Mapping[str, str] | None = None,
