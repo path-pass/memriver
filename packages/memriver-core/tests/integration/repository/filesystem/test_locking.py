@@ -1,7 +1,9 @@
 import threading
 import time
 
+import pytest
 from memriver_core.models import AccessContext, Memory, Project
+from memriver_core.models.errors import StorageFailure
 from memriver_core.repository.filesystem import FileMemoryStore, FileProjectStore
 from memriver_core.repository.filesystem import memory_store as memory_store_module
 from memriver_core.repository.filesystem.locking import store_lock
@@ -42,6 +44,20 @@ def test_store_lock_creates_the_root_and_its_lock_file(tmp_path):
     with store_lock(root):
         pass
     assert (root / ".lock").exists()
+
+
+def test_store_lock_wraps_an_oserror_from_inside_the_block_as_storage_failure(tmp_path):
+    root = tmp_path / "store"
+    cause = OSError("disk full")
+    with pytest.raises(StorageFailure) as excinfo, store_lock(root):
+        raise cause
+    assert excinfo.value.__cause__ is cause
+
+
+def test_store_lock_lets_a_non_oserror_from_inside_the_block_propagate(tmp_path):
+    root = tmp_path / "store"
+    with pytest.raises(ValueError), store_lock(root):
+        raise ValueError("not a storage problem")
 
 
 def test_record_holds_the_lock_from_the_project_check_to_the_write(tmp_path, monkeypatch):

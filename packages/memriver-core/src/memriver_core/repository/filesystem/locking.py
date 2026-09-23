@@ -21,17 +21,22 @@ def store_lock(root: Path) -> Iterator[None]:
     never take it.
     fcntl is POSIX-only: no Windows support yet.
 
-    Any OSError from the lock lifecycle itself -- creating the root,
-    opening the lock file, or (un)locking it -- surfaces as the fieldless
-    StorageFailure; the original exception is kept as `__cause__` for logs
-    and goes no further. Callers must never see a raw platform exception here.
+    Any OSError -- from the lock lifecycle itself (creating the root,
+    opening the lock file, (un)locking it) or raised inside the `with
+    store_lock(...)` block -- surfaces as the fieldless StorageFailure; the
+    original exception is kept as `__cause__` for logs and goes no further.
+    Callers must never see a raw platform exception here. Non-OSError
+    exceptions raised inside the block propagate unchanged. Callers rely on
+    this: the umbrella's registry writer (bind/unbind) lets an OSError
+    raised while holding the lock surface as StorageFailure rather than
+    catching it itself.
     """
     try:
         # a world/group-readable root lets other local users enumerate
-        # memory ids by listing. Only the root created
-        # here, not one that already existed -- some callers deliberately
-        # lock a directory down to simulate a permission failure, and this
-        # must not silently undo that.
+        # memory ids by listing. Only the root created here, not one that
+        # already existed -- some callers deliberately lock a directory
+        # down to simulate a permission failure, and this must not
+        # silently undo that.
         pre_existing = root.exists()
         root.mkdir(parents=True, exist_ok=True)
         if not pre_existing:
