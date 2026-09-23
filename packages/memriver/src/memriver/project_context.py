@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import os
 import stat
-import tempfile
 import tomllib
 import unicodedata
 from collections.abc import Callable
@@ -397,7 +396,7 @@ def _rewrite(store_root: Path, project_id: str,
              change: Callable[[tuple[str, ...] | None, Registry], tuple[str, ...] | None]) -> None:
     # imported here so that importing this module (the Stop hook does, every
     # turn) never loads the core service stack that bootstrap pulls in
-    from memriver_core.bootstrap import store_lock
+    from memriver_core.bootstrap import replace_file, store_lock
 
     if not valid_project_id(project_id):
         raise ValueError("invalid project id")
@@ -407,40 +406,18 @@ def _rewrite(store_root: Path, project_id: str,
         roots = change(current, registry)
         if roots is None:
             return
-        _write_document(store_root, store_root / REGISTRY_DIRNAME / f"{project_id}{REGISTRY_SUFFIX}",
-                        roots)
+        # an OSError here (a symlinked registry/ included) leaves store_lock
+        # as StorageFailure
+        replace_file(store_root, store_root / REGISTRY_DIRNAME / f"{project_id}{REGISTRY_SUFFIX}",
+                     _render(roots))
 
 
-def _write_document(store_root: Path, path: Path, roots: tuple[str, ...]) -> None:
+def _render(roots: tuple[str, ...]) -> str:
     import tomlkit
 
     document = tomlkit.document()
     document["roots"] = list(roots)
-    text = tomlkit.dumps(document)
-    _mkdir_private(store_root, path.parent)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            # inside the with: a failing fchmod must still close the descriptor
-            os.fchmod(f.fileno(), 0o600)
-            f.write(text)
-        os.replace(tmp, path)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
-
-
-def _mkdir_private(store_root: Path, directory: Path) -> None:
-    """``mkdir -p`` from ``store_root`` down to ``directory``, 0700 on created levels only."""
-    d = store_root
-    for part in ("", *directory.relative_to(store_root).parts):
-        d = d / part if part else d
-        try:
-            d.mkdir(mode=0o700)
-        except FileExistsError:
-            continue
-        d.chmod(0o700)
+    return tomlkit.dumps(document)
 
 
 def count_child_git_markers(directory: Path) -> int | None:

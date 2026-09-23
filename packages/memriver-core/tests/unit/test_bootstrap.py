@@ -54,9 +54,11 @@ def test_build_diagnostics_service_uses_explicit_root(tmp_path):
     assert service._inspector.root == tmp_path / "explicit"
 
 
-def test_bootstrap_reexports_store_lock_and_the_empty_index():
+def test_bootstrap_reexports_store_lock_replace_file_and_the_empty_index():
     from memriver_core.application.service import EMPTY_INDEX
+    from memriver_core.repository.filesystem.files import replace_file
     from memriver_core.repository.filesystem.locking import store_lock
 
     assert bootstrap.store_lock is store_lock
+    assert bootstrap.replace_file is replace_file
     assert bootstrap.EMPTY_INDEX == EMPTY_INDEX

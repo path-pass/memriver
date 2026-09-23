@@ -567,6 +567,56 @@ def test_bind_refuses_to_write_over_an_invalid_registry(tmp_path, dirs):
     assert not (store / "registry" / f"{pid}.toml").exists()
 
 
+def test_bind_refuses_a_symlinked_registry_directory(tmp_path, dirs):
+    store = tmp_path / "store"
+    service, (pid,) = _service_with(store, "x")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (store / "registry").symlink_to(outside)
+    with pytest.raises(RegistryInvalid):
+        bind(store, service, pid, dirs["x-work"])
+    assert list(outside.iterdir()) == []
+
+
+def _swap_registry_for_a_link_after_the_read(store: Path, outside: Path, monkeypatch) -> None:
+    """The registry dir becomes a link between the registry read and the write."""
+    true_load = project_context.load_registry
+
+    def load_then_swap(root: Path) -> Registry:
+        registry = true_load(root)
+        (store / "registry").rename(store / "registry-moved")
+        (store / "registry").symlink_to(outside)
+        return registry
+
+    monkeypatch.setattr(project_context, "load_registry", load_then_swap)
+
+
+def test_bind_never_writes_through_a_registry_dir_swapped_for_a_symlink(
+        tmp_path, dirs, monkeypatch):
+    store = tmp_path / "store"
+    service, (pid,) = _service_with(store, "x")
+    bind(store, service, pid, dirs["x-work"])
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _swap_registry_for_a_link_after_the_read(store, outside, monkeypatch)
+    with pytest.raises(StorageFailure):              # store_lock wraps the core writer's OSError
+        bind(store, service, pid, dirs["y-work"])
+    assert list(outside.iterdir()) == []
+
+
+def test_unbind_never_writes_through_a_registry_dir_swapped_for_a_symlink(
+        tmp_path, dirs, monkeypatch):
+    store = tmp_path / "store"
+    service, (pid,) = _service_with(store, "x")
+    bind(store, service, pid, dirs["x-work"])
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _swap_registry_for_a_link_after_the_read(store, outside, monkeypatch)
+    with pytest.raises(StorageFailure):
+        unbind(store, pid, dirs["x-work"])
+    assert list(outside.iterdir()) == []
+
+
 def test_failed_replace_keeps_old_document_and_no_temp_file(tmp_path, dirs, monkeypatch):
     store = tmp_path / "store"
     service, (pid,) = _service_with(store, "x")
@@ -576,31 +626,43 @@ def test_failed_replace_keeps_old_document_and_no_temp_file(tmp_path, dirs, monk
     def boom(src, dst):
         raise OSError("disk full")
 
-    monkeypatch.setattr(project_context.os, "replace", boom)
+    monkeypatch.setattr(os, "replace", boom)       # the core writer's replace
     with pytest.raises(StorageFailure):              # store_lock wraps every OSError
         bind(store, service, pid, dirs["y-work"])
     assert doc.read_text() == f'roots = ["{dirs["x-work"]}"]\n'
     assert [p.name for p in doc.parent.iterdir()] == [doc.name]
 
 
-def test_failed_chmod_closes_the_descriptor_and_leaves_nothing_behind(tmp_path, dirs, monkeypatch):
+def test_failed_temp_write_closes_the_descriptor_and_leaves_nothing_behind(
+        tmp_path, dirs, monkeypatch):
     store = tmp_path / "store"
     service, (pid,) = _service_with(store, "x")
     bind(store, service, pid, dirs["x-work"])
     doc = store / "registry" / f"{pid}.toml"
     opened: list[int] = []
-    true_mkstemp = project_context.tempfile.mkstemp
+    true_fdopen = os.fdopen
 
-    def watched(*args, **kwargs):
-        fd, path = true_mkstemp(*args, **kwargs)
+    class FailingWrite:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.handle.close()
+
+        def write(self, text):
+            raise OSError("disk full")
+
+    def failing_fdopen(fd, mode="r", *args, **kwargs):
+        handle = true_fdopen(fd, mode, *args, **kwargs)
+        if "w" not in mode:                     # the service's reads go through here too
+            return handle
         opened.append(fd)
-        return fd, path
+        return FailingWrite(handle)
 
-    def boom(*args, **kwargs):
-        raise OSError("no chmod here")
-
-    monkeypatch.setattr(project_context.tempfile, "mkstemp", watched)
-    monkeypatch.setattr(project_context.os, "fchmod", boom)
+    monkeypatch.setattr(os, "fdopen", failing_fdopen)   # the core writer's temp file
     with pytest.raises(StorageFailure):
         bind(store, service, pid, dirs["y-work"])
     assert doc.read_text() == f'roots = ["{dirs["x-work"]}"]\n'

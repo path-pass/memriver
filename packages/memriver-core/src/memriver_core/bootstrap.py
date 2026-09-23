@@ -17,11 +17,15 @@ from .repository.filesystem import (
     FilesystemStoreInspector,
 )
 
-# store_lock is re-exported for the umbrella's directory registry, whose
-# writes must serialize with store writes.
+# replace_file and store_lock are re-exported for the umbrella's directory
+# registry: its writes serialize with store writes and use the store's one
+# safe write (symlinked levels refused, 0700 dirs, 0600 files, atomic replace).
+from .repository.filesystem.files import replace_file
 from .repository.filesystem.locking import store_lock
 
-__all__ = ["EMPTY_INDEX", "build_diagnostics_service", "build_service", "store_lock"]
+__all__ = [
+    "EMPTY_INDEX", "build_diagnostics_service", "build_service", "replace_file", "store_lock",
+]
 
 
 def build_service(settings: Settings, *, root: Path | None = None) -> MemoryService:
