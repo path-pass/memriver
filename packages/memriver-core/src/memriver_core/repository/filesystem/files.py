@@ -24,7 +24,7 @@ def project_path(root: Path, project_id: str) -> Path:
     return root / PROJECTS_DIRNAME / f"{project_id}.toml"
 
 
-def container_exists(root: Path, dirname: str) -> bool:
+def data_dir_exists(root: Path, dirname: str) -> bool:
     """Whether the data directory `root/dirname` exists as a real directory.
 
     False when absent. OSError when something else sits there -- a symlink

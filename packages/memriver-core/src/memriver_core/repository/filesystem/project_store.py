@@ -16,7 +16,7 @@ from memriver_core.models.errors import (
 from .files import (
     MANIFEST_FILENAME,
     PROJECTS_DIRNAME,
-    container_exists,
+    data_dir_exists,
     project_path,
     read_regular_text,
     write_new,
@@ -62,7 +62,7 @@ class FileProjectStore:
         if not ID_RE.fullmatch(project_id):
             raise ProjectNotFound(project_id)
         try:
-            if not container_exists(self.root, PROJECTS_DIRNAME):
+            if not data_dir_exists(self.root, PROJECTS_DIRNAME):
                 raise ProjectNotFound(project_id)
         except OSError as err:
             raise StorageFailure from err

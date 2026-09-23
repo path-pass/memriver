@@ -10,7 +10,7 @@ from pathlib import Path
 from memriver_core.models import ID_RE, Memory
 from memriver_core.models.errors import StorageFailure
 
-from .files import MEMORIES_DIRNAME, container_exists, memory_path, read_regular_text
+from .files import MEMORIES_DIRNAME, data_dir_exists, memory_path, read_regular_text
 from .markdown_codec import decode
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ def load_memory(root: Path, memory_id: str) -> Memory | None:
     if not ID_RE.fullmatch(memory_id):
         return None
     try:
-        if not container_exists(root, MEMORIES_DIRNAME):
+        if not data_dir_exists(root, MEMORIES_DIRNAME):
             return None
         text = read_regular_text(memory_path(root, memory_id))
     except (OSError, UnicodeDecodeError) as err:
@@ -52,7 +52,7 @@ def iter_memories(root: Path) -> Iterator[Memory]:
     directory fails the whole scan with StorageFailure.
     """
     try:
-        if not container_exists(root, MEMORIES_DIRNAME):
+        if not data_dir_exists(root, MEMORIES_DIRNAME):
             return
         names = sorted(entry.name for entry in os.scandir(root / MEMORIES_DIRNAME))
     except OSError as err:
