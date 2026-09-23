@@ -5,16 +5,16 @@ import re
 from collections import Counter
 from importlib.resources import files
 
-from memriver_core.application.errors import ContentRejected
 from memriver_core.content_policy.rules_loader import _load_rules
+from memriver_core.models.errors import ContentRejected
 
 _RULES_DIR = files(__package__) / "rules"
 
 _RULES = _load_rules(_RULES_DIR / "memriver.toml", _RULES_DIR / "gitleaks.toml")
 
 # C0 + C1 control characters and the Unicode line/paragraph separators -- the
-# same class the index normalizer collapses (memriver_core.application.
-# service._INDEX_UNSAFE_RE). str.strip() only removes whitespace, so a body of
+# same class the index normalizer collapses (memriver_core.models.
+# single_line). str.strip() only removes whitespace, so a body of
 # nothing but e.g. "\x01\x02" reads as non-empty and would render as a
 # near-blank index line.
 _CONTROL_CHARS_RE = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029]")

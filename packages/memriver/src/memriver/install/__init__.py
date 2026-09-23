@@ -11,20 +11,23 @@ original snapshots and validates again. No directory is created, no backup is
 written, no file is touched anywhere in that phase -- a planning failure is a
 raised ``PlanningError``, never a pretend change.
 
-Applying is a transaction. Each target is re-read and compared to its planning
-snapshot immediately before it is written, so a config that another agent
-changed while the user was answering prompts aborts the run instead of being
-overwritten from a stale render. Each changed target is backed up to a sibling
-``<target>.memriver-backup-<UTC timestamp>`` created exclusively, then replaced
-through a same-directory temporary file. That backup **is** the pre-image
-(spec 10, DEFERRED-1): if any replacement fails, the run walks its write list
-in reverse, copies each backup back over its target and deletes the files it
-created. Backups are never removed -- not on success, not on rollback, not
-when the rollback itself fails, which is exactly when the user needs them.
+Applying harness configuration is a transaction. Each target is re-read and
+compared to its planning snapshot immediately before it is written, so a config
+that another agent changed while the user was answering prompts aborts the run
+instead of being overwritten from a stale render. Each changed target is backed
+up to a sibling ``<target>.memriver-backup-<UTC timestamp>`` created
+exclusively, then replaced through a same-directory temporary file. That backup
+**is** the pre-image (spec 10, DEFERRED-1): if any replacement fails, the run
+walks its write list in reverse, copies each backup back over its target and
+deletes the files it created. Backups are never removed -- not on success, not
+on rollback, not when the rollback itself fails, which is exactly when the user
+needs them.
 
-This package never imports ``memriver_core`` (enforced by
-tests/test_architecture.py): it edits harness config files, it does not touch
-the memory store.
+This package never imports memriver_core (enforced by tests/test_architecture.py).
+The CLI may supply a StoreStep callback for global initialization. After all
+accepted edits are rendered and validated, that callback runs before harness
+configuration is written. Store initialization is not part of the harness-file
+rollback: a later harness failure may leave a valid empty global project.
 """
 
 from __future__ import annotations
@@ -74,6 +77,28 @@ from .editors import (
     validate_document,
 )
 
+
+@dataclass(frozen=True)
+class StoreStep:
+    """The memory store's pending initialization, planned and confirmed with the rest.
+
+    Built by the CLI (this package never imports memriver_core). `apply`
+    creates the global project and returns the line to print. It runs before
+    every harness change and gates them: while the store is not ready, no new
+    harness configuration is applied.
+    """
+
+    summary: str
+    label: str
+    apply: Callable[[], str]
+
+
+STORE_NEEDS_A_TERMINAL = ("\nmemriver install: the memory store needs initializing and stdin "
+                          "is not a terminal; re-run with --yes. No file was changed.\n")
+STORE_DECLINED = ("\ninstallation cancelled; memory store not initialized; no file was changed.\n")
+STORE_FAILED = ("\nmemriver install: the memory store could not be initialized; no harness "
+                "configuration was applied. Run memriver doctor.\n")
+
 __all__ = [
     "HARNESSES",
     "HARNESS_SETTING_TAKEOVER_NOTICE",
@@ -86,6 +111,7 @@ __all__ = [
     "PlanningError",
     "RemovalOperation",
     "Snapshot",
+    "StoreStep",
     "Target",
     "apply_edit",
     "apply_removal",
@@ -681,18 +707,25 @@ def _success_report(writes: Sequence[_Write], command_name: str) -> str:
 
 def run_install(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
                 home: Path, cwd: Path, env: Mapping[str, str],
-                input_fn: Callable[[str], str], stdout: TextIO,
-                replace_file: Callable[[Path, Path], None]) -> int:
-    """Plan, confirm, and apply the install; return the process exit code."""
+                input_fn: Callable[[str], str], stdout: TextIO, stderr: TextIO,
+                replace_file: Callable[[Path, Path], None],
+                store_step: StoreStep | None = None, stdin_is_tty: bool = True) -> int:
+    """Plan, confirm, and apply installation; return the process exit code.
+
+    Store initialization is a required prerequisite with explicit cancellation.
+    Accepted harness edits are rendered and validated before applying the store;
+    the store is ready before any harness file is written. Failures use stderr,
+    plans and normal results use stdout. No store/harness transaction is implied.
+    """
     try:
         plan = _plan(harnesses, home, cwd, env, collect_operations=_install_operations,
                     apply_fn=apply_edit, summary_fn=render_change_summary,
                     command_name="install")
     except PlanningError as error:
-        stdout.write(f"memriver install: {error}\n")
+        stderr.write(f"memriver install: {error}\n")
         return 1
 
-    if not plan.changes:
+    if not plan.changes and store_step is None:
         stdout.write("memriver install: already up to date, nothing to change.\n")
         # notes and the trust step are properties of the harness, not of
         # having written something: an untrusted hook definition does not run,
@@ -701,6 +734,9 @@ def run_install(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
         return 0
 
     stdout.write("".join("\n" + change.summary for change in plan.changes))
+    if store_step is not None:
+        # the store is a change of this plan like any other: shown before any prompt
+        stdout.write("\n" + store_step.summary + "\n")
 
     if dry_run:
         stdout.write("\ndry run: nothing was written.\n")
@@ -708,28 +744,55 @@ def run_install(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
         _write_completion_notes(plan, harnesses, (), stdout)
         return 0
 
+    if store_step is not None and not yes and not stdin_is_tty:
+        # piped input is not consent to create the store
+        stderr.write(STORE_NEEDS_A_TERMINAL)
+        return 1
+
     try:
+        store_accepted = store_step is None or yes or input_fn(
+            f"initialize {store_step.label} and continue installation? [y/N] "
+        ).strip().lower() in ("y", "yes")
+        if not store_accepted:
+            stdout.write(STORE_DECLINED)
+            return 1
         accepted = _confirm(plan.changes, yes=yes, input_fn=input_fn, home=home)
     except EOFError:
-        stdout.write(
+        stderr.write(
             "\nmemriver install: stdin is not interactive and no answer can be "
             "read; re-run with --yes to accept every change shown above.\n"
         )
         return 1
 
+    # render and validate the accepted harness edits before anything is
+    # written: a known PlanningError must not leave a store behind
+    texts: dict = {}
+    if accepted:
+        try:
+            texts, _ = _rendered(accepted, plan.snapshots, apply_edit, "install")
+        except PlanningError as error:
+            stderr.write(f"\nmemriver install: {error}\n")
+            return 1
+
+    if store_step is not None:
+        # then the store, alone: a harness change is only applied once the
+        # store it will point at is ready; a later harness failure may leave
+        # this (legal, empty) global project behind -- no cross-file rollback
+        try:
+            stdout.write("\n" + store_step.apply() + "\n")
+        except Exception:  # noqa: BLE001 - one fixed line, whatever the cause
+            stderr.write(STORE_FAILED)
+            return 1
+
     if not accepted:
-        stdout.write("\nnothing accepted; no file was changed.\n")
+        stdout.write("\nno harness change accepted; no harness file was changed.\n"
+                     if store_step is not None else
+                     "\nnothing accepted; no file was changed.\n")
         # same reasoning as the no-change branch above: hooks installed by an
         # earlier run may still be untrusted, and the native-memory verdict is
         # owed on every completion path, not only the ones that wrote something
         _write_completion_notes(plan, harnesses, (), stdout)
         return 0
-
-    try:
-        texts, _ = _rendered(accepted, plan.snapshots, apply_edit, "install")
-    except PlanningError as error:
-        stdout.write(f"\nmemriver install: {error}\n")
-        return 1
 
     roots = {True: home, False: plan.project_root}
     pending = [
@@ -737,7 +800,7 @@ def run_install(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
         for path, text in texts.items()
         if text != (plan.snapshots[path].text or "")
     ]
-    return _apply(pending, plan, harnesses, accepted, home=home, stdout=stdout,
+    return _apply(pending, plan, harnesses, accepted, home=home, stdout=stdout, stderr=stderr,
                   replace_file=replace_file, write_notes_fn=_write_completion_notes,
                   command_name="install")
 
@@ -804,7 +867,7 @@ def run_config_uninstall(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
         if text != (plan.snapshots[path].text or "")
     ]
     return _apply(pending, plan, harnesses, accepted, home=home, stdout=stdout,
-                  replace_file=replace_file,
+                  stderr=stdout, replace_file=replace_file,
                   write_notes_fn=_write_uninstall_completion_notes,
                   command_name="uninstall")
 
@@ -830,7 +893,7 @@ def _confirm(changes: Sequence[_PlannedChange], *, yes: bool,
 def _apply(pending: Sequence[tuple[Snapshot, str, Path | None]], plan: _Plan,
            harnesses: Sequence[str],
            accepted: Sequence[EditOperation | RemovalOperation], *,
-           home: Path, stdout: TextIO,
+           home: Path, stdout: TextIO, stderr: TextIO,
            replace_file: Callable[[Path, Path], None],
            write_notes_fn: Callable[[_Plan, Sequence[str], Sequence[Any], TextIO], None],
            command_name: str) -> int:
@@ -841,10 +904,10 @@ def _apply(pending: Sequence[tuple[Snapshot, str, Path | None]], plan: _Plan,
             _write_target(snapshot, text, root, stamp, home, command_name,
                           replace_file, writes.append)
     except BaseException as error:  # a Ctrl-C between replacements rolls back too
-        stdout.write(f"\nmemriver {command_name} failed: {error}\n")
-        stdout.write("".join(
+        stderr.write(f"\nmemriver {command_name} failed: {error}\n")
+        stderr.write("".join(
             f"  {line}\n" for line in _roll_back(writes, replace_file)))
-        stdout.write("  backups were kept; no backup is ever deleted.\n")
+        stderr.write("  backups were kept; no backup is ever deleted.\n")
         if not isinstance(error, Exception):
             raise  # KeyboardInterrupt / SystemExit: rolled back, never swallowed
         return 1

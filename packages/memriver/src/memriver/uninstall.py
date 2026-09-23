@@ -65,7 +65,7 @@ def _resolve_storage_root(root_override: Path | None, env: Mapping[str, str],
     # imported here, not at module scope, so a plain uninstall with neither
     # flag never pays for importing memriver_core -- same convention doctor.py
     # already uses for its own memriver_core imports
-    from memriver_core.config import storage_root
+    from memriver_core.settings import storage_root
 
     if root_override is not None:
         return root_override

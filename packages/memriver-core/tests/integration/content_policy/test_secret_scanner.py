@@ -4,14 +4,13 @@
 that replaces `gate.check_content`; `ContentRejected` replaces `GateError`.
 `max_chars` has no default here (unlike the old `check_content`), so every
 call below passes it explicitly -- `BODY_LIMIT` matches the value
-`memriver_core.config.DEFAULT_MAX_BODY_CHARS` carries today.
+`memriver_core.settings.DEFAULT_MAX_BODY_CHARS` carries today.
 """
 import logging
 import re
 import tomllib
 
 import pytest
-from memriver_core.application.errors import ContentRejected
 from memriver_core.content_policy.secret_scanner import (
     _RULES,
     _RULES_DIR,
@@ -19,6 +18,7 @@ from memriver_core.content_policy.secret_scanner import (
     _load_rules,
     _shannon_entropy,
 )
+from memriver_core.models.errors import ContentRejected
 
 BODY_LIMIT = 8000
 

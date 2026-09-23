@@ -1,6 +1,6 @@
 """Silence memriver_core's own stdlib logging for one CLI-boundary call.
 
-memriver_core logs diagnostic warnings (an unreadable config.toml, a skipped
+memriver_core logs diagnostic warnings (an unreadable settings.toml, a skipped
 entry) through stdlib logging, which -- unconfigured, as it is here -- writes
 straight to the real process stderr via `logging.lastResort`, bypassing
 doctor's/hooks' own explicit stderr text entirely. Both promise exactly one

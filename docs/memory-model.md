@@ -18,7 +18,7 @@ What no harness solves today is what happens **outside** its own walls:
 
 memriver's job is to take the proven single-harness model, put it behind MCP
 so every harness reads and writes the *same* store, and add the discipline a
-shared store needs: server-side naming, a secrets gate, and a sync boundary.
+shared store needs: server-generated ids, a secrets gate, and a sync boundary.
 Everything else stays deliberately boring.
 
 ## The entry
@@ -27,9 +27,9 @@ One memory = one mutable markdown file with YAML frontmatter:
 
 ```markdown
 ---
-id: mise-runtime-management
+id: 7kq2v9w3xa
+project_id: 7kq2v9w3xg
 type: user
-scope: global
 sync: true
 created: 2026-08-29T10:00:00.000000Z
 updated: 2026-08-29T10:00:00.000000Z
@@ -45,9 +45,11 @@ All language runtimes on this machine are managed by mise, not nvm/pyenv.
   taxonomy verbatim: who the user is; guidance on how to work; ongoing work
   and constraints; pointers to external resources. Adopted unchanged so that
   agents already trained on this taxonomy need no re-learning.
-- **description** — a one-line recall cue, written for the reader deciding
+- **description** — a one-line summary, written for the reader deciding
   whether to open the entry; rendered in the index.
-- **scope** — `global` (follows the user everywhere) or a project slug.
+- **project_id** — the one project this memory belongs to; global memories
+  belong to the global project named in `store.toml` (read-only to agents,
+  written by hand). The id itself carries no project.
 - **sync** — per-entry privacy boundary: `false` means this entry never
   leaves the machine, regardless of mode.
 - **trust** — provenance of the *source material*: `user` (stated
@@ -65,39 +67,40 @@ and it opts in only for `true` (any case); anything else, including `yes`,
 reads as `false`. This is deliberate: `sync` is the privacy boundary, and a
 hand-edited value must never collapse into an opt-in that was not written.
 
-## Naming
+## Identity
 
-The agent proposes a short kebab-case name; the server disposes:
+memriver generates every id: a memory's id and a project's id are 10 random
+lowercase Crockford base32 characters (50 bits; no i, l, o or u), and no
+caller proposes one. Short on purpose -- ids are injected into every session's
+index and copied back into tool calls. A generated id that is already taken is
+refused atomically and a fresh one drawn; an existing memory is never
+overwritten. The id is permanent -- the file name, the update
+handle, the future sync key -- and says nothing about where the memory
+belongs: `project_id` says that. Readability comes from the description
+(memories) and the name (projects), never from the id.
 
-- The server sanitizes the proposal against a strict slug whitelist. Once
-  accepted, **the name is the permanent id**: the filename, the update
-  handle, and the future sync key. It is never renamed, even if the content
-  drifts (delete and rewrite if the name becomes truly wrong). A global name
-  is unique across the entire store; a project name is unique within its
-  project and may not be claimed by a later global write. Different projects
-  may reuse the same name.
-- **Name collisions are refused, not resolved.** A write against an existing
-  name returns the existing entry's summary instead of writing. The agent —
-  which has the semantic context — then decides: same fact → update the
-  existing entry; different fact → propose a more precise name. The server
-  never silently forks a topic with a `-2` suffix. This refusal doubles as
-  the cheapest possible duplicate-topic detector.
-- A missing or unsalvageable proposal falls back to a server-generated ULID,
-  keeping the write tool's never-raise contract.
-
-Layout, sanitization rules, collision policy, and sync semantics all live in
-the server. The agent only ever contributes a human-readable hint.
+Because ids are generated, there is no name to collide on, and nothing stops
+the same fact being written twice. The protocol tells agents to check the
+index or `memory_search` before writing and to `memory_update` an existing
+entry instead; there is no content-level duplicate check. `memriver doctor`
+flags near-duplicate bodies.
 
 ## Recall
 
 Recall follows the index-and-read pattern, unchanged from single-harness
 practice:
 
-- `memory_index` renders one line per live entry (name + description,
+- `memory_index` renders one line per live entry (id + description,
   falling back to the body's first line for entries without one) under a
   line budget, with an explicit truncation notice. The harness injects it at
-  session start; the LLM does the semantic matching.
-- `memory_read` fetches one entry by name.
+  session start; the LLM does the semantic matching. The index lists the
+  current project's entries first, then global's (tagged `global`), in one
+  line budget; `memory_search` runs one search per project with one total
+  `limit`, project hits first.
+- `memory_read` fetches one entry by id; an id that is absent or outside the
+  session's readable projects (the current project and global) is "no such
+  entry", while a file that exists but cannot be read is reported as
+  unreadable.
 - `memory_search` exists as a tool contract, but the local engine is a plain
   in-memory scan over the files. At local scale (hundreds of entries) an LLM
   scanning the index outperforms any keyword engine, so the local layer
@@ -117,26 +120,12 @@ practice:
 
 ## Maintenance
 
-Everything above is use-time: an entry is checked, if at all, only when
-retrieval happens to surface it. That leaves a blind spot — a memory nobody
-ever searches for again just sits there, correct or not, indefinitely
-unexamined.
-
-`memory_dream` closes it with amortized full-coverage review instead of
-retrieval-triggered spot checks: each call hands back the batch of entries
-whose `updated` is oldest, for a dedicated maintenance session (started by
-the user, or by a user-scheduled headless run) to check against reality.
-It is a tool for that session alone — a working task session must never
-call it, since a maintenance sweep has nothing to do with the task at hand
-and would just crowd its context.
-
-This works because `updated` doubles as "last confirmed true", not merely
-"last edited". An entry the reviewer finds still correct is confirmed by
-calling `memory_update` with its own unchanged body — same content, but the
-timestamp bump rotates it to the back of the review queue; a changed fact
-gets `memory_update` with the corrected body, and a dead one gets
-`memory_delete`. Read this way, an entry's `updated` date is less "last
-touched" and more "current as of" — the date someone last stood behind it.
+`updated` is the time of the last change, nothing more: rewriting an entry
+records that it was rewritten, not that anyone confirmed it is still true.
+memriver has no review queue today. Cross-project knowledge will be distilled
+into global by a separate dream service (not yet built); until then global is
+maintained by hand. `memriver doctor --stale-days N` lists memories not
+updated in N days as a starting point for a manual review.
 
 ## The write gate
 
@@ -153,21 +142,24 @@ to. The protocol reaches their agents through three layers:
 
 1. **MCP tool schemas (zero-install, universal).** `memory_write` declares
    `type` as a schema enum, and the tool descriptions carry one-line
-   semantics for each type plus the naming rules. Every MCP client feeds
-   tool descriptions to its model, so any harness that can connect the
-   server has already been taught — this is why MCP is the integration
-   surface in the first place.
-2. **Refusal as correction (backstop).** An unknown type or a name collision
-   comes back as a structured refusal that names the valid values. The agent
-   self-corrects within the same turn. The server never guesses; it refuses
-   and teaches.
-3. **Installed protocol instructions (richer guidance, planned).** Tool
-   descriptions cannot carry behavioral guidance — when to write a memory,
-   what not to store, check the index before writing. A planned `memriver
-   install` will inject a single server-maintained protocol block into each
-   harness's native instruction file (Codex `AGENTS.md`, Claude Code
-   `CLAUDE.md`, Cursor rules, Kiro steering). The injection points differ
-   per harness; the text would be one source, maintained in the server.
+   semantics for each type plus the note that memriver assigns every id.
+   Every MCP client feeds tool descriptions to its model, so any harness
+   that can connect the server has already been taught — this is why MCP
+   is the integration surface in the first place.
+2. **Refusal as correction (backstop).** Two kinds of refusal, from two
+   places. Arguments outside a tool's schema -- an unknown `type`, a
+   parameter the tool does not take -- are rejected by the MCP layer before
+   the tool runs, and the schema itself lists the valid values. A write the
+   tool refuses -- secret-shaped content, no writable project, a read-only
+   global memory -- comes back as a fixed, path-free message that says what
+   to do next. Either way the agent self-corrects within the same turn; the
+   server never guesses.
+3. **Installed protocol instructions (richer guidance).** Tool descriptions
+   cannot carry behavioral guidance — when to write a memory, what not to
+   store, check the index before writing. `memriver install` writes it per
+   harness; what each one gets is the install table in the README. The
+   injection points differ per harness; the text is one source, maintained in
+   the server.
 
 Layers 1–2 alone make an unconfigured harness work correctly; layer 3
 upgrades "works" to "works well". The taxonomy's four words fitting in a

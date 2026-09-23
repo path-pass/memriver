@@ -1,96 +1,64 @@
-"""bootstrap.build_service: the only place the concrete adapters are named."""
+"""bootstrap: the only place the concrete adapters are named."""
 
 from __future__ import annotations
-
-from pathlib import Path
 
 from memriver_core import bootstrap
 from memriver_core.application.diagnostics import DiagnosticsService
 from memriver_core.application.service import MemoryService
-from memriver_core.config import DEFAULT_MAX_BODY_CHARS, Settings
-from memriver_core.repository.filesystem import FilesystemStoreInspector
+from memriver_core.repository.filesystem import (
+    FileMemoryStore,
+    FileProjectStore,
+    FilesystemStoreInspector,
+)
+from memriver_core.settings import DEFAULT_MAX_BODY_CHARS, Settings
 
 
-class Recorder:
-    """Stands in for MemoryService, keeping what bootstrap injected."""
-
-    def __init__(self, memory_repository, content_policy, **limits):
-        self.memory_repository = memory_repository
-        self.content_policy = content_policy
-        self.limits = limits
+def test_uses_the_settings_root_by_default(tmp_path):
+    service = bootstrap.build_service(Settings(root=tmp_path / "from-settings"))
+    assert service._project_store.root == tmp_path / "from-settings"
+    assert service._memory_store.root == tmp_path / "from-settings"
 
 
-def _capture(monkeypatch) -> list[Path]:
-    roots: list[Path] = []
-    monkeypatch.setattr(bootstrap, "FileMemoryRepository",
-                        lambda root: roots.append(root) or f"repo@{root}")
-    monkeypatch.setattr(bootstrap, "MemoryService", Recorder)
-    return roots
+def test_an_explicit_root_wins_over_the_settings_root(tmp_path):
+    service = bootstrap.build_service(Settings(root=tmp_path / "from-settings"),
+                                      root=tmp_path / "explicit")
+    assert service._project_store.root == tmp_path / "explicit"
 
 
-def test_uses_the_settings_root_by_default(monkeypatch, tmp_path):
-    roots = _capture(monkeypatch)
-    bootstrap.build_service(Settings(root=tmp_path / "from-settings"))
-    assert roots == [tmp_path / "from-settings"]
+def test_the_memory_store_checks_projects_through_the_same_project_store(tmp_path):
+    service = bootstrap.build_service(Settings(root=tmp_path))
+    assert isinstance(service._memory_store, FileMemoryStore)
+    assert isinstance(service._project_store, FileProjectStore)
+    assert service._memory_store._project_store is service._project_store
 
 
-def test_an_explicit_root_wins_over_the_settings_root(monkeypatch, tmp_path):
-    roots = _capture(monkeypatch)
-    bootstrap.build_service(Settings(root=tmp_path / "from-settings"),
-                            root=tmp_path / "explicit")
-    assert roots == [tmp_path / "explicit"]
-
-
-def test_injects_the_configured_body_limit_and_the_default_metadata_limit(
-        monkeypatch, tmp_path):
-    _capture(monkeypatch)
+def test_injects_the_configured_limits(tmp_path):
     settings = Settings(root=tmp_path, max_body_chars=10, search_limit_default=3,
                         search_limit_max=7, index_budget_lines=9)
     service = bootstrap.build_service(settings)
-    assert service.limits == {"max_body_chars": 10,
-                              "metadata_max_chars": DEFAULT_MAX_BODY_CHARS,
-                              "search_limit_default": 3, "search_limit_max": 7,
-                              "index_budget_lines": 9}
-    # a tightened body budget must not tighten metadata acceptance
-    assert service.limits["metadata_max_chars"] == 8000
+    assert (service._max_body_chars, service._metadata_max_chars,
+            service._search_limit_default, service._search_limit_max,
+            service._index_budget_lines) == \
+        (10, DEFAULT_MAX_BODY_CHARS, 3, 7, 9)
 
 
-def test_returns_the_facade_not_a_concrete_adapter(tmp_path):
+def test_returns_the_facade(tmp_path):
     assert isinstance(bootstrap.build_service(Settings(root=tmp_path)), MemoryService)
 
 
-class DiagnosticsRecorder:
-    """Stands in for DiagnosticsService, keeping the inspector bootstrap injected."""
-
-    def __init__(self, inspector):
-        self.inspector = inspector
-
-
-def _capture_inspector(monkeypatch) -> list[Path]:
-    roots: list[Path] = []
-    monkeypatch.setattr(bootstrap, "FilesystemStoreInspector",
-                        lambda root: roots.append(root) or f"inspector@{root}")
-    monkeypatch.setattr(bootstrap, "DiagnosticsService", DiagnosticsRecorder)
-    return roots
-
-
-def test_build_diagnostics_service_uses_the_settings_root_by_default(
-        monkeypatch, tmp_path):
-    roots = _capture_inspector(monkeypatch)
-    bootstrap.build_diagnostics_service(Settings(root=tmp_path / "from-settings"))
-    assert roots == [tmp_path / "from-settings"]
-
-
-def test_build_diagnostics_service_uses_explicit_root(monkeypatch, tmp_path):
-    roots = _capture_inspector(monkeypatch)
-    service = bootstrap.build_diagnostics_service(
-        Settings(root=tmp_path / "from-settings"), root=tmp_path / "explicit",
-    )
-    assert roots == [tmp_path / "explicit"]
-    assert service.inspector == f"inspector@{tmp_path / 'explicit'}"
-
-
-def test_build_diagnostics_service_returns_the_service_not_the_inspector(tmp_path):
-    service = bootstrap.build_diagnostics_service(Settings(root=tmp_path))
+def test_build_diagnostics_service_uses_explicit_root(tmp_path):
+    service = bootstrap.build_diagnostics_service(Settings(root=tmp_path / "s"),
+                                                  root=tmp_path / "explicit")
     assert isinstance(service, DiagnosticsService)
-    assert not isinstance(service, FilesystemStoreInspector)
+    assert isinstance(service._inspector, FilesystemStoreInspector)
+    assert service._inspector.root == tmp_path / "explicit"
+
+
+def test_bootstrap_reexports_store_lock_replace_file_and_the_empty_index():
+    from memriver_core.application.service import EMPTY_INDEX
+    from memriver_core.repository.filesystem.files import replace_file
+    from memriver_core.repository.filesystem.locking import store_lock
+
+    assert bootstrap.store_lock is store_lock
+    assert bootstrap.replace_file is replace_file
+    assert bootstrap.EMPTY_INDEX == EMPTY_INDEX

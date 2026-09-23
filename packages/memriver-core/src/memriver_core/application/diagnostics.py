@@ -1,10 +1,9 @@
 """Backend-neutral diagnostics policy over a `StoreInspector`.
 
 `DiagnosticsService` owns the checks no backend should have to reimplement --
-staleness, near-duplicate bodies, global-vs-project shadowing -- and maps
-backend-reported findings into the same neutral shape. It never touches a
-file, a table, or any other storage detail; that all lives behind
-`StoreInspector`.
+staleness, near-duplicate bodies -- and maps backend-reported findings into
+the same neutral shape. It never touches a file, a table, or any other
+storage detail; that all lives behind `StoreInspector`.
 """
 
 from __future__ import annotations
@@ -19,7 +18,6 @@ from memriver_core.models import now as _default_now
 if TYPE_CHECKING:
     from memriver_core.models import (
         DiagnosticsState,
-        InspectedMemory,
         StoreFinding,
         StoreReport,
     )
@@ -29,12 +27,15 @@ if TYPE_CHECKING:
 # filesystem-style inspector reports today; an unrecognized future kind still
 # gets a safe generic suggestion rather than crashing the umbrella check).
 _BACKEND_SUGGESTIONS = {
-    "unreadable-file": "restore read access to the entry, or remove it",
-    "unparsable": "fix or remove the entry so it decodes as a memory",
-    "scope-directory-mismatch": "move the entry to the location matching its stored scope",
-    "id-stem-mismatch": "rename the entry so its location matches its stored id",
-    "unaddressable-id": "rename the entry to an id the memory API can address",
-    "unaddressable-scope": "move the entry to a project scope the memory API can address",
+    "unreadable-file": "restore read access to the file, or remove it",
+    "unparsable": "fix or remove the memory file so it decodes",
+    "id-stem-mismatch": "rename the memory file so its name matches its stored id",
+    "unaddressable-id": "rename the memory file to its stored id, or remove it",
+    "unknown-project": "restore the missing project file, or remove the memory",
+    "invalid-project": "fix or remove the project file",
+    "invalid-manifest": "fix store.toml so it names the global project's file",
+    "legacy-layout": "this store predates the current layout; memriver does not read or migrate it",
+    "unsafe-container": "replace the link or file with a real directory inside the store",
 }
 _DEFAULT_BACKEND_SUGGESTION = "inspect this entry manually; its finding kind is unrecognized"
 
@@ -55,7 +56,7 @@ def _map_backend_finding(finding: StoreFinding) -> DiagnosticFinding:
     return DiagnosticFinding(
         kind=finding.kind,
         memory_ids=(finding.memory_id,) if finding.memory_id else (),
-        scopes=(finding.scope,) if finding.scope else (),
+        project_ids=(finding.project_id,) if finding.project_id else (),
         location_hints=(finding.location_hint,),
         reason=finding.reason,
         suggestion=_BACKEND_SUGGESTIONS.get(finding.kind, _DEFAULT_BACKEND_SUGGESTION),
@@ -70,7 +71,7 @@ def _stale_cutoff(now_dt: datetime, stale_days: int) -> datetime:
         # `timedelta(days=...)` itself overflows, or the subtraction pushes
         # past `datetime.min`). datetime.min is already earlier than any
         # representable timestamp, so nothing can be staler than it -- no new
-        # config, no product cap, just the honest bound.
+        # setting, no product cap, just the honest bound.
         return datetime.min.replace(tzinfo=UTC)
 
 
@@ -86,7 +87,7 @@ def _staleness_findings(report: StoreReport, now_dt: datetime,
             findings.append(DiagnosticFinding(
                 kind="invalid-updated",
                 memory_ids=(memory.id,),
-                scopes=(memory.scope,),
+                project_ids=(memory.project_id,),
                 location_hints=(entry.location_hint,),
                 reason="stored 'updated' value is not a valid timezone-aware timestamp",
                 suggestion="fix or remove the malformed 'updated' timestamp",
@@ -96,7 +97,7 @@ def _staleness_findings(report: StoreReport, now_dt: datetime,
             findings.append(DiagnosticFinding(
                 kind="stale",
                 memory_ids=(memory.id,),
-                scopes=(memory.scope,),
+                project_ids=(memory.project_id,),
                 location_hints=(entry.location_hint,),
                 reason=f"not updated in over {stale_days} days",
                 suggestion="review and refresh, or delete, this memory",
@@ -108,7 +109,7 @@ def _duplicate_findings(report: StoreReport,
                         jaccard_threshold: float) -> list[DiagnosticFinding]:
     ordered = sorted(
         report.entries,
-        key=lambda e: (e.memory.scope.to_storage(), e.memory.id, e.location_hint),
+        key=lambda e: (e.memory.project_id, e.memory.id, e.location_hint),
     )
     grams = [(entry, _trigrams(entry.memory.body)) for entry in ordered]
     findings: list[DiagnosticFinding] = []
@@ -123,7 +124,7 @@ def _duplicate_findings(report: StoreReport,
             findings.append(DiagnosticFinding(
                 kind="near-duplicate",
                 memory_ids=(entry_a.memory.id, entry_b.memory.id),
-                scopes=(entry_a.memory.scope, entry_b.memory.scope),
+                project_ids=(entry_a.memory.project_id, entry_b.memory.project_id),
                 location_hints=(entry_a.location_hint, entry_b.location_hint),
                 reason=f"bodies are {jaccard:.0%} similar (>= {jaccard_threshold:.0%} threshold)",
                 suggestion="merge or remove the near-duplicate memory",
@@ -131,34 +132,14 @@ def _duplicate_findings(report: StoreReport,
     return findings
 
 
-def _shadowing_findings(report: StoreReport) -> list[DiagnosticFinding]:
-    by_id: dict[str, list[InspectedMemory]] = {}
-    for entry in report.entries:
-        by_id.setdefault(entry.memory.id, []).append(entry)
-    findings: list[DiagnosticFinding] = []
-    for memory_id, entries in sorted(by_id.items()):
-        has_global = any(e.memory.scope.project_id is None for e in entries)
-        has_project = any(e.memory.scope.project_id is not None for e in entries)
-        if not (has_global and has_project):
-            continue
-        ordered = sorted(entries, key=lambda e: (e.memory.scope.to_storage(), e.location_hint))
-        findings.append(DiagnosticFinding(
-            kind="shadowing",
-            memory_ids=(memory_id,),
-            scopes=tuple(e.memory.scope for e in ordered),
-            location_hints=tuple(e.location_hint for e in ordered),
-            reason="same id exists in both a global scope and a project scope",
-            suggestion="rename one entry, or confirm the shadowing is intentional",
-        ))
-    return findings
-
-
 def _derive_state(report: StoreReport,
                   findings: list[DiagnosticFinding]) -> DiagnosticsState:
-    if not report.initialized:
-        return "uninitialized"
+    # a finding outranks everything: a pre-release or damaged store must never
+    # read as merely "not initialized yet"
     if findings:
         return "degraded"
+    if not report.initialized:
+        return "uninitialized"
     if not report.entries:
         return "empty"
     return "healthy"
@@ -183,7 +164,6 @@ class DiagnosticsService:
         findings = [_map_backend_finding(f) for f in report.findings]
         findings.extend(_staleness_findings(report, now_dt, stale_days))
         findings.extend(_duplicate_findings(report, jaccard_threshold))
-        findings.extend(_shadowing_findings(report))
 
         return DiagnosticsReport(state=_derive_state(report, findings),
-                                 findings=tuple(findings))
+                                 findings=tuple(findings), initialized=report.initialized)

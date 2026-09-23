@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from memriver_core.application.errors import StorageFailure
+from memriver_core.models.errors import StorageFailure
 
 
 @contextmanager
@@ -13,23 +13,30 @@ def store_lock(root: Path) -> Iterator[None]:
     """Hold the store-wide exclusive lock for the duration of the block.
 
     Several processes may share one root, so a caller doing its own
-    read-check-write over memories (e.g. a name-collision check before
-    write) should wrap it here to serialize against peers. Not reentrant:
-    `update_body` and `delete` already take this lock internally, so
-    calling either of them from inside a `store_lock` block deadlocks.
+    read-check-write over memories (e.g. an id-exclusive create) should
+    wrap it here to serialize against peers.
+    Not reentrant: `FileMemoryStore.update`/`delete`/`record` and
+    `FileProjectStore.create`/`ensure_global` take this lock internally, so
+    calling any of them from inside a `store_lock` block deadlocks. Reads
+    never take it.
     fcntl is POSIX-only: no Windows support yet.
 
-    Any OSError from the lock lifecycle itself -- creating the root,
-    opening the lock file, or (un)locking it -- surfaces as the fieldless
-    StorageFailure; the original exception is kept as `__cause__` for logs
-    and goes no further. Callers must never see a raw platform exception here.
+    Any OSError -- from the lock lifecycle itself (creating the root,
+    opening the lock file, (un)locking it) or raised inside the `with
+    store_lock(...)` block -- surfaces as the fieldless StorageFailure; the
+    original exception is kept as `__cause__` for logs and goes no further.
+    Callers must never see a raw platform exception here. Non-OSError
+    exceptions raised inside the block propagate unchanged. Callers rely on
+    this: the umbrella's registry writer (bind/unbind) lets an OSError
+    raised while holding the lock surface as StorageFailure rather than
+    catching it itself.
     """
     try:
-        # memory filenames are semantic now; a world/group-readable root lets
-        # other local users enumerate them by listing. Only the root created
-        # here, not one that already existed -- some callers deliberately
-        # lock a directory down to simulate a permission failure, and this
-        # must not silently undo that.
+        # a world/group-readable root lets other local users enumerate
+        # memory ids by listing. Only the root created here, not one that
+        # already existed -- some callers deliberately lock a directory
+        # down to simulate a permission failure, and this must not
+        # silently undo that.
         pre_existing = root.exists()
         root.mkdir(parents=True, exist_ok=True)
         if not pre_existing:

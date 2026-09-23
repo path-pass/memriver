@@ -20,7 +20,6 @@ classifiers = [
 # cloud SDKs, LLM clients) so future packages (dream/sync/vector) stay light.
 dependencies = [
     "python-frontmatter>=1.1",
-    "python-ulid>=2.7",
     "pydantic>=2",
     "pydantic-settings>=2",
 ]

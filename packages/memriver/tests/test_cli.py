@@ -7,12 +7,15 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 from memriver import cli, hooks
 from memriver.hooks import HookResult
-from memriver.project_context import project_slug
+from memriver.project_context import bind
 from memriver.protocol_text import STOP_NUDGE
+from memriver_core.bootstrap import build_service
+from memriver_core.settings import Settings
 
 PROTOCOL_VERSION = "2025-06-18"
 
@@ -102,6 +105,28 @@ def test_install_rejects_combining_harness_and_all():
     assert "not allowed with" in out.stderr
 
 
+@pytest.mark.parametrize(("argv", "handler", "expected"), [
+    (["project", "init", "--yes", "--name", "Work"], "_project_init",
+     {"directory": None, "yes": True, "root": None, "name": "Work"}),
+    (["project", "adopt", "aaaaaaaaaa", "/d"], "_project_adopt",
+     {"project_id": "aaaaaaaaaa", "directory": Path("/d"), "yes": False}),
+    (["project", "unbind", "aaaaaaaaaa", "/d"], "_project_unbind",
+     {"project_id": "aaaaaaaaaa", "directory": Path("/d"), "yes": False}),
+    (["project", "explain", "--project-dir", "/d"], "_project_explain",
+     {"project_dir": Path("/d"), "root": None}),
+])
+def test_project_subcommands_parse(argv, handler, expected):
+    args = cli._build_parser().parse_args(argv)
+    assert args.handler is getattr(cli, handler)
+    assert {key: getattr(args, key) for key in expected} == expected
+
+
+def test_project_without_a_subcommand_is_a_parser_error():
+    out = _run_cli("project")
+    assert out.returncode == 2
+    assert "Traceback" not in out.stderr
+
+
 @pytest.mark.parametrize(
     "argv",
     [
@@ -113,9 +138,14 @@ def test_legacy_and_explicit_serve_parse_to_the_same_handler(argv, monkeypatch):
     assert capture_dispatch(argv, monkeypatch).command == "serve"
 
 
-def test_hook_subcommand_writes_only_hook_result_streams(monkeypatch):
-    result = invoke_main(["hook", "stop", "--harness", "codex"],
-                         stdin='{"stop_hook_active": false}')
+def test_hook_subcommand_writes_only_hook_result_streams(tmp_path):
+    """The Stop nudge fires inside a registered project, and only what the hook
+    composed reaches stdout."""
+    root = tmp_path / "mem"
+    repo = _git_repo(tmp_path, "hook-repo")
+    _register(root, repo)
+    result = invoke_main(["hook", "stop", "--harness", "codex", "--root", str(root)],
+                         stdin=json.dumps({"stop_hook_active": False, "cwd": str(repo)}))
     assert json.loads(result.stdout) == {"decision": "block", "reason": STOP_NUDGE}
     assert result.stderr == ""
     assert result.exit_code == 0
@@ -163,8 +193,8 @@ def _write_over_stdio(root, cwd, extra_args: list[str], content: str,
                      "params": {}})
         _send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
                      "params": {"name": "memory_write",
-                                "arguments": {"content": content, "type": "project",
-                                              "scope": "project"}}})
+                                "arguments": {"content": content,
+                                              "type": "project"}}})
         return _await_response(proc, 2)
     finally:
         proc.stdin.close()
@@ -178,14 +208,24 @@ def _git_repo(tmp_path, name: str):
     return git_repo
 
 
-def _entry_files(root, git_repo):
-    return sorted((root / "projects" / project_slug(git_repo) / "entries").glob("*.md"))
+def _register(root, repo) -> str:
+    """Create a project and bind the fixture repo, the way `memriver project init` would."""
+    service = build_service(Settings(root=root), root=root)
+    project_id = service.create_project(repo.name).id
+    bind(root, service, project_id, str(repo.resolve()))
+    return project_id
+
+
+def _entry_files(root, project_id):
+    return sorted(p for p in (root / "memories").glob("*.md")
+                  if f"project_id: {project_id}" in p.read_text(encoding="utf-8"))
 
 
 def test_project_scope_follows_project_dir_not_cwd(tmp_path):
     """--project-dir decides project attribution even when cwd is elsewhere."""
     root = tmp_path / "mem"
     git_repo = _git_repo(tmp_path, "target-repo")
+    project_id = _register(root, git_repo)
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
 
@@ -193,32 +233,34 @@ def test_project_scope_follows_project_dir_not_cwd(tmp_path):
                                  extra_args=["--project-dir", str(git_repo)],
                                  content="stored for the target repo")
     assert response["result"]["isError"] is False
-    assert len(_entry_files(root, git_repo)) == 1
+    assert len(_entry_files(root, project_id)) == 1
 
 
 def test_project_scope_defaults_to_working_directory(tmp_path):
     """Without --project-dir the MCP client's working directory decides the scope."""
     root = tmp_path / "mem"
     git_repo = _git_repo(tmp_path, "cwd-repo")
+    project_id = _register(root, git_repo)
 
     response = _write_over_stdio(root, cwd=git_repo, extra_args=[],
                                  content="stored for the cwd repo")
     assert response["result"]["isError"] is False
-    assert len(_entry_files(root, git_repo)) == 1
+    assert len(_entry_files(root, project_id)) == 1
 
 
-def test_config_file_in_root_is_honoured_end_to_end(tmp_path):
-    """<root>/config.toml tunes the running server, not just load_settings()."""
+def test_settings_file_in_root_is_honoured_end_to_end(tmp_path):
+    """<root>/settings.toml tunes the running server, not just load_settings()."""
     root = tmp_path / "mem"
     root.mkdir()
-    (root / "config.toml").write_text("max_body_chars = 10\n", encoding="utf-8")
+    (root / "settings.toml").write_text("max_body_chars = 10\n", encoding="utf-8")
     git_repo = _git_repo(tmp_path, "configured-repo")
+    project_id = _register(root, git_repo)
 
     response = _write_over_stdio(root, cwd=git_repo, extra_args=[],
                                  content="x" * 11)
     assert response["result"]["isError"] is False  # tools report, never raise
     assert "too large" in json.dumps(response["result"])
-    assert not _entry_files(root, git_repo)
+    assert not _entry_files(root, project_id)
 
 
 def test_bad_env_value_reports_readably(tmp_path):
@@ -268,11 +310,12 @@ def test_explicit_serve_starts_the_same_stdio_server(tmp_path):
     """`memriver serve` is an alias, not a second server."""
     root = tmp_path / "mem"
     repo = _git_repo(tmp_path, "explicit-serve")
+    project_id = _register(root, repo)
 
     response = _write_over_stdio(root, cwd=repo, extra_args=[],
                                  content="served explicitly", command="serve")
     assert response["result"]["isError"] is False
-    assert len(_entry_files(root, repo)) == 1
+    assert len(_entry_files(root, project_id)) == 1
 
 
 def test_hook_without_project_dir_keeps_the_payload_cwd_fallback_reachable(monkeypatch):
@@ -310,12 +353,16 @@ def test_importing_the_cli_does_not_import_the_server_stack():
     assert out.returncode == 0, out.stderr
 
 
-def test_running_a_hook_does_not_import_the_server_stack():
+def test_running_a_hook_does_not_import_the_server_stack(tmp_path):
+    root = tmp_path / "mem"
+    repo = _git_repo(tmp_path, "leak-check-repo")
+    _register(root, repo)
     out = _python_c("import sys\n"
                     "from memriver.cli import main\n"
-                    "assert main(['hook', 'stop', '--harness', 'codex']) == 0\n"
+                    f"assert main(['hook', 'stop', '--harness', 'codex', "
+                    f"'--root', {str(root)!r}]) == 0\n"
                     + _LEAK_CHECK,
-                    stdin='{"stop_hook_active": false}')
+                    stdin=json.dumps({"stop_hook_active": False, "cwd": str(repo)}))
     assert out.returncode == 0, out.stderr
     assert json.loads(out.stdout)["decision"] == "block"
 
@@ -382,14 +429,14 @@ def test_loader_warnings_go_to_stderr_even_behind_a_stdout_root_handler(
     try:
         with isolated_memriver_loggers():
             assert cli.main(["doctor", "--root", str(tmp_path)]) == 0
-            logging.getLogger("memriver_core.config.loader").warning(
-                "config.toml could not be read")
+            logging.getLogger("memriver_core.settings").warning(
+                "settings.toml could not be read")
     finally:
         logging.getLogger().removeHandler(root_handler)
 
     captured = capsys.readouterr()
-    assert "config.toml could not be read" not in captured.out
-    assert "config.toml could not be read" in captured.err
+    assert "settings.toml could not be read" not in captured.out
+    assert "settings.toml could not be read" in captured.err
 
 
 def test_configuring_the_memriver_loggers_twice_does_not_stack_handlers():
@@ -417,12 +464,12 @@ def test_configure_logging_replaces_a_preattached_stdout_handler(tmp_path, capsy
             logger.addHandler(logging.StreamHandler(sys.stdout))
 
         assert cli.main(["doctor", "--root", str(tmp_path)]) == 0
-        logging.getLogger("memriver_core.config.loader").warning(
-            "config.toml could not be read")
+        logging.getLogger("memriver_core.settings").warning(
+            "settings.toml could not be read")
 
     captured = capsys.readouterr()
-    assert "config.toml could not be read" not in captured.out
-    assert "config.toml could not be read" in captured.err
+    assert "settings.toml could not be read" not in captured.out
+    assert "settings.toml could not be read" in captured.err
 
 
 def test_configure_logging_replaces_a_preattached_null_handler(tmp_path, capsys):
@@ -437,9 +484,63 @@ def test_configure_logging_replaces_a_preattached_null_handler(tmp_path, capsys)
             logger.addHandler(logging.NullHandler())
 
         assert cli.main(["doctor", "--root", str(tmp_path)]) == 0
-        logging.getLogger("memriver_core.config.loader").warning(
-            "config.toml could not be read")
+        logging.getLogger("memriver_core.settings").warning(
+            "settings.toml could not be read")
 
     captured = capsys.readouterr()
-    assert "config.toml could not be read" not in captured.out
-    assert "config.toml could not be read" in captured.err
+    assert "settings.toml could not be read" not in captured.out
+    assert "settings.toml could not be read" in captured.err
+
+
+# --- install: the CLI hands the store step to the installer -----------------
+
+def test_store_step_is_none_once_global_exists(monkeypatch, tmp_path):
+    monkeypatch.setenv("MEMRIVER_ROOT", str(tmp_path / "store"))
+    build_service(Settings(root=tmp_path / "store"), root=tmp_path / "store").ensure_global()
+    assert cli._store_step() is None
+
+
+def test_store_step_for_an_uninitialized_store_creates_global_only_when_applied(
+        monkeypatch, tmp_path):
+    monkeypatch.setenv("MEMRIVER_ROOT", str(tmp_path / "store"))
+    step = cli._store_step()
+    assert "memory store (required): create the global project in" in step.summary
+    assert not (tmp_path / "store" / "store.toml").exists()     # building it writes nothing
+    line = step.apply()
+    global_id = build_service(Settings(root=tmp_path / "store"),
+                              root=tmp_path / "store").global_project_id()
+    assert line == f"memory store: ready (global project {global_id})"
+
+
+def test_install_passes_the_step_and_the_real_tty_state(monkeypatch, tmp_path):
+    import memriver.install as install_module
+
+    monkeypatch.setenv("MEMRIVER_ROOT", str(tmp_path / "store"))
+    seen: dict = {}
+
+    def fake_run_install(*args, **kwargs):
+        seen.update(kwargs)
+        kwargs["stderr"].write("install-error-channel\n")
+        return 0
+
+    monkeypatch.setattr(install_module, "run_install", fake_run_install)
+    result = invoke_main(["install", "--harness", "codex"], stdin="y\n")
+    assert result.exit_code == 0
+    assert result.stderr == "install-error-channel\n" and result.stdout == ""
+    assert seen["store_step"] is not None
+    assert seen["stdin_is_tty"] is False        # invoke_main pipes stdin
+
+
+def test_install_with_an_unreadable_store_stops_before_touching_any_harness(
+        monkeypatch, tmp_path):
+    import memriver.install as install_module
+
+    (tmp_path / "store").mkdir()
+    (tmp_path / "store" / "store.toml").write_text("global_project = 'nope'\n")
+    monkeypatch.setenv("MEMRIVER_ROOT", str(tmp_path / "store"))
+    ran: list = []
+    monkeypatch.setattr(install_module, "run_install", lambda *a, **kw: ran.append(1) or 0)
+    result = invoke_main(["install", "--harness", "codex", "--yes"], stdin="")
+    assert result.exit_code == 1 and ran == []
+    assert result.stderr == ("memriver install: the memory store could not be read; "
+                             "run memriver doctor\n")

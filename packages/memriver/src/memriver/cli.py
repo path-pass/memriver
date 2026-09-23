@@ -29,7 +29,7 @@ def _add_store_options(parser: argparse.ArgumentParser, *,
                        project_dir_help: str) -> None:
     parser.add_argument("--root", type=Path, default=None,
                         help="storage root, which also holds the optional "
-                             "config.toml (default: $MEMRIVER_ROOT or ~/agent-memory)")
+                             "settings.toml (default: $MEMRIVER_ROOT or ~/agent-memory)")
     parser.add_argument("--project-dir", type=Path, default=project_dir_default,
                         help=project_dir_help)
 
@@ -47,9 +47,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # --version`, so serve has to answer for --version too
     serve.add_argument("--version", action="version", version=__version__)
     _add_store_options(serve, project_dir_default=Path.cwd(),
-                       project_dir_help="project whose 'project' memory scope is "
-                                        "used (default: the current working "
-                                        "directory)")
+                       project_dir_help="directory where project discovery starts "
+                                        "(the registry decides the project; "
+                                        "default: the current working directory)")
     serve.set_defaults(handler=_serve)
 
     hook = commands.add_parser("hook", help="run a harness hook over stdin/stdout")
@@ -60,9 +60,10 @@ def _build_parser() -> argparse.ArgumentParser:
     # pins these names to hooks.Harness so the two cannot drift.
     hook.add_argument("--harness", choices=["claude-code", "codex"], required=True)
     _add_store_options(hook, project_dir_default=None,
-                       project_dir_help="project whose 'project' memory scope is "
-                                        "used (default: the directory the harness "
-                                        "reports, else the current working directory)")
+                       project_dir_help="directory where project discovery starts "
+                                        "(the registry decides the project; default: "
+                                        "the directory the harness reports, else the "
+                                        "current working directory)")
     hook.set_defaults(handler=_hook)
 
     install = commands.add_parser(
@@ -113,7 +114,52 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="days since a memory was last updated before it is "
                              "flagged stale (default: 90)")
     doctor.set_defaults(handler=_doctor)
+
+    _add_project_commands(commands)
     return parser
+
+
+def _add_project_commands(commands) -> None:
+    """`memriver project ...`: the only commands that write the project registry."""
+    project = commands.add_parser(
+        "project", help="register directories as memory projects")
+    project_commands = project.add_subparsers(dest="project_command", required=True)
+
+    def add(name: str, help_text: str, *, confirmable: bool = True) -> argparse.ArgumentParser:
+        sub = project_commands.add_parser(name, help=help_text)
+        sub.add_argument("--root", type=Path, default=None,
+                         help="storage root holding the registry (default: "
+                              "$MEMRIVER_ROOT or ~/agent-memory)")
+        if confirmable:
+            # explain writes nothing, so it has nothing to confirm
+            sub.add_argument("--yes", action="store_true",
+                             help="accept the plan shown, without prompting")
+        return sub
+
+    init = add("init", "register a new project rooted at a directory")
+    init.add_argument("directory", type=Path, nargs="?", default=None,
+                      help="project root (default: the current working directory)")
+    init.add_argument("--name", default=None,
+                      help="readable project name (default: the directory's name)")
+    init.set_defaults(handler=_project_init)
+
+    adopt = add("adopt", "bind a directory to an existing project id")
+    adopt.add_argument("project_id", help="id of the project to bind to")
+    adopt.add_argument("directory", type=Path, nargs="?", default=None,
+                       help="project root (default: the current working directory)")
+    adopt.set_defaults(handler=_project_adopt)
+
+    unbind = add("unbind", "remove a root from a project")
+    unbind.add_argument("project_id", help="id of the project to edit")
+    unbind.add_argument("directory", type=Path, help="root to remove, as registered")
+    unbind.set_defaults(handler=_project_unbind)
+
+    explain = add("explain", "show which project a directory resolves to",
+                  confirmable=False)
+    explain.add_argument("--project-dir", type=Path, default=None,
+                         help="directory to explain (default: the current "
+                              "working directory)")
+    explain.set_defaults(handler=_project_explain)
 
 
 def _positive_int(value: str) -> int:
@@ -137,7 +183,7 @@ def _normalize_legacy_serve(argv: list[str]) -> list[str]:
 
 
 def _serve(args: argparse.Namespace) -> int:
-    from memriver_core.config import load_settings
+    from memriver_core.settings import load_settings
     from pydantic import ValidationError
 
     from .server import build_server
@@ -145,7 +191,7 @@ def _serve(args: argparse.Namespace) -> int:
     try:
         settings = load_settings(root_override=args.root)
     except ValidationError as err:
-        # an invalid config *file* is warned about and ignored; only a bad
+        # an invalid settings *file* is warned about and ignored; only a bad
         # MEMRIVER_* environment variable reaches here, and that is worth
         # failing on -- but as a readable message, not a bare traceback
         raise SystemExit(f"memriver: invalid MEMRIVER_* environment setting\n{err}")
@@ -181,9 +227,47 @@ def _install(args: argparse.Namespace) -> int:
     # no selector means every harness, so the documented optional grammar has
     # one deterministic meaning rather than a silent no-op
     harnesses = [args.harness] if args.harness else list(HARNESSES)
+    try:
+        store_step = _store_step()
+    except Exception:  # noqa: BLE001 - any cause is one fixed, path-free line
+        # a store that cannot even be read is not initialized behind the
+        # user's back, and no harness is pointed at it
+        sys.stderr.write("memriver install: the memory store could not be read; "
+                         "run memriver doctor\n")
+        return 1
     return run_install(harnesses, yes=args.yes, dry_run=args.dry_run,
                        home=Path.home(), cwd=Path.cwd(), env=os.environ,
-                       input_fn=input, stdout=sys.stdout, replace_file=os.replace)
+                       input_fn=input, stdout=sys.stdout, stderr=sys.stderr,
+                       replace_file=os.replace, store_step=store_step, stdin_is_tty=sys.stdin.isatty())
+
+
+def _store_step():
+    """The memory store's pending initialization, as one change of the install plan.
+
+    None when the global project already exists (nothing to initialize, so
+    nothing to consent to). Built here because the installer package never
+    imports memriver_core; building it reads the store and writes nothing.
+    """
+    from memriver_core.bootstrap import build_service
+    from memriver_core.settings import load_settings
+
+    from .core_logging import quiet_core_logging
+    from .install import StoreStep
+    from .project_context import visible
+
+    with quiet_core_logging():
+        settings = load_settings()
+        service = build_service(settings, root=settings.root)
+        if service.global_project_id() is not None:
+            return None
+    where = visible(str(settings.root))
+
+    def apply() -> str:
+        with quiet_core_logging():
+            return f"memory store: ready (global project {service.ensure_global()})"
+
+    return StoreStep(summary=f"memory store (required): create the global project in {where}",
+                     label=f"memory store in {where}", apply=apply)
 
 
 def _uninstall(args: argparse.Namespace) -> int:
@@ -200,6 +284,37 @@ def _uninstall(args: argparse.Namespace) -> int:
                          input_fn=input, stdout=sys.stdout, replace_file=os.replace)
 
 
+def _project_init(args: argparse.Namespace) -> int:
+    from .project_commands import run_init
+
+    return run_init(args.directory, name=args.name, root=args.root, yes=args.yes,
+                    stdin_is_tty=sys.stdin.isatty(), input_fn=input,
+                    stdout=sys.stdout, cwd=Path.cwd(), home=Path.home())
+
+
+def _project_adopt(args: argparse.Namespace) -> int:
+    from .project_commands import run_adopt
+
+    return run_adopt(args.project_id, args.directory, root=args.root, yes=args.yes,
+                     stdin_is_tty=sys.stdin.isatty(), input_fn=input,
+                     stdout=sys.stdout, cwd=Path.cwd(), home=Path.home())
+
+
+def _project_unbind(args: argparse.Namespace) -> int:
+    from .project_commands import run_unbind
+
+    return run_unbind(args.project_id, args.directory, root=args.root, yes=args.yes,
+                      stdin_is_tty=sys.stdin.isatty(), input_fn=input,
+                      stdout=sys.stdout, cwd=Path.cwd(), home=Path.home())
+
+
+def _project_explain(args: argparse.Namespace) -> int:
+    from .project_commands import run_explain
+
+    return run_explain(root=args.root, project_dir=args.project_dir,
+                       stdout=sys.stdout, cwd=Path.cwd(), home=Path.home())
+
+
 def _doctor(args: argparse.Namespace) -> int:
     from .doctor import run_doctor
 
@@ -212,7 +327,7 @@ def _configure_logging() -> None:
     """Pin memriver's own loggers to stderr, wherever the root logger points.
 
     Under stdio transport, stdout is the JSON-RPC/hook channel and stderr is
-    the only place a loader warning (an unreadable config.toml, an unknown
+    the only place a loader warning (an unreadable settings.toml, an unknown
     key) can surface. `logging.basicConfig` cannot promise that: it is a no-op
     once the root logger has a handler, so a process that embeds `main()`
     after configuring logging to stdout would leak those warnings into the

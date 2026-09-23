@@ -1,4 +1,5 @@
 from .inspector import FilesystemStoreInspector
-from .repository import FileMemoryRepository
+from .memory_store import FileMemoryStore
+from .project_store import FileProjectStore
 
-__all__ = ["FileMemoryRepository", "FilesystemStoreInspector"]
+__all__ = ["FileMemoryStore", "FileProjectStore", "FilesystemStoreInspector"]

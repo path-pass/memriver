@@ -3,10 +3,10 @@
 import memriver_core
 from memriver_core.application.service import MemoryService
 from memriver_core.bootstrap import build_service
-from memriver_core.config import Settings
 from memriver_core.content_policy.secret_scanner import SecretScanner
 from memriver_core.models import Memory
-from memriver_core.repository.filesystem import FileMemoryRepository
+from memriver_core.repository.filesystem import FileMemoryStore, FileProjectStore
+from memriver_core.settings import Settings
 
 
 def test_version():
@@ -15,4 +15,5 @@ def test_version():
 
 def test_every_layer_imports(tmp_path):
     assert isinstance(build_service(Settings(root=tmp_path)), MemoryService)
-    assert SecretScanner() and FileMemoryRepository(tmp_path) and Memory
+    project_store = FileProjectStore(tmp_path)
+    assert SecretScanner() and FileMemoryStore(tmp_path, project_store) and Memory

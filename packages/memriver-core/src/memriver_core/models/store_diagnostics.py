@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from .memory import Memory, Scope
+from .memory import Memory
 
 DiagnosticsState = Literal["uninitialized", "empty", "healthy", "degraded"]
 
@@ -17,7 +17,7 @@ class InspectedMemory:
 @dataclass(frozen=True)
 class StoreFinding:
     kind: str
-    scope: Scope | None
+    project_id: str | None
     location_hint: str
     memory_id: str | None
     reason: str
@@ -27,6 +27,7 @@ class StoreFinding:
 class StoreReport:
     initialized: bool
     entries: tuple[InspectedMemory, ...]
+    projects: tuple[str, ...]
     findings: tuple[StoreFinding, ...]
 
 
@@ -34,7 +35,7 @@ class StoreReport:
 class DiagnosticFinding:
     kind: str
     memory_ids: tuple[str, ...]
-    scopes: tuple[Scope, ...]
+    project_ids: tuple[str, ...]
     location_hints: tuple[str, ...]
     reason: str
     suggestion: str
@@ -44,3 +45,6 @@ class DiagnosticFinding:
 class DiagnosticsReport:
     state: DiagnosticsState
     findings: tuple[DiagnosticFinding, ...]
+    # a finding outranks "uninitialized" in `state`, so whether the manifest
+    # exists is carried on its own
+    initialized: bool = True

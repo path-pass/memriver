@@ -91,18 +91,23 @@ def _modules_under(package: str) -> list[str]:
 # --- the forbidden-edge table (one row per spec rule) ------------------------
 
 FORBIDDEN = [
-    # models import stdlib and the pure ulid value generator only
+    # Memory and Project share models.helpers and never import each other
+    ("memriver_core.models.project", "memriver_core.models.memory"),
+    ("memriver_core.models.memory", "memriver_core.models.project"),
+    ("memriver_core.models.helpers", "memriver_core.models.memory"),
+    ("memriver_core.models.helpers", "memriver_core.models.project"),
+    # models import the standard library only
     ("memriver_core.models", "memriver_core.application"),
     ("memriver_core.models", "memriver_core.repository"),
     ("memriver_core.models", "memriver_core.content_policy"),
-    ("memriver_core.models", "memriver_core.config"),
+    ("memriver_core.models", "memriver_core.settings"),
     ("memriver_core.models", "pydantic"),
     ("memriver_core.models", "frontmatter"),
     ("memriver_core.models", "fcntl"),
-    # the application talks to protocols, never to adapters, config, or I/O
+    # the application talks to protocols, never to adapters, settings, or I/O
     ("memriver_core.application", "memriver_core.repository.filesystem"),
     ("memriver_core.application", "memriver_core.content_policy.secret_scanner"),
-    ("memriver_core.application", "memriver_core.config"),
+    ("memriver_core.application", "memriver_core.settings"),
     ("memriver_core.application", "pydantic"),
     ("memriver_core.application", "frontmatter"),
     ("memriver_core.application", "os"),
@@ -111,17 +116,25 @@ FORBIDDEN = [
     ("memriver_core.application", "pathlib"),
     # a protocol never knows its implementation
     ("memriver_core.repository.protocol", "memriver_core.repository.filesystem"),
-    ("memriver_core.repository.protocol", "memriver_core.application"),
-    ("memriver_core.repository.protocol", "memriver_core.config"),
+    ("memriver_core.repository.protocol", "memriver_core.settings"),
     ("memriver_core.content_policy.protocol",
      "memriver_core.content_policy.secret_scanner"),
-    ("memriver_core.content_policy.protocol", "memriver_core.application"),
-    ("memriver_core.content_policy.protocol", "memriver_core.config"),
-    # implementations may use the error taxonomy, never the service or config
-    ("memriver_core.repository.filesystem", "memriver_core.application.service"),
-    ("memriver_core.repository.filesystem", "memriver_core.config"),
-    ("memriver_core.content_policy.secret_scanner", "memriver_core.application.service"),
-    ("memriver_core.content_policy.secret_scanner", "memriver_core.config"),
+    ("memriver_core.content_policy.protocol", "memriver_core.settings"),
+    # implementations use the error taxonomy in models; never application or settings
+    ("memriver_core.repository", "memriver_core.application"),
+    ("memriver_core.repository.filesystem", "memriver_core.settings"),
+    ("memriver_core.content_policy", "memriver_core.application"),
+    ("memriver_core.content_policy.secret_scanner", "memriver_core.settings"),
+    # the two filesystem stores share memory_files and never import each other
+    ("memriver_core.repository.filesystem.memory_store",
+     "memriver_core.repository.filesystem.project_store"),
+    ("memriver_core.repository.filesystem.project_store",
+     "memriver_core.repository.filesystem.memory_store"),
+    # memory_files sits below both stores; it never imports either back
+    ("memriver_core.repository.filesystem.memory_files",
+     "memriver_core.repository.filesystem.memory_store"),
+    ("memriver_core.repository.filesystem.memory_files",
+     "memriver_core.repository.filesystem.project_store"),
 ]
 
 
@@ -130,6 +143,9 @@ FORBIDDEN = [
 def test_forbidden_import_edge(subject, forbidden):
     modules = _modules_under(subject)
     assert modules, f"no production module under {subject}"
+    # a renamed or deleted memriver_core target would make the row vacuous
+    if forbidden.startswith(ROOT_PKG + "."):
+        assert _modules_under(forbidden), f"no production module under {forbidden}"
     for module in modules:
         offenders = [t for t in _imported_modules(module) if _under(t, forbidden)]
         assert not offenders, f"{module} must not import {forbidden}: {offenders}"
@@ -146,8 +162,8 @@ def test_forbidden_import_edge(subject, forbidden):
 STDLIB = set(sys.stdlib_module_names)
 
 ALLOWED_NON_STDLIB = {
-    # models: stdlib + the pure ulid value generator + intra-models only
-    "memriver_core.models": {"ulid", "memriver_core.models"},
+    # models: stdlib + intra-models only
+    "memriver_core.models": {"memriver_core.models"},
     # application: stdlib + models + the two protocols + intra-application
     "memriver_core.application": {
         "memriver_core.models",
@@ -164,6 +180,10 @@ ALLOWED_NON_STDLIB = {
     # content_policy.protocol: stdlib only today (spec section 3) — keep it
     # that tight rather than pre-granting models it doesn't use yet.
     "memriver_core.content_policy.protocol": set(),
+    # repository.filesystem.files: stdlib only -- the store-layout/file
+    # primitives both filesystem stores share must never grow a memriver_core
+    # dependency of their own.
+    "memriver_core.repository.filesystem.files": set(),
 }
 
 
@@ -186,14 +206,15 @@ def test_strict_layer_allowlist(layer):
 # --- composition-root rules -------------------------------------------------
 
 # Concrete adapters may only be assembled in bootstrap.py. Reaching one via
-# `import memriver_core.repository.filesystem as fs; fs.FileMemoryRepository()`
+# `import memriver_core.repository.filesystem as fs; fs.FileMemoryStore()`
 # must be caught exactly like `from memriver_core.repository.filesystem import
-# FileMemoryRepository` — so, in addition to the from-import symbol check
+# FileMemoryStore` — so, in addition to the from-import symbol check
 # below, this also checks the normalized module-target set: importing the
 # adapter's module at all, under any alias, from an unauthorized module is
 # itself the violation.
 CONCRETE_ADAPTER_MODULES = {
-    "FileMemoryRepository": "memriver_core.repository.filesystem",
+    "FileMemoryStore": "memriver_core.repository.filesystem",
+    "FileProjectStore": "memriver_core.repository.filesystem",
     "SecretScanner": "memriver_core.content_policy.secret_scanner",
     "FilesystemStoreInspector": "memriver_core.repository.filesystem",
 }
@@ -264,17 +285,24 @@ def test_diagnostics_application_depends_only_on_models_and_inspection_port():
 
 
 @pytest.mark.parametrize("symbol", ["Settings", "load_settings"])
-def test_only_config_and_bootstrap_import_settings(symbol):
+def test_only_bootstrap_imports_settings(symbol):
+    assert "memriver_core.settings" in SOURCES, "memriver_core.settings is gone"
     for module in SOURCES:
-        if module == "memriver_core.bootstrap" or _under(module, "memriver_core.config"):
+        if module == "memriver_core.bootstrap" or _under(module, "memriver_core.settings"):
             continue
         assert symbol not in _imported_names(module), \
-            f"{module} imports {symbol}; configuration stays in config/ and bootstrap"
-        offenders = [t for t in _imported_modules(module) if _under(t, "memriver_core.config")]
+            f"{module} imports {symbol}; settings stay in settings.py and bootstrap"
+        offenders = [t for t in _imported_modules(module) if _under(t, "memriver_core.settings")]
         assert not offenders, (
-            f"{module} imports the memriver_core.config module ({offenders}); "
-            f"configuration stays in config/ and bootstrap, even via a module alias"
+            f"{module} imports the memriver_core.settings module ({offenders}); "
+            f"settings stay in settings.py and bootstrap, even via a module alias"
         )
+
+
+def test_application_names_the_store_ports_not_the_adapters():
+    imports = _imported_modules("memriver_core.application.service")
+    assert "memriver_core.repository.protocol" in imports
+    assert not any(_under(t, "memriver_core.repository.filesystem") for t in imports)
 
 
 # --- synthetic-source self-tests for the normalization helper ---------------
@@ -293,15 +321,15 @@ def test_only_config_and_bootstrap_import_settings(symbol):
         # `from pkg import mod` — reaches a module, not a name
         ("from memriver_core.repository import filesystem\n", "memriver_core.bootstrap"),
         # `from pkg.mod import Name`
-        ("from memriver_core.repository.filesystem import FileMemoryRepository\n",
+        ("from memriver_core.repository.filesystem import FileMemoryStore\n",
          "memriver_core.bootstrap"),
         # `from pkg.mod import Name as alias`
-        ("from memriver_core.repository.filesystem import FileMemoryRepository as fmr\n",
+        ("from memriver_core.repository.filesystem import FileMemoryStore as fmr\n",
          "memriver_core.bootstrap"),
         # relative `from . import mod`
         ("from . import filesystem\n", "memriver_core.repository"),
         # relative `from .mod import Name as alias`
-        ("from .filesystem import FileMemoryRepository as w\n", "memriver_core.repository"),
+        ("from .filesystem import FileMemoryStore as w\n", "memriver_core.repository"),
     ],
 )
 def test_imports_from_source_catches_every_bypass_form(source, anchor_package):
@@ -312,12 +340,12 @@ def test_imports_from_source_catches_every_bypass_form(source, anchor_package):
     )
 
 
-def test_imports_from_source_catches_config_module_alias_bypass():
-    # the other bypass I-3 named: `import memriver_core.config as cfg; cfg.Settings(...)`
+def test_imports_from_source_catches_settings_module_alias_bypass():
+    # the other bypass I-3 named: `import memriver_core.settings as cfg; cfg.Settings(...)`
     targets = _imports_from_source(
-        "import memriver_core.config as cfg\n", "memriver_core.application"
+        "import memriver_core.settings as cfg\n", "memriver_core.application"
     )
-    assert any(_under(t, "memriver_core.config") for t in targets)
+    assert any(_under(t, "memriver_core.settings") for t in targets)
 
 
 @pytest.mark.parametrize(
@@ -331,7 +359,7 @@ def test_imports_from_source_catches_config_module_alias_bypass():
 def test_imports_from_source_clean_module_passes(source):
     targets = _imports_from_source(source, "memriver_core.bootstrap")
     assert not any(_under(t, "memriver_core.repository.filesystem") for t in targets)
-    assert not any(_under(t, "memriver_core.config") for t in targets)
+    assert not any(_under(t, "memriver_core.settings") for t in targets)
 
 
 # --- git discovery belongs to the umbrella package --------------------------
@@ -339,7 +367,7 @@ def test_imports_from_source_clean_module_passes(source):
 # gitleaks.toml is a secret-scanning rule resource under content_policy/; its
 # name has nothing to do with git project discovery, which is why this rule is
 # scoped to models/ and application/ rather than to the whole package.
-GIT_MARKERS = ['".git"', "'.git'", "subprocess", "project_slug", "_git_root"]
+GIT_MARKERS = ['".git"', "'.git'", "subprocess", "find_git_root"]
 
 
 @pytest.mark.parametrize("package", ["memriver_core.models", "memriver_core.application"])
