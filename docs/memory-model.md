@@ -19,26 +19,29 @@ What no harness solves today is what happens **outside** its own walls:
 memriver's job is to take the proven single-harness model, put it behind MCP
 so every harness reads and writes the *same* store, and add the discipline a
 shared store needs: server-generated ids, a secrets gate, and a sync boundary.
-Everything else stays deliberately boring.
+Everything else stays deliberately boring. The interaction model (index, then
+read individual entries) is Claude Code's unchanged; the storage behind it is
+one SQLite database (*Storage*), not files.
 
 ## The entry
 
-One memory = one mutable markdown file with YAML frontmatter:
+One memory has these fields -- the shape `memory_read` returns and the model
+the application layer works with, not the literal `memories` table layout
+(there, `source` is two columns, `source_harness` and `source_method`, and
+`sync` is stored as `0`/`1`; see *Storage*):
 
-```markdown
----
-id: 7kq2v9w3xa
-project_id: 7kq2v9w3xg
-type: user
-sync: true
-created: 2026-08-29T10:00:00.000000Z
-updated: 2026-08-29T10:00:00.000000Z
-source: {harness: claude-code, method: agent}
-trust: user
+```
+id:          7kq2v9w3xa
+project_id:  7kq2v9w3xg
+type:        user
+sync:        true
+version:     1
+created:     2026-08-29T10:00:00.000000Z
+updated:     2026-08-29T10:00:00.000000Z
+source:      {harness: claude-code, method: agent}
+trust:       user
 description: mise manages every runtime; check before suggesting installs
----
-
-All language runtimes on this machine are managed by mise, not nvm/pyenv.
+body:        All language runtimes on this machine are managed by mise, not nvm/pyenv.
 ```
 
 - **type** — `user` | `feedback` | `project` | `reference`, Claude Code's
@@ -48,8 +51,17 @@ All language runtimes on this machine are managed by mise, not nvm/pyenv.
 - **description** — a one-line summary, written for the reader deciding
   whether to open the entry; rendered in the index.
 - **project_id** — the one project this memory belongs to; global memories
-  belong to the global project named in `store.toml` (read-only to agents,
-  written by hand). The id itself carries no project.
+  belong to the one project row flagged global (it never has a directory --
+  an unbound project has none either; the flag, not the missing directory,
+  is what makes it global), read-only to agents and, today, to the CLI too
+  (*Maintenance*). The id itself carries no project.
+- **version** — an optimistic-concurrency counter, starting at 1 and
+  incrementing on every update or soft delete (`--hard` removes the row
+  instead, so there is no new version to see). `memory_read` returns it so
+  `memory_update`/`memory_delete` can require it back (*Updates, deletion,
+  and history*). A row also carries `deleted_at`, set only by a soft delete;
+  it is never part of what an agent can read — the fields above are the whole
+  set an agent may know.
 - **sync** — per-entry privacy boundary: `false` means this entry never
   leaves the machine, regardless of mode.
 - **trust** — provenance of the *source material*: `user` (stated
@@ -59,22 +71,24 @@ All language runtimes on this machine are managed by mise, not nvm/pyenv.
   storage.
 - Freshness is judged by `updated`, not by type.
 
-The frontmatter is read as YAML 1.2 core-schema booleans: **`true` and `false`
-are the only booleans**, and `yes`/`no`/`on`/`off` are ordinary strings
-everywhere in the block — including hand-written keys such as `source`, where
-`{interactive: yes}` is the string `"yes"`. `sync` is the only boolean field,
-and it opts in only for `true` (any case); anything else, including `yes`,
-reads as `false`. This is deliberate: `sync` is the privacy boundary, and a
-hand-edited value must never collapse into an opt-in that was not written.
+## Storage
+
+Every root's data lives in one file, `<root>/memriver.db` — every project and
+memory, bodies included, behind SQLite's own consistency guarantees; there is
+no separate index or manifest to go stale. A project has at most one bound
+directory; global has none. Nothing about a memory says where its project's
+directory is — readers resolve a directory to a project, never a memory to a
+location.
 
 ## Identity
 
 memriver generates every id: a memory's id and a project's id are 10 random
 lowercase Crockford base32 characters (50 bits; no i, l, o or u), and no
 caller proposes one. Short on purpose -- ids are injected into every session's
-index and copied back into tool calls. A generated id that is already taken is
-refused atomically and a fresh one drawn; an existing memory is never
-overwritten. The id is permanent -- the file name, the update
+index and copied back into tool calls. A generated id that is already taken
+(vanishingly unlikely at 50 bits) fails the write outright -- nothing is
+retried and nothing is written; an existing memory is never overwritten. The
+id is permanent -- the row's primary key, the update
 handle, the future sync key -- and says nothing about where the memory
 belongs: `project_id` says that. Readability comes from the description
 (memories) and the name (projects), never from the id.
@@ -97,34 +111,66 @@ practice:
   current project's entries first, then global's (tagged `global`), in one
   line budget; `memory_search` runs one search per project with one total
   `limit`, project hits first.
-- `memory_read` fetches one entry by id; an id that is absent or outside the
-  session's readable projects (the current project and global) is "no such
-  entry", while a file that exists but cannot be read is reported as
-  unreadable.
+- `memory_read` fetches one entry by id; an id that is absent, outside the
+  session's readable projects (the current project and global), or soft-deleted
+  is "no such entry" — the three look identical to an agent — while a row that
+  exists but cannot be read (a value memriver could not have written) is
+  reported as unreadable.
 - `memory_search` exists as a tool contract, but the local engine is a plain
-  in-memory scan over the files. At local scale (hundreds of entries) an LLM
-  scanning the index outperforms any keyword engine, so the local layer
-  ships no search infrastructure. When hybrid mode adds semantic retrieval,
-  the engine upgrades behind the same contract — agents never notice.
+  case-insensitive substring scan over the project's rows, computed in Python
+  rather than in SQL. At local scale (hundreds of entries) an LLM scanning the
+  index outperforms any keyword engine, so the local layer ships no search
+  infrastructure. When hybrid mode adds semantic retrieval, the engine
+  upgrades behind the same contract — agents never notice.
 
 ## Updates, deletion, and history
 
-- Update = rewrite the same file in place (atomic replace under a file
-  lock), bump `updated`.
-- Delete = delete the file.
-- The local store keeps **no version history**. History and conflict-free
-  replication are the sync layer's job, where object-store native versioning
-  provides them without any local machinery. The file count therefore equals
-  the number of live memories — naturally bounded, no compaction mechanism
-  required.
+- Update = rewrite the row's `body`/`description` in place inside one
+  transaction, bump `version` and `updated`. `memory_update` requires the
+  `expected_version` that `memory_read` returned; a memory changed since is
+  refused with nothing written, never silently overwritten.
+- Delete through MCP is always a soft delete: `deleted_at` is set and
+  `version` bumps, but the row stays. `memory_delete` confirms the delete
+  (`{deleted: id}`) like any other tool call, but nothing anywhere -- that
+  result, an error, or an index entry -- ever reveals that the delete was
+  soft or that the row remains: a later `memory_read`/`memory_search`/
+  `memory_index` treats that id exactly as if it had never existed.
+  `memory_delete` also requires `expected_version`.
+- `memriver delete --hard` (the human CLI, *Management views*) removes the
+  row itself, including one already soft-deleted. A soft-deleted memory is
+  otherwise recoverable only by an operator — there is no undelete command,
+  so recovery means clearing `deleted_at` on that row directly in
+  `memriver.db` (`memriver show ID --deleted` finds it first); `memory_write`
+  cannot do this, since it always assigns a new id rather than reviving an
+  old one. There is no MCP path to a hard delete.
+- The local store keeps **no history of old bodies**: `version` guards
+  against a lost concurrent update, it is not a log. History and
+  conflict-free replication remain the sync layer's job, where object-store
+  native versioning provides them without any local machinery.
+
+## Management views
+
+`memriver list` / `show` / `search` / `export` (README has the exact CLI
+grammar) are read-only views for a person, not the MCP surface agents use:
+they see every project including global, `show --deleted` can surface a
+soft-deleted row and its `deleted_at`, and none of them go through a
+`ReadWriteSet` the way a session does. `memriver delete` is the one
+per-memory write path outside MCP (project `init`/`adopt`/`unbind`, `install`
+and `uninstall --purge-data` write too, but to the project registry or the
+whole store, never to one memory's content); `delete` is scoped to the
+current directory's project exactly like an agent, so global stays
+undeletable there too.
 
 ## Maintenance
 
 `updated` is the time of the last change, nothing more: rewriting an entry
 records that it was rewritten, not that anyone confirmed it is still true.
-memriver has no review queue today. Cross-project knowledge will be distilled
-into global by a separate dream service (not yet built); until then global is
-maintained by hand. `memriver doctor --stale-days N` lists memories not
+memriver has no review queue today. Global is read-only everywhere today: MCP
+refuses every write to it, and the human CLI's `delete` is scoped to the
+current directory's project the same way, so it cannot reach global either.
+Cross-project knowledge will be distilled into global by a separate dream
+service (not yet built); until then, the only way to change it is by hand
+against `memriver.db`. `memriver doctor --stale-days N` lists memories not
 updated in N days as a starting point for a manual review.
 
 ## The write gate
@@ -167,7 +213,7 @@ tool description is itself part of why it was adopted.
 
 ## Modes and sync (forward-looking)
 
-- **Local-only** — everything above; pure markdown, no LLM, no network.
+- **Local-only** — everything above; one local SQLite file, no LLM, no network.
 - **Hybrid** — entries with `sync: true` replicate to user-owned object
   storage; versioning and multi-device semantics live there.
 - **Team** — shared knowledge is produced by a distillation pipeline with
@@ -179,7 +225,10 @@ provisioning for the later modes.
 
 ## Non-goals
 
-- A new memory taxonomy, file format, or recall strategy.
-- Local search infrastructure (databases, tokenizers, embeddings).
+- A new memory taxonomy, storage format, or recall strategy.
+- Local search infrastructure beyond a plain substring scan (full-text
+  search, tokenizers, embeddings).
 - Local version history, immutable entry chains, or supersede protocols.
+- Restoring a soft-deleted memory through MCP or the human CLI (an operator
+  can, by hand against `memriver.db`).
 - Agent-controlled naming or layout.
