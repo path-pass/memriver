@@ -666,16 +666,16 @@ def test_stop_is_silent_under_a_degraded_registry_and_never_fails(tmp_path):
 
 
 def test_stop_never_imports_the_service_stack(tmp_path, registered):
-    # memriver_core.application and .application.errors are imported by the
-    # memriver_core facade itself and are fine; the service, bootstrap, the
-    # repository and the secret scanner are what must stay out
+    # importing memriver_core now loads only memriver_core.models (the error
+    # taxonomy lives at memriver_core.models.errors); application, bootstrap,
+    # the repository and the secret scanner must all stay out
     script = (
         "import json, sys\n"
         "from pathlib import Path\n"
         "from memriver.hooks import run_hook\n"
         f"result = run_hook('stop', 'claude-code', json.dumps({{'stop_hook_active': False, 'cwd': {str(registered)!r}}}),\n"
         f"         root=Path({str(tmp_path / 'mem')!r}), project_dir=None, cwd=Path({str(tmp_path)!r}))\n"
-        "bad = [m for m in sys.modules if m.startswith(('memriver_core.application.service',\n"
+        "bad = [m for m in sys.modules if m.startswith(('memriver_core.application',\n"
         "       'memriver_core.bootstrap', 'memriver_core.repository', 'detect_secrets'))]\n"
         "print(json.dumps([bad, bool(result.stdout)]))\n"
     )

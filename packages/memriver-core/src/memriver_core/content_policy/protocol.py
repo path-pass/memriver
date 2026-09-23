@@ -6,9 +6,9 @@ from typing import Protocol
 class ContentPolicy(Protocol):
     """Content-acceptance port consumed by the application facade.
 
-    Binding semantics: ``check`` raises the stable application
+    Binding semantics: ``check`` raises the stable core
     ``ContentRejected`` error without echoing rejected content. The Protocol
-    itself does not import application errors; the concrete implementation
+    itself does not import the error taxonomy; the concrete implementation
     raises the documented error.
     """
 

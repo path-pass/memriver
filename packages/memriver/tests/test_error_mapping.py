@@ -14,7 +14,7 @@ from fastmcp import Client
 from memriver import server as server_module
 from memriver.project_context import bind
 from memriver.server import _map_error, build_server
-from memriver_core.application.errors import (
+from memriver_core import (
     ContentRejected,
     GlobalReadOnly,
     MemoryNotFound,

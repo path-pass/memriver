@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import pytest
-from memriver_core.application.errors import (
+from memriver_core.application.service import EMPTY_INDEX, MemoryService
+from memriver_core.models import ID_RE, AccessContext, Memory, Project
+from memriver_core.models.errors import (
     ContentRejected,
     GlobalReadOnly,
     IdCollision,
@@ -12,8 +14,6 @@ from memriver_core.application.errors import (
     ProjectUnavailable,
     StorageFailure,
 )
-from memriver_core.application.service import EMPTY_INDEX, MemoryService
-from memriver_core.models import ID_RE, AccessContext, Memory, Project
 
 P = "aaaaaaaaaa"
 G = "gggggggggg"

@@ -11,14 +11,14 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from memriver_core.application.errors import (
+from memriver_core.models import ID_RE, AccessContext, Memory, Project, single_line
+from memriver_core.models.errors import (
     ContentRejected,
     IdCollision,
     ProjectNotFound,
     ProjectUnavailable,
     StorageFailure,
 )
-from memriver_core.models import ID_RE, AccessContext, Memory, Project, single_line
 
 if TYPE_CHECKING:
     from memriver_core.content_policy.protocol import ContentPolicy

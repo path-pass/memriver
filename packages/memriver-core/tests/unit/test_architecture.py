@@ -117,10 +117,11 @@ FORBIDDEN = [
      "memriver_core.content_policy.secret_scanner"),
     ("memriver_core.content_policy.protocol", "memriver_core.application"),
     ("memriver_core.content_policy.protocol", "memriver_core.config"),
-    # implementations may use the error taxonomy, never the service or config
-    ("memriver_core.repository.filesystem", "memriver_core.application.service"),
+    # implementations may use the error taxonomy (now in models), never the
+    # application layer at all, nor config
+    ("memriver_core.repository.filesystem", "memriver_core.application"),
     ("memriver_core.repository.filesystem", "memriver_core.config"),
-    ("memriver_core.content_policy.secret_scanner", "memriver_core.application.service"),
+    ("memriver_core.content_policy.secret_scanner", "memriver_core.application"),
     ("memriver_core.content_policy.secret_scanner", "memriver_core.config"),
 ]
 

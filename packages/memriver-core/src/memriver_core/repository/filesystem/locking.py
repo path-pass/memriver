@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from memriver_core.application.errors import StorageFailure
+from memriver_core.models.errors import StorageFailure
 
 
 @contextmanager

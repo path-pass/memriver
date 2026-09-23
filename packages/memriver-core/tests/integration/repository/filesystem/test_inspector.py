@@ -3,8 +3,8 @@ import stat
 import time
 
 import pytest
-from memriver_core.application.errors import StorageFailure
 from memriver_core.models import AccessContext, Memory, Project, new_id
+from memriver_core.models.errors import StorageFailure
 from memriver_core.repository.filesystem import (
     FileMemoryStore,
     FileProjectStore,

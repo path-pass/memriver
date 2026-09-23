@@ -11,7 +11,6 @@ import re
 import tomllib
 
 import pytest
-from memriver_core.application.errors import ContentRejected
 from memriver_core.content_policy.secret_scanner import (
     _RULES,
     _RULES_DIR,
@@ -19,6 +18,7 @@ from memriver_core.content_policy.secret_scanner import (
     _load_rules,
     _shannon_entropy,
 )
+from memriver_core.models.errors import ContentRejected
 
 BODY_LIMIT = 8000
 

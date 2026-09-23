@@ -22,7 +22,7 @@ class MemoryStore(Protocol):
       does not exist). A present file that cannot be read or decoded, and an
       unsafe container, raise `StorageFailure`. `update`/`delete` of a global
       entry raise `GlobalReadOnly`.
-    - Errors carry fields, never words (see `application.errors`).
+    - Errors carry fields, never words (see `models.errors`).
     """
 
     def record(self, memory: Memory, ctx: AccessContext) -> None: ...

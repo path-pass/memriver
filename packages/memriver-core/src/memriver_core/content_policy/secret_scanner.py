@@ -5,8 +5,8 @@ import re
 from collections import Counter
 from importlib.resources import files
 
-from memriver_core.application.errors import ContentRejected
 from memriver_core.content_policy.rules_loader import _load_rules
+from memriver_core.models.errors import ContentRejected
 
 _RULES_DIR = files(__package__) / "rules"
 
