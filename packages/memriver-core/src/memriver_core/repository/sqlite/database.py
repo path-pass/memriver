@@ -189,6 +189,11 @@ def upgrade_if_needed(path: Path, *, busy_timeout_ms: int) -> None:
     transaction, re-checking `user_version` inside it: a peer that already
     upgraded leaves the re-check at 2 and this does nothing. A failure
     part-way rolls back to an intact v1, since SQLite's DDL is transactional.
+
+    `user_version` is read once outside any transaction first: almost every
+    open finds v2 already, and only a database actually at v1 may take the
+    write lock -- otherwise every read would queue behind a concurrent
+    writer's `BEGIN IMMEDIATE` for a schema that never changes.
     """
     try:
         conn = sqlite3.connect(f"{Path(os.path.abspath(path)).as_uri()}?mode=rw", uri=True,
@@ -203,6 +208,8 @@ def upgrade_if_needed(path: Path, *, busy_timeout_ms: int) -> None:
     try:
         try:
             conn.execute("PRAGMA foreign_keys = ON")
+            if conn.execute("PRAGMA user_version").fetchone()[0] != 1:
+                return                       # no lock taken: nothing to upgrade
             conn.execute("BEGIN IMMEDIATE")
             if conn.execute("PRAGMA user_version").fetchone()[0] == 1:
                 for statement in _UPGRADE_STATEMENTS:

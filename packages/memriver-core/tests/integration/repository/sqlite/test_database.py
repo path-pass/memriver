@@ -9,6 +9,7 @@ import subprocess
 import sys
 import textwrap
 import threading
+import time
 from contextlib import closing
 
 import pytest
@@ -165,6 +166,30 @@ def test_two_openers_upgrade_a_version_one_database_once(tmp_path):
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
         columns = {r[1] for r in conn.execute("PRAGMA table_info(memories)")}
     assert "last_read_at" in columns
+
+
+def test_a_read_of_a_v2_database_does_not_queue_behind_a_writers_lock(tmp_path):
+    """`upgrade_if_needed` must not take BEGIN IMMEDIATE once the schema is already
+    current: that would serialize every read behind any concurrent writer's own
+    write transaction, for an upgrade that never has anything to do."""
+    root = tmp_path / "store"
+    with _db(root).write():
+        pass                                # creates the v2 schema
+    holder = sqlite3.connect(root / "memriver.db", isolation_level=None)
+    holder.execute("BEGIN IMMEDIATE")
+    holder.execute("INSERT INTO projects (id, name, root, is_global) VALUES (?, 'g', NULL, 1)",
+                   (new_id(),))
+    try:
+        # a busy timeout far shorter than any real wait: if the upgrade check
+        # took the write lock too, this read would block on it and time out
+        start = time.monotonic()
+        with Database(root, busy_timeout_ms=50).read() as conn:
+            assert conn is not None
+        elapsed = time.monotonic() - start
+    finally:
+        holder.execute("ROLLBACK")
+        holder.close()
+    assert elapsed < 0.05
 
 
 def test_an_upgrade_failing_part_way_leaves_version_one_intact(tmp_path, monkeypatch):
