@@ -29,20 +29,136 @@ _log = logging.getLogger("memriver_core.content_policy.secret_scanner")
 # (rule id, compiled pattern, entropy threshold, secretGroup, lowercased keywords)
 _Rule = tuple[str, "re.Pattern[str]", float | None, int, tuple[str, ...]]
 
+# RE2 spells the eight named POSIX classes as `[:name:]` inside a bracket
+# expression; Python has no such syntax and reads `[[:alnum:]]` as a nested
+# set. Expanding to the ASCII range keeps the vendored pattern's meaning.
+_POSIX_CLASSES = {
+    "alnum": "a-zA-Z0-9",
+    "alpha": "a-zA-Z",
+    "digit": "0-9",
+    "lower": "a-z",
+    "upper": "A-Z",
+    "xdigit": "0-9A-Fa-f",
+    "space": "\t\n\v\f\r ",
+    "word": "0-9A-Za-z_",
+}
+
+# A "global flags" group: `(?` followed by one or more RE2/`re` flag letters
+# (optionally a `-` and more letters to turn some off) and a closing `)`,
+# with nothing else inside -- so it never matches `(?:`, `(?=`, `(?<name>`,
+# `(?P<name>`, `(?#...)` or an already-scoped `(?flags:...)`.
+_FLAG_GROUP_RE = re.compile(r"\(\?([aiLmsux]+(?:-[aiLmsux]+)?)\)")
+
+
+def _re2_to_python(pattern: str) -> str:
+    """Translate the RE2-only constructs gitleaks.toml uses into Python `re`.
+
+    RE2 and Python `re` agree on almost everything a gitleaks rule needs, but
+    three constructs differ:
+
+    - A mid-pattern flag group `(?i)` is, in RE2, scoped from that point to
+      the end of its innermost enclosing group (or the whole pattern); Python
+      requires a bare `(?flags)` at position 0 of the pattern and rejects it
+      anywhere else. A mid-pattern one is rewritten to the equivalent scoped
+      group `(?flags:...)`, closed at the same point RE2 would have stopped
+      applying it. A flag group already at position 0 is left untouched.
+    - `\\z` (absolute end of text) is Python's `\\Z`; an escaped `\\\\z` (a
+      literal backslash followed by 'z') is left alone.
+    - A POSIX class such as `[:alnum:]` inside a bracket expression is
+      expanded to its ASCII range; an unrecognised class name is left as-is,
+      so it still fails to compile rather than silently mismatching.
+
+    The pattern is scanned once, left to right, tracking backslash escapes
+    (so `\\\\z` is never misread as `\\z`) and bracket expressions (so none of
+    this rewriting happens inside `[...]` except the POSIX-class case).
+    """
+    out: list[str] = []
+    # frames[-1] is the pending-close count for the group currently open;
+    # frames[0] stands in for the top level, closed at the end of the string.
+    frames = [0]
+    in_class = False
+    i = 0
+    n = len(pattern)
+    while i < n:
+        ch = pattern[i]
+        if ch == "\\" and i + 1 < n:
+            if pattern[i + 1] == "z" and not in_class:
+                out.append("\\Z")
+            else:
+                out.append(pattern[i:i + 2])
+            i += 2
+            continue
+        if in_class:
+            if ch == "[" and pattern[i + 1:i + 2] == ":":
+                end = pattern.find(":]", i + 2)
+                if end != -1 and pattern[i + 2:end] in _POSIX_CLASSES:
+                    out.append(_POSIX_CLASSES[pattern[i + 2:end]])
+                    i = end + 2
+                    continue
+                out.append(ch)
+                i += 1
+                continue
+            if ch == "]":
+                in_class = False
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "[":
+            in_class = True
+            out.append(ch)
+            i += 1
+            # a leading '^' (negation) or ']' (literal close bracket as the
+            # first member) does not end the bracket expression it opens
+            if i < n and pattern[i] == "^":
+                out.append(pattern[i])
+                i += 1
+            if i < n and pattern[i] == "]":
+                out.append(pattern[i])
+                i += 1
+            continue
+        if ch == "(":
+            match = _FLAG_GROUP_RE.match(pattern, i)
+            if match:
+                if i == 0:
+                    out.append(match.group(0))
+                else:
+                    out.append(f"(?{match.group(1)}:")
+                    frames[-1] += 1
+                i = match.end()
+                continue
+            out.append(ch)
+            frames.append(0)
+            i += 1
+            continue
+        if ch == ")":
+            if len(frames) > 1:
+                pending = frames.pop()
+                out.append(")" * pending)
+            out.append(ch)
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    out.append(")" * frames[0])
+    return "".join(out)
+
 
 def _load_rules(*sources: Traversable) -> list[_Rule]:
     """Parse and compile the vendored rule TOMLs once, at import.
 
-    The patterns are written for Go's RE2, so a couple of dozen are not valid
-    Python `re` -- and *which* ones depends on the interpreter (`\\z` only became
-    legal in 3.14). Each is compiled here rather than at vendoring time so the
-    ruleset adapts to whatever runs it; an incompatible rule is dropped with its
-    id logged, never raised, because a bad pattern must not take down the scanner
-    and with it every write.
+    The patterns are written for Go's RE2, so a couple of dozen use constructs
+    Python `re` does not accept as written. `_re2_to_python` translates those
+    before compiling, so nothing is dropped merely for being RE2 syntax. What
+    still fails to compile after translation -- a construct with no Python
+    equivalent, or one this translation does not cover -- is dropped with its
+    id logged at WARNING, never raised: a bad pattern must not take down the
+    scanner and with it every write, but a dropped rule is a coverage loss an
+    operator must see.
 
-    Warnings are promoted to errors so that constructs Python merely tolerates
-    with a *different* meaning (POSIX classes such as `[[:alnum:]]`, which Python
-    reads as a nested set) are skipped rather than silently mis-matching.
+    Warnings are promoted to errors so that a construct Python merely tolerates
+    with a *different* meaning -- an unrecognised POSIX class name, which
+    `_re2_to_python` leaves untouched and Python then reads as a nested set --
+    is skipped rather than silently mis-matching.
 
     Sources are read in order and ids are deduplicated first-wins, so memriver's
     own floor rules take precedence over an upstream rule of the same id.
@@ -74,10 +190,10 @@ def _load_rules(*sources: Traversable) -> list[_Rule]:
             try:
                 with warnings.catch_warnings():
                     warnings.simplefilter("error")
-                    compiled = re.compile(pattern)
+                    compiled = re.compile(_re2_to_python(pattern))
             except (re.error, Warning, RecursionError) as exc:
-                _log.debug("scanner: skipping rule %s, regex unusable on this "
-                           "interpreter: %s", rule_id, exc)
+                _log.warning("scanner: skipping rule %s, regex unusable on this "
+                             "interpreter: %s", rule_id, exc)
                 continue
             entropy = rule.get("entropy")
             rules.append((
