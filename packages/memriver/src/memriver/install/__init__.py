@@ -36,6 +36,7 @@ import json
 import os
 import shlex
 import shutil
+import stat
 import tempfile
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -229,6 +230,34 @@ def _collect_targets(harnesses: Sequence[str],
     return classified, per_harness
 
 
+def _symlinked_component(target: Target, root: Path | None) -> Path | None:
+    """The first path component at or below ``target.path`` that is a link,
+    checked the same way ``_refuse_symlinks`` does -- ``root`` itself is
+    exempt, everything below it (including the leaf) is checked -- or
+    ``None`` if none of them is.
+    """
+    components = [target.path]
+    if root is not None and target.path.is_relative_to(root):
+        parts = target.path.relative_to(root).parts
+        components = [root.joinpath(*parts[:depth]) for depth in range(1, len(parts) + 1)]
+    for component in components:
+        # `lstat` directly, not `Path.is_symlink()`: on 3.14 that method
+        # routes through `os.path.islink`, which swallows every `OSError`
+        # (not just "nothing here") and reports False -- silently reading a
+        # failed check as "no link found, safe to proceed". A missing
+        # component (or one below a non-directory) genuinely has nothing to
+        # follow, so that alone is treated as "no link here"; any other
+        # OSError (a permission or I/O failure) proves nothing and must
+        # propagate to the caller's own unexpected-failure handling.
+        try:
+            mode = component.lstat().st_mode
+        except (FileNotFoundError, NotADirectoryError):
+            return None
+        if stat.S_ISLNK(mode):
+            return component
+    return None
+
+
 def _refuse_symlinks(target: Target, root: Path | None, command_name: str) -> None:
     """Refuse the target and every path component below ``root`` that is a link.
 
@@ -237,17 +266,13 @@ def _refuse_symlinks(target: Target, root: Path | None, command_name: str) -> No
     checked: a home or project directory reached through a link is the user's
     own arrangement, not something this edit redirects.
     """
-    components = [target.path]
-    if root is not None and target.path.is_relative_to(root):
-        parts = target.path.relative_to(root).parts
-        components = [root.joinpath(*parts[:depth]) for depth in range(1, len(parts) + 1)]
-    for component in components:
-        if component.is_symlink():
-            raise PlanningError(
-                f"{component} is a symlink; memriver will not write through it "
-                f"to {target.path}. Replace it with a regular file or directory "
-                f"(or remove it) and run {command_name} again"
-            )
+    component = _symlinked_component(target, root)
+    if component is not None:
+        raise PlanningError(
+            f"{component} is a symlink; memriver will not write through it "
+            f"to {target.path}. Replace it with a regular file or directory "
+            f"(or remove it) and run {command_name} again"
+        )
 
 
 def _read_snapshot(target: Target, root: Path | None,
@@ -388,11 +413,26 @@ class _CreatedDir:
 
 @dataclass(frozen=True)
 class _Write:
-    """One completed replacement, and everything rollback needs to undo it."""
+    """One completed replacement, and everything rollback needs to undo it.
+
+    ``written`` is the exact bytes this run put at ``target.path`` -- ``None``
+    for a deletion (the ``delete_if_emptied`` branch, where this run's own
+    effect on the path is its absence). Rollback compares this against what
+    is on disk before touching anything: undoing a write that another process
+    has since changed would destroy that change with no backup to recover it
+    from, since the backup only ever holds the *pre*-run bytes.
+
+    ``root`` is the same root ``_write_target`` was given (``home`` or the
+    project root), kept so rollback can re-run the component check below it:
+    reading or writing through ``target.path`` alone would still follow a
+    parent directory swapped for a symlink after this run's own write landed.
+    """
 
     target: Target
     backup: Path | None
     original_mode: int | None
+    written: bytes | None
+    root: Path | None
     # the parents this write had to create, deepest first, so rollback can put
     # the tree back the way it found it
     created_dirs: tuple[_CreatedDir, ...] = ()
@@ -471,12 +511,15 @@ def _write_target(snapshot: Snapshot, text: str, root: Path | None, stamp: str,
             _write_backup(target, original_mode, stamp) if original_mode is not None
             else None
         )
+        deleting = text == "" and target.delete_if_emptied and original_mode is not None
+        data = text.encode("utf-8")
         write = _Write(target=target, backup=backup, original_mode=original_mode,
+                       written=None if deleting else data, root=root,
                        created_dirs=created_dirs)
         mode = original_mode
         if mode is None:
             mode = 0o600 if target.user_level else _umask_mode()
-        if text == "" and target.delete_if_emptied and original_mode is not None:
+        if deleting:
             # this target is entirely memriver's own file; a removal that
             # empties it takes the file with it rather than leaving an empty
             # one behind (spec P2-6). The backup just written above still
@@ -486,7 +529,7 @@ def _write_target(snapshot: Snapshot, text: str, root: Path | None, stamp: str,
             recorded = True
             target.path.unlink()
         else:
-            _replace_atomically(target.path, text.encode("utf-8"), mode, replace_file)
+            _replace_atomically(target.path, data, mode, replace_file)
             record(write)
     except BaseException:
         # a write that never joined the rollback list takes its own directories
@@ -598,21 +641,112 @@ def _remove_created_dirs(created_dirs: Sequence[_CreatedDir]) -> None:
             return
 
 
+# a path that exists but is a symlink or another non-regular file (FIFO,
+# device, ...): never read through it -- that could follow the link
+# somewhere this run never wrote, or block forever on a FIFO -- so its
+# content never equals anything and it always falls to the "changed" branch
+_NOT_A_REGULAR_FILE = object()
+
+
+def _current_bytes(path: Path) -> bytes | None | object:
+    """The bytes at ``path`` right now: ``None`` if absent, the sentinel
+    above if it is not a plain file, otherwise its contents.
+
+    ``lstat`` rather than ``stat``, consistent with ``_refuse_symlinks``:
+    a symlink swapped in for the target is refused, not followed.
+    """
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(info.st_mode):
+        return _NOT_A_REGULAR_FILE
+    return path.read_bytes()
+
+
+def _left_as_is_report(path: Path, backup: Path | None) -> str:
+    return (
+        f"{path} changed after this run wrote it; left as is -- "
+        + (f"merge your changes from {backup}" if backup
+           else "this run created it, and there is no backup")
+    )
+
+
 def _roll_back(writes: Sequence[_Write],
                replace_file: Callable[[Path, Path], None]) -> list[str]:
-    """Undo completed writes newest-first. Backups survive every outcome."""
+    """Undo completed writes newest-first. Backups survive every outcome.
+
+    Before touching a path at all, ``_symlinked_component`` re-runs the same
+    component check ``_refuse_symlinks`` already ran before this run's own
+    write: a parent directory swapped for a symlink after that write landed
+    would otherwise still be followed straight through by a plain
+    ``read_bytes``/``unlink``/atomic replace on the leaf path, which checking
+    only the leaf itself (even by ``lstat``) cannot catch. A link anywhere
+    below the root is treated exactly like any other foreign change below --
+    left alone and reported -- without reading through it or writing to
+    whatever it resolves to.
+
+    Past that check, the path's current bytes (``None`` if absent, or the
+    not-a-regular-file sentinel for a symlink or special file at the leaf)
+    are compared against ``write.written`` -- what this run itself left
+    there. A match means nothing has touched the file since, so the backup
+    is restored, or the file this run created is removed, exactly as before.
+
+    Two mismatches are not a foreign edit, only this run's own write never
+    actually landing, and are treated as already undone rather than reported:
+    a deletion whose ``unlink`` never happened (it raised, or an interrupt
+    landed between recording the write and running it) leaves the file
+    holding exactly the bytes the backup does, so restoring the backup over
+    it would be a no-op; and a file this run created that is already absent
+    needs nothing restored either, only its created directories reclaimed.
+
+    Any other mismatch -- another process edited a rewritten target,
+    recreated a path this run deleted, or changed a file this run created --
+    leaves it exactly as it is: the backup is the pre-run state, and
+    overwriting or deleting the current content would destroy an edit no
+    backup holds. The directories this run created are only reclaimed once
+    their file was actually rolled back (or found already gone); one left in
+    place keeps its directory.
+
+    None of this closes the check-then-act window between this check and the
+    restore/removal below -- POSIX has no atomic "check every component,
+    then act on the leaf" -- it only narrows the case a plain path operation
+    would miss outright: a link already in place by the time rollback looks.
+
+    An ``OSError`` from the component check itself (as opposed to it finding
+    a link) is never treated as "no link found": a stat failure proves
+    nothing was verified, not that nothing is wrong, and a parent really
+    could have been swapped for a link right where this failed to look. It
+    falls through to the catch-all below like any other unexpected failure,
+    reported as unable to recover and left exactly as it is -- this is one
+    write inside the loop, so it does not stop any other write in the same
+    run from rolling back normally.
+    """
     report: list[str] = []
     for write in reversed(writes):
         path = write.target.path
         try:
-            if write.backup is None:
-                path.unlink(missing_ok=True)
-                report.append(f"removed {path} (this run created it)")
-            else:
-                _replace_atomically(path, write.backup.read_bytes(),
-                                    write.original_mode, replace_file)
-                report.append(f"restored {path} from {write.backup}")
-            _remove_created_dirs(write.created_dirs)
+            if _symlinked_component(write.target, write.root) is not None:
+                report.append(_left_as_is_report(path, write.backup))
+                continue
+            current = _current_bytes(path)
+            if current == write.written:
+                if write.backup is None:
+                    path.unlink(missing_ok=True)
+                    report.append(f"removed {path} (this run created it)")
+                else:
+                    _replace_atomically(path, write.backup.read_bytes(),
+                                        write.original_mode, replace_file)
+                    report.append(f"restored {path} from {write.backup}")
+                _remove_created_dirs(write.created_dirs)
+                continue
+            if (write.written is None and write.backup is not None
+                    and current == write.backup.read_bytes()):
+                continue  # this run's own unlink never happened; already fine
+            if write.backup is None and current is None:
+                _remove_created_dirs(write.created_dirs)
+                continue  # this run's own file is already gone; already fine
+            report.append(_left_as_is_report(path, write.backup))
         except Exception as error:  # noqa: BLE001 - every outcome gets reported
             report.append(
                 f"COULD NOT recover {path}"

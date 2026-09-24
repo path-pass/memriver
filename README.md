@@ -1,12 +1,12 @@
 # memriver
 
 Shared memory layer for coding agents across harnesses (Claude Code / Codex /
-Cursor / Kiro), exposed via MCP. Markdown is the single source of truth.
-Local-only mode uses no LLM and no network.
+Cursor / Kiro), exposed via MCP. One SQLite database is the single source of
+truth. Local-only mode uses no LLM and no network.
 
 Monorepo (uv workspace):
 
-- `packages/memriver-core` — mutable, one-file-per-memory markdown entry store, write gate
+- `packages/memriver-core` — the SQLite memory and project store, write gate
 - `packages/memriver` — CLI + MCP server (the package users install)
 - `skills/` — agent skills that ship with the project (see *Migrating existing Claude Code memory*)
 - planned: `memriver-vector` / `memriver-dream` / `memriver-sync`
@@ -68,24 +68,28 @@ reports go to stderr.
   turn so the agent is never trapped in a loop.
 - **Cursor / Kiro** use the static instructions block instead of hooks.
 
-Hooks never fail the harness: any error inside memriver degrades to "no
-injection" for that event instead of blocking the session. If memories seem
-to be missing, `memriver doctor` shows what the store actually holds.
+Hooks never fail the harness: an unreadable store is stated inline, in the
+injected header itself, as a labelled "unavailable" session -- exit 0, empty
+stderr, nothing blocked. Only a hook step that cannot complete at all (a
+malformed payload, some other unhandled failure) skips the injection entirely
+and prints one fixed, path-free stderr line instead. If memories seem to be
+missing, `memriver doctor` shows what the store actually holds.
 
 ## Projects
 
 A project is a directory you registered. Nothing else confers project
 identity -- not a `.git` directory, not a marker file -- and the `memriver
-project` commands never write anything inside a project directory; the
-registry lives in the store. (Installing Cursor or Kiro still writes their
-static instruction file at the git root, as the install table shows.)
+project` commands never write anything inside a project directory; each
+project's directory binding lives on its row in the store. (Installing Cursor
+or Kiro still writes their static instruction file at the git root, as the
+install table shows.)
 
 ```bash
 uvx memriver project init                 # register the current directory
 uvx memriver project init ~/99_git/work   # register a parent folder holding several repos
 uvx memriver project init --name "Work"   # the project's readable name (default: the directory name)
-uvx memriver project adopt <id> <dir>     # bind an existing project to another (or a moved) directory
-uvx memriver project unbind <id> <dir>    # drop one binding; memories stay
+uvx memriver project adopt <id> <dir>     # bind an unbound project (unbind first if it has a directory)
+uvx memriver project unbind <id> <dir>    # drop its binding (one directory per project); memories stay
 uvx memriver project explain              # what the current directory resolves to
 ```
 
@@ -101,9 +105,6 @@ and their MCP servers restart.
 Known limits:
 
 - A directory that reuses a registered path inherits that project's memories.
-- A deleted registry file (`registry/<id>.toml`) is indistinguishable from
-  "never registered"; if the deleted one belonged to a sub-project, its
-  directory falls back to the registered parent.
 - A root as wide as a whole workspace is, in effect, a writable global.
 - The session-start hook resolves the directory the harness reports while the
   MCP server resolves its own working directory, so the two can name different
@@ -113,33 +114,55 @@ Known limits:
   still disagree, and that mismatch is not solved.
 - After upgrading memriver, restart every harness session and MCP server that
   shares the store; a running server keeps its old rules.
-- A store written by a pre-release version (`global/entries/`,
-  `projects/<id>/entries/`) is not read or migrated; `memriver doctor` reports
-  it as `legacy-layout`.
+- A store written by the pre-SQLite file layout (`global/`, `store.toml`,
+  `projects/`, `memories/`, `registry/`) is not read or migrated; `memriver
+  doctor` reports it as `legacy-layout`.
 - Confirmation prompts protect against mistakes, not against an agent with a
-  shell: the store is a directory your user can write.
+  shell: the store is a database file your user can write.
 
 ## Tools
 
 | Tool | Purpose |
 |---|---|
 | `memory_index()` | The session's project on the first line, then a compact index: the project's memories, then global's (tagged `global`) |
-| `memory_read(memory_id)` | One memory in full, by id: all ten fields. An entry that exists but cannot be read is reported as such, not as missing |
+| `memory_read(memory_id)` | One memory in full, by id: eleven fields, including the `version` that `memory_update`/`memory_delete` must be given back. An entry that exists but cannot be read is reported as such, not as missing |
 | `memory_search(query, limit=None)` | Memories relevant to a task: the project's hits first, then global's; `limit` caps the whole answer, so a query with many project hits can leave no room for global ones |
 | `memory_write(content, type, sync=True, harness="unknown", description="")` | Save one durable fact to the current project; memriver assigns the id; global is read-only to agents; `type` is `user` / `feedback` / `project` / `reference` |
-| `memory_update(memory_id, content, description=None)` | Rewrite a memory's content in place (id, project and type stay); refused for global memories |
-| `memory_delete(memory_id)` | Remove a memory that is no longer true or wanted; refused for global memories |
+| `memory_update(memory_id, expected_version, content, description=None)` | Rewrite a memory's content in place (id, project and type stay); returns `{id, updated, version}`; refused for global memories or a stale `expected_version` |
+| `memory_delete(memory_id, expected_version)` | Remove a memory that is no longer true or wanted; returns `{deleted: memory_id}`; refused for global memories or a stale `expected_version` |
 
-Every write passes the content policy (secret-shaped content is refused, the
-value is never echoed back) and the size limits from *Settings*. An
-operational failure inside a tool comes back as a path-free error message
-rather than an exception through the transport; a call that does not match a
-tool's schema — an unknown argument, a missing one, a wrong type — is rejected
-by the MCP layer before the tool runs.
+`expected_version` is the value `memory_read` last returned; if the memory
+changed since, the call is refused and nothing is written -- read it again and
+redo the edit on the current text. Every write passes the content policy
+(secret-shaped content is refused, the value is never echoed back) and the
+size limits from *Settings*. An operational failure inside a tool comes back
+as an MCP tool error (`isError: true`) carrying the same path-free message,
+never as a raw exception through the transport; a call that does not match a
+tool's schema — an unknown argument, a missing one, a wrong type — is
+rejected by the MCP layer before the tool runs.
 
-The storage model — frontmatter fields, the four types, id rules, the
-strict boolean and timestamp formats — is specified in
+The memory model — its fields, the four types, id rules, the strict boolean
+and timestamp formats — is specified in
 [`docs/memory-model.md`](docs/memory-model.md).
+
+## Browsing and deleting memories directly
+
+```bash
+uvx memriver list [--project ID]                      # every project, or one; id, type, date, cue
+uvx memriver show ID [--deleted]                       # full memory: header fields + body
+uvx memriver search QUERY [--project ID] [--limit N]
+uvx memriver export DIR                                # DIR must not exist; a markdown snapshot, never read back
+uvx memriver delete ID --version N [--hard] [--yes]
+```
+
+These are read-only views for a person, not the MCP surface agents use:
+`list`/`search`/`export` see every project, including global, but never a
+soft-deleted memory; `show --deleted` is the one view that can, and it prints
+the memory's `deleted_at`. `delete` needs the `version` that `memriver show`
+printed and is scoped to the current directory's project exactly like an
+agent -- global stays undeletable through it too. It soft-deletes by default
+(the row's `deleted_at` is set, and it is recoverable only by an operator);
+`--hard` removes the row itself, including one already soft-deleted.
 
 ## Doctor
 
@@ -150,17 +173,25 @@ uvx memriver doctor --stale-days 30   # flag memories not updated in 30 days (de
 uvx memriver doctor --root /path      # check a non-default store
 ```
 
-`doctor` diagnoses store and registry problems in more detail than a tool
-call reports: unreadable memory or project files, unparsable memory files, a
-memory file whose name is not an id or whose stored id disagrees with it,
-memories whose project does not exist, invalid project files or manifest,
-data directories that are links or not directories, a pre-release layout,
-invalid timestamps, stale memories and near-duplicates. Reports never contain
-memory bodies; memory-file findings use store-relative location hints, but
-registry diagnostics (a missing or unverifiable registered root, a root that
-no longer resolves canonically) print the bound absolute directory path. An
-inaccessible store exits with status 2 (with `--json`, a `{"error": ...}`
-object is still emitted on stdout).
+`doctor` diagnoses store problems in more detail than a tool call reports: an
+unrecognized schema version (`unknown-schema`; when the check cannot complete
+at all -- a garbage file, a missing table -- doctor takes the inaccessible
+branch below instead, exit 2), a failed SQLite integrity check (`integrity`),
+`memriver.db` as a symlink or anything but a regular file
+(`unsafe-database`), a memory whose project row no longer exists (`orphan`), a
+row holding a value memriver could not have written (`invalid-row`), a bound
+directory that is no longer canonical or could not be checked, two projects
+bound to the same directory under different spellings (`root-conflict`), the
+pre-SQLite file layout (`legacy-layout`), invalid `updated` timestamps, stale
+memories and near-duplicates. It also lists every project -- id, name, its
+directory (or `global`), its root's state (a directory that has gone missing
+is only a state here, not a finding), and its active and deleted memory
+counts. Reports never contain memory bodies, and no finding carries a path --
+findings use store-relative location hints such as `projects/<id>` or
+`memories/<id>`. The projects section is where an absolute directory appears:
+every bound project's `root`, printed for a person and, with `--json`,
+returned as a plain field. An inaccessible store exits with status 2 (with
+`--json`, a `{"error": ...}` object is still emitted on stdout).
 
 ## Uninstall
 
@@ -180,10 +211,12 @@ rather than guessed at, Kiro's steering file (memriver's own) is deleted, and
 shared files are never deleted. The harness's own memory setting is left as it
 is; the completion report says so and names any file left empty.
 
-`--purge-data` is the only thing that deletes memories, and only with the
-explicit flag (`--yes` merely skips the prompts). The resolved, canonical path
-is shown before deletion; the filesystem root, your home, the current
-directory and anything that resolves onto them through a symlink are refused.
+`--purge-data` is the only thing that deletes the whole store rather than one
+memory (`memriver delete` removes a single memory; see *Browsing and deleting
+memories directly*), and only with the explicit flag (`--yes` merely skips the
+prompts). The resolved, canonical path is shown before deletion; the
+filesystem root, your home, the current directory and anything that resolves
+onto them through a symlink are refused.
 `--clean-uv-cache` runs `uv cache clean` for both packages afterwards and is
 non-fatal if `uv` is missing or fails.
 
@@ -219,27 +252,29 @@ The MCP client's working directory determines project attribution: `--project`
 runs memriver from this checkout while keeping that directory, so memories land
 under the project you are actually working in (use `--directory` and every
 session would resolve against memriver's own checkout). `--project-dir` on the
-`memriver` command is where project discovery starts (the registry decides the
-id); pass it to pin a directory.
+`memriver` command is where project discovery starts (the nearest directory
+bound to a project decides the id); pass it to pin a directory.
 
 ## Storage layout
 
 ```
 ~/agent-memory/
-  store.toml                 # global_project = "<id>"  (written by memriver install)
-  projects/<id>.toml         # one project: name = "..."
-  memories/<id>.md           # one memory; its frontmatter names its project_id
-  registry/<id>.toml         # a project's registered directories: roots = [...]
-  settings.toml              # optional, see Settings
+  memriver.db          # 0600; the only data file -- every project and memory, bodies included
+  memriver.db-journal  # transient, SQLite's own; also left by a crashed writer until the next connection rolls it back
+  settings.toml        # optional, see Settings
 ```
 
 Every id is 10 random lowercase characters memriver generates (Crockford base32:
 digits and letters without i, l, o, u). A memory belongs to exactly one project
-through its `project_id`; global is the project named in `store.toml`. To
-maintain global memories by hand, edit the files in `memories/` whose
-`project_id` is that id. Directories memriver creates are private to your user
-(`0700`), files `0600`; `projects/` and `memories/` must be real directories
-(memriver never follows a link there).
+through its `project_id`; global is the one project row flagged global (it
+never has a directory -- an unbound project has none either; the flag is
+what tells them apart), shown as `global` by `doctor` and `project explain`.
+To maintain global memories by hand, edit `memriver.db`'s `memories` table
+where `project_id` is that project's id -- there is no write path to global
+through the CLI or MCP today. The root directory memriver creates is private
+to your user (`0700`);
+`memriver.db` is `0600` and must be a real file (memriver never follows a link
+there).
 Override the root with `--root` or `MEMRIVER_ROOT`.
 
 ## Installing before the PyPI release

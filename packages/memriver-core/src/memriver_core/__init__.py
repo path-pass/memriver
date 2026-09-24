@@ -5,6 +5,7 @@ these are the same class objects, not copies.
 """
 
 from .models.errors import (
+    BindingRefused,
     ContentRejected,
     GlobalReadOnly,
     MemoryError,
@@ -12,11 +13,13 @@ from .models.errors import (
     ProjectNotFound,
     ProjectUnavailable,
     StorageFailure,
+    VersionConflict,
 )
 
 __version__ = "0.1.0"
 
 __all__ = [
+    "BindingRefused",
     "ContentRejected",
     "GlobalReadOnly",
     "MemoryError",
@@ -24,5 +27,6 @@ __all__ = [
     "ProjectNotFound",
     "ProjectUnavailable",
     "StorageFailure",
+    "VersionConflict",
     "__version__",
 ]

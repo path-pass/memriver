@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 from memriver_core import bootstrap
-from memriver_core.application.diagnostics import DiagnosticsService
 from memriver_core.application.service import MemoryService
-from memriver_core.repository.filesystem import (
-    FileMemoryStore,
-    FileProjectStore,
-    FilesystemStoreInspector,
+from memriver_core.repository.sqlite import (
+    SqliteMemoryStore,
+    SqliteProjectStore,
+    SqliteStoreInspector,
 )
-from memriver_core.settings import DEFAULT_MAX_BODY_CHARS, Settings
+from memriver_core.settings import (
+    DEFAULT_MAX_BODY_CHARS,
+    HEADER_FIELD_CHARS,
+    INDEX_CUE_CHARS,
+    PROJECT_NAME_MAX_CHARS,
+    Settings,
+)
 
 
 def test_uses_the_settings_root_by_default(tmp_path):
@@ -25,40 +33,42 @@ def test_an_explicit_root_wins_over_the_settings_root(tmp_path):
     assert service._project_store.root == tmp_path / "explicit"
 
 
-def test_the_memory_store_checks_projects_through_the_same_project_store(tmp_path):
-    service = bootstrap.build_service(Settings(root=tmp_path))
-    assert isinstance(service._memory_store, FileMemoryStore)
-    assert isinstance(service._project_store, FileProjectStore)
-    assert service._memory_store._project_store is service._project_store
+def test_composes_the_sqlite_adapters(tmp_path):
+    service = bootstrap.build_service(Settings(root=tmp_path), home=tmp_path / "home")
+    assert isinstance(service._memory_store, SqliteMemoryStore)
+    assert isinstance(service._project_store, SqliteProjectStore)
+    assert isinstance(service._diagnostics._inspector, SqliteStoreInspector)
+    assert service._project_store._home == tmp_path / "home"
 
 
-def test_injects_the_configured_limits(tmp_path):
+def test_injects_the_configured_limits_and_the_fixed_constants(tmp_path):
     settings = Settings(root=tmp_path, max_body_chars=10, search_limit_default=3,
                         search_limit_max=7, index_budget_lines=9)
     service = bootstrap.build_service(settings)
     assert (service._max_body_chars, service._metadata_max_chars,
             service._search_limit_default, service._search_limit_max,
-            service._index_budget_lines) == \
-        (10, DEFAULT_MAX_BODY_CHARS, 3, 7, 9)
+            service._index_budget_lines) == (10, DEFAULT_MAX_BODY_CHARS, 3, 7, 9)
+    assert (service._index_cue_chars, service._header_field_chars,
+            service._project_name_max_chars) == (INDEX_CUE_CHARS, HEADER_FIELD_CHARS,
+                                                 PROJECT_NAME_MAX_CHARS)
 
 
 def test_returns_the_facade(tmp_path):
     assert isinstance(bootstrap.build_service(Settings(root=tmp_path)), MemoryService)
 
 
-def test_build_diagnostics_service_uses_explicit_root(tmp_path):
-    service = bootstrap.build_diagnostics_service(Settings(root=tmp_path / "s"),
-                                                  root=tmp_path / "explicit")
-    assert isinstance(service, DiagnosticsService)
-    assert isinstance(service._inspector, FilesystemStoreInspector)
-    assert service._inspector.root == tmp_path / "explicit"
+def test_bootstrap_exports_the_facade_builder_the_empty_index_and_the_purge():
+    assert set(bootstrap.__all__) == {"EMPTY_INDEX", "PurgePlan", "PurgeRefusal", "PurgeResult",
+                                      "build_service", "plan_purge", "purge"}
+    for gone in ("build_diagnostics_service", "store_lock", "replace_file"):
+        assert not hasattr(bootstrap, gone)
 
 
-def test_bootstrap_reexports_store_lock_replace_file_and_the_empty_index():
-    from memriver_core.application.service import EMPTY_INDEX
-    from memriver_core.repository.filesystem.files import replace_file
-    from memriver_core.repository.filesystem.locking import store_lock
-
-    assert bootstrap.store_lock is store_lock
-    assert bootstrap.replace_file is replace_file
-    assert bootstrap.EMPTY_INDEX == EMPTY_INDEX
+def test_building_the_service_never_loads_the_secret_scanner(tmp_path):
+    script = ("import sys; from memriver_core.bootstrap import build_service; "
+              "from memriver_core.settings import Settings; "
+              f"build_service(Settings(root={str(tmp_path)!r})); "
+              "print('memriver_core.content_policy.secret_scanner' in sys.modules)")
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                            check=True)
+    assert result.stdout.strip() == "False"

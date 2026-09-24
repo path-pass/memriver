@@ -18,7 +18,7 @@ classifiers = [
 ]
 dependencies = [
     "memriver-core>=0.1.0",
-    "fastmcp>=3.0",
+    "fastmcp>=3.4.7",
     "pydantic>=2",
     "tomlkit",
 ]

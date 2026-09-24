@@ -11,7 +11,6 @@ nothing else unless that exits clean.
 
 from __future__ import annotations
 
-import os
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -72,7 +71,7 @@ def _resolve_storage_root(root_override: Path | None, env: Mapping[str, str],
     return storage_root(env=env, home=home)
 
 
-def _unresolvable(path: Path, error: Exception) -> str:
+def _unresolvable(path: Path, detail: str) -> str:
     """The refusal for a path canonicalization cannot answer for at all.
 
     A symlink loop, a component this user may not traverse: every one of them
@@ -83,72 +82,51 @@ def _unresolvable(path: Path, error: Exception) -> str:
     path is resolved.
     """
     return (
-        f"memriver uninstall: cannot resolve {path} ({error}); nothing was "
+        f"memriver uninstall: cannot resolve {path} ({detail}); nothing was "
         "removed. Check what the path points at and run uninstall --purge-data "
         "again.\n"
     )
 
 
-def _refuse_purge_target(given: Path, canonical: Path, *, home: Path,
-                         cwd: Path) -> str | None:
-    """The refusal text for a target too dangerous to delete, or ``None``.
-
-    Both checks run against ``canonical`` -- the destination the deletion would
-    actually walk -- because a symlinked component anywhere above the leaf
-    redirects the deletion somewhere the given spelling never named, and a
-    relative path or a ``..`` chain names it only after resolution.
-
-    A leaf that is itself a symlink is still refused outright rather than
-    followed: ``--root`` names the store, and a link standing in for it is an
-    arrangement memriver will not delete through.
-    """
-    if given.is_symlink():
-        return (
-            f"memriver uninstall: {given} is a symlink; memriver will not purge "
-            "through it. Replace it with a regular directory (or remove it) and "
-            "run uninstall --purge-data again.\n"
-        )
-    # `home`/`cwd` being relative to the target covers the target *being* one of
-    # them and the target being any ancestor of one -- the filesystem root
-    # included, since every path is relative to it
-    for base in (home, cwd):
-        try:
-            resolved = base.resolve()
-        except (OSError, RuntimeError) as error:
-            return _unresolvable(base, error)
-        if resolved.is_relative_to(canonical):
-            return (
-                f"memriver uninstall: {canonical} is too broad a target to delete "
+def _refusal_text(refusal) -> str:
+    if refusal.kind == "unresolvable":
+        return _unresolvable(refusal.path, refusal.detail)
+    if refusal.kind == "symlink":
+        return (f"memriver uninstall: {refusal.path} is a symlink; memriver will not purge "
+                "through it. Replace it with a regular directory (or remove it) and "
+                "run uninstall --purge-data again.\n")
+    if refusal.kind == "too-broad":
+        return (f"memriver uninstall: {refusal.path} is too broad a target to delete "
                 "-- it holds the home directory, the current directory, or the "
                 "whole filesystem. Point --root (or MEMRIVER_ROOT) at the memriver "
-                "store itself and run uninstall --purge-data again.\n"
-            )
-    return None
+                "store itself and run uninstall --purge-data again.\n")
+    if refusal.kind == "not-directory":
+        return f"memriver uninstall: {refusal.path} is not a directory; nothing was removed.\n"
+    return (f"memriver uninstall: {refusal.path} could not be opened as a directory "
+            f"({refusal.detail}); nothing was removed.\n")
 
 
-def _open_directory_without_following_symlinks(path: Path) -> int:
-    """Open ``path`` as a directory fd, refusing a symlink at *any* level.
-
-    ``path`` must be absolute and already resolved. ``O_NOFOLLOW`` on a
-    single full-path ``os.open`` refuses only a symlinked *leaf* -- an ancestor
-    component swapped for a symlink between a guard and the open is still
-    followed, redirecting the open onto a different real directory. So the path
-    is walked component by component from the filesystem root, every component
-    opened with ``O_NOFOLLOW``: a symlink anywhere along the way fails closed
-    (``OSError``) rather than redirecting. The caller owns the returned fd.
-    """
-    fd = os.open(path.anchor or "/", os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        for component in path.parts[1:]:
-            next_fd = os.open(component,
-                              os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY,
-                              dir_fd=fd)
-            os.close(fd)
-            fd = next_fd
-    except BaseException:
-        os.close(fd)
-        raise
-    return fd
+def _result_text(result) -> str:
+    canonical = result.path
+    if result.outcome == "removed":
+        return f"removed {canonical}\n"
+    if result.outcome == "unopenable-parent":
+        return (f"memriver uninstall: {canonical} could not be opened as a "
+                f"directory ({result.detail}); nothing was removed.\n")
+    if result.outcome == "uncheckable":
+        return (f"memriver uninstall: {canonical} could not be checked "
+                f"({result.detail}); nothing was removed.\n")
+    if result.outcome == "not-confirmed":
+        return (f"memriver uninstall: {canonical} is no longer the directory "
+                "shown above; nothing was removed. Check what the path points "
+                "at and run uninstall --purge-data again.\n")
+    if result.outcome == "refused":
+        return _refusal_text(result.refusal)
+    if result.outcome == "replaced-root":
+        return (f"memriver uninstall: the memory store at {canonical} was "
+                "emptied, but a different object now stands at that name "
+                "and was left alone. Remove the empty directory by hand.\n")
+    return _partly_removed(canonical, result.detail, result.replaced)
 
 
 def _purge_data(*, yes: bool, dry_run: bool, input_fn: Callable[[str], str],
@@ -162,159 +140,46 @@ def _purge_data(*, yes: bool, dry_run: bool, input_fn: Callable[[str], str],
 
     The target is canonicalized before anything else looks at it, and it is the
     canonical path -- not the spelling that produced it -- that is shown and
-    that every guard runs against. What is finally deleted, though, is not a
-    path at all: ``_remove_confirmed_directory`` binds the deletion to the
-    directory *object* the user was shown, so the confirmation prompt is no
-    longer a window in which the target can be swapped for another one.
+    that every guard runs against. The deletion itself is the core's
+    ``plan_purge``/``purge``: the plan holds the directory *object* the user
+    was shown open across the prompt and ``purge`` deletes exactly that object,
+    so the confirmation prompt is not a window in which the target can be
+    swapped for another one. This function only words each outcome.
     """
+    from memriver_core.bootstrap import PurgeRefusal, plan_purge, purge
+
     given = _resolve_storage_root(root_override, env, home)
-    if not given.is_absolute():
-        given = cwd / given
-    try:
-        canonical = given.resolve()
-    except (OSError, RuntimeError) as error:
-        stdout.write("\n" + _unresolvable(given, error))
+    plan = plan_purge(given, home=home, cwd=cwd, dry_run=dry_run)
+    if isinstance(plan, PurgeRefusal):
+        if plan.canonical is not None:
+            stdout.write(f"\nmemory storage root: {plan.canonical}\n")
+            stdout.write(_refusal_text(plan))
+        else:
+            stdout.write("\n" + _refusal_text(plan))
         return 1
-    stdout.write(f"\nmemory storage root: {canonical}\n")
-    refusal = _refuse_purge_target(given, canonical, home=home, cwd=cwd)
-    if refusal is not None:
-        stdout.write(refusal)
-        return 1
-    if not canonical.exists():
-        stdout.write("no data to remove.\n")
-        return 0
-    if not canonical.is_dir():
-        stdout.write(
-            f"memriver uninstall: {canonical} is not a directory; nothing was "
-            "removed.\n"
-        )
-        return 1
-    if dry_run:
-        stdout.write("dry run: the memory store was not removed.\n")
-        return 0
-    try:
-        confirmed_fd = _open_directory_without_following_symlinks(canonical)
-    except OSError as error:
-        # the no-follow walk is what makes any component -- leaf or ancestor --
-        # turned into a symlink between the guards above and here fail closed
-        # rather than redirect the open onto a different real directory
-        stdout.write(
-            f"memriver uninstall: {canonical} could not be opened as a directory "
-            f"({error.strerror or error}); nothing was removed.\n"
-        )
-        return 1
-    try:
-        confirmed = os.fstat(confirmed_fd)
+    with plan:
+        stdout.write(f"\nmemory storage root: {plan.canonical}\n")
+        if not plan.exists:
+            stdout.write("no data to remove.\n")
+            return 0
+        if dry_run:
+            stdout.write("dry run: the memory store was not removed.\n")
+            return 0
         if not yes:
             try:
-                answer = input_fn(
-                    f"remove the entire memory store at {canonical}? [y/N] ")
+                answer = input_fn(f"remove the entire memory store at {plan.canonical}? [y/N] ")
             except EOFError:
                 stdout.write(
                     "memriver uninstall: stdin is not interactive and no answer can "
                     "be read; re-run with --yes to purge the memory store shown "
-                    "above.\n"
-                )
+                    "above.\n")
                 return 1
             if answer.strip().lower() not in ("y", "yes"):
-                stdout.write(
-                    "data purge declined; the memory store was left in place.\n")
+                stdout.write("data purge declined; the memory store was left in place.\n")
                 return 0
-        return _remove_confirmed_directory(canonical, confirmed, stdout,
-                                           given=given, home=home, cwd=cwd)
-    finally:
-        os.close(confirmed_fd)
-
-
-def _remove_confirmed_directory(canonical: Path, confirmed: os.stat_result,
-                                stdout: TextIO, *, given: Path, home: Path,
-                                cwd: Path) -> int:
-    """Delete the one directory ``confirmed`` identifies, or nothing at all.
-
-    Comparing path strings a second time only proves that two moments resolved
-    to the same spelling; it does not prove the directory standing there is
-    still the object the user was shown. Neither does checking the object and
-    then handing the *name* to a remover: whatever re-opens that name can be
-    handed a different directory than the one that was checked.
-
-    So the deletion is anchored to descriptors instead. The canonical parent is
-    opened once; the leaf is opened through that fd and its ``(st_dev,
-    st_ino)`` compared against the confirmed directory's; and the walk that
-    empties it runs on *that* descriptor, never on a name. A leaf renamed away
-    mid-walk takes its descriptor with it -- deleting its contents is still the
-    action the user confirmed -- and a replacement standing at the old name is
-    neither entered nor removed.
-
-    Only the emptied root itself has to be detached by name, because there is
-    no way to unlink a directory by descriptor; that one step re-checks the
-    identity immediately beforehand and gives up if the name has changed hands.
-    """
-    try:
-        parent_fd = _open_directory_without_following_symlinks(canonical.parent)
-    except OSError as error:
-        stdout.write(
-            f"memriver uninstall: {canonical.parent} could not be opened as a "
-            f"directory ({error.strerror or error}); nothing was removed.\n"
-        )
-        return 1
-    try:
-        try:
-            leaf_fd = os.open(canonical.name,
-                              os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY,
-                              dir_fd=parent_fd)
-        except OSError as error:
-            stdout.write(
-                f"memriver uninstall: {canonical} could not be checked "
-                f"({error.strerror or error}); nothing was removed.\n"
-            )
-            return 1
-        try:
-            if not _is_confirmed(os.fstat(leaf_fd), confirmed):
-                stdout.write(
-                    f"memriver uninstall: {canonical} is no longer the directory "
-                    "shown above; nothing was removed. Check what the path points "
-                    "at and run uninstall --purge-data again.\n"
-                )
-                return 1
-            # the object is the confirmed one; the last question is whether the
-            # protected bases moved into it while the prompt was open
-            refusal = _refuse_purge_target(given, canonical, home=home, cwd=cwd)
-            if refusal is not None:
-                stdout.write(refusal)
-                return 1
-            replaced: list[Path] = []
-            try:
-                _empty_directory(leaf_fd, directory=canonical, replaced=replaced)
-            except OSError as error:
-                stdout.write(_partly_removed(canonical, error.strerror or str(error),
-                                             replaced))
-                return 1
-            try:
-                still_there = os.stat(canonical.name, dir_fd=parent_fd,
-                                      follow_symlinks=False)
-                if not _is_confirmed(still_there, confirmed):
-                    stdout.write(
-                        f"memriver uninstall: the memory store at {canonical} was "
-                        "emptied, but a different object now stands at that name "
-                        "and was left alone. Remove the empty directory by hand.\n"
-                    )
-                    return 1
-                os.rmdir(canonical.name, dir_fd=parent_fd)
-            except OSError as error:
-                stdout.write(_partly_removed(canonical, error.strerror or str(error),
-                                             replaced))
-                return 1
-        finally:
-            os.close(leaf_fd)
-    finally:
-        os.close(parent_fd)
-    stdout.write(f"removed {canonical}\n")
-    return 0
-
-
-def _is_confirmed(candidate: os.stat_result, confirmed: os.stat_result) -> bool:
-    return (candidate.st_dev, candidate.st_ino) == (confirmed.st_dev,
-                                                    confirmed.st_ino)
+        result = purge(plan)
+    stdout.write(_result_text(result))
+    return 0 if result.outcome == "removed" else 1
 
 
 def _partly_removed(canonical: Path, reason: str,
@@ -327,54 +192,6 @@ def _partly_removed(canonical: Path, reason: str,
         "the harness configuration above was removed successfully. Delete the "
         "remaining directory by hand.\n"
     )
-
-
-def _empty_directory(fd: int, *, directory: Path, replaced: list[Path]) -> None:
-    """Delete everything inside the open directory ``fd``, not the directory itself.
-
-    Every step is relative to a descriptor this walk opened itself, so nothing
-    a concurrent rename does to the path above can redirect a single unlink.
-    Child directories are opened with ``O_NOFOLLOW``, which keeps a symlink a
-    symlink: it is unlinked where it stands, never followed into.
-
-    Detaching an emptied child is the one step no descriptor can carry out --
-    there is no ``rmdir`` by fd -- so it names the child, and a name can change
-    hands while the walk beneath it runs. The child's identity is captured when
-    it is opened and re-checked immediately before the ``rmdir``: a stranger
-    standing at that name is appended to ``replaced``, which the
-    partial-removal report names. ``directory`` is carried only to spell those
-    paths out for the user.
-
-    The descriptor is held open across that comparison and across the ``rmdir``
-    itself, never closed the moment the recursion returns. An open descriptor
-    keeps the original inode allocated, so a replacement created after the
-    original is renamed away *and* unlinked cannot be handed the same inode and
-    pass the comparison by wearing the confirmed identity.
-
-    What remains is best-effort, not a guarantee: POSIX offers no atomic "stat
-    and rmdir", so a stranger that takes the name in the instant between the
-    two is still removed. The window needs exact, very short concurrent timing,
-    and ``rmdir`` never touches a non-empty directory, but it is not closed.
-    """
-    with os.scandir(fd) as entries:
-        children = list(entries)
-    for child in children:
-        if not child.is_dir(follow_symlinks=False):
-            os.unlink(child.name, dir_fd=fd)
-            continue
-        child_fd = os.open(child.name,
-                           os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY, dir_fd=fd)
-        try:
-            opened = os.fstat(child_fd)
-            _empty_directory(child_fd, directory=directory / child.name,
-                             replaced=replaced)
-            still_there = os.stat(child.name, dir_fd=fd, follow_symlinks=False)
-            if not _is_confirmed(still_there, opened):
-                replaced.append(directory / child.name)
-                continue
-            os.rmdir(child.name, dir_fd=fd)
-        finally:
-            os.close(child_fd)
 
 
 def _clean_uv_cache(stdout: TextIO) -> None:

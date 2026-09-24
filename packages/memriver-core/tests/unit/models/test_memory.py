@@ -56,10 +56,10 @@ def test_description_is_stripped():
     assert m.description == "cue"
 
 
-def test_memory_has_exactly_the_ten_fields():
+def test_memory_has_exactly_its_fields():
     assert [f for f in Memory.__dataclass_fields__] == [
         "id", "project_id", "type", "source", "trust", "sync",
-        "created", "updated", "description", "body"]
+        "created", "updated", "description", "body", "version", "deleted_at"]
 
 
 def test_scope_and_name_helpers_are_gone():
@@ -98,3 +98,8 @@ def test_now_strictly_after_falls_back_to_the_clock_for_a_non_canonical_value():
 
 def test_single_line_collapses_control_and_line_separators():
     assert single_line("a\nb c\x00d   e\u2028f") == "a b c d e f"
+
+
+def test_a_new_memory_starts_at_version_one_and_not_deleted():
+    memory = Memory.new(body="b", type="user", project_id="aaaaaaaaaa", source={})
+    assert (memory.version, memory.deleted_at) == (1, None)

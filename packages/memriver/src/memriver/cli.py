@@ -48,7 +48,7 @@ def _build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--version", action="version", version=__version__)
     _add_store_options(serve, project_dir_default=Path.cwd(),
                        project_dir_help="directory where project discovery starts "
-                                        "(the registry decides the project; "
+                                        "(the bound directories decide the project; "
                                         "default: the current working directory)")
     serve.set_defaults(handler=_serve)
 
@@ -61,7 +61,7 @@ def _build_parser() -> argparse.ArgumentParser:
     hook.add_argument("--harness", choices=["claude-code", "codex"], required=True)
     _add_store_options(hook, project_dir_default=None,
                        project_dir_help="directory where project discovery starts "
-                                        "(the registry decides the project; default: "
+                                        "(the bound directories decide the project; default: "
                                         "the directory the harness reports, else the "
                                         "current working directory)")
     hook.set_defaults(handler=_hook)
@@ -116,11 +116,12 @@ def _build_parser() -> argparse.ArgumentParser:
     doctor.set_defaults(handler=_doctor)
 
     _add_project_commands(commands)
+    _add_view_commands(commands)
     return parser
 
 
 def _add_project_commands(commands) -> None:
-    """`memriver project ...`: the only commands that write the project registry."""
+    """`memriver project ...`: the only commands that bind directories to projects."""
     project = commands.add_parser(
         "project", help="register directories as memory projects")
     project_commands = project.add_subparsers(dest="project_command", required=True)
@@ -128,7 +129,7 @@ def _add_project_commands(commands) -> None:
     def add(name: str, help_text: str, *, confirmable: bool = True) -> argparse.ArgumentParser:
         sub = project_commands.add_parser(name, help=help_text)
         sub.add_argument("--root", type=Path, default=None,
-                         help="storage root holding the registry (default: "
+                         help="memory store root (default: "
                               "$MEMRIVER_ROOT or ~/agent-memory)")
         if confirmable:
             # explain writes nothing, so it has nothing to confirm
@@ -160,6 +161,43 @@ def _add_project_commands(commands) -> None:
                          help="directory to explain (default: the current "
                               "working directory)")
     explain.set_defaults(handler=_project_explain)
+
+
+def _add_view_commands(commands) -> None:
+    """Human views of the store (read-only) and the one confirmed delete."""
+    def add(name: str, help_text: str) -> argparse.ArgumentParser:
+        sub = commands.add_parser(name, help=help_text)
+        sub.add_argument("--root", type=Path, default=None,
+                         help="storage root (default: $MEMRIVER_ROOT or ~/agent-memory)")
+        return sub
+
+    listing = add("list", "list every project's memories, or one project's")
+    listing.add_argument("--project", default=None, help="only this project id")
+    listing.set_defaults(handler=_view_list)
+
+    show = add("show", "show one memory in full")
+    show.add_argument("memory_id")
+    show.add_argument("--deleted", action="store_true", help="also show a deleted memory")
+    show.set_defaults(handler=_view_show)
+
+    search = add("search", "search memories across projects")
+    search.add_argument("query")
+    search.add_argument("--project", default=None, help="only this project id")
+    search.add_argument("--limit", type=_positive_int, default=None)
+    search.set_defaults(handler=_view_search)
+
+    export = add("export", "write a read-only markdown snapshot of every memory")
+    export.add_argument("directory", type=Path, help="a directory that does not exist yet")
+    export.set_defaults(handler=_view_export)
+
+    delete = add("delete", "delete one memory of the current directory's project")
+    delete.add_argument("memory_id")
+    delete.add_argument("--version", type=_positive_int, required=True,
+                        help="the version memriver show printed")
+    delete.add_argument("--hard", action="store_true",
+                        help="remove the row itself, even one already deleted")
+    delete.add_argument("--yes", action="store_true", help="confirm without prompting")
+    delete.set_defaults(handler=_view_delete)
 
 
 def _positive_int(value: str) -> int:
@@ -313,6 +351,41 @@ def _project_explain(args: argparse.Namespace) -> int:
 
     return run_explain(root=args.root, project_dir=args.project_dir,
                        stdout=sys.stdout, cwd=Path.cwd(), home=Path.home())
+
+
+def _view_list(args: argparse.Namespace) -> int:
+    from .views import run_list
+
+    return run_list(root=args.root, project_id=args.project, stdout=sys.stdout, home=Path.home())
+
+
+def _view_show(args: argparse.Namespace) -> int:
+    from .views import run_show
+
+    return run_show(args.memory_id, root=args.root, deleted=args.deleted, stdout=sys.stdout,
+                    home=Path.home())
+
+
+def _view_search(args: argparse.Namespace) -> int:
+    from .views import run_search
+
+    return run_search(args.query, root=args.root, project_id=args.project, limit=args.limit,
+                      stdout=sys.stdout, home=Path.home())
+
+
+def _view_export(args: argparse.Namespace) -> int:
+    from .views import run_export
+
+    return run_export(args.directory, root=args.root, stdout=sys.stdout, home=Path.home(),
+                      cwd=Path.cwd())
+
+
+def _view_delete(args: argparse.Namespace) -> int:
+    from .views import run_delete
+
+    return run_delete(args.memory_id, version=args.version, hard=args.hard, yes=args.yes,
+                      root=args.root, stdin_is_tty=sys.stdin.isatty(), input_fn=input,
+                      stdout=sys.stdout, cwd=Path.cwd(), home=Path.home())
 
 
 def _doctor(args: argparse.Namespace) -> int:

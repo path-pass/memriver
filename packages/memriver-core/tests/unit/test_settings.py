@@ -265,3 +265,12 @@ def test_root_key_in_settings_file_is_ignored_and_warns(tmp_path, caplog):
     assert s.max_body_chars == 42
     assert "root" in caplog.text
     assert "MEMRIVER_ROOT" in caplog.text
+
+
+def test_the_fixed_length_and_timeout_constants_live_in_settings():
+    from memriver_core import settings
+    assert (settings.INDEX_CUE_CHARS, settings.SEARCH_SNIPPET_CHARS, settings.HEADER_FIELD_CHARS,
+            settings.PROJECT_NAME_MAX_CHARS, settings.BUSY_TIMEOUT_MS) == (60, 60, 120, 120, 5000)
+    for name in ("INDEX_CUE_CHARS", "SEARCH_SNIPPET_CHARS", "HEADER_FIELD_CHARS",
+                 "PROJECT_NAME_MAX_CHARS", "BUSY_TIMEOUT_MS"):
+        assert name in settings.__all__

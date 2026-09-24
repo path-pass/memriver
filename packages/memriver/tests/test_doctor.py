@@ -1,9 +1,9 @@
 """Contract tests for `memriver doctor` rendering and exit codes.
 
-All diagnostic policy is faked out here: these tests only pin doctor.py's
+Most diagnostic policy is faked out here: these tests pin doctor.py's
 CLI-facing contract (state -> message -> exit code, JSON/human shape) against
-a stand-in memriver_core.bootstrap.build_diagnostics_service, never against a
-real store.
+a stand-in memriver_core.bootstrap.build_service whose diagnose() returns a
+prepared report. The few real-store tests pin the boundary end to end.
 """
 
 from __future__ import annotations
@@ -11,27 +11,21 @@ from __future__ import annotations
 import io
 import json
 import os
+import sqlite3
 import sys
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 from memriver import doctor
 from memriver.doctor import run_doctor
-from memriver.project_context import bind
 from memriver_core import StorageFailure
 from memriver_core.bootstrap import build_service
 from memriver_core.models import DiagnosticFinding, DiagnosticsReport
 from memriver_core.settings import Settings
 
 P = "aaaaaaaaaa"
-
-
-def _bind_new(store, directory, name="a") -> str:
-    service = build_service(Settings(root=store), root=store)
-    project_id = service.create_project(name).id
-    bind(store, service, project_id, str(directory.resolve()))
-    return project_id
 
 
 @dataclass(frozen=True)
@@ -57,29 +51,29 @@ def _finding(kind: str = "unparsable") -> DiagnosticFinding:
         suggestion="repair or remove the stored entry")
 
 
-class _FakeDiagnosticsService:
+class _FakeService:
     def __init__(self, report: DiagnosticsReport, calls: list) -> None:
         self._report = report
         self._calls = calls
 
-    def run(self, *, stale_days: int) -> DiagnosticsReport:
-        self._calls.append(stale_days)
+    def diagnose(self, **kw) -> DiagnosticsReport:
+        self._calls.append(kw["stale_days"])
         return self._report
 
 
 def install_fake_diagnostics_service(monkeypatch, state: str, finding_count: int):
-    """Stand in for build_diagnostics_service; returns (build_calls, run_calls)."""
+    """Stand in for build_service; returns (build_calls, diagnose_calls)."""
     report = DiagnosticsReport(
         state=state, findings=tuple(_finding() for _ in range(finding_count)))
     build_calls: list = []
-    run_calls: list = []
+    diagnose_calls: list = []
 
-    def fake_build(settings, *, root=None):
+    def fake_build(settings, *, root=None, home=None):
         build_calls.append((settings, root))
-        return _FakeDiagnosticsService(report, run_calls)
+        return _FakeService(report, diagnose_calls)
 
-    monkeypatch.setattr("memriver_core.bootstrap.build_diagnostics_service", fake_build)
-    return build_calls, run_calls
+    monkeypatch.setattr("memriver_core.bootstrap.build_service", fake_build)
+    return build_calls, diagnose_calls
 
 
 def install_fake_diagnostics_service_for_findings(monkeypatch, state: str, findings) -> None:
@@ -87,22 +81,22 @@ def install_fake_diagnostics_service_for_findings(monkeypatch, state: str, findi
     instead of the generic ``_finding()`` stand-in."""
     report = DiagnosticsReport(state=state, findings=tuple(findings))
 
-    def fake_build(settings, *, root=None):
-        return _FakeDiagnosticsService(report, [])
+    def fake_build(settings, *, root=None, home=None):
+        return _FakeService(report, [])
 
-    monkeypatch.setattr("memriver_core.bootstrap.build_diagnostics_service", fake_build)
+    monkeypatch.setattr("memriver_core.bootstrap.build_service", fake_build)
 
 
 def install_raising_service(monkeypatch, exc: Exception):
-    """The inspector fails inside .run(), as the real StorageFailure does."""
+    """The inspector fails inside .diagnose(), as the real StorageFailure does."""
     class _RaisingService:
-        def run(self, *, stale_days: int):
+        def diagnose(self, **kw):
             raise exc
 
-    def fake_build(settings, *, root=None):
+    def fake_build(settings, *, root=None, home=None):
         return _RaisingService()
 
-    monkeypatch.setattr("memriver_core.bootstrap.build_diagnostics_service", fake_build)
+    monkeypatch.setattr("memriver_core.bootstrap.build_service", fake_build)
 
 
 @pytest.mark.parametrize(
@@ -115,17 +109,18 @@ def install_raising_service(monkeypatch, exc: Exception):
     ],
 )
 def test_doctor_state_exit_contract(monkeypatch, state, finding_count, exit_code, tmp_path):
-    build_calls, run_calls = install_fake_diagnostics_service(monkeypatch, state, finding_count)
+    build_calls, diagnose_calls = install_fake_diagnostics_service(monkeypatch, state,
+                                                                   finding_count)
     result = invoke_doctor(root=tmp_path, stale_days=45)
 
     assert result.exit_code == exit_code
     assert result.stderr == ""
-    # doctor calls only build_diagnostics_service(settings, root=settings.root)
-    # .run(stale_days=stale_days) -- never a concrete inspector or application module
+    # doctor calls only build_service(settings, root=settings.root)
+    # .diagnose(stale_days=stale_days) -- never a concrete inspector or application module
     assert len(build_calls) == 1
     settings, root = build_calls[0]
     assert root == settings.root
-    assert run_calls == [45]
+    assert diagnose_calls == [45]
 
 
 def test_inaccessible_store_is_path_free_exit_two(monkeypatch, tmp_path):
@@ -216,18 +211,6 @@ def test_inaccessible_root_leaks_no_logging_line_to_real_stderr(tmp_path, capsys
     assert capsys.readouterr().err == ""
 
 
-def test_a_data_directory_occupied_by_a_file_is_a_finding_not_an_empty_store(tmp_path):
-    root = tmp_path / "store"
-    root.mkdir()
-    (root / "memories").write_text("not a directory", encoding="utf-8")
-    result = invoke_doctor(root=root)
-    assert result.exit_code == 1
-    assert "unsafe-container" in result.stdout
-    assert str(root) not in result.stdout
-
-
-_EMPTY_PROJECTS_JSON = {"registered": [], "finding": None, "integrity": None}
-
 _EXPECTED_JSON = {
     "state": "degraded",
     "initialized": True,
@@ -239,7 +222,7 @@ _EXPECTED_JSON = {
         "reason": "stored entry cannot be decoded",
         "suggestion": "repair or remove the stored entry",
     }],
-    "projects": _EMPTY_PROJECTS_JSON,
+    "projects": [],
 }
 
 
@@ -255,7 +238,7 @@ def test_json_output_keeps_arrays_when_empty(monkeypatch, tmp_path):
     result = invoke_doctor(root=tmp_path, json_output=True)
 
     assert json.loads(result.stdout) == {
-        "state": "healthy", "initialized": True, "findings": [], "projects": _EMPTY_PROJECTS_JSON,
+        "state": "healthy", "initialized": True, "findings": [], "projects": [],
     }
 
 
@@ -349,202 +332,11 @@ def test_a_surrogateescaped_location_reaches_stdout_without_its_raw_byte(
     assert b"\x9b" not in raw.getvalue()
 
 
-def test_a_non_utf8_filename_in_a_real_store_renders_without_its_raw_byte(tmp_path):
-    """The same, end to end through a real store, so the decode boundary is
-    the filesystem's rather than a literal in this file. Filesystems that
-    enforce UTF-8 names (APFS does) cannot hold the file at all, and there is
-    nothing to render there."""
-    entries = tmp_path / "memories"
-    entries.mkdir(parents=True)
-    hostile = entries / os.fsdecode(b"bad\x9b31m.md")
-    try:
-        hostile.write_text("not a memory at all", encoding="utf-8")
-    except OSError:
-        pytest.skip("this filesystem rejects filenames that are not valid UTF-8")
-
-    raw, out = _terminal_stdout()
-    exit_code = doctor.run_doctor(root=tmp_path, json_output=False, stale_days=90,
-                                  stdout=out, stderr=io.StringIO())
-    out.flush()
-
-    assert exit_code == 1  # the store is degraded, so the name really is rendered
-    assert b"31m.md" in raw.getvalue()
-    assert b"\x9b" not in raw.getvalue()
-
-
 def test_healthy_human_output_has_no_findings_section(monkeypatch, tmp_path):
     install_fake_diagnostics_service(monkeypatch, "healthy", 0)
     result = invoke_doctor(root=tmp_path)
 
     assert result.stdout == "store is healthy\n"
-
-
-def test_doctor_reads_the_store_only(monkeypatch, tmp_path):
-    """[DEFERRED-4] No harness-configuration audit: doctor never looks under
-    HOME beyond the explicit store root, and the JSON has exactly the
-    documented keys."""
-    sentinel_home = tmp_path / "sentinel-home"
-    sentinel_home.mkdir()
-    monkeypatch.setattr(Path, "home", lambda: sentinel_home)
-    install_fake_diagnostics_service(monkeypatch, "healthy", 0)
-
-    result = invoke_doctor(root=tmp_path / "store", json_output=True)
-
-    assert list(sentinel_home.iterdir()) == []
-    assert set(json.loads(result.stdout)) == {"state", "initialized", "findings", "projects"}
-
-
-def test_doctor_lists_registered_projects_missing_and_unverifiable_roots(tmp_path, capsys, monkeypatch):
-    store = tmp_path / "store"
-    present, gone, locked = (tmp_path / "present", tmp_path / "gone", tmp_path / "locked")
-    for d in (present, gone, locked):
-        d.mkdir()
-    pid = _bind_new(store, present)
-    bind(store, build_service(Settings(root=store), root=store), pid, str(gone.resolve()))
-    bind(store, build_service(Settings(root=store), root=store), pid, str(locked.resolve()))
-    gone_key, locked_key = str(gone.resolve()), str(locked.resolve())   # before the mock: resolve() stats
-    gone.rmdir()
-    real_stat = os.stat
-
-    def stat(path, *a, **kw):
-        if str(path) == locked_key:
-            raise PermissionError(13, "denied")
-        return real_stat(path, *a, **kw)
-
-    monkeypatch.setattr(os, "stat", stat)
-    code = run_doctor(root=store, json_output=True, stale_days=90, stdout=sys.stdout, stderr=sys.stderr)
-    report = json.loads(capsys.readouterr().out)
-    assert report["projects"] == {"registered": [{"id": pid, "name": "a", "roots": 3,
-                                                  "missing_roots": [gone_key],
-                                                  "unverifiable_roots": [locked_key]}],
-                                  "finding": None, "integrity": None}
-    assert code == 0
-
-
-def test_doctor_reports_a_repointed_root_like_the_resolver_does(tmp_path, capsys):
-    old = tmp_path / "old"
-    new = tmp_path / "new"
-    old.mkdir()
-    _bind_new(tmp_path / "store", old)
-    old.rmdir()
-    new.mkdir()
-    old.symlink_to(new)
-    code = run_doctor(root=tmp_path / "store", json_output=True, stale_days=90, stdout=sys.stdout, stderr=sys.stderr)
-    report = json.loads(capsys.readouterr().out)
-    bound = str(new.resolve().parent / "old")            # the string that was bound: tmp_path/old, canonical at bind time
-    assert report["projects"]["integrity"] == f"{bound}: registered root is no longer a canonical path"
-    assert code >= 1
-
-
-def test_doctor_human_output_renders_a_real_integrity_line(tmp_path, capsys):
-    """The scrubbing test below plants a forged ``integrity:`` line and asserts
-    it never renders; this is the positive control -- a genuinely re-pointed
-    root does produce one."""
-    old, new = tmp_path / "old", tmp_path / "new"
-    old.mkdir()
-    _bind_new(tmp_path / "store", old)
-    old.rmdir()
-    new.mkdir()
-    old.symlink_to(new)
-
-    code = run_doctor(root=tmp_path / "store", json_output=False, stale_days=90,
-                      stdout=sys.stdout, stderr=sys.stderr)
-    out = capsys.readouterr().out
-
-    bound = str(new.resolve().parent / "old")
-    assert f"  integrity: {bound}: registered root is no longer a canonical path\n" in out
-    assert code >= 1
-
-
-def test_doctor_reports_an_invalid_registry_and_exits_nonzero(tmp_path, capsys):
-    d = tmp_path / "registry"
-    d.mkdir(parents=True)
-    (d / f"{P}.toml").write_text("roots = [\n")
-    code = run_doctor(root=tmp_path, json_output=False, stale_days=90, stdout=sys.stdout, stderr=sys.stderr)
-    out = capsys.readouterr().out
-    assert f"registry/{P}.toml: registry file is not valid TOML" in out
-    assert code >= 1
-
-
-def test_doctor_human_output_renders_a_projects_section(tmp_path, capsys, monkeypatch):
-    store = tmp_path / "store"
-    present, gone, locked = (tmp_path / "present", tmp_path / "gone", tmp_path / "locked")
-    for d in (present, gone, locked):
-        d.mkdir()
-    pid = _bind_new(store, present)
-    bind(store, build_service(Settings(root=store), root=store), pid, str(gone.resolve()))
-    bind(store, build_service(Settings(root=store), root=store), pid, str(locked.resolve()))
-    gone_key, locked_key = str(gone.resolve()), str(locked.resolve())   # before the mock: resolve() stats
-    gone.rmdir()
-    real_stat = os.stat
-
-    def stat(path, *a, **kw):
-        if str(path) == locked_key:
-            raise PermissionError(13, "denied")
-        return real_stat(path, *a, **kw)
-
-    monkeypatch.setattr(os, "stat", stat)
-    code = run_doctor(root=store, json_output=False, stale_days=90, stdout=sys.stdout, stderr=sys.stderr)
-    out = capsys.readouterr().out
-
-    assert out.endswith(
-        "\nprojects:\n"
-        f"  {pid} (a): 3 roots\n"
-        f"    missing: {gone_key}\n"
-        f"    unverifiable: {locked_key}\n"
-    )
-    assert code == 0
-
-
-def test_doctor_human_output_uses_the_singular_for_one_root(tmp_path, capsys):
-    store = tmp_path / "store"
-    solo = tmp_path / "solo"
-    solo.mkdir()
-    pid = _bind_new(store, solo, name="b")
-
-    code = run_doctor(root=store, json_output=False, stale_days=90, stdout=sys.stdout, stderr=sys.stderr)
-    out = capsys.readouterr().out
-
-    assert out.endswith(f"\nprojects:\n  {pid} (b): 1 root\n")
-    assert code == 0
-
-
-def test_doctor_human_output_neutralises_an_injected_root_string(tmp_path, capsys):
-    """A registry root comes from a hand-editable registry file, just like the
-    project ids/locations the findings renderer already scrubs (see the
-    comment above `_INVISIBLE_CATEGORIES`). The hostile root is planted by
-    writing the registry file directly -- the same way an invalid-registry
-    test does."""
-    store = tmp_path / "store"
-    registry_dir = store / "registry"
-    registry_dir.mkdir(parents=True)
-    (registry_dir / f"{P}.toml").write_text(
-        'roots = ["/nonexistent/evil\\n  integrity: none - forged all-clear"]\n'
-    )
-
-    code = run_doctor(root=store, json_output=False, stale_days=90, stdout=sys.stdout, stderr=sys.stderr)
-    out = capsys.readouterr().out
-
-    lines = out.splitlines()
-    assert not any(line.strip().startswith("integrity: none") for line in lines)
-    assert f"  {P} (unknown project): 1 root" in out
-    missing_line = next(line for line in lines if line.strip().startswith("missing:"))
-    assert "evil" in missing_line and "forged all-clear" in missing_line
-    assert code == 0
-
-
-def test_a_pre_release_store_is_degraded_and_says_it_is_not_initialized(tmp_path):
-    root = tmp_path / "store"
-    (root / "global" / "entries").mkdir(parents=True)
-    (root / "global" / "entries" / "tea.md").write_text("old")
-    before = sorted(p.read_bytes() for p in root.rglob("*") if p.is_file())
-    result = invoke_doctor(root=root)
-    assert result.exit_code == 1
-    lines = result.stdout.splitlines()
-    assert lines[:2] == ["store has findings",
-                         "note: store not initialized yet; run memriver install"]
-    assert "legacy-layout:" in result.stdout
-    assert sorted(p.read_bytes() for p in root.rglob("*") if p.is_file()) == before
 
 
 def test_an_uninitialized_store_names_the_command_to_run(tmp_path):
@@ -559,3 +351,88 @@ def test_an_initialized_empty_store_is_empty(tmp_path):
     result = invoke_doctor(root=root, json_output=True)
     report = json.loads(result.stdout)
     assert (report["state"], report["initialized"]) == ("empty", True)
+
+
+def test_doctor_reads_the_store_only(monkeypatch, tmp_path):
+    """[DEFERRED-4] No harness-configuration audit: doctor never looks under
+    HOME beyond the explicit store root, never writes the database, and the
+    JSON has exactly the documented keys."""
+    store, _, _ = _real_store(tmp_path)
+    sentinel_home = tmp_path / "sentinel-home"
+    sentinel_home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: sentinel_home)
+    before = (store / "memriver.db").read_bytes()
+
+    result = invoke_doctor(root=store, json_output=True)
+
+    assert (store / "memriver.db").read_bytes() == before
+    assert list(sentinel_home.iterdir()) == []
+    assert set(json.loads(result.stdout)) == {"state", "initialized", "findings", "projects"}
+
+
+def test_a_pre_release_store_is_degraded_and_says_it_is_not_initialized(tmp_path):
+    root = tmp_path / "store"
+    (root / "memories").mkdir(parents=True)
+    result = invoke_doctor(root=root)
+    assert result.exit_code == 1
+    lines = result.stdout.splitlines()
+    assert lines[:2] == ["store has findings",
+                         "note: store not initialized yet; run memriver install"]
+    assert "legacy-layout:" in result.stdout
+    assert not (root / "memriver.db").exists()
+
+
+def _real_store(tmp_path):
+    store, work = tmp_path / "mem", tmp_path / "work"
+    work.mkdir()
+    service = build_service(Settings(root=store), root=store)
+    service.ensure_global()
+    project = service.init_project("demo", service.plan_root(str(work)))
+    return store, work, project
+
+
+def test_doctor_lists_projects_with_directory_state_and_counts(tmp_path, capsys):
+    store, work, project = _real_store(tmp_path)
+    work.rmdir()
+    code = run_doctor(root=store, json_output=False, stale_days=90,
+                      stdout=sys.stdout, stderr=sys.stderr)
+    out = capsys.readouterr().out
+    assert code == 0                                   # an offline directory is not a finding
+    assert f"{project.id} (demo): {work.resolve()} [missing]; 0 memories, 0 deleted" in out
+    assert "global (no directory)" in out
+
+
+def test_doctor_fails_on_a_re_pointed_directory(tmp_path, capsys):
+    store, work, _ = _real_store(tmp_path)
+    moved = tmp_path / "moved"
+    work.rename(moved)
+    work.symlink_to(moved)
+    code = run_doctor(root=store, json_output=False, stale_days=90,
+                      stdout=sys.stdout, stderr=sys.stderr)
+    assert code == 1 and "non-canonical-root" in capsys.readouterr().out
+
+
+def test_doctor_neutralises_an_injected_root(tmp_path, capsys):
+    # a hostile name never reaches the renderer (row validation rejects it);
+    # a root is only shape-checked, so newline and ESC arrive intact
+    store, _, project = _real_store(tmp_path)
+    hostile = f"{tmp_path}/evil\n  forged line\x1b[2J"
+    with closing(sqlite3.connect(store / "memriver.db")) as conn, conn:
+        conn.execute("UPDATE projects SET root = ? WHERE id = ?", (hostile, project.id))
+    run_doctor(root=store, json_output=False, stale_days=90, stdout=sys.stdout,
+               stderr=sys.stderr)
+    out = capsys.readouterr().out
+    assert f"{project.id} (demo): {tmp_path}/evil   forged line [2J" in out
+    assert "\x1b" not in out
+    assert not any(line.startswith("  forged") for line in out.splitlines())
+
+
+def test_doctor_marks_an_unverifiable_directory(tmp_path, capsys, monkeypatch):
+    store, work, project = _real_store(tmp_path)
+    monkeypatch.setattr("memriver_core.repository.directories.root_state",
+                        lambda root: "unverifiable")
+    code = run_doctor(root=store, json_output=False, stale_days=90,
+                      stdout=sys.stdout, stderr=sys.stderr)
+    out = capsys.readouterr().out
+    assert code == 1                                   # unverifiable-root is a finding
+    assert f"{project.id} (demo): {work.resolve()} [unverifiable]; 0 memories, 0 deleted" in out

@@ -1,10 +1,18 @@
-"""MemoryService against in-memory fakes: orchestration without a filesystem."""
+"""MemoryService against in-memory fakes: orchestration without a store."""
 
 from __future__ import annotations
 
 import pytest
 from memriver_core.application.service import EMPTY_INDEX, MemoryService
-from memriver_core.models import ID_RE, Memory, Project, ReadWriteSet
+from memriver_core.models import (
+    ID_RE,
+    Memory,
+    Project,
+    ReadWriteSet,
+    Resolution,
+    RootPlan,
+    UnbindPlan,
+)
 from memriver_core.models.errors import (
     ContentRejected,
     GlobalReadOnly,
@@ -46,20 +54,26 @@ class FakeProjectStore:
         self.failures: list[Exception] = []     # raised, in order, by create/ensure_global
         self.attempted_ids: list[str] = []
         self.ensure_global_calls = 0
+        self.resolution = Resolution("none")
+        self.calls: list[tuple] = []
 
     def _next_failure(self):
         if self.failures:
             raise self.failures.pop(0)
 
-    def create(self, project):
+    def create(self, project, plan):
         self.attempted_ids.append(project.id)
         self._next_failure()
-        self.projects[project.id] = project
+        self.projects[project.id] = Project(id=project.id, name=project.name, root=plan.root)
 
     def read(self, project_id):
         if project_id not in self.projects:
             raise ProjectNotFound(project_id)
         return self.projects[project_id]
+
+    def list_projects(self):
+        return ([p for p in self.projects.values() if p.id != self.global_id]
+                + [p for p in self.projects.values() if p.id == self.global_id])
 
     def global_project_id(self):
         return self.global_id
@@ -73,12 +87,29 @@ class FakeProjectStore:
 
     def search(self, project_id, read_write_set, *, query, limit):
         self.search_calls.append((project_id, query, limit))
-        if project_id not in read_write_set.readable():
+        # a None read/write set is the management view: every project readable
+        if read_write_set is not None and project_id not in read_write_set.readable():
             return []
         hits = [m for m in self.memories if m.project_id == project_id
-                and (query is None or query.lower() in m.body.lower())]
+                and (query is None or (query != "" and query.lower() in m.body.lower()))]
         hits.sort(key=lambda m: (m.updated, m.id), reverse=True)
         return hits if limit is None else hits[:limit]
+
+    def resolve(self, start, *, ignoring=None):
+        return self.resolution
+
+    def plan_root(self, directory, project_id):
+        return RootPlan(root=directory, store="/s", nested=(), already_bound=False)
+
+    def bind(self, project_id, plan):
+        self.calls.append(("bind", project_id, plan))
+
+    def plan_unbind(self, project_id, root, cwd):
+        self.calls.append(("plan_unbind", project_id, root, cwd))
+        return UnbindPlan(project_id=project_id, root=root, store="/s"), self.resolution
+
+    def unbind(self, plan):
+        self.calls.append(("unbind", plan))
 
 
 class FakeMemoryStore:
@@ -99,21 +130,37 @@ class FakeMemoryStore:
         self.calls.append(("read", memory_id, read_write_set))
         raise MemoryNotFound(memory_id)
 
-    def update(self, memory_id, read_write_set, *, body, description):
-        self.calls.append(("update", memory_id, body, description))
+    def update(self, memory_id, read_write_set, *, expected_version, body, description):
+        self.calls.append(("update", memory_id, expected_version, body, description))
         raise GlobalReadOnly()
 
-    def delete(self, memory_id, read_write_set):
-        self.calls.append(("delete", memory_id, read_write_set))
+    def delete(self, memory_id, read_write_set, *, expected_version, hard):
+        self.calls.append(("delete", memory_id, expected_version, hard))
+        return expected_version + 1
+
+    def read_any(self, memory_id, *, include_deleted):
+        self.calls.append(("read_any", memory_id, include_deleted))
+        raise MemoryNotFound(memory_id)
+
+
+class FakeDiagnostics:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def run(self, **kwargs):
+        self.calls.append(kwargs)
+        return "report"
 
 
 def _service(project_store=None, *, budget=100, limit_default=5, limit_max=50):
     project_store = project_store or FakeProjectStore([Project(id=P, name="demo")])
     memory_store = FakeMemoryStore(project_store)
     policy = FakeContentPolicy()
-    service = MemoryService(memory_store, project_store, policy, max_body_chars=100,
-                            metadata_max_chars=200, search_limit_default=limit_default,
-                            search_limit_max=limit_max, index_budget_lines=budget)
+    service = MemoryService(memory_store, project_store, lambda: policy, FakeDiagnostics(),
+                            max_body_chars=100, metadata_max_chars=200,
+                            search_limit_default=limit_default, search_limit_max=limit_max,
+                            index_budget_lines=budget, index_cue_chars=60,
+                            header_field_chars=120, project_name_max_chars=120)
     return service, memory_store, project_store, policy
 
 
@@ -124,22 +171,68 @@ def _memory(project_id, body, updated, description=""):
     return m
 
 
-# --- read_write_set -------------------------------------------------------
+# --- sessions -------------------------------------------------------------
 
-def test_read_write_set_for_an_existing_project():
-    service, *_ = _service()
-    assert service.read_write_set(P) == READ_WRITE_SET
+def test_open_session_registered_names_the_project_and_its_root():
+    service, _, project_store, _ = _service()
+    project_store.resolution = Resolution("registered",
+                                          project=Project(id=P, name="demo", root="/w"))
+    session = service.open_session("/w")
+    assert session.state == "registered"
+    assert session.header == f"project: demo [{P}] (root /w)"
+    assert session.read_write_set == READ_WRITE_SET
 
 
-@pytest.mark.parametrize("project_id", [None, G, "not-an-id", "zzzzzzzzzz"])
-def test_read_write_set_drops_anything_but_an_existing_non_global_project(project_id):
-    service, *_ = _service()
-    assert service.read_write_set(project_id) == NO_PROJECT
+def test_open_session_none_and_degraded_keep_global_readable_and_write_nothing():
+    service, _, project_store, _ = _service()
+    assert service.open_session("/x").header.startswith("project: none")
+    project_store.resolution = Resolution("degraded", diagnostic="/r: matched by more than one project")
+    session = service.open_session("/x")
+    assert session.state == "degraded" and session.read_write_set == NO_PROJECT
+    assert "/r: matched by more than one project" in session.header
+    assert "memriver project explain" in session.header
 
 
-def test_read_write_set_of_an_uninitialized_store_has_no_global():
-    service, *_ = _service(FakeProjectStore([Project(id=P, name="demo")], global_id=None))
-    assert service.read_write_set(P) == ReadWriteSet(project_id=P, global_project_id=None)
+def test_open_session_turns_a_storage_failure_into_an_unavailable_session():
+    service, _, project_store, _ = _service()
+
+    def broken(start, *, ignoring=None):
+        raise StorageFailure
+
+    project_store.resolve = broken
+    session = service.open_session("/x")
+    assert session.state == "unavailable"
+    assert session.read_write_set == ReadWriteSet(project_id=None, global_project_id=None)
+
+
+def test_header_fields_are_single_line_and_capped():
+    service, _, project_store, _ = _service()
+    project_store.resolution = Resolution(
+        "registered", project=Project(id=P, name="n\nx" + "y" * 200, root="/w\n" + "z" * 200))
+    header = service.open_session("/w").header
+    name, root = ("n x" + "y" * 200)[:120], ("/w " + "z" * 200)[:120]
+    assert header == f"project: {name} [{P}] (root {root})"
+    assert len(name) == len(root) == 120
+
+    project_store.resolution = Resolution("degraded", diagnostic="/r:\n" + "d" * 200)
+    header = service.open_session("/x").header
+    diagnostic = ("/r: " + "d" * 200)[:120]
+    assert "\n" not in header and len(diagnostic) == 120
+    assert f"({diagnostic}); ask the user" in header
+
+
+def test_open_session_turns_an_unreadable_global_into_an_unavailable_session():
+    service, _, project_store, _ = _service()
+    project_store.resolution = Resolution("registered",
+                                          project=Project(id=P, name="demo", root="/w"))
+
+    def broken():
+        raise StorageFailure
+
+    project_store.global_project_id = broken
+    session = service.open_session("/w")
+    assert session.state == "unavailable"
+    assert session.read_write_set == ReadWriteSet(project_id=None, global_project_id=None)
 
 
 # --- record -----------------------------------------------------------------
@@ -192,6 +285,24 @@ def test_record_takes_no_name_argument():
                        read_write_set=READ_WRITE_SET, name="n")  # type: ignore[call-arg]
 
 
+def test_the_content_policy_is_built_only_when_a_write_needs_it():
+    built: list[int] = []
+    project_store = FakeProjectStore([Project(id=P, name="demo")])
+    service = MemoryService(FakeMemoryStore(project_store), project_store,
+                            lambda: built.append(1) or FakeContentPolicy(), FakeDiagnostics(),
+                            max_body_chars=100, metadata_max_chars=200, search_limit_default=5,
+                            search_limit_max=50, index_budget_lines=100, index_cue_chars=60,
+                            header_field_chars=120, project_name_max_chars=120)
+    service.index(READ_WRITE_SET)
+    service.open_session("/x")
+    assert built == []
+    service.record(content="c", type="user", sync=True, harness="h", description="",
+                   read_write_set=READ_WRITE_SET)
+    service.record(content="d", type="user", sync=True, harness="h", description="",
+                   read_write_set=READ_WRITE_SET)
+    assert built == [1]
+
+
 # --- read / update / delete ---------------------------------------------------
 
 def test_read_update_delete_delegate_with_the_read_write_set():
@@ -199,40 +310,64 @@ def test_read_update_delete_delegate_with_the_read_write_set():
     with pytest.raises(MemoryNotFound):
         service.read("X", READ_WRITE_SET)
     with pytest.raises(GlobalReadOnly):
-        service.update("X", "new body", READ_WRITE_SET, description=None)
-    service.delete("X", READ_WRITE_SET)
-    assert memory_store.calls == [("read", "X", READ_WRITE_SET), ("update", "X", "new body", None),
-                                  ("delete", "X", READ_WRITE_SET)]
+        service.update("X", "new body", READ_WRITE_SET, expected_version=1, description=None)
+    assert service.delete("X", READ_WRITE_SET, expected_version=1) == 2
+    assert memory_store.calls == [("read", "X", READ_WRITE_SET),
+                                  ("update", "X", 1, "new body", None),
+                                  ("delete", "X", 1, False)]
 
 
 def test_update_runs_the_content_policy_first():
     service, memory_store, *_ = _service()
     with pytest.raises(ContentRejected):
-        service.update("X", "ghp_abc", READ_WRITE_SET)
+        service.update("X", "ghp_abc", READ_WRITE_SET, expected_version=1)
     with pytest.raises(ContentRejected):
-        service.update("X", "fine", READ_WRITE_SET, description="ghp_abc")
+        service.update("X", "fine", READ_WRITE_SET, expected_version=1, description="ghp_abc")
     assert memory_store.calls == []
 
 
+def test_update_and_delete_pass_the_expected_version_through():
+    service, memory_store, _, _ = _service()
+    with pytest.raises(GlobalReadOnly):
+        service.update("m", "body", READ_WRITE_SET, expected_version=3)
+    assert service.delete("m", READ_WRITE_SET, expected_version=3, hard=True) == 4
+    assert memory_store.calls[-2:] == [("update", "m", 3, "body", None),
+                                       ("delete", "m", 3, True)]
+
+
 # --- projects -----------------------------------------------------------------
-
-def test_create_project_generates_an_id_and_stores_it():
-    service, *_ = _service()
-    project = service.create_project("  work ")
-    assert ID_RE.fullmatch(project.id) and project.name == "work"
-    assert service.read_project(project.id) == project
-
-
-def test_create_project_refuses_a_bad_name():
-    service, *_ = _service()
-    with pytest.raises(ValueError):
-        service.create_project("\n")
-
 
 def test_ensure_global_delegates():
     service, *_ = _service(FakeProjectStore([], global_id=None))
     assert service.ensure_global() == "nnnnnnnnnn"
     assert service.global_project_id() == "nnnnnnnnnn"
+
+
+def test_init_project_validates_the_name_with_the_injected_cap():
+    service, *_ = _service()
+    plan = service.plan_root("/w")
+    project = service.init_project("demo", plan)
+    assert (project.name, project.root) == ("demo", "/w")
+    with pytest.raises(ValueError, match="120"):
+        service.init_project("x" * 121, plan)
+
+
+def test_init_project_reports_a_collision_as_storage_failure():
+    service, _, project_store, _ = _service()
+    project_store.failures = [IdCollision("x")]
+    with pytest.raises(StorageFailure):
+        service.init_project("demo", service.plan_root("/w"))
+
+
+def test_binding_calls_delegate_to_the_project_store():
+    service, _, project_store, _ = _service()
+    plan = service.plan_root("/w", P)
+    service.adopt(P, plan)
+    unbind_plan, resolution = service.plan_unbind(P, "/w", "/w/sub")
+    service.unbind(unbind_plan)
+    assert resolution == project_store.resolution
+    assert project_store.calls == [("bind", P, plan), ("plan_unbind", P, "/w", "/w/sub"),
+                                   ("unbind", unbind_plan)]
 
 
 # --- a collision surfaces as StorageFailure, on the first store call ---------
@@ -259,14 +394,8 @@ def test_a_non_collision_failure_is_final_on_the_first_call_too():
     assert len(memory_store.attempted_ids) == 1
 
 
-def test_create_project_and_ensure_global_surface_a_collision_the_same_way():
+def test_ensure_global_surfaces_a_collision_the_same_way():
     service, _, project_store, _ = _service(FakeProjectStore([], global_id=None))
-    project_store.failures = [IdCollision("x")]
-    with pytest.raises(StorageFailure) as exc_info:
-        service.create_project("work")
-    assert len(project_store.attempted_ids) == 1
-    assert isinstance(exc_info.value.__cause__, IdCollision)
-
     project_store.failures = [IdCollision("y")]
     with pytest.raises(StorageFailure) as exc_info:
         service.ensure_global()
@@ -280,8 +409,27 @@ def test_create_project_and_ensure_global_surface_a_collision_the_same_way():
 def test_one_clamp_normalizes_every_limit(asked, normalized):
     service, _, project_store, _ = _service()
     assert service.normalize_search_limit(asked) == normalized
-    service.search(P, "q", READ_WRITE_SET, asked)
-    assert project_store.search_calls == [(P, "q", normalized)]
+    service.search("q", READ_WRITE_SET, asked)
+    assert project_store.search_calls == [(P, "q", normalized), (G, "q", normalized)]
+
+
+def test_search_is_project_first_then_global_in_one_budget():
+    project_store = FakeProjectStore([Project(id=P, name="demo")])
+    service, _, _, _ = _service(project_store, limit_default=2)
+    project_store.memories = [_memory(P, "hit one", "2026-01-02"),
+                              _memory(G, "hit two", "2026-01-03"),
+                              _memory(G, "hit three", "2026-01-01")]
+    hits = service.search("hit", READ_WRITE_SET)
+    assert [m.body for m in hits] == ["hit one", "hit two"]
+    assert [c[0] for c in project_store.search_calls] == [P, G]
+
+
+def test_a_spent_budget_skips_global():
+    project_store = FakeProjectStore([Project(id=P, name="demo")])
+    service, _, _, _ = _service(project_store)
+    project_store.memories = [_memory(P, "hit", "2026-01-02"), _memory(G, "hit", "2026-01-03")]
+    assert len(service.search("hit", READ_WRITE_SET, limit=1)) == 1
+    assert [c[0] for c in project_store.search_calls] == [P]
 
 
 # --- index --------------------------------------------------------------------
@@ -334,6 +482,28 @@ def test_index_lines_are_single_line_and_capped():
     line = service.index(READ_WRITE_SET)
     assert "\n" not in line
     assert len(line.split(": ", 1)[1].rsplit(" (", 1)[0]) == 60
+
+
+# --- management reads ---------------------------------------------------------
+
+def test_management_reads_use_the_unrestricted_views():
+    service, memory_store, project_store, _ = _service()
+    project_store.memories = [_memory(P, "mine", "2026-01-02"), _memory(G, "global", "2026-01-03")]
+    assert [m.body for m in service.search_all("")] == []
+    assert [m.body for m in service.search_all("l")] == ["global"]
+    assert [m.body for m in service.search_all("n")] == ["mine"]
+    listed = service.list_memories()
+    assert [p.id for p, _ in listed] == [P, G]
+    with pytest.raises(MemoryNotFound):
+        service.show("m", include_deleted=True)
+    assert memory_store.calls[-1] == ("read_any", "m", True)
+
+
+def test_diagnose_delegates_to_the_diagnostics_service():
+    service, _, _, _ = _service()
+    assert service.diagnose(stale_days=5) == "report"
+    assert service._diagnostics.calls == [{"now": None, "stale_days": 5,
+                                           "jaccard_threshold": 0.6}]
 
 
 def test_there_is_no_dream_and_no_create():

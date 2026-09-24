@@ -88,7 +88,6 @@ def operations(
             kind="json-object",
             expected="1",
             key_path=("env", "CLAUDE_CODE_DISABLE_AUTO_MEMORY"),
-            optional=True,
             harness_owned=True,
         ))
     return tuple(ops)

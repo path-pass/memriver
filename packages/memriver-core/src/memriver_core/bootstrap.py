@@ -9,35 +9,55 @@ from .application.diagnostics import DiagnosticsService
 # EMPTY_INDEX is re-exported (not composed) here: bootstrap is the one
 # memriver_core surface, alongside settings/models, that a transport may import.
 from .application.service import EMPTY_INDEX, MemoryService
-from .content_policy.secret_scanner import SecretScanner
-from .repository.filesystem import (
-    FileMemoryStore,
-    FileProjectStore,
-    FilesystemStoreInspector,
+
+# The store purge is the one data operation outside the facade (the user's
+# choice): it destroys the whole storage directory rather than records.
+from .repository.directories import (
+    PurgePlan,
+    PurgeRefusal,
+    PurgeResult,
+    plan_purge,
+    purge,
+)
+from .repository.sqlite import (
+    SqliteMemoryStore,
+    SqliteProjectStore,
+    SqliteStoreInspector,
+)
+from .settings import (
+    BUSY_TIMEOUT_MS,
+    DEFAULT_MAX_BODY_CHARS,
+    HEADER_FIELD_CHARS,
+    INDEX_CUE_CHARS,
+    PROJECT_NAME_MAX_CHARS,
+    Settings,
 )
 
-# replace_file and store_lock are re-exported for the umbrella's directory
-# registry: its writes serialize with store writes and use the store's one
-# safe write (symlinked levels refused, 0700 dirs, 0600 files, atomic replace).
-from .repository.filesystem.files import replace_file
-from .repository.filesystem.locking import store_lock
-from .settings import DEFAULT_MAX_BODY_CHARS, Settings
-
 __all__ = [
-    "EMPTY_INDEX", "build_diagnostics_service", "build_service", "replace_file", "store_lock",
+    "EMPTY_INDEX", "PurgePlan", "PurgeRefusal", "PurgeResult", "build_service", "plan_purge",
+    "purge",
 ]
 
 
-def build_service(settings: Settings, *, root: Path | None = None) -> MemoryService:
+def _content_policy():
+    # imported on first use, never at module level: compiling the scanner's
+    # rules is paid by a write, not by a read-only caller such as the Stop hook
+    from .content_policy.secret_scanner import SecretScanner
+
+    return SecretScanner()
+
+
+def build_service(settings: Settings, *, root: Path | None = None,
+                  home: Path | None = None) -> MemoryService:
     # an explicit root is authoritative: callers that already resolved it (the
     # CLI, the tests) must not have it replaced by the environment or settings
     store_root = settings.root if root is None else root
-    project_store = FileProjectStore(store_root)
-    memory_store = FileMemoryStore(store_root, project_store)
+    home = Path.home() if home is None else home
     return MemoryService(
-        memory_store,
-        project_store,
-        SecretScanner(),
+        SqliteMemoryStore(store_root, busy_timeout_ms=BUSY_TIMEOUT_MS),
+        SqliteProjectStore(store_root, home=home, busy_timeout_ms=BUSY_TIMEOUT_MS),
+        _content_policy,
+        DiagnosticsService(SqliteStoreInspector(store_root, busy_timeout_ms=BUSY_TIMEOUT_MS)),
         max_body_chars=settings.max_body_chars,
         # metadata keeps the default budget, so a tightened body limit does
         # not silently change harness/description acceptance
@@ -45,11 +65,7 @@ def build_service(settings: Settings, *, root: Path | None = None) -> MemoryServ
         search_limit_default=settings.search_limit_default,
         search_limit_max=settings.search_limit_max,
         index_budget_lines=settings.index_budget_lines,
+        index_cue_chars=INDEX_CUE_CHARS,
+        header_field_chars=HEADER_FIELD_CHARS,
+        project_name_max_chars=PROJECT_NAME_MAX_CHARS,
     )
-
-
-def build_diagnostics_service(
-    settings: Settings, *, root: Path | None = None,
-) -> DiagnosticsService:
-    inspector = FilesystemStoreInspector(settings.root if root is None else root)
-    return DiagnosticsService(inspector)

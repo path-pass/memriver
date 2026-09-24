@@ -119,10 +119,8 @@ class EditOperation:
     expected: object
     key_path: tuple[str, ...] = ()
     identity: tuple[str, ...] = ()
-    optional: bool = False
     # the key belongs to the harness, not to memriver: only the takeover
-    # wording differs, and it is kept apart from `optional` because "the user
-    # may decline this" and "memriver does not own this key" are two facts
+    # wording differs
     harness_owned: bool = False
 
 

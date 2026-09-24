@@ -3,7 +3,8 @@
 Two kinds of error live here, and they differ in who owns the words:
 
 - **Storage-boundary errors** -- `MemoryNotFound`, `ProjectNotFound`,
-  `IdCollision`, `StorageFailure` -- carry structured *fields* only. Their `str()` is a
+  `IdCollision`, `StorageFailure`, `VersionConflict`, `BindingRefused` -- carry
+  structured *fields* only. Their `str()` is a
   developer-facing line for logs and must never reach a client: a transport
   composes client copy from the operation plus these fields, so a second
   backend cannot change a byte of what a client sees, nor leak SQL, driver or
@@ -24,7 +25,7 @@ class MemoryNotFound(MemoryError):
     """No memory the caller may read answers to `memory_id`.
 
     Absent, another project's, and orphaned (its project does not exist) are
-    one answer, so a caller never reads another project's entry. A file that
+    one answer, so a caller never reads another project's entry. A row that
     is present but cannot be read or decoded is `StorageFailure` instead:
     damage is reported as damage, not disguised as absence.
     """
@@ -78,3 +79,37 @@ class StorageFailure(MemoryError):
 
     def __init__(self) -> None:
         super().__init__("storage failure")
+
+
+class VersionConflict(MemoryError):
+    """The memory is readable and writable, but not at the version the caller read.
+
+    Nothing was written. The caller reads again and redoes its edit; the
+    store never replays the caller's text onto the newer row.
+    """
+
+    def __init__(self, memory_id: str) -> None:
+        super().__init__(f"version conflict: {memory_id}")
+        self.memory_id = memory_id
+
+
+BINDING_REASONS = frozenset({
+    "not-a-directory", "covers-home", "covers-store", "inside-store", "bound-elsewhere",
+    "unverifiable", "is-global", "has-directory", "plan-changed", "binding-changed",
+    "no-such-project",
+})
+
+
+class BindingRefused(MemoryError):
+    """A directory could not be planned, bound or unbound; nothing was written.
+
+    Fields only: `reason` is one of BINDING_REASONS, `project_id` names the
+    other project for "bound-elsewhere". The CLI owns every sentence.
+    """
+
+    def __init__(self, reason: str, project_id: str | None = None) -> None:
+        if reason not in BINDING_REASONS:
+            raise ValueError(f"unknown binding reason: {reason!r}")
+        super().__init__(f"binding refused: {reason}")
+        self.reason = reason
+        self.project_id = project_id

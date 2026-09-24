@@ -21,6 +21,7 @@ created -- and never delete a backup, even when the restore itself fails.
 
 from __future__ import annotations
 
+import errno
 import io
 import json
 import os
@@ -33,6 +34,7 @@ from memriver.install import (
     HARNESS_SETTING_TAKEOVER_NOTICE,
     TAKEOVER_NOTICE,
     StoreStep,
+    _symlinked_component,
     claude_code,
     cursor,
     run_install,
@@ -46,16 +48,14 @@ from memriver.install.codex import (
 from memriver.install.codex import (
     NATIVE_MEMORY_OFF_NOTE as CODEX_NATIVE_MEMORY_OFF_NOTE,
 )
-from memriver.project_context import bind
+from memriver.install.editors import Target
 from memriver_core.bootstrap import build_service
 from memriver_core.settings import Settings
 
 
 def _bind_new(store: Path, directory: Path, name: str) -> str:
     service = build_service(Settings(root=store), root=store)
-    project_id = service.create_project(name).id
-    bind(store, service, project_id, str(directory.resolve()))
-    return project_id
+    return service.init_project(name, service.plan_root(str(directory))).id
 
 
 CODEX_TRUST_TEXT = (
@@ -1091,13 +1091,22 @@ def test_a_later_failure_still_rolls_back_a_directory_with_a_placeholder_record(
     ordinary transaction rollback: a *different*, later write failing must
     still unwind the earlier, already-completed write through `_roll_back`,
     and `_remove_created_dirs` must still take back that write's directory
-    even though its record was never verified."""
+    even though its record was never verified.
+
+    The mock fails only the one `lstat` call this is actually about --
+    `_make_dirs`'s post-`mkdir` identity capture for `settings`, the instant
+    it starts existing -- and behaves normally after: rollback's own
+    symlink-component check also calls `lstat` on this same directory later,
+    and it must see the truth (an ordinary directory, not a link) rather than
+    inherit a permanently degraded stat that has nothing to do with it."""
     settings = home / ".kiro" / "settings"
     kiro = home / ".kiro"
     real_lstat = Path.lstat
+    degraded = {"done": False}
 
     def failing_lstat(self, *args, **kwargs):
-        if self == settings and self.exists():
+        if self == settings and self.exists() and not degraded["done"]:
+            degraded["done"] = True
             raise OSError("injected identity-stat failure")
         return real_lstat(self, *args, **kwargs)
 
@@ -1178,6 +1187,326 @@ def test_a_failed_rollback_reports_the_exact_paths_and_keeps_the_backups(home,
     assert "could not" in result.stderr.lower()
     assert backup.read_text() == json.dumps({"apiKey": SECRET})
     assert SECRET not in result.stderr
+
+
+def test_rollback_leaves_a_file_another_process_edited_during_the_failed_run(
+        home, project):
+    """A later target failing must not let rollback stomp a concurrent edit to
+    an earlier target: `_roll_back` restoring the backup unconditionally would
+    discard whatever another process wrote to that file in the window between
+    this run's write and the rollback, and the backup -- taken before this run
+    touched the file -- has no way to hold that edit either."""
+    claude_json = write(home / ".claude.json", json.dumps({"original": True}))
+    original_bytes = claude_json.read_bytes()
+    calls: list[int] = []
+
+    def replace(source, destination) -> None:
+        calls.append(len(calls) + 1)
+        if calls[-1] == 2:
+            # simulates another process editing ~/.claude.json in the window
+            # between this run's own write (call 1) and the second target's
+            # replacement, which then fails
+            claude_json.write_text(
+                json.dumps({"original": True,
+                            "concurrent_foreign_edit": "must survive"}),
+                encoding="utf-8")
+            raise OSError("injected replacement failure #2")
+        os.replace(source, destination)
+
+    result = install(["claude-code"], home=home, cwd=project, yes=True,
+                     replace=replace)
+
+    assert result.exit_code == 1
+    assert json.loads(claude_json.read_text())["concurrent_foreign_edit"] == (
+        "must survive"
+    )
+    backup = backups(home)[0]
+    assert backup.read_bytes() == original_bytes
+    assert "concurrent_foreign_edit" not in backup.read_text()
+    assert str(claude_json) in result.stderr
+    assert "changed after this run wrote it" in result.stderr
+
+
+def test_rollback_does_not_delete_a_created_file_someone_modified_afterward(
+        home, project):
+    """The mirror case for a target this run created (no backup exists): a
+    later target failing must not let rollback delete that file once another
+    process has written to it in the meantime -- there is nothing to restore
+    it to, so deleting it would simply lose the concurrent edit."""
+    claude_json = write(home / ".claude.json", json.dumps({"original": True}))
+    original_json = claude_json.read_bytes()
+    write(home / ".codex" / "config.toml", 'model = "gpt"\n')
+    settings_json = home / ".claude" / "settings.json"
+    calls: list[int] = []
+
+    def replace(source, destination) -> None:
+        calls.append(len(calls) + 1)
+        if calls[-1] == 3:
+            # ~/.claude/settings.json (call 2) was created fresh by this run;
+            # this simulates another process writing to it before the third
+            # target (codex's config.toml) fails
+            settings_json.write_text('{"tampered": true}', encoding="utf-8")
+            raise OSError("injected replacement failure #3")
+        os.replace(source, destination)
+
+    result = install(["claude-code", "codex"], home=home, cwd=project, yes=True,
+                     replace=replace)
+
+    assert result.exit_code != 0
+    assert settings_json.exists()
+    assert json.loads(settings_json.read_text()) == {"tampered": True}
+    assert claude_json.read_bytes() == original_json
+    assert str(settings_json) in result.stderr
+    assert "changed after this run wrote it" in result.stderr
+
+
+def test_rollback_refuses_to_touch_a_path_swapped_for_a_symlink(home, project):
+    """`_roll_back` must not follow a symlink into place of the target it is
+    about to restore: a symlink could point anywhere, and even one pointing
+    at a file with byte-identical content is a different path this run never
+    wrote to. Reading through it (or restoring/removing it) would touch or
+    hide whatever it actually resolves to -- and a FIFO in its place would
+    hang the read outright, so the check has to happen before any read, via
+    `lstat` rather than `stat`, the same way `_refuse_symlinks` does."""
+    claude_json = write(home / ".claude.json", json.dumps({"original": True}))
+    elsewhere = home / "elsewhere.json"
+    calls: list[int] = []
+
+    def replace(source, destination) -> None:
+        calls.append(len(calls) + 1)
+        if calls[-1] == 2:
+            # swaps ~/.claude.json for a symlink to a file with byte-identical
+            # content, in the window between this run's own write (call 1)
+            # and the second target's replacement, which then fails
+            elsewhere.write_bytes(claude_json.read_bytes())
+            claude_json.unlink()
+            claude_json.symlink_to(elsewhere)
+            raise OSError("injected replacement failure #2")
+        os.replace(source, destination)
+
+    result = install(["claude-code"], home=home, cwd=project, yes=True,
+                     replace=replace)
+
+    assert result.exit_code == 1
+    assert claude_json.is_symlink()
+    assert claude_json.resolve() == elsewhere.resolve()
+    assert str(claude_json) in result.stderr
+    assert "changed after this run wrote it" in result.stderr
+
+
+def test_rollback_treats_a_created_file_already_deleted_as_undone(home, project):
+    """The mirror of the modified-in-place case: once a file this run created
+    is already gone by the time rollback reaches it, the state rollback wants
+    already holds -- nothing to restore (no backup exists) and nothing to
+    remove (it is already absent) -- so this is reported as nothing, not as a
+    foreign change, and the directory this run made for it is still reclaimed
+    like any other completed rollback."""
+    claude_json = write(home / ".claude.json", json.dumps({"original": True}))
+    original_json = claude_json.read_bytes()
+    write(home / ".codex" / "config.toml", 'model = "gpt"\n')
+    settings_json = home / ".claude" / "settings.json"
+    calls: list[int] = []
+
+    def replace(source, destination) -> None:
+        calls.append(len(calls) + 1)
+        if calls[-1] == 3:
+            # ~/.claude/settings.json (call 2) was created fresh by this run,
+            # including its ~/.claude parent; this simulates another process
+            # (or a cleanup of its own) removing it before the third target
+            # (codex's config.toml) fails
+            settings_json.unlink()
+            raise OSError("injected replacement failure #3")
+        os.replace(source, destination)
+
+    result = install(["claude-code", "codex"], home=home, cwd=project, yes=True,
+                     replace=replace)
+
+    assert result.exit_code != 0
+    assert not settings_json.exists()
+    assert not settings_json.parent.exists()
+    assert claude_json.read_bytes() == original_json
+    assert str(settings_json) not in result.stderr
+    assert "changed after this run wrote it" not in result.stderr
+
+
+def test_rollback_refuses_to_touch_a_target_reached_through_a_swapped_parent(
+        home, project, tmp_path):
+    """A symlink does not have to replace the target's own leaf to redirect
+    rollback -- swapping a *parent* directory the leaf path travels through
+    does the same thing, and comparing only the leaf's own bytes (even by
+    `lstat`) cannot see it: reading or writing `~/.claude/settings.json`
+    still resolves `~/.claude` first. Only re-running the same component walk
+    `_refuse_symlinks` already does before this run's own write -- this time
+    right before rollback touches anything -- catches a parent swapped in
+    afterwards. Without it, a byte-identical copy left at the link's target
+    makes the stale bytes-comparison alone believe nothing changed, and
+    `path.unlink()` (this write created ~/.claude/settings.json, so it has no
+    backup) deletes through the link -- someone else's file, not this run's."""
+    claude_json = write(home / ".claude.json", json.dumps({"original": True}))
+    original_json = claude_json.read_bytes()
+    settings_json = home / ".claude" / "settings.json"
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    calls: list[int] = []
+
+    def replace(source, destination) -> None:
+        calls.append(len(calls) + 1)
+        if calls[-1] == 3:
+            # ~/.claude/settings.json (call 2) already holds this run's own
+            # bytes; copy them to a foreign location, move the real ~/.claude
+            # out of the way, and put a symlink to the foreign directory in
+            # its place, before the third target (codex's config.toml) fails
+            (foreign / "settings.json").write_bytes(settings_json.read_bytes())
+            (home / ".claude").rename(home / ".claude.real")
+            (home / ".claude").symlink_to(foreign)
+            raise OSError("injected replacement failure #3")
+        os.replace(source, destination)
+
+    result = install(["claude-code", "codex"], home=home, cwd=project, yes=True,
+                     replace=replace)
+
+    assert result.exit_code != 0
+    assert (home / ".claude").is_symlink()
+    assert (foreign / "settings.json").exists()  # not deleted through the link
+    assert claude_json.read_bytes() == original_json
+    assert str(settings_json) in result.stderr
+    assert "changed after this run wrote it" in result.stderr
+
+
+def test_rollback_does_not_restore_a_backup_through_a_swapped_parent(
+        home, project, tmp_path):
+    """The rewrite half of the same defect: a target this run rewrote (so a
+    backup exists) must not have that backup restored *through* a parent
+    swapped for a symlink after this run's own write landed -- that would
+    silently overwrite whatever the link now points at instead of the file
+    this run actually touched."""
+    claude_json = write(home / ".claude.json", json.dumps({"original": True}))
+    original_json = claude_json.read_bytes()
+    codex_toml = write(home / ".codex" / "config.toml", 'model = "gpt"\n')
+    original_toml = codex_toml.read_bytes()
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    calls: list[int] = []
+    destinations: list[Path] = []
+    rewritten_bytes: list[bytes] = []
+
+    def replace(source, destination) -> None:
+        calls.append(len(calls) + 1)
+        destinations.append(Path(destination))
+        if calls[-1] == 4:
+            # ~/.codex/config.toml (call 3) already holds this run's own
+            # rewritten bytes, and its sibling backup this run wrote still
+            # holds the pre-run bytes; copy both to a foreign location (so a
+            # restore that follows the link can still find "its" backup),
+            # move the real ~/.codex out of the way, and put a symlink to the
+            # foreign directory in its place, before the fourth target
+            # (codex's hooks.json) fails
+            codex_dir = home / ".codex"
+            backup = next(codex_dir.glob("config.toml.memriver-backup-*"))
+            rewritten_bytes.append(codex_toml.read_bytes())
+            (foreign / "config.toml").write_bytes(rewritten_bytes[0])
+            (foreign / backup.name).write_bytes(backup.read_bytes())
+            codex_dir.rename(home / ".codex.real")
+            codex_dir.symlink_to(foreign)
+            raise OSError("injected replacement failure #4")
+        os.replace(source, destination)
+
+    result = install(["claude-code", "codex"], home=home, cwd=project, yes=True,
+                     replace=replace)
+
+    assert result.exit_code != 0
+    assert (home / ".codex").is_symlink()
+    assert rewritten_bytes[0] != original_toml  # this run did change it
+    # not restored through the link: the backup's pre-run bytes never landed
+    # on the foreign file the link now points at
+    assert (foreign / "config.toml").read_bytes() == rewritten_bytes[0]
+    # the only replace_file call after the injected failure restores
+    # ~/.claude.json (untouched); none targets ~/.codex/config.toml, which
+    # would only be reachable by writing through the symlink
+    assert destinations[4:] == [claude_json]
+    assert claude_json.read_bytes() == original_json
+    assert str(codex_toml) in result.stderr
+    assert "changed after this run wrote it" in result.stderr
+
+
+def test_symlinked_component_treats_a_failed_lstat_as_unverified_not_safe(
+        tmp_path, monkeypatch):
+    """A transient `OSError` from `lstat` on a path component must propagate
+    rather than be read as "no link here": a caller that took `None` back
+    from a failed check would treat an unverified component as safe to write
+    or roll back through."""
+    target_path = tmp_path / "target"
+    target_path.write_text("content")
+    target = Target(path=target_path, user_level=True, rollback_instruction="")
+    real_lstat = Path.lstat
+
+    def flaky_lstat(self, *args, **kwargs):
+        if self == target_path:
+            raise OSError(errno.EIO, "injected transient I/O error")
+        return real_lstat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", flaky_lstat)
+
+    with pytest.raises(OSError, match="injected transient I/O error"):
+        _symlinked_component(target, root=None)
+
+
+def test_rollback_reports_could_not_recover_when_the_link_check_itself_fails(
+        home, project, monkeypatch, tmp_path):
+    """A transient `OSError` from the symlink-component check's own `lstat`
+    -- as opposed to that check actually finding a link -- must not be read
+    as "no link here, safe to act": failing open would defeat the very check
+    this guards, since a parent really has been swapped for a symlink at this
+    point and the leaf alone (even by `lstat`) cannot see it. It is reported
+    as an ordinary recovery failure instead, exactly like any other
+    unexpected error hit while undoing a write, and the file -- now reachable
+    only through the link -- is left exactly as it is. Being inside the
+    per-write loop, this failing one write does not stop any other write in
+    the same run from rolling back normally."""
+    claude_json = write(home / ".claude.json", json.dumps({"original": True}))
+    original_json = claude_json.read_bytes()
+    settings_json = home / ".claude" / "settings.json"
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    calls: list[int] = []
+
+    def replace(source, destination) -> None:
+        calls.append(len(calls) + 1)
+        if calls[-1] == 3:
+            # swaps ~/.claude for a symlink to a foreign directory holding a
+            # byte-identical copy of settings.json (call 2), before the third
+            # target (codex's config.toml) fails
+            (foreign / "settings.json").write_bytes(settings_json.read_bytes())
+            (home / ".claude").rename(home / ".claude.real")
+            (home / ".claude").symlink_to(foreign)
+            raise OSError("injected replacement failure #3")
+        os.replace(source, destination)
+
+    claude_dir = home / ".claude"
+    real_lstat = Path.lstat
+    fired = {"done": False}
+
+    def flaky_lstat(self, *args, **kwargs):
+        # fires exactly once, and only once ~/.claude is genuinely a symlink
+        # -- i.e. the first time rollback's own component check looks at it,
+        # never during planning or this run's own write, when it is still an
+        # ordinary directory (or does not exist yet)
+        if self == claude_dir and not fired["done"] and os.path.islink(self):
+            fired["done"] = True
+            raise OSError(errno.EIO, "injected transient I/O error")
+        return real_lstat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", flaky_lstat)
+
+    result = install(["claude-code", "codex"], home=home, cwd=project, yes=True,
+                     replace=replace)
+
+    assert result.exit_code != 0
+    assert (foreign / "settings.json").exists()  # not deleted through the link
+    assert "COULD NOT recover" in result.stderr
+    assert str(settings_json) in result.stderr
+    # a different write in the same run still rolls back normally
+    assert claude_json.read_bytes() == original_json
 
 
 def test_success_reports_backup_paths_and_restore_commands_never_contents(home,
@@ -1373,10 +1702,10 @@ def test_installing_all_four_harnesses_writes_every_target(home, project):
     assert tomlkit.parse((home / ".codex" / "config.toml").read_text())["mcp_servers"]
 
 
-# --- install is decoupled from the project registry ---------------------------
+# --- install is decoupled from the project bindings ---------------------------
 #
-# The static file still lands on the nearest git root, and the registry still
-# decides the project identity the MCP server reports. Neither reads the other:
+# The static file still lands on the nearest git root, and the bound directories
+# still decide the project identity the MCP server reports. Neither reads the other:
 # these four cases cross the two axes (registered or not, git root or not) and
 # pin that the outcomes stay independent.
 
@@ -1410,7 +1739,7 @@ def test_install_in_unregistered_repo_lands_on_git_root_and_registers_nothing(
 
     assert result.exit_code == 0
     assert (project / STATIC_FILE[harness]).exists()
-    assert not (store / "projects").exists() and not (store / "registry").exists()
+    assert not (store / "memriver.db").exists()
     assert _server_header(store, project / "src").startswith("project: none")
 
 

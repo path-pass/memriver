@@ -105,7 +105,9 @@ FORBIDDEN = [
     ("memriver_core.models", "frontmatter"),
     ("memriver_core.models", "fcntl"),
     # the application talks to protocols, never to adapters, settings, or I/O
-    ("memriver_core.application", "memriver_core.repository.filesystem"),
+    ("memriver_core.application", "memriver_core.repository.sqlite"),
+    ("memriver_core.application", "memriver_core.repository.directories"),
+    ("memriver_core.application", "sqlite3"),
     ("memriver_core.application", "memriver_core.content_policy.secret_scanner"),
     ("memriver_core.application", "memriver_core.settings"),
     ("memriver_core.application", "pydantic"),
@@ -115,26 +117,24 @@ FORBIDDEN = [
     ("memriver_core.application", "tempfile"),
     ("memriver_core.application", "pathlib"),
     # a protocol never knows its implementation
-    ("memriver_core.repository.protocol", "memriver_core.repository.filesystem"),
+    ("memriver_core.repository.protocol", "memriver_core.repository.sqlite"),
     ("memriver_core.repository.protocol", "memriver_core.settings"),
     ("memriver_core.content_policy.protocol",
      "memriver_core.content_policy.secret_scanner"),
     ("memriver_core.content_policy.protocol", "memriver_core.settings"),
     # implementations use the error taxonomy in models; never application or settings
     ("memriver_core.repository", "memriver_core.application"),
-    ("memriver_core.repository.filesystem", "memriver_core.settings"),
+    ("memriver_core.repository.sqlite", "memriver_core.settings"),
+    ("memriver_core.repository.directories", "memriver_core.settings"),
     ("memriver_core.content_policy", "memriver_core.application"),
     ("memriver_core.content_policy.secret_scanner", "memriver_core.settings"),
-    # the two filesystem stores share memory_files and never import each other
-    ("memriver_core.repository.filesystem.memory_store",
-     "memriver_core.repository.filesystem.project_store"),
-    ("memriver_core.repository.filesystem.project_store",
-     "memriver_core.repository.filesystem.memory_store"),
-    # memory_files sits below both stores; it never imports either back
-    ("memriver_core.repository.filesystem.memory_files",
-     "memriver_core.repository.filesystem.memory_store"),
-    ("memriver_core.repository.filesystem.memory_files",
-     "memriver_core.repository.filesystem.project_store"),
+    # the two sqlite stores share database and never import each other
+    ("memriver_core.repository.sqlite.memory_store",
+     "memriver_core.repository.sqlite.project_store"),
+    ("memriver_core.repository.sqlite.project_store",
+     "memriver_core.repository.sqlite.memory_store"),
+    ("memriver_core.repository.sqlite.database", "memriver_core.repository.sqlite.memory_store"),
+    ("memriver_core.repository.sqlite.database", "memriver_core.repository.sqlite.project_store"),
 ]
 
 
@@ -180,10 +180,8 @@ ALLOWED_NON_STDLIB = {
     # content_policy.protocol: stdlib only today (spec section 3) — keep it
     # that tight rather than pre-granting models it doesn't use yet.
     "memriver_core.content_policy.protocol": set(),
-    # repository.filesystem.files: stdlib only -- the store-layout/file
-    # primitives both filesystem stores share must never grow a memriver_core
-    # dependency of their own.
-    "memriver_core.repository.filesystem.files": set(),
+    # directory rules: stdlib only -- never a memriver_core dependency of their own
+    "memriver_core.repository.directories": set(),
 }
 
 
@@ -206,17 +204,17 @@ def test_strict_layer_allowlist(layer):
 # --- composition-root rules -------------------------------------------------
 
 # Concrete adapters may only be assembled in bootstrap.py. Reaching one via
-# `import memriver_core.repository.filesystem as fs; fs.FileMemoryStore()`
-# must be caught exactly like `from memriver_core.repository.filesystem import
-# FileMemoryStore` — so, in addition to the from-import symbol check
+# `import memriver_core.repository.sqlite as db; db.SqliteMemoryStore()`
+# must be caught exactly like `from memriver_core.repository.sqlite import
+# SqliteMemoryStore` — so, in addition to the from-import symbol check
 # below, this also checks the normalized module-target set: importing the
 # adapter's module at all, under any alias, from an unauthorized module is
 # itself the violation.
 CONCRETE_ADAPTER_MODULES = {
-    "FileMemoryStore": "memriver_core.repository.filesystem",
-    "FileProjectStore": "memriver_core.repository.filesystem",
+    "SqliteMemoryStore": "memriver_core.repository.sqlite",
+    "SqliteProjectStore": "memriver_core.repository.sqlite",
+    "SqliteStoreInspector": "memriver_core.repository.sqlite",
     "SecretScanner": "memriver_core.content_policy.secret_scanner",
-    "FilesystemStoreInspector": "memriver_core.repository.filesystem",
 }
 
 # The services bootstrap composes are held to the same rule for the same
@@ -259,11 +257,11 @@ def test_only_bootstrap_names_a_composed_service(service):
     _assert_only_bootstrap_names(service, COMPOSED_SERVICE_MODULES[service], "services")
 
 
-def test_only_bootstrap_constructs_filesystem_inspector():
+def test_only_bootstrap_constructs_the_sqlite_inspector():
     # the inspector is an adapter like any other, so the rule above already
     # covers it; this pins the table entry that puts it under that rule.
-    assert CONCRETE_ADAPTER_MODULES["FilesystemStoreInspector"] == (
-        "memriver_core.repository.filesystem"
+    assert CONCRETE_ADAPTER_MODULES["SqliteStoreInspector"] == (
+        "memriver_core.repository.sqlite"
     )
 
 
@@ -302,7 +300,7 @@ def test_only_bootstrap_imports_settings(symbol):
 def test_application_names_the_store_ports_not_the_adapters():
     imports = _imported_modules("memriver_core.application.service")
     assert "memriver_core.repository.protocol" in imports
-    assert not any(_under(t, "memriver_core.repository.filesystem") for t in imports)
+    assert not any(_under(t, "memriver_core.repository.sqlite") for t in imports)
 
 
 # --- synthetic-source self-tests for the normalization helper ---------------
@@ -317,25 +315,25 @@ def test_application_names_the_store_ports_not_the_adapters():
     ("source", "anchor_package"),
     [
         # plain `import pkg.mod as alias`
-        ("import memriver_core.repository.filesystem as fs\n", "memriver_core.bootstrap"),
+        ("import memriver_core.repository.sqlite as db\n", "memriver_core.bootstrap"),
         # `from pkg import mod` — reaches a module, not a name
-        ("from memriver_core.repository import filesystem\n", "memriver_core.bootstrap"),
+        ("from memriver_core.repository import sqlite\n", "memriver_core.bootstrap"),
         # `from pkg.mod import Name`
-        ("from memriver_core.repository.filesystem import FileMemoryStore\n",
+        ("from memriver_core.repository.sqlite import SqliteMemoryStore\n",
          "memriver_core.bootstrap"),
         # `from pkg.mod import Name as alias`
-        ("from memriver_core.repository.filesystem import FileMemoryStore as fmr\n",
+        ("from memriver_core.repository.sqlite import SqliteMemoryStore as fmr\n",
          "memriver_core.bootstrap"),
         # relative `from . import mod`
-        ("from . import filesystem\n", "memriver_core.repository"),
+        ("from . import sqlite\n", "memriver_core.repository"),
         # relative `from .mod import Name as alias`
-        ("from .filesystem import FileMemoryStore as w\n", "memriver_core.repository"),
+        ("from .sqlite import SqliteMemoryStore as w\n", "memriver_core.repository"),
     ],
 )
 def test_imports_from_source_catches_every_bypass_form(source, anchor_package):
     targets = _imports_from_source(source, anchor_package)
-    assert any(_under(t, "memriver_core.repository.filesystem") for t in targets), (
-        f"normalization missed a reference to memriver_core.repository.filesystem "
+    assert any(_under(t, "memriver_core.repository.sqlite") for t in targets), (
+        f"normalization missed a reference to memriver_core.repository.sqlite "
         f"in {source!r}: got {targets}"
     )
 
@@ -358,7 +356,7 @@ def test_imports_from_source_catches_settings_module_alias_bypass():
 )
 def test_imports_from_source_clean_module_passes(source):
     targets = _imports_from_source(source, "memriver_core.bootstrap")
-    assert not any(_under(t, "memriver_core.repository.filesystem") for t in targets)
+    assert not any(_under(t, "memriver_core.repository.sqlite") for t in targets)
     assert not any(_under(t, "memriver_core.settings") for t in targets)
 
 

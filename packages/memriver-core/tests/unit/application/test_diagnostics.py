@@ -40,7 +40,7 @@ def inspected(id: str, *, project_id: str = PID,
               body: str = "a body long enough to trigram", updated: str = FIXED_NOW,
               location_hint: str | None = None) -> InspectedMemory:
     return InspectedMemory(memory=_memory(id, project_id=project_id, body=body, updated=updated),
-                           location_hint=location_hint or f"memories/{id}.md")
+                           location_hint=location_hint or f"memories/{id}")
 
 
 def store_finding(kind: str, *, project_id: str | None = None,
@@ -220,17 +220,31 @@ def test_no_shadowing_finding_exists_any_more():
 
 
 def test_a_legacy_store_is_degraded_and_still_says_it_is_not_initialized():
-    report = StoreReport(False, (), (), (store_finding("legacy-layout"),))
+    report = StoreReport(False, (), (),
+                         (store_finding("legacy-layout", location_hint="memories",
+                                       memory_id=None),))
     result = DiagnosticsService(FakeInspector(report)).run(now=FIXED_NOW)
     assert (result.state, result.initialized) == ("degraded", False)
 
 
-@pytest.mark.parametrize("kind", ["unknown-project", "invalid-project", "invalid-manifest",
-                                  "legacy-layout", "unsafe-container"])
-def test_new_backend_kinds_get_their_own_suggestion(kind):
+@pytest.mark.parametrize(
+    ("kind", "suggestion"),
+    [
+        ("unknown-schema", "restore the database from a backup made by this memriver version"),
+        ("unsafe-database", "replace it with the real database file"),
+        ("integrity", "restore the database from a backup"),
+        ("orphan", "restore the missing project from a backup; until then the memory stays hidden"),
+        ("invalid-row", "fix or remove the row"),
+        ("non-canonical-root", "bind the real directory with memriver project unbind and adopt"),
+        ("unverifiable-root", "restore access to the directory, then run memriver doctor again"),
+        ("root-conflict", "unbind one of them with memriver project unbind"),
+        ("legacy-layout", "migrate it, or remove it once migrated"),
+    ],
+)
+def test_new_backend_kinds_get_their_own_suggestion(kind, suggestion):
     report = StoreReport(True, (), (), (store_finding(kind),))
     mapped = DiagnosticsService(FakeInspector(report)).run(now=FIXED_NOW).findings[0]
-    assert mapped.suggestion != diagnostics._DEFAULT_BACKEND_SUGGESTION
+    assert mapped.suggestion == suggestion
 
 
 def test_mixed_empty_and_nonempty_trigram_pair_yields_no_finding():
@@ -242,16 +256,25 @@ def test_mixed_empty_and_nonempty_trigram_pair_yields_no_finding():
 
 
 def test_backend_finding_fields_are_copied_without_absolute_paths():
-    finding = store_finding("unparsable", project_id=PID,
+    finding = store_finding("invalid-row", project_id=PID,
                             location_hint="memories/broken.md", memory_id="broken",
                             reason="memory file is not decodable memory markdown")
     report = StoreReport(True, (), (), (finding,))
     result = DiagnosticsService(FakeInspector(report)).run(now=FIXED_NOW)
     assert len(result.findings) == 1
     mapped = result.findings[0]
-    assert mapped.kind == "unparsable"
+    assert mapped.kind == "invalid-row"
     assert mapped.memory_ids == ("broken",)
     assert mapped.project_ids == (PID,)
     assert mapped.location_hints == ("memories/broken.md",)
     assert mapped.reason == "memory file is not decodable memory markdown"
     assert not mapped.location_hints[0].startswith("/")
+
+
+def test_the_inspectors_projects_pass_through_to_the_report():
+    from memriver_core.models import InspectedProject
+
+    project = InspectedProject(id=PID, name="demo", root="/w", is_global=False,
+                               root_state="ok", active_memories=0, deleted_memories=0)
+    report = StoreReport(initialized=True, entries=(), projects=(project,), findings=())
+    assert DiagnosticsService(FakeInspector(report)).run(now=FIXED_NOW).projects == (project,)

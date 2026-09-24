@@ -257,6 +257,39 @@ def test_vendored_secrets_blocked(text, marker):
     assert marker not in str(ei.value)
 
 
+# Rules dropped before `_re2_to_python` existed: each pattern used a
+# construct RE2 accepts but Python `re` rejects (a mid-pattern inline flag
+# group, or a POSIX class in a bracket expression), so these families were
+# never scanned at all. Shapes are built from the rule's own regex, never
+# real credentials.
+RE2_TRANSLATED_BLOCKED = [
+    # linear-api-key: 'lin_api_(?i)[a-z0-9]{40}' -- mid-pattern (?i)
+    ("token " + "lin_api_" + "a1" * 20 + " end",
+     "lin_api_" + "a1" * 20, "linear-api-key"),
+    # airtable-personnal-access-token: '\b(pat[[:alnum:]]{14}\.[a-f0-9]{64})\b'
+    # -- POSIX class inside a bracket expression
+    ("airtable token pat" + "a1" * 7 + "." + "0123456789abcdef" * 4 + " end",
+     "pat" + "a1" * 7 + "." + "0123456789abcdef" * 4,
+     "airtable-personnal-access-token"),
+    # sendgrid-api-token: '\b(SG\.(?i)[a-z0-9=_\-\.]{66})...' -- mid-pattern (?i)
+    ("token " + "SG." + "a1" * 33 + " end", "SG." + "a1" * 33, "sendgrid-api-token"),
+    # curl-auth-header: two quoted alternatives, each with its own
+    # mid-pattern (?i) inside the shared enclosing group -- proves both the
+    # double- and the single-quoted branch stay reachable. A scope that
+    # swallowed the '|' would make the double-quote prefix mandatory and
+    # drop this (single-quoted) branch entirely.
+    ('curl -H "Authorization: Bearer abcdefghij12345"',
+     "abcdefghij12345", "curl-auth-header"),
+    ("curl -H 'Authorization: Bearer abcdefghij12345'",
+     "abcdefghij12345", "curl-auth-header"),
+]
+
+
+@pytest.mark.parametrize("text,marker,rule_id", RE2_TRANSLATED_BLOCKED)
+def test_re2_translated_rules_are_now_enforced(text, marker, rule_id):
+    _blocked_by(text, marker, rule_id)
+
+
 def _blocked_by(text, marker, rule_id):
     with pytest.raises(ContentRejected) as ei:
         _SCANNER.check(text, BODY_LIMIT)
@@ -395,9 +428,17 @@ def test_duplicate_ids_across_files_keep_the_first(tmp_path, caplog):
 def test_uncompilable_rule_is_skipped_not_fatal(tmp_path, caplog):
     # gitleaks patterns are RE2; some are invalid Python `re`, and which ones
     # varies by interpreter. One bad rule must not take the whole scanner down.
+    # A *known* POSIX class such as [[:alnum:]] is translated and now loads
+    # (see test_rules_loader.py). An unknown class name raises instead of
+    # being left verbatim -- at the start of a bracket ('unknown-posix-class')
+    # Python's own nested-set reading would have caught it anyway, but
+    # elsewhere in the bracket ('posix-class-not-at-start') Python reads a
+    # bare '[' as a literal character and would otherwise compile the rule
+    # silently, with the wrong meaning.
     (tmp_path / "rules.toml").write_text(
         '[[rules]]\nid = "bad-regex"\nregex = "(unclosed"\n\n'
-        '[[rules]]\nid = "posix-class"\nregex = "[[:alnum:]]{10}"\n\n'
+        '[[rules]]\nid = "unknown-posix-class"\nregex = "[[:nonsense:]]{10}"\n\n'
+        '[[rules]]\nid = "posix-class-not-at-start"\nregex = "[x[:blank:]]+"\n\n'
         '[[rules]]\nid = "path-only"\npath = "\\\\.pem$"\n\n'
         '[[rules]]\nid = "good"\nregex = "ZQ9[0-9]{4}"\n'
     )
@@ -406,9 +447,16 @@ def test_uncompilable_rule_is_skipped_not_fatal(tmp_path, caplog):
     assert [rid for rid, *_ in rules] == ["good"]
     # each dropped rule is named, so a sync that loses coverage is diagnosable
     assert "bad-regex" in caplog.text
-    # a POSIX class compiles in Python with a *different* meaning; it must be
-    # rejected too, not silently mis-matched
-    assert "posix-class" in caplog.text
+    # an unrecognised POSIX class name now raises during translation, so it
+    # is reported and dropped rather than silently mis-compiled
+    assert "unknown-posix-class" in caplog.text
+    assert "posix-class-not-at-start" in caplog.text
+    # a dropped rule is a coverage loss an operator must see, not a detail
+    # buried at DEBUG
+    dropped = [r for r in caplog.records
+               if r.name == "memriver_core.content_policy.secret_scanner"
+               and "skipping rule" in r.getMessage()]
+    assert dropped and all(r.levelno == logging.WARNING for r in dropped)
 
 
 # --- [policy] honor_entropy_only_for --------------------------------------

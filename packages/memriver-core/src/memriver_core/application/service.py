@@ -1,21 +1,32 @@
-"""The application facade: orchestrates the two stores, the content policy and the limits.
+"""The application facade: orchestrates the stores, the content policy and the limits.
 
-MemoryStore owns single-memory actions and ProjectStore owns collections;
-this facade only sequences policy checks, builds read/write sets and renders
-the index. Nothing here knows about files, frontmatter, git, or
-settings.
+MemoryStore owns single-memory actions and ProjectStore owns collections and
+directories; this facade sequences policy checks, builds sessions and
+read/write sets, renders the index and the project header, and hands the
+CLI its planning and management reads. Nothing here touches a file, a table
+or settings: every limit is injected.
 """
 
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Protocol
 
-from memriver_core.models import ID_RE, Memory, Project, ReadWriteSet, single_line
+from memriver_core.models import (
+    DiagnosticsReport,
+    Memory,
+    Project,
+    ReadWriteSet,
+    Resolution,
+    RootPlan,
+    Session,
+    UnbindPlan,
+    single_line,
+)
 from memriver_core.models.errors import (
     ContentRejected,
     IdCollision,
-    ProjectNotFound,
     ProjectUnavailable,
     StorageFailure,
 )
@@ -23,6 +34,17 @@ from memriver_core.models.errors import (
 if TYPE_CHECKING:
     from memriver_core.content_policy.protocol import ContentPolicy
     from memriver_core.repository.protocol import MemoryStore, ProjectStore
+
+
+class Diagnostics(Protocol):
+    """What the facade needs from the diagnostics service bootstrap composes.
+
+    A structural type rather than an import of DiagnosticsService: only
+    bootstrap may name a composed service (architecture rule).
+    """
+
+    def run(self, *, now: str | None, stale_days: int,
+            jaccard_threshold: float) -> DiagnosticsReport: ...
 
 # 'harness' is persisted verbatim into the stored memory, so without this it
 # is a policy-free channel for secrets or megabytes of text. The shape check
@@ -34,28 +56,27 @@ _HARNESS_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 # source transports compare against.
 EMPTY_INDEX = "(no memories yet)"
 
-# the index is injected into every session: one short cue per entry
-_CUE_CHARS = 60
-
-
-def _index_line(memory: Memory, tag: str) -> str:
-    # stored memories are hand-editable, so an empty body must not break the
-    # index, and every stored field is normalized on its own before the line
-    # is composed so one field's characters never land in another's budget
-    raw_cue = memory.description or (memory.body.splitlines() or [""])[0]
-    cue = single_line(raw_cue)[:_CUE_CHARS]
-    return (f"- [{memory.type}{tag}] {single_line(memory.id)}: {cue} "
-            f"({single_line(memory.updated[:10])})")
+# The session header's fixed lines; the registered and degraded lines are
+# composed per session in open_session.
+NONE_HEADER = "project: none — global is read-only; ask the user to run memriver project init"
+STORE_UNREADABLE_HEADER = ("project: unavailable — the memory store could not be read; "
+                           "ask the user to run memriver doctor")
 
 
 class MemoryService:
     def __init__(self, memory_store: MemoryStore, project_store: ProjectStore,
-                 content_policy: ContentPolicy, *, max_body_chars: int,
-                 metadata_max_chars: int, search_limit_default: int,
-                 search_limit_max: int, index_budget_lines: int) -> None:
+                 content_policy_factory: Callable[[], ContentPolicy],
+                 diagnostics: Diagnostics, *, max_body_chars: int,
+                 metadata_max_chars: int, search_limit_default: int, search_limit_max: int,
+                 index_budget_lines: int, index_cue_chars: int, header_field_chars: int,
+                 project_name_max_chars: int) -> None:
         self._memory_store = memory_store
         self._project_store = project_store
-        self._content_policy = content_policy
+        # built on first use: a read-only caller (the Stop hook, doctor, the
+        # human views) never pays for loading and compiling the scanner rules
+        self._content_policy_factory = content_policy_factory
+        self._content_policy: ContentPolicy | None = None
+        self._diagnostics = diagnostics
         self._max_body_chars = max_body_chars
         # metadata keeps its own budget so that lowering the configured body
         # limit does not silently tighten harness/description acceptance
@@ -63,43 +84,86 @@ class MemoryService:
         self._search_limit_default = search_limit_default
         self._search_limit_max = search_limit_max
         self._index_budget_lines = index_budget_lines
+        self._index_cue_chars = index_cue_chars
+        self._header_field_chars = header_field_chars
+        self._project_name_max_chars = project_name_max_chars
 
-    # --- sessions and projects ---
+    def _policy(self) -> ContentPolicy:
+        if self._content_policy is None:
+            self._content_policy = self._content_policy_factory()
+        return self._content_policy
 
-    def read_write_set(self, project_id: str | None) -> ReadWriteSet:
-        """The read/write set a session may act in; only an existing, non-global project is kept."""
-        global_project_id = self._project_store.global_project_id()
-        kept = None
-        if project_id is not None and project_id != global_project_id \
-                and ID_RE.fullmatch(project_id):
-            try:
-                self._project_store.read(project_id)
-                kept = project_id
-            except ProjectNotFound:
-                kept = None
-        return ReadWriteSet(project_id=kept, global_project_id=global_project_id)
+    def _field(self, value: str) -> str:
+        """One stored value as it may appear in the agent-facing header."""
+        return single_line(value)[:self._header_field_chars]
+
+    # --- sessions ---
+
+    def open_session(self, start: str) -> Session:
+        """The header, state and read/write set for one directory. Never raises for a
+        store problem: an unreadable store is an empty, clearly labelled session."""
+        try:
+            resolution = self._project_store.resolve(start)
+            global_project_id = self._project_store.global_project_id()
+        except StorageFailure:
+            return Session("unavailable", STORE_UNREADABLE_HEADER,
+                           ReadWriteSet(project_id=None, global_project_id=None))
+        project = resolution.project
+        if resolution.state == "registered" and project is not None \
+                and project.id != global_project_id:
+            return Session(
+                "registered",
+                f"project: {self._field(project.name)} [{project.id}] "
+                f"(root {self._field(project.root or '')})",
+                ReadWriteSet(project_id=project.id, global_project_id=global_project_id),
+                project)
+        read_write_set = ReadWriteSet(project_id=None, global_project_id=global_project_id)
+        if resolution.state == "degraded":
+            diagnostic = resolution.diagnostic or ""
+            return Session(
+                "degraded",
+                f"project: unavailable — this directory could not be matched to one project "
+                f"({self._field(diagnostic)}); ask the user to run memriver project explain",
+                read_write_set, diagnostic=diagnostic)
+        return Session("none", NONE_HEADER, read_write_set)
+
+    # --- projects ---
 
     def global_project_id(self) -> str | None:
         return self._project_store.global_project_id()
 
     def ensure_global(self) -> str:
-        # the store takes its lock and re-reads the manifest itself, so a
-        # global created by a peer in between is returned, not duplicated
         try:
             return self._project_store.ensure_global()
         except IdCollision as err:
             raise StorageFailure from err
 
-    def create_project(self, name: str) -> Project:
-        project = Project.new(name)
-        try:
-            self._project_store.create(project)
-        except IdCollision as err:
-            raise StorageFailure from err
-        return project
-
     def read_project(self, project_id: str) -> Project:
         return self._project_store.read(project_id)
+
+    def list_projects(self) -> list[Project]:
+        return self._project_store.list_projects()
+
+    def plan_root(self, directory: str, project_id: str | None = None) -> RootPlan:
+        return self._project_store.plan_root(directory, project_id)
+
+    def init_project(self, name: str, plan: RootPlan) -> Project:
+        project = Project.new(name, max_chars=self._project_name_max_chars)
+        try:
+            self._project_store.create(project, plan)
+        except IdCollision as err:
+            raise StorageFailure from err
+        return Project(id=project.id, name=project.name, root=plan.root)
+
+    def adopt(self, project_id: str, plan: RootPlan) -> None:
+        self._project_store.bind(project_id, plan)
+
+    def plan_unbind(self, project_id: str, root: str,
+                    cwd: str) -> tuple[UnbindPlan, Resolution]:
+        return self._project_store.plan_unbind(project_id, root, cwd)
+
+    def unbind(self, plan: UnbindPlan) -> None:
+        self._project_store.unbind(plan)
 
     # --- single memories ---
 
@@ -112,15 +176,16 @@ class MemoryService:
         if not _HARNESS_RE.fullmatch(harness):
             raise ContentRejected("invalid harness identifier "
                                   "(allowed: letters, digits, ., _, -, max 64 chars)")
-        self._content_policy.check(harness, self._metadata_max_chars)
-        self._content_policy.check(content, self._max_body_chars)
+        policy = self._policy()
+        policy.check(harness, self._metadata_max_chars)
+        policy.check(content, self._max_body_chars)
         # description is persisted verbatim too, and only checked when
         # non-empty since it is optional and the policy refuses ""
         if description.strip():
-            self._content_policy.check(description, self._metadata_max_chars)
+            policy.check(description, self._metadata_max_chars)
         memory = Memory.new(body=content, type=type, project_id=read_write_set.project_id,
-                           sync=sync, description=description,
-                           source={"harness": harness, "method": "agent"})
+                            sync=sync, description=description,
+                            source={"harness": harness, "method": "agent"})
         try:
             self._memory_store.record(memory, read_write_set)
         except IdCollision as err:
@@ -130,16 +195,20 @@ class MemoryService:
     def read(self, memory_id: str, read_write_set: ReadWriteSet) -> Memory:
         return self._memory_store.read(memory_id, read_write_set)
 
-    def update(self, memory_id: str, content: str, read_write_set: ReadWriteSet,
-               description: str | None = None) -> Memory:
-        self._content_policy.check(content, self._max_body_chars)
+    def update(self, memory_id: str, content: str, read_write_set: ReadWriteSet, *,
+               expected_version: int, description: str | None = None) -> Memory:
+        policy = self._policy()
+        policy.check(content, self._max_body_chars)
         if description is not None and description.strip():
-            self._content_policy.check(description, self._metadata_max_chars)
-        return self._memory_store.update(memory_id, read_write_set, body=content,
+            policy.check(description, self._metadata_max_chars)
+        return self._memory_store.update(memory_id, read_write_set,
+                                         expected_version=expected_version, body=content,
                                          description=description)
 
-    def delete(self, memory_id: str, read_write_set: ReadWriteSet) -> None:
-        self._memory_store.delete(memory_id, read_write_set)
+    def delete(self, memory_id: str, read_write_set: ReadWriteSet, *, expected_version: int,
+               hard: bool = False) -> int:
+        return self._memory_store.delete(memory_id, read_write_set,
+                                         expected_version=expected_version, hard=hard)
 
     # --- collections ---
 
@@ -148,11 +217,32 @@ class MemoryService:
         limit = self._search_limit_default if limit is None else limit
         return max(1, min(limit, self._search_limit_max))
 
-    def search(self, project_id: str, query: str, read_write_set: ReadWriteSet,
+    def search(self, query: str, read_write_set: ReadWriteSet,
                limit: int | None = None) -> list[Memory]:
-        # the store answers exactly what it is asked for; clamping is ours
-        return self._project_store.search(project_id, read_write_set, query=query,
-                                          limit=self.normalize_search_limit(limit))
+        """The current project first, then global, in one budget.
+
+        One clamp for the whole answer, then two single-project searches; a
+        spent budget skips global rather than being clamped back to one.
+        """
+        remaining = self.normalize_search_limit(limit)
+        hits: list[Memory] = []
+        for project_id in (read_write_set.project_id, read_write_set.global_project_id):
+            if project_id is None or remaining == 0:
+                continue
+            found = self._project_store.search(project_id, read_write_set, query=query,
+                                               limit=remaining)
+            hits += found
+            remaining -= len(found)
+        return hits
+
+    def _index_line(self, memory: Memory, tag: str) -> str:
+        # an empty body must not break the index, and every stored field is
+        # normalized on its own before the line is composed so one field's
+        # characters never land in another's budget
+        raw_cue = memory.description or (memory.body.splitlines() or [""])[0]
+        cue = single_line(raw_cue)[:self._index_cue_chars]
+        return (f"- [{memory.type}{tag}] {single_line(memory.id)}: {cue} "
+                f"({single_line(memory.updated[:10])})")
 
     def index(self, read_write_set: ReadWriteSet) -> str:
         """The current project's entries, then global's, in one line budget."""
@@ -169,7 +259,42 @@ class MemoryService:
         lines: list[str] = []
         for tag, memories in listed:
             room = self._index_budget_lines - len(lines)
-            lines += [_index_line(m, tag) for m in memories[:max(room, 0)]]
+            lines += [self._index_line(m, tag) for m in memories[:max(room, 0)]]
         if total > len(lines):
             lines.append(f"… ({total - len(lines)} more entries omitted; use memory_search)")
         return "\n".join(lines)
+
+    # --- management reads (the human CLI; never reachable from MCP) ---
+
+    def show(self, memory_id: str, *, include_deleted: bool = False) -> Memory:
+        return self._memory_store.read_any(memory_id, include_deleted=include_deleted)
+
+    def list_memories(self, project_id: str | None = None) -> list[tuple[Project, list[Memory]]]:
+        """Every project (or one) with its active memories, for the human views.
+
+        Each project is read in its own transaction, so a multi-project listing
+        or export is not a single cross-project snapshot.
+        """
+        projects = self._project_store.list_projects() if project_id is None \
+            else [self._project_store.read(project_id)]
+        return [(project, self._project_store.search(project.id, None, query=None, limit=None))
+                for project in projects]
+
+    def search_all(self, query: str, project_id: str | None = None,
+                   limit: int | None = None) -> list[Memory]:
+        """Matches across every project (or one), newest first.
+
+        Each project is read in its own transaction, so a multi-project search
+        is not a single cross-project snapshot.
+        """
+        projects = self._project_store.list_projects() if project_id is None \
+            else [self._project_store.read(project_id)]
+        hits = [m for project in projects
+                for m in self._project_store.search(project.id, None, query=query, limit=None)]
+        hits.sort(key=lambda m: (m.updated, m.id), reverse=True)
+        return hits if limit is None else hits[:limit]
+
+    def diagnose(self, *, now: str | None = None, stale_days: int = 90,
+                 jaccard_threshold: float = 0.6) -> DiagnosticsReport:
+        return self._diagnostics.run(now=now, stale_days=stale_days,
+                                     jaccard_threshold=jaccard_threshold)

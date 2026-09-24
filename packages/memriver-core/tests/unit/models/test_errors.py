@@ -2,6 +2,7 @@ import memriver_core
 import pytest
 from memriver_core.models import errors
 from memriver_core.models.errors import (
+    BindingRefused,
     ContentRejected,
     GlobalReadOnly,
     IdCollision,
@@ -10,10 +11,11 @@ from memriver_core.models.errors import (
     ProjectNotFound,
     ProjectUnavailable,
     StorageFailure,
+    VersionConflict,
 )
 
 PUBLIC = [MemoryNotFound, ProjectNotFound, ContentRejected, ProjectUnavailable,
-          GlobalReadOnly, StorageFailure]
+          GlobalReadOnly, StorageFailure, VersionConflict, BindingRefused]
 SUBCLASSES = [*PUBLIC, IdCollision]
 TAXONOMY = [MemoryError, *PUBLIC]
 
@@ -51,3 +53,23 @@ def test_identity_proposal_errors_are_gone(name):
 @pytest.mark.parametrize("cls", TAXONOMY)
 def test_the_public_facade_reexports_the_same_class_objects(cls):
     assert getattr(memriver_core, cls.__name__) is cls
+
+
+def test_version_conflict_and_binding_refused_carry_fields_not_words():
+    assert VersionConflict("m").memory_id == "m"
+    refused = BindingRefused("bound-elsewhere", "pppppppppp")
+    assert (refused.reason, refused.project_id) == ("bound-elsewhere", "pppppppppp")
+    assert BindingRefused("plan-changed").project_id is None
+
+
+def test_binding_reasons_are_the_eleven_the_spec_lists():
+    from memriver_core.models.errors import BINDING_REASONS
+    assert BINDING_REASONS == {
+        "not-a-directory", "covers-home", "covers-store", "inside-store", "bound-elsewhere",
+        "unverifiable", "is-global", "has-directory", "plan-changed", "binding-changed",
+        "no-such-project"}
+
+
+def test_an_unknown_binding_reason_is_a_programming_error():
+    with pytest.raises(ValueError):
+        BindingRefused("because")
