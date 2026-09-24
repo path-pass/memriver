@@ -178,9 +178,21 @@ class MemoryService:
 
     # --- sessions (spec §5) ---
 
+    def store_exists(self) -> bool:
+        """False only for a store known to be absent (nothing to route, nothing to
+        write). One that cannot be checked counts as present: its operation then
+        reports it as unavailable."""
+        try:
+            return self._session_store.store_exists()
+        except StorageFailure:
+            return True
+
     def start_session(self, key: SessionKey, *, source: str, entry_dir: str,
                       transcript_path: str | None) -> ProjectContext:
         """SessionStart: the stored row's context, registering the session when it has none."""
+        # first: without a store no directory question (git included) is asked
+        if not self.store_exists():
+            return self._storeless_context(key)
         try:
             stored = self._session_store.get(key)
             if stored is not None:
@@ -202,6 +214,9 @@ class MemoryService:
     def observe_prompt(self, key: SessionKey, *, prompt: str, entry_dir: str,
                        transcript_path: str | None) -> tuple[ProjectContext, bool]:
         """UserPromptSubmit: count and record one prompt; True when this call created the row."""
+        # first: without a store neither the scanner nor git runs
+        if not self.store_exists():
+            return self._storeless_context(key), False
         entry = self._prompt_entry(prompt, now())
         try:
             seed = self._session_store.get(key)

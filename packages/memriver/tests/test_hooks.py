@@ -53,6 +53,7 @@ PENDING_HEADER = ("project: awaiting confirmation — this session is not regist
                   "ask the user, then call session_confirm")
 
 SESSION_ID = "session-1"
+MISSING = object()          # a payload key left out
 
 
 @pytest.fixture(autouse=True)
@@ -647,6 +648,20 @@ def test_a_missing_store_makes_every_hook_a_silent_no_op(event, harness, tmp_pat
     assert not store.exists()
 
 
+@pytest.mark.parametrize("event", ["session-start", "user-prompt-submit", "stop",
+                                   "session-end"])
+def test_a_missing_store_is_silent_even_for_an_unresolvable_entry(event, tmp_path):
+    """The store is checked first: an entry that cannot be resolved would
+    otherwise answer `degraded` before anyone noticed there is no store."""
+    store = tmp_path / "never-created"
+    result = hook(event, "codex", {"source": "startup", "prompt": "hello",
+                                   "stop_hook_active": False,
+                                   "cwd": str(tmp_path / "no-such-directory")},
+                  root=store)
+    assert result == HookResult()
+    assert not store.exists()
+
+
 def test_a_store_with_only_unreadable_entries_is_empty_not_broken(tmp_path,
                                                                   monkeypatch):
     root = tmp_path / "root"
@@ -871,6 +886,19 @@ def test_user_prompt_submit_records_each_prompt_silently(harness, tmp_path, regi
     assert [entry.text for entry in session.recent_prompts] == ["first", "second"]
 
 
+@pytest.mark.parametrize("prompt", [None, 17, MISSING])
+def test_a_prompt_that_is_not_text_is_counted_as_invalid(prompt, tmp_path, registered):
+    store = tmp_path / "mem"
+    session_start("claude-code", {"cwd": str(registered)}, root=store)
+    payload = {"cwd": str(registered)}
+    if prompt is not MISSING:
+        payload["prompt"] = prompt
+    assert hook("user-prompt-submit", "claude-code", payload, root=store) == HookResult()
+    session = _session(store)
+    assert session.prompt_count == 1
+    assert (session.first_prompt.text, session.first_prompt.omitted) == (None, "invalid")
+
+
 @pytest.mark.parametrize("marker", [{"agent_id": "agent-7"}, {"agent_type": "explorer"}])
 def test_a_codex_sub_agent_prompt_is_neither_recorded_nor_counted(marker, tmp_path,
                                                                   registered):
@@ -990,8 +1018,6 @@ def test_a_resume_from_elsewhere_keeps_the_sessions_project(tmp_path):
         session_start("claude-code", {"cwd": str(b), "source": "resume"}, root=store))
     assert _line_after_begin(text).startswith(f"project: a [{a_id}]")
 
-
-MISSING = object()
 
 
 @pytest.mark.parametrize("event", EVENTS)

@@ -112,6 +112,9 @@ class SessionStore(Protocol):
       `StorageFailure` on a direct lookup and skipped by `search`. A row a
       write would leave behind that would not read back is a `ValueError`,
       and nothing is written. Other store trouble is `StorageFailure`.
+    - `store_exists`: whether the store is there at all; never creates it.
+      `StorageFailure` when it cannot be checked (not a regular file, an
+      unreadable directory).
     - `register`: insert if absent, never overwrite; returns the stored row,
       which may be a concurrent peer's.
     - `touch`: `last_active_at = max(stored, at)`; a non-None
@@ -137,6 +140,7 @@ class SessionStore(Protocol):
       prompt text, `entry_cwd` or `branch`; newest `last_active_at` first.
     """
 
+    def store_exists(self) -> bool: ...
     def get(self, key: SessionKey) -> Session | None: ...
     def register(self, session: Session) -> Session | None: ...
     def touch(self, key: SessionKey, at: str, *,

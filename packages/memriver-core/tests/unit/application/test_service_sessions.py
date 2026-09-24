@@ -299,6 +299,43 @@ def test_a_prompt_without_a_store_creates_nothing(storeless):
     assert not storeless.store.exists()
 
 
+class Recording:
+    """A collaborator that must not be reached: it records every call."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+
+    def __call__(self, *args, **kwargs):
+        self.calls.append(args)
+        return args[0] if args else None
+
+    def check(self, *args, **kwargs):
+        self.calls.append(args)
+
+
+def test_without_a_store_no_directory_question_and_no_scan_is_asked(storeless):
+    """No store, nothing to route: an unresolvable entry is not a `degraded`
+    answer, and no git subprocess or secret scan runs for a store that is not there."""
+    main_tree, policy = Recording(), Recording()
+    storeless.main_tree, storeless.policy = main_tree, policy
+    missing = storeless.base / "never-created-directory"
+    assert storeless.service.store_exists() is False
+    assert storeless.start(entry=missing).state == "none"
+    assert storeless.prompt(entry=missing)[0].state == "none"
+    assert storeless.start().state == "none"
+    assert storeless.prompt()[0].state == "none"
+    assert (main_tree.calls, policy.calls) == ([], [])
+    assert not storeless.store.exists()
+
+
+def test_an_uncheckable_store_counts_as_present(world, monkeypatch):
+    """Only a store known to be absent is absent: one that cannot be checked
+    goes on to its operation, which reports it as unavailable."""
+    monkeypatch.setattr(world.session_store, "store_exists",
+                        Broken(world.session_store, "store_exists").store_exists)
+    assert world.service.store_exists() is True
+
+
 def test_a_prompt_whose_directory_cannot_be_mapped_records_nothing(world):
     world.main_tree = lambda path: None
     context, created = world.prompt()

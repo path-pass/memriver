@@ -162,6 +162,9 @@ class SqliteSessionStore:
         self.root = Path(root)
         self._database = Database(self.root, busy_timeout_ms=busy_timeout_ms)
 
+    def store_exists(self) -> bool:
+        return self._database.exists()
+
     def get(self, key: SessionKey) -> Session | None:
         with self._database.read() as conn:
             return _stored(conn, key)

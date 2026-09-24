@@ -104,6 +104,15 @@ def test_get_on_an_absent_store_is_none_and_creates_nothing(root):
     assert not root.exists()
 
 
+def test_store_exists_on_an_absent_store_is_false_and_creates_nothing(root):
+    assert _store(root).store_exists() is False
+    assert not root.exists()
+
+
+def test_store_exists_on_an_initialized_store_is_true(session_store):
+    assert session_store.store_exists() is True
+
+
 def test_register_stores_the_row_and_returns_it(session_store):
     session = _session(transcript_path="/tmp/t.jsonl")
     assert session_store.register(session) == session

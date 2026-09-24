@@ -3,8 +3,9 @@
 SessionStart registers the session (or finds its row) and injects the index
 its row grants; UserPromptSubmit counts and records the prompt; Stop decides
 the save nudge; SessionEnd records the end. Every event names its session by
-the payload's ``session_id``: without a valid one, or without a store, a hook
-does nothing -- and no hook ever creates the store.
+the payload's ``session_id``: without a valid one, or without a store (asked
+first, through ``store_exists``), a hook does nothing -- and no hook ever
+creates the store.
 
 Three rules shape this module.
 
@@ -217,7 +218,7 @@ def _stop(harness: Harness, payload_text: str, *, root: Path | None) -> HookResu
 
         store_root = Path(root) if root is not None else storage_root()
         service = build_service(Settings(root=store_root), root=store_root)
-        if not service.stop_decision(key):
+        if not (service.store_exists() and service.stop_decision(key)):
             return HookResult()
         return HookResult(stdout=_emit(_STOP_ENCODERS[harness](STOP_NUDGE)))
     except Exception:  # noqa: BLE001 - a failed nudge is never worth a message
@@ -240,6 +241,8 @@ def _user_prompt_submit(harness: Harness, payload_text: str, *, root: Path | Non
             return HookResult()
         with quiet_core_logging():
             service = _open_service(root)
+            if not service.store_exists():
+                return HookResult()
             context, created = service.observe_prompt(
                 key, prompt=payload.get("prompt"),
                 entry_dir=str(_resolve_dir(harness, payload, project_dir, cwd)),
@@ -260,7 +263,9 @@ def _session_end(harness: Harness, payload_text: str, *, root: Path | None) -> H
         key = _session_key(harness, payload) if isinstance(payload, dict) else None
         if key is not None:
             with quiet_core_logging():
-                _open_service(root).end_session(key)
+                service = _open_service(root)
+                if service.store_exists():
+                    service.end_session(key)
         return HookResult()
     except Exception:  # noqa: BLE001 - a missed end is never worth a message
         return HookResult()
@@ -287,14 +292,13 @@ def _session_start(harness: Harness, payload_text: str, *, root: Path | None,
         source = payload.get("source")
         with quiet_core_logging():
             service = _open_service(root)
+            # no store, nothing to route: silent, and nothing is created
+            if not service.store_exists():
+                return HookResult()
             context = service.start_session(
                 key, source=source if isinstance(source, str) else "",
                 entry_dir=str(_resolve_dir(harness, payload, project_dir, cwd)),
                 transcript_path=_transcript_path(payload))
-            # a `none` context with no row behind it is the storeless answer:
-            # nothing was written and there is nothing to route
-            if context.state == "none" and service.entry_of(context) is None:
-                return HookResult()
             notice = (_pending_notice(service, context) if context.state == "pending"
                       else "")
             # the same header and body the MCP server shows for this context

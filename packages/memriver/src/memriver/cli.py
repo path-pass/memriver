@@ -62,10 +62,12 @@ def _build_parser() -> argparse.ArgumentParser:
     # those literals so they cannot drift.
     hook.add_argument("--harness", choices=["claude-code", "codex"], required=True)
     _add_store_options(hook, project_dir_default=None,
-                       project_dir_help="directory where project discovery starts "
-                                        "(the bound directories decide the project; default: "
-                                        "the directory the harness reports, else the "
-                                        "current working directory)")
+                       project_dir_help="entry directory registered for a session memriver "
+                                        "has not seen yet; an existing session keeps its "
+                                        "project (default: for claude-code "
+                                        "$CLAUDE_PROJECT_DIR when absolute, else the "
+                                        "directory the harness reports, else the current "
+                                        "working directory)")
     hook.set_defaults(handler=_hook)
 
     install = commands.add_parser(
