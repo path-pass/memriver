@@ -1177,6 +1177,77 @@ def test_a_failed_rollback_reports_the_exact_paths_and_keeps_the_backups(home,
     assert SECRET not in result.stderr
 
 
+def test_rollback_leaves_a_file_another_process_edited_during_the_failed_run(
+        home, project):
+    """A later target failing must not let rollback stomp a concurrent edit to
+    an earlier target: `_roll_back` restoring the backup unconditionally would
+    discard whatever another process wrote to that file in the window between
+    this run's write and the rollback, and the backup -- taken before this run
+    touched the file -- has no way to hold that edit either."""
+    claude_json = write(home / ".claude.json", json.dumps({"original": True}))
+    original_bytes = claude_json.read_bytes()
+    calls: list[int] = []
+
+    def replace(source, destination) -> None:
+        calls.append(len(calls) + 1)
+        if calls[-1] == 2:
+            # simulates another process editing ~/.claude.json in the window
+            # between this run's own write (call 1) and the second target's
+            # replacement, which then fails
+            claude_json.write_text(
+                json.dumps({"original": True,
+                            "concurrent_foreign_edit": "must survive"}),
+                encoding="utf-8")
+            raise OSError("injected replacement failure #2")
+        os.replace(source, destination)
+
+    result = install(["claude-code"], home=home, cwd=project, yes=True,
+                     replace=replace)
+
+    assert result.exit_code == 1
+    assert json.loads(claude_json.read_text())["concurrent_foreign_edit"] == (
+        "must survive"
+    )
+    backup = backups(home)[0]
+    assert backup.read_bytes() == original_bytes
+    assert "concurrent_foreign_edit" not in backup.read_text()
+    assert str(claude_json) in result.stderr
+    assert "changed after this run wrote it" in result.stderr
+
+
+def test_rollback_does_not_delete_a_created_file_someone_modified_afterward(
+        home, project):
+    """The mirror case for a target this run created (no backup exists): a
+    later target failing must not let rollback delete that file once another
+    process has written to it in the meantime -- there is nothing to restore
+    it to, so deleting it would simply lose the concurrent edit."""
+    claude_json = write(home / ".claude.json", json.dumps({"original": True}))
+    original_json = claude_json.read_bytes()
+    write(home / ".codex" / "config.toml", 'model = "gpt"\n')
+    settings_json = home / ".claude" / "settings.json"
+    calls: list[int] = []
+
+    def replace(source, destination) -> None:
+        calls.append(len(calls) + 1)
+        if calls[-1] == 3:
+            # ~/.claude/settings.json (call 2) was created fresh by this run;
+            # this simulates another process writing to it before the third
+            # target (codex's config.toml) fails
+            settings_json.write_text('{"tampered": true}', encoding="utf-8")
+            raise OSError("injected replacement failure #3")
+        os.replace(source, destination)
+
+    result = install(["claude-code", "codex"], home=home, cwd=project, yes=True,
+                     replace=replace)
+
+    assert result.exit_code != 0
+    assert settings_json.exists()
+    assert json.loads(settings_json.read_text()) == {"tampered": True}
+    assert claude_json.read_bytes() == original_json
+    assert str(settings_json) in result.stderr
+    assert "changed after this run wrote it" in result.stderr
+
+
 def test_success_reports_backup_paths_and_restore_commands_never_contents(home,
                                                                          project):
     write(home / ".claude.json", json.dumps({"apiKey": SECRET}))

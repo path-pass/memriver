@@ -1210,6 +1210,39 @@ def test_a_failed_apply_restores_every_touched_target_from_its_backup(home, proj
     assert "backups were kept" in result.stdout
 
 
+def test_rollback_of_a_deletion_does_not_overwrite_a_file_someone_recreated(
+        home, project):
+    """kiro's steering file is deleted outright once uninstall empties it
+    (`delete_if_emptied`) -- write 2 of this run. If another process recreates
+    that path before rollback undoes a later failure (codex's config.toml,
+    write 3), restoring the backup over it would silently discard whatever
+    that process wrote, with no way to recover it afterwards."""
+    install(["kiro", "codex"], home=home, cwd=project, yes=True)
+    mcp_json = home / ".kiro" / "settings" / "mcp.json"
+    steering = project / ".kiro" / "steering" / "memriver.md"
+    original_mcp = mcp_json.read_bytes()
+    calls: list[int] = []
+
+    def replace(source, destination) -> None:
+        import os
+        calls.append(len(calls) + 1)
+        if calls[-1] == 3:
+            # simulates another process recreating the steering file (deleted
+            # by this run's own write 2) before codex's config.toml (write 3)
+            # fails
+            steering.write_text("someone recreated this\n", encoding="utf-8")
+            raise OSError("injected replacement failure #3")
+        os.replace(source, destination)
+
+    result = uninstall(["kiro", "codex"], home=home, cwd=project, yes=True,
+                       replace=replace)
+
+    assert result.exit_code != 0
+    assert steering.read_text() == "someone recreated this\n"
+    assert mcp_json.read_bytes() == original_mcp
+    assert "changed after this run wrote it" in result.stdout
+
+
 def test_an_interrupt_the_instant_the_steering_file_is_unlinked_still_rolls_back(
         home, project, monkeypatch):
     """The steering file is deleted outright rather than rewritten. Its

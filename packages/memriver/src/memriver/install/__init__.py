@@ -388,11 +388,20 @@ class _CreatedDir:
 
 @dataclass(frozen=True)
 class _Write:
-    """One completed replacement, and everything rollback needs to undo it."""
+    """One completed replacement, and everything rollback needs to undo it.
+
+    ``written`` is the exact bytes this run put at ``target.path`` -- ``None``
+    for a deletion (the ``delete_if_emptied`` branch, where this run's own
+    effect on the path is its absence). Rollback compares this against what
+    is on disk before touching anything: undoing a write that another process
+    has since changed would destroy that change with no backup to recover it
+    from, since the backup only ever holds the *pre*-run bytes.
+    """
 
     target: Target
     backup: Path | None
     original_mode: int | None
+    written: bytes | None
     # the parents this write had to create, deepest first, so rollback can put
     # the tree back the way it found it
     created_dirs: tuple[_CreatedDir, ...] = ()
@@ -471,12 +480,14 @@ def _write_target(snapshot: Snapshot, text: str, root: Path | None, stamp: str,
             _write_backup(target, original_mode, stamp) if original_mode is not None
             else None
         )
+        deleting = text == "" and target.delete_if_emptied and original_mode is not None
+        data = text.encode("utf-8")
         write = _Write(target=target, backup=backup, original_mode=original_mode,
-                       created_dirs=created_dirs)
+                       written=None if deleting else data, created_dirs=created_dirs)
         mode = original_mode
         if mode is None:
             mode = 0o600 if target.user_level else _umask_mode()
-        if text == "" and target.delete_if_emptied and original_mode is not None:
+        if deleting:
             # this target is entirely memriver's own file; a removal that
             # empties it takes the file with it rather than leaving an empty
             # one behind (spec P2-6). The backup just written above still
@@ -486,7 +497,7 @@ def _write_target(snapshot: Snapshot, text: str, root: Path | None, stamp: str,
             recorded = True
             target.path.unlink()
         else:
-            _replace_atomically(target.path, text.encode("utf-8"), mode, replace_file)
+            _replace_atomically(target.path, data, mode, replace_file)
             record(write)
     except BaseException:
         # a write that never joined the rollback list takes its own directories
@@ -600,11 +611,34 @@ def _remove_created_dirs(created_dirs: Sequence[_CreatedDir]) -> None:
 
 def _roll_back(writes: Sequence[_Write],
                replace_file: Callable[[Path, Path], None]) -> list[str]:
-    """Undo completed writes newest-first. Backups survive every outcome."""
+    """Undo completed writes newest-first. Backups survive every outcome.
+
+    Before touching a path, its current bytes (``None`` if absent) are
+    compared against ``write.written`` -- what this run itself left there.
+    A match means nothing has touched the file since, so the backup is
+    restored, or the file this run created is removed, exactly as before.
+    A mismatch -- another process edited it, recreated a path this run
+    deleted, or changed a file this run created -- leaves it exactly as it
+    is: the backup is the pre-run state, and overwriting or deleting the
+    current content would destroy an edit no backup holds. The directories
+    this run created are only reclaimed once their file was actually rolled
+    back; one left in place keeps its directory.
+    """
     report: list[str] = []
     for write in reversed(writes):
         path = write.target.path
         try:
+            try:
+                current = path.read_bytes()
+            except FileNotFoundError:
+                current = None
+            if current != write.written:
+                report.append(
+                    f"{path} changed after this run wrote it; left as is -- "
+                    + (f"merge your changes from {write.backup}" if write.backup
+                       else "this run created it, and there is no backup")
+                )
+                continue
             if write.backup is None:
                 path.unlink(missing_ok=True)
                 report.append(f"removed {path} (this run created it)")
