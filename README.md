@@ -37,13 +37,15 @@ Symlinked targets are refused. What it writes, per harness:
 Claude Code and Codex are session-routed: `--harness claude-code|codex`
 decides each session's project once, at its `SessionStart`, and every hook
 and every MCP call for that session then read the same stored decision, so
-the hook and the server always agree on it. A session memriver has not
-registered before -- one resumed without memriver ever having seen its
-`SessionStart` -- gets a proposed project from its first observed prompt
-instead, and stays pending until the user agrees and the agent calls
-`session_confirm` (see *What your agent sees*). Cursor and Kiro stay
-directory mode: `--harness cursor|kiro` resolves `--project-dir` once, when
-the server starts, and that never changes for the life of the process.
+the hook and the server always agree on it. A resumed or compacted session
+with no row yet gets a proposed project from its `SessionStart` itself --
+no prompt needed -- and stays pending until the user agrees and the agent
+calls `session_confirm`; only a session `SessionStart` never got to record
+(one memriver truly never saw start) waits for its first observed prompt to
+get that same proposal instead (see *What your agent sees*). Cursor and
+Kiro stay directory mode: `--harness cursor|kiro` resolves `--project-dir`
+once, when the server starts, and that never changes for the life of the
+process.
 
 Turning off the harness's own memory feature (Claude Code, Codex) is a
 separately confirmed change, never implied by the rest. Codex only runs hooks
@@ -103,17 +105,24 @@ reports go to stderr.
 
 Hooks never fail the harness: an unreadable store is stated inline, in the
 injected header itself, as a labelled "unavailable" session -- exit 0, empty
-stderr, nothing blocked. Only a hook step that cannot complete at all (a
-malformed payload, some other unhandled failure) skips the injection entirely
-and prints one fixed, path-free stderr line instead. If memories seem to be
-missing, `memriver doctor` shows what the store actually holds.
+stderr, nothing blocked. Of the four, only `SessionStart` ever writes to
+stderr: when it hits something it cannot route around at all (a malformed
+payload, some other unhandled failure) it skips the injection entirely and
+prints one fixed, path-free stderr line instead. `UserPromptSubmit`, `Stop`
+and `SessionEnd` degrade the same failures silently -- empty stdout, empty
+stderr, exit 0 -- since none of them owes the agent a header. If memories
+seem to be missing, `memriver doctor` shows what the store actually holds.
 
 Known limits: `session_search`/`memriver sessions` only look at each
-session's first prompt and its five most recent, so a keyword used earlier in
-a long session will not be found; and memriver never checks whether a session
-can still be resumed -- the harness may already have deleted its transcript
-(Claude Code prunes transcripts after `cleanupPeriodDays`, 30 days by
-default).
+session's first prompt and its five most recent, each saved as at most 512
+characters; a prompt that is too large, looks like a secret, is invalid, or
+fails the scan is stored with no text at all, only a fixed reason. A keyword
+that appears only in a middle prompt that got dropped, or in text that was
+truncated or omitted, will not be found -- the first prompt itself still
+matches however early in the session it was. And memriver never checks
+whether a session can still be resumed -- the harness may already have
+deleted its transcript (Claude Code prunes transcripts after
+`cleanupPeriodDays`, 30 days by default).
 
 ## Projects
 
@@ -220,9 +229,13 @@ the memory's `deleted_at`. `show` and `export` also expose `last_read_at`,
 set by a successful `memory_read`: `show` prints it as `never` until the
 first one, `export` writes the same field as JSON, `null` until then --
 neither is part of what an agent can read.
-`delete` needs the `version` that `memriver show`
-printed and is scoped to the current directory's project exactly like an
-agent -- global stays undeletable through it too. It soft-deletes by default
+`delete` needs the `version` that `memriver show` printed, and it always
+resolves the command's own current directory -- the same way directory mode
+does -- to decide which project it may touch. That is not always the same
+project a session-routed agent would use: an agent's `memory_delete` acts on
+its session's stored project instead (a session registered in A but resumed
+from B can delete only in A; running `delete` from B at that same moment
+acts on B). Either way global stays undeletable. It soft-deletes by default
 (the row's `deleted_at` is set, and it is recoverable only by an operator);
 `--hard` removes the row itself, including one already soft-deleted.
 
@@ -236,9 +249,11 @@ Lists every recorded Claude Code/Codex session (or one project's), newest
 activity first: harness, project, branch, when it was first recorded and last
 active, its last `SessionEnd`, its first and latest prompt, and a resume
 command (`claude --resume <id>` / `codex resume <id>`). `QUERY` matches a word
-in a session's prompts, branch or entry directory, the same way `session_search`
-does for the calling session's own project; unlike `session_search`, this
-sees every project. `--json` emits the same item shape `session_search`
+in a session's saved prompt text (the same first-plus-five, 512-characters-each
+scope `session_search` has -- see its Known limits above), branch or entry
+directory, the same way `session_search` does for the calling session's own
+project; unlike `session_search`, this sees every project. `--json` emits
+the same item shape `session_search`
 returns.
 
 ## Doctor
@@ -257,8 +272,9 @@ branch below instead, exit 2), a failed SQLite integrity check (`integrity`),
 `memriver.db` as a symlink or anything but a regular file
 (`unsafe-database`), a memory whose project row no longer exists (`orphan`), a
 session whose project or proposed project no longer exists (`session-orphan`),
-a memory or session row holding a value memriver could not have written
-(`invalid-row`), a bound directory that is no longer canonical or could not be checked, two projects
+a memory, project, or session row holding a value memriver could not have
+written (`invalid-row`), a bound directory that is no longer canonical or
+could not be checked, two projects
 bound to the same directory under different spellings (`root-conflict`), the
 pre-SQLite file layout (`legacy-layout`), invalid `updated` timestamps, stale
 memories and near-duplicates. It also lists every project -- id, name, its
@@ -338,8 +354,10 @@ e.g. `uv run --project /path/to/repo memriver hook session-start --harness
 claude-code` (and `user-prompt-submit`, `stop`, `session-end`), wired into
 `~/.claude/settings.json`'s `hooks.SessionStart` etc. (or Codex's
 `~/.codex/hooks.json`) the way `memriver install` does. Without them the
-server still answers per session, but no session is ever registered, so
-every call stays "not registered with memriver".
+server still answers per session -- reading global memory is still allowed --
+but no session is ever registered, so no session ever gets a project of its
+own to write to, and `session_search` sees none of them; a session that
+already has a row from before keeps being routed by it regardless.
 
 `--project-dir` on the `memriver` command is where directory-mode project
 discovery starts (the nearest directory bound to a project decides the id).
