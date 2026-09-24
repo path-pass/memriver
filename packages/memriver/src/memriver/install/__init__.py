@@ -298,7 +298,7 @@ def _read_snapshot(target: Target, root: Path | None,
         # carry the original separators through untouched; the write side is
         # already binary.
         return Snapshot(target=target, text=path.read_bytes().decode("utf-8"),
-                        mode=_mode_of(path))
+                        mode=mode & 0o777)
     except (UnicodeError, OSError) as err:
         # the whole read is one boundary, not just the decode: a target that
         # exists but cannot be decoded, opened or stat'ed is a planning
@@ -442,10 +442,6 @@ class _Write:
     # the parents this write had to create, deepest first, so rollback can put
     # the tree back the way it found it
     created_dirs: tuple[_CreatedDir, ...] = ()
-
-
-def _mode_of(path: Path) -> int:
-    return path.stat().st_mode & 0o777
 
 
 def _umask_mode() -> int:
