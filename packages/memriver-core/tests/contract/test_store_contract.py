@@ -29,7 +29,7 @@ from memriver_core.repository.sqlite import SqliteMemoryStore, SqliteProjectStor
 
 SOURCE = {"harness": "test", "method": "agent"}
 MEMORY_COLUMNS = ("id, project_id, type, source_harness, source_method, trust, sync, "
-                  "description, body, created, updated, version, deleted_at")
+                  "description, body, created, updated, version, deleted_at, last_read_at")
 
 
 @dataclass(frozen=True)
@@ -58,10 +58,11 @@ def _make_sqlite(root: Path, home: Path) -> tuple[MemoryStore, ProjectStore]:
 def _plant_row(root: Path, memory: Memory) -> None:
     with closing(sqlite3.connect(root / "memriver.db")) as conn, conn:
         conn.execute(
-            f"INSERT INTO memories ({MEMORY_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            f"INSERT INTO memories ({MEMORY_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (memory.id, memory.project_id, memory.type, memory.source["harness"],
              memory.source["method"], memory.trust, int(memory.sync), memory.description,
-             memory.body, memory.created, memory.updated, memory.version, memory.deleted_at))
+             memory.body, memory.created, memory.updated, memory.version, memory.deleted_at,
+             memory.last_read_at))
 
 
 def _remove_project_row(root: Path, project_id: str) -> None:
@@ -273,6 +274,22 @@ def test_an_orphan_memory_is_never_readable(backend, root, world):
     backend.plant(root, orphan)
     with pytest.raises(MemoryNotFound):
         world["memory_store"].read(orphan.id, world["read_write_set"])
+
+
+def test_touch_read_sets_last_read_at_and_nothing_else(root, world):
+    memory_store, read_write_set = world["memory_store"], world["read_write_set"]
+    memory = _record(world)
+    memory_store.touch_read(memory.id, "2026-09-24T00:00:01.000000Z")
+    seen = memory_store.read(memory.id, read_write_set)
+    assert seen.last_read_at == "2026-09-24T00:00:01.000000Z"
+    assert (seen.version, seen.updated, seen.body) == (memory.version, memory.updated, memory.body)
+    # an earlier timestamp never moves it back
+    memory_store.touch_read(memory.id, "2020-01-01T00:00:00.000000Z")
+    assert memory_store.read(memory.id, read_write_set).last_read_at == \
+        "2026-09-24T00:00:01.000000Z"
+    memory_store.touch_read(new_id(), "2026-09-24T00:00:01.000000Z")   # unknown id: a no-op
+    shutil.rmtree(root)
+    memory_store.touch_read(memory.id, "2026-09-24T00:00:01.000000Z")  # absent store: a no-op
 
 
 @pytest.mark.parametrize("action", ["read", "update", "delete"])

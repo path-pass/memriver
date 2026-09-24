@@ -37,6 +37,11 @@ class MemoryStore(Protocol):
       and 0 is returned.
     - `read_any`: the management read (human CLI only): any project, no
       read/write set; deleted rows only with `include_deleted`.
+    - `touch_read`: best effort, after a successful `memory_read` (spec §3.3):
+      moves `last_read_at` to `max(stored, at)`, never backwards; `version`
+      and `updated` are untouched. An unknown id, and a store that is absent
+      or fails, are all no-ops -- nothing here creates a store, and a failure
+      never fails the read that asked for it.
     - Errors carry fields, never words (see `models.errors`).
     """
 
@@ -47,6 +52,7 @@ class MemoryStore(Protocol):
     def delete(self, memory_id: str, read_write_set: ReadWriteSet, *, expected_version: int,
                hard: bool) -> int: ...
     def read_any(self, memory_id: str, *, include_deleted: bool) -> Memory: ...
+    def touch_read(self, memory_id: str, at: str) -> None: ...
 
 
 class ProjectStore(Protocol):

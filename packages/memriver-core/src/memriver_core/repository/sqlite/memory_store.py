@@ -146,6 +146,17 @@ class SqliteMemoryStore:
                          (now(), memory_id, expected_version))
             return expected_version + 1
 
+    def touch_read(self, memory_id: str, at: str) -> None:
+        if not _addressable(memory_id):
+            return
+        try:
+            with self._database.write(create=False) as conn:
+                conn.execute(
+                    "UPDATE memories SET last_read_at = max(coalesce(last_read_at, ''), ?) "
+                    "WHERE id = ? AND deleted_at IS NULL", (at, memory_id))
+        except StorageFailure:
+            pass   # best effort (spec §3.3): a missing store, or any failure, never fails the read
+
     def read_any(self, memory_id: str, *, include_deleted: bool) -> Memory:
         if not _addressable(memory_id):
             raise MemoryNotFound(memory_id)

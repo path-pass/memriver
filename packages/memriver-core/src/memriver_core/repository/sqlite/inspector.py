@@ -32,6 +32,7 @@ from .database import (
     _lenient_text,
     memory_from_row,
     project_from_row,
+    upgrade_if_needed,
 )
 
 # the names the file store of earlier versions used at the store root
@@ -95,6 +96,10 @@ class SqliteStoreInspector:
             findings.append(_finding("unsafe-database", DATABASE_FILENAME))
             return StoreReport(initialized=True, entries=(), projects=(),
                                findings=_sorted_findings(findings))
+        try:
+            upgrade_if_needed(path, busy_timeout_ms=self._busy_timeout_ms)
+        except StorageFailure:
+            pass   # the v1 it leaves behind is reported below, by the ordinary version check
         try:
             # the same per-connection settings as Database's reads (mode=rw so a
             # hot journal left by a crashed writer can be rolled back; query_only

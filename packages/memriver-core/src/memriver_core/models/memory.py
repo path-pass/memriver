@@ -41,6 +41,10 @@ class Memory:
     # set only on the management reads; agent-facing paths never return a
     # deleted memory (spec §4)
     deleted_at: str | None = None
+    # last successful memory_read, moved forward by MemoryStore.touch_read;
+    # None = never read since the v2 upgrade. System metadata, not shown to
+    # agents: memory_read's eleven fields are unchanged (spec §4)
+    last_read_at: str | None = None
 
     @classmethod
     def new(cls, *, body: str, type: str, project_id: str, source: dict,

@@ -59,7 +59,7 @@ def test_description_is_stripped():
 def test_memory_has_exactly_its_fields():
     assert [f for f in Memory.__dataclass_fields__] == [
         "id", "project_id", "type", "source", "trust", "sync",
-        "created", "updated", "description", "body", "version", "deleted_at"]
+        "created", "updated", "description", "body", "version", "deleted_at", "last_read_at"]
 
 
 def test_scope_and_name_helpers_are_gone():
