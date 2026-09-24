@@ -155,6 +155,16 @@ def test_an_invalid_row_is_reported_and_kept_out_of_entries(world):
     assert report.entries == ()
 
 
+def test_a_malformed_last_read_at_is_reported_and_kept_out_of_entries(world):
+    bad = _plant(world["store"], _memory(world["project"]))
+    with closing(sqlite3.connect(world["store"] / "memriver.db")) as conn, conn:
+        conn.execute("UPDATE memories SET last_read_at = 'not-a-timestamp' WHERE id = ?",
+                     (bad.id,))
+    report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+    assert ("invalid-row", bad.id) in [(f.kind, f.memory_id) for f in report.findings]
+    assert report.entries == ()
+
+
 def test_a_damaged_deleted_row_is_still_reported(world):
     gone = _memory(world["project"], "gone")
     gone.deleted_at, gone.version = "2026-09-24T00:00:00.000000Z", 2

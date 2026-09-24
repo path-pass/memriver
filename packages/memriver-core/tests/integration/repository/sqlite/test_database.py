@@ -9,11 +9,10 @@ import subprocess
 import sys
 import textwrap
 import threading
-import time
 from contextlib import closing
 
 import pytest
-from memriver_core.models import Memory, new_id
+from memriver_core.models import Memory, new_id, now
 from memriver_core.models.errors import StorageFailure
 from memriver_core.repository.sqlite import database as database_module
 from memriver_core.repository.sqlite.database import (
@@ -180,16 +179,14 @@ def test_a_read_of_a_v2_database_does_not_queue_behind_a_writers_lock(tmp_path):
     holder.execute("INSERT INTO projects (id, name, root, is_global) VALUES (?, 'g', NULL, 1)",
                    (new_id(),))
     try:
-        # a busy timeout far shorter than any real wait: if the upgrade check
-        # took the write lock too, this read would block on it and time out
-        start = time.monotonic()
+        # a busy timeout far shorter than the holder keeps its lock: if the
+        # upgrade check took the write lock too, this read would block on it
+        # and raise StorageFailure once the timeout elapsed
         with Database(root, busy_timeout_ms=50).read() as conn:
             assert conn is not None
-        elapsed = time.monotonic() - start
     finally:
         holder.execute("ROLLBACK")
         holder.close()
-    assert elapsed < 0.05
 
 
 def test_an_upgrade_failing_part_way_leaves_version_one_intact(tmp_path, monkeypatch):
@@ -344,9 +341,17 @@ def test_a_memory_round_trips_through_its_row():
     assert memory_from_row(memory_to_row(memory)) == memory
 
 
+def test_a_valid_last_read_at_round_trips():
+    memory = Memory.new(body="b", type="project", project_id=new_id(),
+                        source={"harness": "h", "method": "agent"})
+    memory.last_read_at = now()
+    assert memory_from_row(memory_to_row(memory)) == memory
+
+
 @pytest.mark.parametrize("change", [
     {"id": "../../evil"}, {"project_id": "ABCDEFGHJK"}, {"type": "note"}, {"trust": "high"},
     {"sync": 2}, {"version": 0}, {"body": b"bytes"}, {"deleted_at": 5}, {"last_read_at": 5},
+    {"last_read_at": "not-a-timestamp"},
 ])
 def test_a_memory_row_memriver_could_not_have_written_is_invalid(change):
     memory = Memory.new(body="b", type="project", project_id=new_id(),

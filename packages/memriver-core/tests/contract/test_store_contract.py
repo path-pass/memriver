@@ -292,6 +292,17 @@ def test_touch_read_sets_last_read_at_and_nothing_else(root, world):
     memory_store.touch_read(memory.id, "2026-09-24T00:00:01.000000Z")  # absent store: a no-op
 
 
+def test_touch_read_with_a_malformed_at_is_a_no_op(world):
+    memory_store, read_write_set = world["memory_store"], world["read_write_set"]
+    memory = _record(world)
+    memory_store.touch_read(memory.id, "not-a-timestamp")
+    assert memory_store.read(memory.id, read_write_set).last_read_at is None
+    memory_store.touch_read(memory.id, "2026-09-24T00:00:01.000000Z")
+    memory_store.touch_read(memory.id, "not-a-timestamp")   # a bad value never overwrites a good one
+    assert memory_store.read(memory.id, read_write_set).last_read_at == \
+        "2026-09-24T00:00:01.000000Z"
+
+
 @pytest.mark.parametrize("action", ["read", "update", "delete"])
 def test_a_project_removed_after_the_read_write_set_was_built_hides_its_memories(
         backend, root, world, action):

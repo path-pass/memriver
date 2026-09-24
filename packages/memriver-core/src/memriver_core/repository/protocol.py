@@ -39,9 +39,9 @@ class MemoryStore(Protocol):
       read/write set; deleted rows only with `include_deleted`.
     - `touch_read`: best effort, after a successful `memory_read` (spec §3.3):
       moves `last_read_at` to `max(stored, at)`, never backwards; `version`
-      and `updated` are untouched. An unknown id, and a store that is absent
-      or fails, are all no-ops -- nothing here creates a store, and a failure
-      never fails the read that asked for it.
+      and `updated` are untouched. An unknown id, a malformed `at`, and a
+      store that is absent or fails, are all no-ops -- nothing here creates a
+      store, and a failure never fails the read that asked for it.
     - Errors carry fields, never words (see `models.errors`).
     """
 

@@ -30,6 +30,12 @@ def single_line(value: str) -> str:
     return " ".join(_LINE_UNSAFE_RE.sub(" ", value).split())
 
 
+# the exact shape `now()` produces: strftime's %f always pads to six digits,
+# so this is a fixed-width form, and two of them compare lexicographically in
+# chronological order (see now_strictly_after)
+TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z")
+
+
 def now() -> str:
     # microseconds, not seconds: `updated` is the recency sort key, and a
     # same-second update must still advance it

@@ -23,7 +23,15 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import get_args
 
-from memriver_core.models import ID_RE, Memory, MemoryType, Project, Trust, single_line
+from memriver_core.models import (
+    ID_RE,
+    TIMESTAMP_RE,
+    Memory,
+    MemoryType,
+    Project,
+    Trust,
+    single_line,
+)
 from memriver_core.models.errors import StorageFailure
 
 DATABASE_FILENAME = "memriver.db"
@@ -151,8 +159,9 @@ def memory_from_row(row: Sequence[object]) -> Memory:
         raise ValueError("version is not a positive integer")
     if deleted_at is not None and not isinstance(deleted_at, str):
         raise ValueError("deleted_at is not text")
-    if last_read_at is not None and not isinstance(last_read_at, str):
-        raise ValueError("last_read_at is not text")
+    if last_read_at is not None and not (isinstance(last_read_at, str)
+                                         and TIMESTAMP_RE.fullmatch(last_read_at)):
+        raise ValueError("last_read_at is not a timestamp")
     return Memory(id=memory_id, project_id=project_id, type=type_,
                   source={"harness": harness, "method": method}, trust=trust,
                   sync=bool(sync), created=created, updated=updated,

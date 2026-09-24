@@ -5,7 +5,14 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from memriver_core.models import ID_RE, Memory, ReadWriteSet, now, now_strictly_after
+from memriver_core.models import (
+    ID_RE,
+    TIMESTAMP_RE,
+    Memory,
+    ReadWriteSet,
+    now,
+    now_strictly_after,
+)
 from memriver_core.models.errors import (
     GlobalReadOnly,
     IdCollision,
@@ -147,7 +154,8 @@ class SqliteMemoryStore:
             return expected_version + 1
 
     def touch_read(self, memory_id: str, at: str) -> None:
-        if not _addressable(memory_id):
+        if (not _addressable(memory_id) or not isinstance(at, str)
+                or not TIMESTAMP_RE.fullmatch(at)):
             return
         try:
             with self._database.write(create=False) as conn:
