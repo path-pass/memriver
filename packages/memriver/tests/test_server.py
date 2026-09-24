@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import logging
 import sqlite3
 import threading
 import time
@@ -555,3 +556,53 @@ async def test_memory_write_does_not_block_the_event_loop(world):
     # generous margin: the tool wait is ~0.5s; a blocked event loop would show
     # a single ~0.5s gap, a free one never exceeds a couple of scheduler ticks
     assert max(stalls) < 0.2, f"the event loop stalled for {max(stalls):.3f}s"
+
+
+async def test_an_expected_refusal_logs_at_debug_not_error(world, caplog):
+    """FastMCP itself logs every failed tool call at `ToolError.log_level`
+    (`logger.log(e.log_level, ...)`, default ERROR), on the "fastmcp.server.server"
+    logger (pytest's `catching_logs` attaches `caplog`'s handler straight to
+    it, since `fastmcp`'s own `configure_logging` makes it non-propagating).
+    A named core error such as `MemoryNotFound` is a routine agent mistake,
+    not an operational problem, and must not print an ERROR line for it."""
+    server = build_server(root=world["store"], project_dir=world["dir"])
+    caplog.set_level(logging.DEBUG, logger="fastmcp.server.server")
+
+    await _error(server, "memory_read", memory_id=new_id())
+
+    fastmcp_records = [r for r in caplog.records if r.name == "fastmcp.server.server"]
+    assert len(fastmcp_records) == 1
+    assert fastmcp_records[0].levelno == logging.DEBUG
+    assert not any(r.name == "memriver" for r in caplog.records)
+
+
+async def test_an_unexpected_failure_logs_at_error_and_memriver_still_warns(
+        world, monkeypatch, caplog):
+    """An error outside `_NAMED_ERRORS` (and outside the write path's
+    non-Unicode `ValueError` carve-out) is not routine: FastMCP's own ERROR
+    line and memriver's WARNING must both still fire, unchanged."""
+    from memriver import server as server_module
+    from memriver_core import StorageFailure
+
+    real_build_service = server_module.build_service
+
+    def broken_build_service(settings, *, root):
+        service = real_build_service(settings, root=root)
+        monkeypatch.setattr(
+            service, "read", lambda *a, **k: (_ for _ in ()).throw(StorageFailure()))
+        return service
+
+    monkeypatch.setattr(server_module, "build_service", broken_build_service)
+    server = build_server(root=world["store"], project_dir=world["dir"])
+    caplog.set_level(logging.DEBUG, logger="fastmcp.server.server")
+    caplog.set_level(logging.DEBUG, logger="memriver")
+
+    await _error(server, "memory_read", memory_id=new_id())
+
+    fastmcp_records = [r for r in caplog.records if r.name == "fastmcp.server.server"]
+    memriver_records = [r for r in caplog.records if r.name == "memriver"]
+    assert len(fastmcp_records) == 1
+    assert fastmcp_records[0].levelno == logging.ERROR
+    assert len(memriver_records) == 1
+    assert memriver_records[0].levelno == logging.WARNING
+    assert "memory_read failed: StorageFailure" in memriver_records[0].message

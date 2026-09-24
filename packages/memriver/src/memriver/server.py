@@ -124,9 +124,18 @@ def _fail(operation: Operation, err: Exception, *, memory_id: str | None = None,
     message = _map_error(operation, err, memory_id=memory_id, session_state=session_state)
     write_value_error = (operation == "write" and isinstance(err, ValueError)
                          and not isinstance(err, UnicodeError))
-    if not isinstance(err, _NAMED_ERRORS) and not write_value_error:
+    expected = isinstance(err, _NAMED_ERRORS) or write_value_error
+    if not expected:
         logger.warning("memory_%s failed: %s", operation, type(err).__name__)
-    raise ToolError(message) from None
+    # An expected refusal (a named core error, or the write path's non-Unicode
+    # ValueError) is routine agent behaviour, not an operational problem: it
+    # would otherwise print an ERROR line to stderr for every MemoryNotFound,
+    # VersionConflict or content refusal. FastMCP logs each ToolError at
+    # `log_level` (default ERROR); DEBUG here keeps that noise out of normal
+    # operation while an unexpected failure still logs at FastMCP's default,
+    # alongside memriver's own WARNING above.
+    log_level = logging.DEBUG if expected else logging.ERROR
+    raise ToolError(message, log_level=log_level) from None
 
 
 def _full(memory: Memory) -> dict:
