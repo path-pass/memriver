@@ -91,7 +91,10 @@ reports go to stderr.
   silently bound to whatever directory it happens to be resumed in. It is
   marked "awaiting confirmation": only global memory is readable, every write
   is refused, and the agent is told to ask you and call `session_confirm`
-  only once you agree to the project it proposes.
+  only once you agree to the project it proposes. When the directory it was
+  first observed in is in no registered project there is nothing to propose:
+  the agent is told that saving needs `memriver project init` there and a new
+  session, and is not asked to confirm.
 - **Stop**: a reminder to save durable facts, but only for a session's own
   prompts (not a sub-agent's) and only once it has made at least 5 prompts
   since its last save -- a successful `memory_write` or `memory_update`

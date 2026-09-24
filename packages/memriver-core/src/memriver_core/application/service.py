@@ -73,8 +73,24 @@ STORE_UNREADABLE_HEADER = ("project: unavailable — the memory store could not 
                            "ask the user to run memriver doctor")
 PENDING_HEADER = ("project: awaiting confirmation — this session is not registered; "
                   "ask the user, then call session_confirm")
-UNIDENTIFIED_HEADER = ("project: none — this session is not registered with memriver; "
-                       "restart the session after memriver install")
+# pending with no candidate: confirming would register no project for good, so
+# the header does not offer session_confirm
+PENDING_NO_CANDIDATE_HEADER = (
+    "project: none — this session is not registered, and the directory it was first "
+    "observed in is not in any registered project, so global is read-only; to save, ask "
+    "the user to run memriver project init there, then start a new session")
+UNIDENTIFIED_HEADER = ("project: none — this session is not registered with memriver: its "
+                       "hooks may not be installed (memriver install) or trusted (Codex asks "
+                       "on start), or the harness sent no session id; ask the user to fix "
+                       "that, then start a new session")
+# a session row's project never re-resolves, so these two point at a new
+# session rather than at the directory the session happens to be in
+SESSION_NONE_HEADER = ("project: none — this session was registered with no project, so global "
+                       "is read-only; to save, ask the user to run memriver project init, then "
+                       "start a new session")
+SESSION_PROJECT_GONE_HEADER = ("project: unavailable — this session's project no longer exists "
+                               "or became global, so global is read-only; to save, ask the "
+                               "user to start a new session")
 
 # a new session with no row: these sources start one afresh, so it registers
 # at once; resume/compact continue one memriver never saw, so it waits for
@@ -312,17 +328,21 @@ class MemoryService:
         """What a stored row grants: its project, none, or pending (read global only)."""
         global_project_id = self._project_store.global_project_id()
         if session.status == "pending":
-            return _no_project_context("pending", PENDING_HEADER, global_project_id,
-                                       session.key)
+            header = PENDING_HEADER if session.candidate_id is not None \
+                else PENDING_NO_CANDIDATE_HEADER
+            return _no_project_context("pending", header, global_project_id, session.key)
         if session.project_id is None:
-            return _no_project_context("none", NONE_HEADER, global_project_id, session.key)
+            return _no_project_context("none", SESSION_NONE_HEADER, global_project_id,
+                                       session.key)
         try:
             project = self._project_store.read(session.project_id)
         except ProjectNotFound:
             project = None
         if project is None or project.id == global_project_id:
-            return self._degraded_context(_SESSION_PROJECT_MISSING, global_project_id,
-                                          session.key)
+            return ProjectContext(
+                "degraded", SESSION_PROJECT_GONE_HEADER,
+                ReadWriteSet(project_id=None, global_project_id=global_project_id),
+                diagnostic=_SESSION_PROJECT_MISSING, session_key=session.key)
         return self._registered_context(project, global_project_id, session.key)
 
     def _storeless_context(self, key: SessionKey) -> ProjectContext:

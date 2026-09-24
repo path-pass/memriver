@@ -43,7 +43,7 @@ from .protocol_text import (
     INDEX_BEGIN_DELIMITER,
     INDEX_END_DELIMITER,
     PENDING_NOTICE,
-    PENDING_TARGET_NONE,
+    PENDING_NOTICE_NO_PROJECT,
     PENDING_TARGET_PROJECT,
     SESSION_START_PREFIX,
     STOP_NUDGE,
@@ -335,11 +335,12 @@ def _resolve_dir(harness: Harness, payload: dict[str, Any], project_dir: Path | 
 def _pending_notice(service: Any, context: ProjectContext) -> str:
     """The pending notice for ``context``, naming the stored entry and its candidate."""
     candidate = service.pending_candidate(context)
-    target = (PENDING_TARGET_NONE if candidate is None
-              else PENDING_TARGET_PROJECT.format(name=visible(candidate.name),
-                                                 id=candidate.id))
-    return PENDING_NOTICE.format(entry_cwd=visible(service.entry_of(context) or ""),
-                                 target=target)
+    entry_cwd = visible(service.entry_of(context) or "")
+    if candidate is None:
+        return PENDING_NOTICE_NO_PROJECT.format(entry_cwd=entry_cwd)
+    return PENDING_NOTICE.format(
+        entry_cwd=entry_cwd,
+        target=PENDING_TARGET_PROJECT.format(name=visible(candidate.name), id=candidate.id))
 
 
 def _neutralize_delimiters(index: str) -> str:

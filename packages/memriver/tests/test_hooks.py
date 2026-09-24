@@ -36,7 +36,7 @@ from memriver.protocol_text import (
     INDEX_BEGIN_DELIMITER,
     INDEX_END_DELIMITER,
     PENDING_NOTICE,
-    PENDING_TARGET_NONE,
+    PENDING_NOTICE_NO_PROJECT,
     PENDING_TARGET_PROJECT,
     STOP_NUDGE,
     UNTRUSTED_DATA_NOTICE,
@@ -48,9 +48,16 @@ from memriver_core.settings import Settings
 
 INDEX_LINE = "- [user] likes-tea: drinks oolong (2026-01-01)"
 
-NONE_HEADER = "project: none — global is read-only; ask the user to run memriver project init"
+# a session started outside every project is registered with none, for good
+SESSION_NONE_HEADER = ("project: none — this session was registered with no project, so "
+                       "global is read-only; to save, ask the user to run memriver project "
+                       "init, then start a new session")
 PENDING_HEADER = ("project: awaiting confirmation — this session is not registered; "
                   "ask the user, then call session_confirm")
+PENDING_NO_CANDIDATE_HEADER = (
+    "project: none — this session is not registered, and the directory it was first "
+    "observed in is not in any registered project, so global is read-only; to save, ask "
+    "the user to run memriver project init there, then start a new session")
 
 SESSION_ID = "session-1"
 MISSING = object()          # a payload key left out
@@ -425,7 +432,7 @@ def test_a_full_index_fits_the_metric_the_harness_itself_counts(harness, source,
     lines = text.split(INDEX_BEGIN_DELIMITER + "\n", 1)[1].split(
         "\n" + INDEX_END_DELIMITER, 1)[0].split("\n")
     header, body = lines[0], lines[1:]
-    assert header == NONE_HEADER
+    assert header == SESSION_NONE_HEADER
     # whole lines only, and the tail says exactly how many are missing
     kept = len(body) - 1
     assert 0 < kept < 100
@@ -490,10 +497,10 @@ def test_empty_store_still_shows_the_header(fake_service, tmp_path, registered):
     assert "(no memories yet)" in text
 
 
-def test_unregistered_directory_header_says_none(fake_service, tmp_path):
+def test_a_session_started_in_an_unregistered_directory_says_it_has_no_project(fake_service, tmp_path):
     fake_service("(no memories yet)")
     result = session_start("codex", {"cwd": str(tmp_path)}, root=_store(tmp_path))
-    assert _line_after_begin(additional_context(result)) == NONE_HEADER
+    assert _line_after_begin(additional_context(result)) == SESSION_NONE_HEADER
 
 
 def test_session_start_shows_the_degraded_header_for_a_re_pointed_root(fake_service, tmp_path):
@@ -676,7 +683,7 @@ def test_a_store_with_only_unreadable_entries_is_empty_not_broken(tmp_path,
     result = session_start("claude-code", {"cwd": str(tmp_path)},
                            root=tmp_path / "root")
     text = additional_context(result)
-    assert _line_after_begin(text) == NONE_HEADER
+    assert _line_after_begin(text) == SESSION_NONE_HEADER
     assert "(no memories yet)" in text
 
 
@@ -979,13 +986,15 @@ def test_a_resume_without_a_row_injects_the_pending_notice_naming_the_stored_ent
                 root=store) == HookResult()
 
 
-def test_a_pending_notice_without_a_candidate_says_so(tmp_path):
+def test_a_pending_notice_without_a_candidate_says_so_and_offers_no_confirmation(tmp_path):
     store = _store(tmp_path)
     elsewhere = a_directory(tmp_path, "elsewhere")
     text = additional_context(
         session_start("codex", {"cwd": str(elsewhere), "source": "resume"}, root=store))
-    assert text.startswith(PENDING_NOTICE.format(entry_cwd=str(elsewhere.resolve()),
-                                                 target=PENDING_TARGET_NONE) + "\n")
+    assert text.startswith(
+        PENDING_NOTICE_NO_PROJECT.format(entry_cwd=str(elsewhere.resolve())) + "\n")
+    assert _line_after_begin(text) == PENDING_NO_CANDIDATE_HEADER
+    assert "session_confirm" not in text
 
 
 def test_the_pending_notice_survives_index_fitting(tmp_path, fake_service):
@@ -993,8 +1002,8 @@ def test_the_pending_notice_survives_index_fitting(tmp_path, fake_service):
     store = _store(tmp_path)
     text = additional_context(
         session_start("codex", {"cwd": str(tmp_path), "source": "resume"}, root=store))
-    assert text.startswith(PENDING_NOTICE.format(entry_cwd=str(tmp_path.resolve()),
-                                                 target=PENDING_TARGET_NONE) + "\n")
+    assert text.startswith(
+        PENDING_NOTICE_NO_PROJECT.format(entry_cwd=str(tmp_path.resolve())) + "\n")
     assert codex_tokens(text) <= 2_500
     assert text.count("more entries omitted") == 1
 

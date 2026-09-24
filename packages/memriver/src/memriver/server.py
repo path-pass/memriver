@@ -58,14 +58,27 @@ _NO_PROJECT = {
                    "store. No memory was saved. Ask the user to run memriver project explain."),
 }
 
+# The same states for a context that came from a session row: its project was
+# fixed when the session registered and never re-resolves, so the way out is a
+# new session, not the directory the session happens to be in.
+_SESSION_NO_PROJECT = {
+    "none": ("no writable project: this session was registered with no project. No memory "
+             "was saved. Ask the user to run memriver project init, then start a new session "
+             "to save there; do not run it yourself."),
+    "degraded": ("no writable project: this session's project no longer exists or became "
+                 "global. No memory was saved. Ask the user to start a new session."),
+}
+
 
 # Why a session may not use a project, keyed by ProjectUnavailable.reason or,
 # where the reason is empty, by the context state the call ran under.
 _SESSION_REFUSAL = {
     "pending": ("this session is awaiting the user's confirmation; ask the user, then call "
                 "session_confirm"),
-    "unidentified": ("this session is not registered with memriver; ask the user to restart "
-                     "it after memriver install"),
+    "unidentified": ("this session is not registered with memriver: its hooks may not be "
+                     "installed (memriver install) or trusted (Codex asks on start), or the "
+                     "harness sent no session id; ask the user to fix that, then start a new "
+                     "session"),
     "candidate-changed": ("the proposed project changed since memriver proposed it; ask the "
                           "user to start a new session"),
 }
@@ -74,7 +87,7 @@ _SESSION_TOOLS_UNAVAILABLE = "session tools are not available for this harness r
 
 
 def _map_error(operation: Operation, err: Exception, *, memory_id: str | None = None,
-               context_state: str | None = None) -> str:
+               context_state: str | None = None, session_keyed: bool = False) -> str:
     """Application error -> the tool's client-visible message. Tools never leak one raw.
 
     Every client-visible string for a storage-boundary error is written here,
@@ -94,7 +107,10 @@ def _map_error(operation: Operation, err: Exception, *, memory_id: str | None = 
         return "could not confirm this session; ask the user to run memriver doctor"
     if operation == "write":
         if isinstance(err, ProjectUnavailable):
-            return _NO_PROJECT.get(context_state or "none", _NO_PROJECT["none"])
+            state = context_state or "none"
+            if session_keyed and state in _SESSION_NO_PROJECT:
+                return _SESSION_NO_PROJECT[state]
+            return _NO_PROJECT.get(state, _NO_PROJECT["none"])
         # a codec failure (a lone surrogate) is a ValueError whose message is
         # the codec's, not policy copy
         if isinstance(err, ContentRejected | ValueError) and not isinstance(err, UnicodeError):
@@ -135,7 +151,7 @@ _NAMED_ERRORS: tuple[type[Exception], ...] = (
 
 
 def _fail(operation: Operation, err: Exception, *, memory_id: str | None = None,
-          context_state: str | None = None) -> NoReturn:
+          context_state: str | None = None, session_keyed: bool = False) -> NoReturn:
     """Map `err` to its client message and raise it as the tool's failure.
 
     An exception outside `_NAMED_ERRORS` also logs one WARNING line naming
@@ -147,7 +163,8 @@ def _fail(operation: Operation, err: Exception, *, memory_id: str | None = None,
     on `write` both fall through to a generic message, so they log like any
     other unnamed exception.
     """
-    message = _map_error(operation, err, memory_id=memory_id, context_state=context_state)
+    message = _map_error(operation, err, memory_id=memory_id, context_state=context_state,
+                         session_keyed=session_keyed)
     write_value_error = (operation == "write" and isinstance(err, ValueError)
                          and not isinstance(err, UnicodeError))
     expected = isinstance(err, _NAMED_ERRORS) or write_value_error
@@ -302,7 +319,8 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
                                     harness=source_harness, description=description,
                                     context=context)
         except Exception as err:  # noqa: BLE001
-            _fail("write", err, context_state=None if context is None else context.state)
+            _fail("write", err, context_state=None if context is None else context.state,
+                  session_keyed=context is not None and context.session_key is not None)
         return {"id": memory.id, "project_id": memory.project_id}
 
     @mcp.tool

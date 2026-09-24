@@ -14,7 +14,7 @@ from memriver.protocol_text import (
     INDEX_END_DELIMITER,
     INSTRUCTIONS,
     PENDING_NOTICE,
-    PENDING_TARGET_NONE,
+    PENDING_NOTICE_NO_PROJECT,
     PENDING_TARGET_PROJECT,
     PROTOCOL_BLOCK,
     SESSION_INSTRUCTIONS,
@@ -84,9 +84,15 @@ def test_pending_notice_is_the_spec_copy():
         target=PENDING_TARGET_PROJECT.format(name="app", id="abcdefghij")) == (
         "[memriver] This session is not registered yet. It was first observed in "
         "/work/app, which resolves to project app [abcdefghij]." + expected_tail)
-    assert PENDING_NOTICE.format(entry_cwd="/work/app", target=PENDING_TARGET_NONE) == (
+
+
+def test_a_pending_notice_without_a_candidate_never_offers_confirmation():
+    assert PENDING_NOTICE_NO_PROJECT.format(entry_cwd="/work/app") == (
         "[memriver] This session is not registered yet. It was first observed in "
-        "/work/app, which resolves to no registered project." + expected_tail)
+        "/work/app, which is not in any registered project, so only global memories are "
+        "readable. To save memories, the user must run memriver project init there and "
+        "then start a new session.")
+    assert "session_confirm" not in PENDING_NOTICE_NO_PROJECT
 
 
 def test_untrusted_data_notice_is_the_spec_copy():

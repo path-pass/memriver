@@ -85,7 +85,7 @@ COMPACT_RESCUE_SUFFIX = (
 # --- pending session: SessionStart, or the first prompt of a row it never saw ---
 
 # filled by hooks.py: `entry_cwd` is the stored entry directory after the
-# display neutralizer, `target` one of the two PENDING_TARGET_* phrases
+# display neutralizer, `target` the PENDING_TARGET_PROJECT phrase
 PENDING_NOTICE = (
     "[memriver] This session is not registered yet. It was first observed in "
     "{entry_cwd}, which resolves to {target}. This may differ from where the session "
@@ -93,7 +93,14 @@ PENDING_NOTICE = (
     "session_confirm only if they agree. Until then only global memories are readable."
 )
 PENDING_TARGET_PROJECT = "project {name} [{id}]"
-PENDING_TARGET_NONE = "no registered project"
+# no candidate: confirming would register the session to no project for good,
+# so the agent is not asked to offer it
+PENDING_NOTICE_NO_PROJECT = (
+    "[memriver] This session is not registered yet. It was first observed in "
+    "{entry_cwd}, which is not in any registered project, so only global memories are "
+    "readable. To save memories, the user must run memriver project init there and then "
+    "start a new session."
+)
 
 # --- stop hook: at most one continuation per nudge interval ---
 

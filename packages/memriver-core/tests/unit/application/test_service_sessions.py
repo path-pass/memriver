@@ -43,8 +43,20 @@ KEY = SessionKey("claude-code", "session-1")
 OTHER_KEY = SessionKey("codex", "session-2")
 PENDING_HEADER = ("project: awaiting confirmation — this session is not registered; "
                   "ask the user, then call session_confirm")
-UNIDENTIFIED_HEADER = ("project: none — this session is not registered with memriver; "
-                       "restart the session after memriver install")
+UNIDENTIFIED_HEADER = ("project: none — this session is not registered with memriver: its "
+                       "hooks may not be installed (memriver install) or trusted (Codex asks "
+                       "on start), or the harness sent no session id; ask the user to fix "
+                       "that, then start a new session")
+PENDING_NO_CANDIDATE_HEADER = (
+    "project: none — this session is not registered, and the directory it was first "
+    "observed in is not in any registered project, so global is read-only; to save, ask "
+    "the user to run memriver project init there, then start a new session")
+SESSION_NONE_HEADER = ("project: none — this session was registered with no project, so global "
+                       "is read-only; to save, ask the user to run memriver project init, then "
+                       "start a new session")
+SESSION_PROJECT_GONE_HEADER = ("project: unavailable — this session's project no longer exists "
+                               "or became global, so global is read-only; to save, ask the "
+                               "user to start a new session")
 SECRET_PROMPT = "token ghp_" + "a" * 36          # from the secret-scanner tests
 
 
@@ -190,7 +202,7 @@ def test_a_resumed_unknown_session_is_pending_with_the_entry_project_as_candidat
 def test_a_start_in_an_unbound_directory_registers_no_project(world):
     elsewhere = world.base / "elsewhere"
     elsewhere.mkdir()
-    assert world.start(entry=elsewhere) == _no_project(world, "none", NONE_HEADER)
+    assert world.start(entry=elsewhere) == _no_project(world, "none", SESSION_NONE_HEADER)
     assert (world.row().status, world.row().project_id) == ("registered", None)
     world.start("resume", entry=elsewhere, key=OTHER_KEY)
     row = world.row(OTHER_KEY)
@@ -392,7 +404,7 @@ def test_session_context_follows_the_stored_row(world):
     assert world.service.session_context(KEY) == _no_project(world, "pending", PENDING_HEADER)
     world.start(entry=world.base, key=OTHER_KEY)
     assert world.service.session_context(OTHER_KEY) == _no_project(
-        world, "none", NONE_HEADER, key=OTHER_KEY)
+        world, "none", SESSION_NONE_HEADER, key=OTHER_KEY)
     third = SessionKey("claude-code", "session-3")
     world.start(key=third)
     assert world.service.session_context(third) == ProjectContext(
@@ -404,12 +416,10 @@ def test_a_session_whose_project_is_gone_or_global_is_degraded(world, project_id
     world.start()
     world.sql("UPDATE sessions SET project_id = ?",
               world.global_id if project_id == "global" else project_id)
-    context = world.service.session_context(KEY)
-    assert context == ProjectContext(
-        "degraded", context.header, ReadWriteSet(project_id=None,
-                                                 global_project_id=world.global_id),
+    assert world.service.session_context(KEY) == ProjectContext(
+        "degraded", SESSION_PROJECT_GONE_HEADER,
+        ReadWriteSet(project_id=None, global_project_id=world.global_id),
         diagnostic="session project missing", session_key=KEY)
-    assert "(session project missing)" in context.header
 
 
 def test_a_store_failure_is_an_unavailable_session_context(world):
@@ -430,9 +440,15 @@ def test_confirming_a_candidate_registers_its_project(world):
     assert world.service.confirm_session(KEY) == _registered(world)
 
 
+def test_a_pending_session_without_a_candidate_is_not_offered_for_confirmation(world):
+    context, created = world.prompt(entry=world.base)
+    assert created and context == _no_project(world, "pending", PENDING_NO_CANDIDATE_HEADER)
+    assert world.service.session_context(KEY) == context
+
+
 def test_confirming_a_null_candidate_registers_no_project(world):
     world.prompt(entry=world.base)
-    assert world.service.confirm_session(KEY) == _no_project(world, "none", NONE_HEADER)
+    assert world.service.confirm_session(KEY) == _no_project(world, "none", SESSION_NONE_HEADER)
     assert world.intact_calls == []
     assert (world.row().status, world.row().project_id) == ("registered", None)
 

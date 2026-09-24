@@ -38,12 +38,26 @@ TOOLS = {"memory_index", "memory_read", "memory_search", "memory_write", "memory
          "memory_delete", "session_search", "session_confirm"}
 PENDING_HEADER = ("project: awaiting confirmation — this session is not registered; "
                   "ask the user, then call session_confirm")
-UNIDENTIFIED_HEADER = ("project: none — this session is not registered with memriver; "
-                       "restart the session after memriver install")
+UNIDENTIFIED_HEADER = ("project: none — this session is not registered with memriver: its "
+                       "hooks may not be installed (memriver install) or trusted (Codex asks "
+                       "on start), or the harness sent no session id; ask the user to fix "
+                       "that, then start a new session")
+SESSION_NONE_HEADER = ("project: none — this session was registered with no project, so global "
+                       "is read-only; to save, ask the user to run memriver project init, then "
+                       "start a new session")
+SESSION_PROJECT_GONE_HEADER = ("project: unavailable — this session's project no longer exists "
+                               "or became global, so global is read-only; to save, ask the "
+                               "user to start a new session")
 PENDING = ("this session is awaiting the user's confirmation; ask the user, then call "
            "session_confirm")
-UNIDENTIFIED = ("this session is not registered with memriver; ask the user to restart it "
-                "after memriver install")
+UNIDENTIFIED = ("this session is not registered with memriver: its hooks may not be installed "
+                "(memriver install) or trusted (Codex asks on start), or the harness sent no "
+                "session id; ask the user to fix that, then start a new session")
+SESSION_NO_PROJECT = ("no writable project: this session was registered with no project. No "
+                      "memory was saved. Ask the user to run memriver project init, then start "
+                      "a new session to save there; do not run it yourself.")
+SESSION_PROJECT_GONE = ("no writable project: this session's project no longer exists or became "
+                        "global. No memory was saved. Ask the user to start a new session.")
 CANDIDATE_CHANGED = ("the proposed project changed since memriver proposed it; ask the user "
                      "to start a new session")
 NOT_AVAILABLE = "session tools are not available for this harness registration"
@@ -477,7 +491,8 @@ async def test_no_protocol_field_or_fixed_copy_reveals_deletion_state(server):
                   ("update", VersionConflict(memory_id)),
                   ("delete", VersionConflict(memory_id)))]
     copy = [server_module._GLOBAL_READ_ONLY, server_module._COULD_NOT_READ_STORE,
-            *server_module._NO_PROJECT.values(), STOP_NUDGE, UNTRUSTED_DATA_NOTICE,
+            *server_module._NO_PROJECT.values(), *server_module._SESSION_NO_PROJECT.values(),
+            STOP_NUDGE, UNTRUSTED_DATA_NOTICE,
             PROTOCOL_BLOCK, SESSION_START_PREFIX, COMPACT_PREFIX, COMPACT_RESCUE_SUFFIX,
             *mapped]
     assert not any("soft" in text.lower() or "deleted" in text.lower() for text in copy)
@@ -786,6 +801,64 @@ async def test_a_changed_candidate_is_refused_and_the_row_stays_pending(world):
     meta = CODEX_META["root"]
     assert await _error(server, "session_confirm", meta=meta) == CANDIDATE_CHANGED
     assert (await _call(server, "memory_index", meta=meta)).splitlines()[0] == PENDING_HEADER
+
+
+def _session_with_no_project(world, key):
+    unregistered = world["dir"].parent / "unregistered"
+    unregistered.mkdir()
+    _start(world, key, unregistered)
+
+
+def _session_whose_project_is_gone(world, key):
+    _start(world, key, world["dir"])
+    _sql(world["store"], "UPDATE sessions SET project_id = 'zzzzzzzzzz'")
+
+
+def _bad_session_row(world, key):
+    _start(world, key, world["dir"])
+    _sql(world["store"], "UPDATE sessions SET recent_prompts = '{}'")
+
+
+@contextlib.contextmanager
+def _store_locked(world, monkeypatch):
+    """Another process holding the write lock past memriver's (shortened) busy wait."""
+    from memriver_core import bootstrap
+
+    monkeypatch.setattr(bootstrap, "BUSY_TIMEOUT_MS", 50)
+    with closing(sqlite3.connect(world["store"] / "memriver.db",
+                                 isolation_level=None)) as holder:
+        holder.execute("BEGIN EXCLUSIVE")
+        try:
+            yield
+        finally:
+            holder.execute("ROLLBACK")
+
+
+@pytest.mark.parametrize(("case", "header", "refusal"), [
+    ("no-project", SESSION_NONE_HEADER, SESSION_NO_PROJECT),
+    ("project-gone", SESSION_PROJECT_GONE_HEADER, SESSION_PROJECT_GONE),
+    ("bad-row", STORE_UNREADABLE_HEADER, UNAVAILABLE),
+    ("lock-timeout", STORE_UNREADABLE_HEADER, UNAVAILABLE),
+], ids=["no-project", "project-gone", "bad-row", "lock-timeout"])
+async def test_a_session_without_a_usable_project_never_falls_back_to_the_server_directory(
+        world, monkeypatch, case, header, refusal):
+    """The server starts in a registered directory; the session's own state answers."""
+    key = SessionKey("codex", CODEX_ID)
+    {"no-project": _session_with_no_project,
+     "project-gone": _session_whose_project_is_gone,
+     "bad-row": _bad_session_row,
+     "lock-timeout": lambda world, key: _start(world, key, world["dir"])}[case](world, key)
+    server = build_server(root=world["store"], project_dir=world["dir"], harness="codex")
+    meta = CODEX_META["root"]
+    before = _snapshot(world["store"])
+    with _store_locked(world, monkeypatch) if case == "lock-timeout" \
+            else contextlib.nullcontext():
+        index = await _call(server, "memory_index", meta=meta)
+        written = await _error(server, "memory_write", meta=meta, content="x", type="project")
+    assert index.splitlines()[0] == header
+    assert index.splitlines()[0] != _registered_header(world, world["dir"])
+    assert written == refusal
+    assert _snapshot(world["store"]) == before
 
 
 @pytest.mark.parametrize("harness", [None, "cursor", "kiro"])
