@@ -489,6 +489,12 @@ def test_sessions_lists_pending_sessions_with_their_status(world):
     assert "pending" in out and "pending-1" in out
 
 
+def test_sessions_with_an_unknown_project_id_is_refused(world):
+    code, out = _sessions("", root=world["store"], home=world["home"],
+                          project_id="zzzzzzzzzz")
+    assert (code, out) == (2, "no such project: zzzzzzzzzz\n")
+
+
 def test_sessions_json_matches_the_session_search_item_shape(world):
     key = SessionKey("codex", "sess-3")
     _start(world, key, world["work"])

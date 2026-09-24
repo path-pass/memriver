@@ -300,7 +300,12 @@ class MemoryService:
 
     def list_sessions(self, *, project_id: str | None = None, query: str = "",
                       limit: int | None = None) -> list[Session]:
-        """The human read: every project's sessions (or one's), pending ones included."""
+        """The human read: every project's sessions (or one's), pending ones included.
+
+        ProjectNotFound for an unknown project id, like the other human reads.
+        """
+        if project_id is not None:
+            self._project_store.read(project_id)
         return self._session_store.search(project_id, query,
                                           sys.maxsize if limit is None else limit)
 

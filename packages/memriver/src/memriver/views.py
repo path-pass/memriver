@@ -228,6 +228,9 @@ def run_sessions(query: str, *, root: Path | None, project_id: str | None, limit
     try:
         service = _service(root, home)
         sessions = service.list_sessions(project_id=project_id, query=query, limit=limit)
+    except ProjectNotFound:
+        stdout.write(f"no such project: {visible((project_id or '')[:255])}\n")
+        return 2
     except StorageFailure:
         stdout.write(STORE_UNREADABLE + "\n")
         return 2
