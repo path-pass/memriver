@@ -47,15 +47,30 @@ def test_mid_pattern_flag_inside_a_group_scopes_to_that_groups_close():
     assert compiled.fullmatch("xyZ") is None
 
 
-def test_two_alternatives_each_with_their_own_flag_group_compiles():
+def test_two_alternatives_each_with_their_own_flag_group_matches_both():
     # the curl-auth-header shape: two quoted alternatives, each opening with
-    # its own (?i) inside a shared enclosing group. Each occurrence gets its
-    # own closing paren (both close together, right before the shared
-    # group's own close), and the pattern compiles and matches the first,
-    # reachable alternative case-insensitively.
-    translated = _re2_to_python(r"""(?:"(?i)(?:A)"|'(?i)(?:A)')""")
+    # its own (?i) inside a shared enclosing group. In RE2 a mid-pattern
+    # flag's scope crosses any '|' at that same depth rather than resetting
+    # per alternative, so naively wrapping straight through to the group's
+    # close (folding the '|' inside the new group) would make the literal
+    # quote before the first (?i) mandatory and the second alternative
+    # unreachable. Ground truth, verified with Go's regexp (anchored):
+    # (?:"(?i)a"|'b') matches 'B' -> true, and "A" -> true.
+    translated = _re2_to_python(r"""(?:"(?i)a"|'b')""")
     compiled = re.compile(translated)
-    assert compiled.fullmatch('"a"') is not None
+    assert compiled.fullmatch("'B'") is not None
+    assert compiled.fullmatch('"A"') is not None
+
+
+def test_flag_inside_one_alternative_does_not_leak_past_the_pipe_boundary():
+    # ground truth, verified with Go's regexp (anchored):
+    # (?:x(?i)a|b)c matches Bc -> true, xAC -> false -- the 'c' after the
+    # group stays case-sensitive, and the flag opened in the first
+    # alternative must not make the literal 'x' before it optional
+    translated = _re2_to_python(r"(?:x(?i)a|b)c")
+    compiled = re.compile(translated)
+    assert compiled.fullmatch("Bc") is not None
+    assert compiled.fullmatch("xAC") is None
 
 
 def test_redundant_inner_flag_group_becomes_a_scoped_group():

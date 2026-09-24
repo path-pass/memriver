@@ -62,6 +62,12 @@ def _re2_to_python(pattern: str) -> str:
       anywhere else. A mid-pattern one is rewritten to the equivalent scoped
       group `(?flags:...)`, closed at the same point RE2 would have stopped
       applying it. A flag group already at position 0 is left untouched.
+      RE2's scope crosses any `|` at the same depth -- it is not reset per
+      alternative -- so a `|` at that depth closes every flag group still
+      open there just before it and reopens the same ones just after; naively
+      wrapping straight through to the group's close would instead fold that
+      `|` *inside* the new group, turning what preceded the flag group into a
+      mandatory prefix and making the other branches unreachable.
     - `\\z` (absolute end of text) is Python's `\\Z`; an escaped `\\\\z` (a
       literal backslash followed by 'z') is left alone.
     - A POSIX class such as `[:alnum:]` inside a bracket expression is
@@ -73,9 +79,12 @@ def _re2_to_python(pattern: str) -> str:
     this rewriting happens inside `[...]` except the POSIX-class case).
     """
     out: list[str] = []
-    # frames[-1] is the pending-close count for the group currently open;
-    # frames[0] stands in for the top level, closed at the end of the string.
-    frames = [0]
+    # frames[-1] holds the flags of every translated flag group still "open"
+    # at the depth currently being scanned, outermost first; frames[0] stands
+    # in for the top level. Entering a real group pushes a fresh, empty list
+    # -- an outer scope's flags need no help from '|' bookkeeping there,
+    # since they already wrap the whole nested group in the output text.
+    frames: list[list[str]] = [[]]
     in_class = False
     i = 0
     n = len(pattern)
@@ -123,23 +132,33 @@ def _re2_to_python(pattern: str) -> str:
                     out.append(match.group(0))
                 else:
                     out.append(f"(?{match.group(1)}:")
-                    frames[-1] += 1
+                    frames[-1].append(match.group(1))
                 i = match.end()
                 continue
             out.append(ch)
-            frames.append(0)
+            frames.append([])
             i += 1
             continue
         if ch == ")":
             if len(frames) > 1:
-                pending = frames.pop()
-                out.append(")" * pending)
+                open_flags = frames.pop()
+                out.append(")" * len(open_flags))
             out.append(ch)
+            i += 1
+            continue
+        if ch == "|":
+            open_flags = frames[-1]
+            if open_flags:
+                out.append(")" * len(open_flags))
+                out.append(ch)
+                out.extend(f"(?{flags}:" for flags in open_flags)
+            else:
+                out.append(ch)
             i += 1
             continue
         out.append(ch)
         i += 1
-    out.append(")" * frames[0])
+    out.append(")" * len(frames[0]))
     return "".join(out)
 
 

@@ -273,6 +273,14 @@ RE2_TRANSLATED_BLOCKED = [
      "airtable-personnal-access-token"),
     # sendgrid-api-token: '\b(SG\.(?i)[a-z0-9=_\-\.]{66})...' -- mid-pattern (?i)
     ("token " + "SG." + "a1" * 33 + " end", "SG." + "a1" * 33, "sendgrid-api-token"),
+    # curl-auth-header: two quoted alternatives, each with its own
+    # mid-pattern (?i) inside the shared enclosing group -- proves both the
+    # double- and the single-quoted branch stay reachable (a fix-round bug
+    # made the flag scoping fold the second alternative out of the pattern)
+    ('curl -H "Authorization: Bearer abcdefghij12345"',
+     "abcdefghij12345", "curl-auth-header"),
+    ("curl -H 'Authorization: Bearer abcdefghij12345'",
+     "abcdefghij12345", "curl-auth-header"),
 ]
 
 
