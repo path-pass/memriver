@@ -180,3 +180,24 @@ def test_current_branch_of_main_worktree_and_detached_head(main, worktree):
     assert current_branch(str(worktree), timeout_s=TIMEOUT_S) == "feature"
     _git("checkout", "--detach", cwd=main)
     assert current_branch(str(main), timeout_s=TIMEOUT_S) == "HEAD"
+
+
+def test_a_symlinked_alias_outside_git_answers_its_canonical_directory(base):
+    target = base / "a" / "sub"
+    target.mkdir(parents=True)
+    (base / "b").mkdir()
+    (base / "b" / "alias").symlink_to(target)
+    assert main_tree_path(str(base / "b" / "alias"), timeout_s=TIMEOUT_S) == str(target)
+
+
+def test_an_alias_into_a_linked_worktree_maps_like_the_worktree_itself(base, main, worktree):
+    (worktree / "sub").mkdir()
+    (base / "link").symlink_to(worktree / "sub")
+    assert main_tree_path(str(base / "link"), timeout_s=TIMEOUT_S) == str(main / "sub")
+    assert current_branch(str(base / "link"), timeout_s=TIMEOUT_S) == "feature"
+
+
+@pytest.mark.parametrize("path", ["x" + chr(0) + "y", "/does/not/exist"])
+def test_a_path_that_is_not_an_existing_directory_is_degraded_never_raises(base, path):
+    assert main_tree_path(path, timeout_s=TIMEOUT_S) is None
+    assert current_branch(path, timeout_s=TIMEOUT_S) is None

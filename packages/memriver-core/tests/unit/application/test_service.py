@@ -32,7 +32,8 @@ CONTEXT = ProjectContext("registered", "", READ_WRITE_SET)
 NO_PROJECT_CONTEXT = ProjectContext("none", "", NO_PROJECT)
 # the session collaborators these directory-mode tests never reach
 SESSION_ARGUMENTS = {
-    "session_store": None, "main_tree_path": lambda path: path,
+    "session_store": None, "canonical_directory": lambda path: path,
+    "main_tree_path": lambda path: path,
     "current_branch": lambda path: None, "root_is_intact": lambda root: True,
     "session_prompt_chars": 512, "session_recent_prompts": 5,
     "session_prompt_scan_max_bytes": 65536, "stop_nudge_min_prompts": 5,

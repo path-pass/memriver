@@ -30,6 +30,7 @@ from memriver_core.models.errors import (
     StorageFailure,
     VersionConflict,
 )
+from memriver_core.repository.directories import canonical_directory
 from memriver_core.repository.sqlite import (
     SqliteMemoryStore,
     SqliteProjectStore,
@@ -92,6 +93,7 @@ class World:
                                busy_timeout_ms=BUSY_TIMEOUT_MS),
             lambda: self.policy, None,
             session_store=self.session_store,
+            canonical_directory=canonical_directory,
             main_tree_path=lambda path: self.main_tree(path),
             current_branch=lambda path: self.branch,
             root_is_intact=intact,
@@ -450,6 +452,63 @@ def test_a_candidate_whose_root_went_missing_in_the_main_tree_still_confirms(tmp
     (main / "sub").rmdir()          # the main tree's checkout no longer has it
     context = service.confirm_session(KEY)
     assert (context.state, context.read_write_set.project_id) == ("registered", project.id)
+
+
+
+def _real_service(base: Path) -> MemoryService:
+    service = bootstrap.build_service(Settings(root=base / "store"), root=base / "store",
+                                      home=base / "home")
+    service.ensure_global()
+    return service
+
+
+def test_a_symlinked_alias_registers_and_proposes_its_targets_project(tmp_path):
+    base = Path(os.path.realpath(tmp_path))
+    (base / "a" / "sub").mkdir(parents=True)
+    (base / "b").mkdir()
+    alias = base / "b" / "alias"
+    alias.symlink_to(base / "a" / "sub")
+    service = _real_service(base)
+    target = service.init_project("a", service.plan_root(str(base / "a")))
+    service.init_project("b", service.plan_root(str(base / "b")))
+    assert service.open_project_context(str(alias)).project == target
+    context = service.start_session(KEY, source="startup", entry_dir=str(alias),
+                                    transcript_path=None)
+    assert context.project == target
+    assert service.list_sessions()[0].entry_cwd == str(base / "a" / "sub")
+    pending, _ = service.observe_prompt(OTHER_KEY, prompt="hi", entry_dir=str(alias),
+                                        transcript_path=None)
+    assert pending.state == "pending" and service.pending_candidate(pending) == target
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+def test_an_alias_into_a_linked_worktree_registers_the_main_trees_project_and_branch(tmp_path):
+    base = Path(os.path.realpath(tmp_path))
+    main = base / "main"
+    main.mkdir()
+    _git("init", "-b", "main", str(main), cwd=base)
+    _git("commit", "--allow-empty", "-m", "init", cwd=main)
+    _git("worktree", "add", "-b", "feature", str(base / "wt"), cwd=main)
+    (base / "wt" / "sub").mkdir()
+    (base / "link").symlink_to(base / "wt" / "sub")
+    service = _real_service(base)
+    project = service.init_project("demo", service.plan_root(str(main)))
+    context = service.start_session(KEY, source="startup", entry_dir=str(base / "link"),
+                                    transcript_path=None)
+    assert context.project == project
+    row = service.list_sessions()[0]
+    assert (row.entry_cwd, row.branch) == (str(base / "wt" / "sub"), "feature")
+
+
+def test_an_entry_with_a_nul_is_degraded_and_writes_nothing(tmp_path):
+    service = _real_service(Path(os.path.realpath(tmp_path)))
+    entry = "/tmp/x" + chr(0) + "y"
+    assert service.start_session(KEY, source="startup", entry_dir=entry,
+                                 transcript_path=None).state == "degraded"
+    context, created = service.observe_prompt(KEY, prompt="hi", entry_dir=entry,
+                                              transcript_path=None)
+    assert (context.state, created) == ("degraded", False)
+    assert service.list_sessions() == []
 
 
 # --- search_sessions / list_sessions / pending_candidate / entry_of -----------------------

@@ -80,6 +80,7 @@ UNIDENTIFIED_HEADER = ("project: none — this session is not registered with me
 # at once; resume/compact continue one memriver never saw, so it waits for
 # the user (spec §5.2)
 _FRESH_SOURCES = frozenset({"startup", "clear", "fork"})
+_ENTRY_UNRESOLVABLE = "working directory could not be resolved"
 _WORKTREE_UNMAPPED = "the git worktree could not be mapped to its main working tree"
 _SESSION_PROJECT_MISSING = "session project missing"
 
@@ -88,6 +89,7 @@ class MemoryService:
     def __init__(self, memory_store: MemoryStore, project_store: ProjectStore,
                  content_policy_factory: Callable[[], ContentPolicy],
                  diagnostics: Diagnostics, *, session_store: SessionStore,
+                 canonical_directory: Callable[[str], str | None],
                  main_tree_path: Callable[[str], str | None],
                  current_branch: Callable[[str], str | None],
                  root_is_intact: Callable[[str], bool], max_body_chars: int,
@@ -102,6 +104,7 @@ class MemoryService:
         self._session_store = session_store
         # the directory questions a session registration asks (spec §5.1),
         # injected so this layer runs no git and reads no filesystem
+        self._canonical_directory = canonical_directory
         self._main_tree_path = main_tree_path
         self._current_branch = current_branch
         self._root_is_intact = root_is_intact
@@ -318,11 +321,15 @@ class MemoryService:
         A context instead when the directory cannot be resolved: nothing is
         registered, and the next event tries again.
         """
-        mapped = self._main_tree_path(entry_dir)
-        if mapped is None:
-            return self._degraded_context(_WORKTREE_UNMAPPED,
-                                          self._project_store.global_project_id(), key)
-        resolution = self._project_store.resolve(entry_dir, logical=mapped)
+        # only the canonical spelling is registered and walked: an alias (a
+        # symlink) belongs where it points, never where it is written
+        entry = self._canonical_directory(entry_dir)
+        mapped = None if entry is None else self._main_tree_path(entry)
+        if entry is None or mapped is None:
+            return self._degraded_context(
+                _ENTRY_UNRESOLVABLE if entry is None else _WORKTREE_UNMAPPED,
+                self._project_store.global_project_id(), key)
+        resolution = self._project_store.resolve(entry, logical=mapped)
         if resolution.state == "degraded":
             return self._degraded_context(resolution.diagnostic or "",
                                           self._project_store.global_project_id(), key)
@@ -334,7 +341,7 @@ class MemoryService:
             project_id=project.id if fresh and project is not None else None,
             candidate_id=None if fresh or project is None else project.id,
             candidate_root=None if fresh or project is None else project.root,
-            entry_cwd=entry_dir, branch=self._current_branch(entry_dir),
+            entry_cwd=entry, branch=self._current_branch(entry),
             transcript_path=transcript_path, started_at=at, last_active_at=at, ended_at=None,
             prompt_count=0, last_write_prompt_count=0, last_nudge_prompt_count=0,
             first_prompt=None, recent_prompts=())

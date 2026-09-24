@@ -13,7 +13,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from memriver_core.repository.directories import same_directory
+from memriver_core.repository.directories import canonical_directory, same_directory
 
 _LOCATE = ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir",
            "--git-common-dir"]
@@ -62,9 +62,16 @@ def _locate(cwd: str, timeout_s: float) -> list[str] | None:
 
 
 def main_tree_path(path: str, *, timeout_s: float) -> str | None:
-    """`path` itself outside git or in a main working tree; its twin in the main tree
-    when inside a linked worktree; None when that cannot be told for sure.
+    """`path`'s canonical directory outside git or in a main working tree; its twin
+    in the main tree when inside a linked worktree; None when that cannot be told
+    for sure, or when `path` is not an existing directory.
+
+    Only the canonical spelling is ever used: an alias (a symlink) walks the
+    ancestors of where it points, never of where it is written.
     """
+    path = canonical_directory(path)
+    if path is None:
+        return None
     found = _has_git_entry(path)
     if found is None:
         return None
@@ -109,7 +116,8 @@ def main_tree_path(path: str, *, timeout_s: float) -> str | None:
 
 def current_branch(path: str, *, timeout_s: float) -> str | None:
     """The checked-out branch; "HEAD" when detached; None outside git or on any failure."""
-    if _has_git_entry(path) is not True:
+    path = canonical_directory(path)
+    if path is None or _has_git_entry(path) is not True:
         return None
     output = _git(["rev-parse", "--abbrev-ref", "HEAD"], path, timeout_s)
     if output is None:

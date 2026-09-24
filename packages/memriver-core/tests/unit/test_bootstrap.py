@@ -73,6 +73,7 @@ def test_composes_the_session_store_and_the_directory_callables(tmp_path):
         assert query.keywords == {"timeout_s": GIT_QUERY_TIMEOUT_S}
     plain = base / "plain"
     plain.mkdir()
+    assert service._canonical_directory(str(plain)) == str(plain)
     assert service._main_tree_path(str(plain)) == str(plain)
     assert service._current_branch(str(plain)) is None
     (base / "link").symlink_to(plain)
