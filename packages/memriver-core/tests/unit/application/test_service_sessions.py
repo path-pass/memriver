@@ -10,6 +10,8 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 
@@ -263,6 +265,64 @@ def test_a_prompt_on_a_registered_row_is_counted_and_keeps_its_registration(worl
     world.start()
     assert world.prompt() == (_registered(world), False)
     assert (world.row().status, world.row().prompt_count) == ("registered", 1)
+
+
+class BothReadFirst:
+    """Holds the first two `get`s until both have read -- each caller has seen no
+    row, so each builds its own seed -- then lets `first_writer` write first."""
+
+    def __init__(self, inner, first_writer: str) -> None:
+        self._inner, self._first_writer = inner, first_writer
+        self._barrier = threading.Barrier(2, timeout=10)
+        self._gated, self._lock = 2, threading.Lock()
+        self._written = threading.Event()
+
+    def get(self, key):
+        stored = self._inner.get(key)
+        with self._lock:
+            gated, self._gated = self._gated > 0, self._gated - 1
+        if gated:
+            self._barrier.wait()
+        return stored
+
+    def register(self, *args, **kwargs):
+        return self._write("register", *args, **kwargs)
+
+    def add_prompt(self, *args, **kwargs):
+        return self._write("add_prompt", *args, **kwargs)
+
+    def _write(self, name, *args, **kwargs):
+        if name != self._first_writer:
+            assert self._written.wait(timeout=10)
+        try:
+            return getattr(self._inner, name)(*args, **kwargs)
+        finally:
+            if name == self._first_writer:
+                self._written.set()
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+@pytest.mark.parametrize(("first_writer", "status"), [("register", "registered"),
+                                                      ("add_prompt", "pending")])
+def test_a_first_start_and_a_first_prompt_racing_share_one_row(world, first_writer, status):
+    """SessionStart's register and UserPromptSubmit's seeded add_prompt, both
+    for a key with no row: one INSERT wins, both callers answer from it, and
+    the prompt is counted once."""
+    world.session_store = BothReadFirst(world.session_store, first_writer)
+    service = world.build()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        started = pool.submit(service.start_session, KEY, source="startup",
+                              entry_dir=str(world.work), transcript_path=None)
+        prompted = pool.submit(service.observe_prompt, KEY, prompt="first",
+                               entry_dir=str(world.work), transcript_path=None)
+        start_context, (prompt_context, created) = started.result(), prompted.result()
+    [row] = service.list_sessions()
+    assert (row.key, row.status, row.prompt_count, row.first_prompt.text) == (
+        KEY, status, 1, "first")
+    assert created is (first_writer == "add_prompt")
+    assert start_context == prompt_context == service.session_context(KEY)
 
 
 def test_prompt_text_is_one_line_capped_and_only_the_recent_ones_are_kept(world):
@@ -624,6 +684,7 @@ def test_a_failed_save_leaves_the_watermark_alone(world):
     world.prompt()
     with pytest.raises(ContentRejected):
         world.write(context, SECRET_PROMPT)
+    assert world.row().last_write_prompt_count == 0
     memory = world.write(context)
     world.prompt()
     with pytest.raises(VersionConflict):

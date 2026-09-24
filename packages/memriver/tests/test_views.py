@@ -481,12 +481,13 @@ def test_sessions_shows_the_relative_age_from_the_injected_now(world):
 
 
 def test_sessions_lists_pending_sessions_with_their_status(world):
-    key = SessionKey("claude-code", "pending-1")
+    key = SessionKey("claude-code", "resumed-1")
     _start(world, key, world["work"], source="resume")
 
     code, out = _sessions("", root=world["store"], home=world["home"])
     assert code == 0
-    assert "pending" in out and "pending-1" in out
+    assert "resumed-1" in out
+    assert f"project: pending -> demo ({world['project'].id})" in out
 
 
 def test_sessions_with_an_unknown_project_id_is_refused(world):

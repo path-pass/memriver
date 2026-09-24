@@ -12,9 +12,11 @@ from pathlib import Path
 import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
+from memriver.hooks import HookResult, run_hook
 from memriver.protocol_text import (
     INSTRUCTIONS,
     SESSION_INSTRUCTIONS,
+    STOP_NUDGE,
     UNTRUSTED_DATA_NOTICE,
 )
 from memriver.server import build_server
@@ -877,6 +879,36 @@ async def test_directory_mode_answers_for_its_start_directory(world, monkeypatch
     assert read["source"] == {"harness": harness or "unknown", "method": "agent"}
     assert await _error(server, "session_search") == NOT_AVAILABLE
     assert await _error(server, "session_confirm") == NOT_AVAILABLE
+
+
+@pytest.mark.parametrize("harness", ["codex", "claude-code"])
+async def test_hooks_and_server_share_the_save_watermark_end_to_end(world, monkeypatch, harness):
+    """Real hooks count the prompts, a real MCP write through the session-routed
+    server moves the watermark, and the Stop hook reads it: silent right after
+    the save, a nudge once 5 more prompts have gone by."""
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    session_id = CODEX_ID if harness == "codex" else "claude-session-1"
+
+    def hook(event, **payload):
+        return run_hook(event, harness, json.dumps({"session_id": session_id} | payload),
+                        root=world["store"], project_dir=None, cwd=world["dir"])
+
+    def prompts(count):
+        for number in range(count):
+            assert hook("user-prompt-submit", cwd=str(world["dir"]),
+                        prompt=f"task {number}") == HookResult()
+
+    hook("session-start", cwd=str(world["dir"]), source="startup")
+    prompts(5)
+    meta = _as_session(harness, session_id, monkeypatch)
+    server = build_server(root=world["store"], project_dir=world["dir"].parent / "other",
+                          harness=harness)
+    written = await _call(server, "memory_write", meta=meta, content="fact", type="project")
+    assert written["project_id"] == world["project"]
+    assert hook("stop", stop_hook_active=False) == HookResult()
+    prompts(5)
+    nudge = hook("stop", stop_hook_active=False)
+    assert json.loads(nudge.stdout) == {"decision": "block", "reason": STOP_NUDGE}
 
 
 @pytest.mark.parametrize("harness", ["codex", "claude-code"])
