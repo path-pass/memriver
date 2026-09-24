@@ -12,6 +12,10 @@ from memriver_core.repository.sqlite import SqliteProjectStore, SqliteStoreInspe
 
 MEMORY_COLUMNS = ("id, project_id, type, source_harness, source_method, trust, sync, "
                   "description, body, created, updated, version, deleted_at, last_read_at")
+SESSION_COLUMNS = ("harness, session_id, status, origin, project_id, candidate_id, "
+                   "candidate_root, entry_cwd, branch, transcript_path, started_at, "
+                   "last_active_at, ended_at, prompt_count, last_write_prompt_count, "
+                   "last_nudge_prompt_count, first_prompt, recent_prompts")
 
 # the v1 schema, frozen here to build a database an upgrade must act on
 _V1_SCHEMA = (
@@ -59,6 +63,30 @@ def _plant(store: Path, memory: Memory) -> Memory:
              memory.body, memory.created, memory.updated, memory.version, memory.deleted_at,
              memory.last_read_at))
     return memory
+
+
+def _plant_session(store: Path, **overrides: object) -> dict[str, object]:
+    """A raw `sessions` row, bypassing every app-level check the store enforces --
+    a bare `sqlite3.connect` never turns `PRAGMA foreign_keys` on, so a
+    `candidate_id`/`project_id` naming no project plants cleanly, and
+    `PRAGMA ignore_check_constraints` lets an otherwise-invalid row past the
+    table's own CHECKs."""
+    row: dict[str, object] = {
+        "harness": "codex", "session_id": "s1", "status": "registered", "origin": "start",
+        "project_id": None, "candidate_id": None, "candidate_root": None,
+        "entry_cwd": "/tmp/x", "branch": None, "transcript_path": None,
+        "started_at": "2026-09-24T00:00:00.000000Z",
+        "last_active_at": "2026-09-24T00:00:00.000000Z", "ended_at": None,
+        "prompt_count": 0, "last_write_prompt_count": 0, "last_nudge_prompt_count": 0,
+        "first_prompt": None, "recent_prompts": "[]",
+    }
+    row.update(overrides)
+    placeholders = ", ".join("?" for _ in SESSION_COLUMNS.split(","))
+    with closing(sqlite3.connect(store / "memriver.db")) as conn, conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute(f"INSERT INTO sessions ({SESSION_COLUMNS}) VALUES ({placeholders})",
+                     tuple(row.values()))
+    return row
 
 
 def _sql(store: Path, statement: str, *params) -> list[tuple]:
@@ -184,6 +212,38 @@ def test_an_undecodable_memory_column_is_invalid_row_not_a_crash(world):
     report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
     assert ("invalid-row", bad.id) in [(f.kind, f.memory_id) for f in report.findings]
     assert report.entries == ()
+
+
+def test_an_invalid_session_row_is_reported_as_invalid_row(world):
+    _plant_session(world["store"], harness="codex", session_id="bad-1", status="odd")
+    report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+    assert ("invalid-row", "sessions/codex/bad-1") in \
+        [(f.kind, f.location_hint) for f in report.findings]
+
+
+def test_a_session_with_a_dangling_candidate_id_is_a_session_orphan_finding(world):
+    _plant_session(world["store"], harness="codex", session_id="pending-1", status="pending",
+                   origin="first-seen", candidate_id="zzzzzzzzzz", candidate_root="/z")
+    report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+    assert ("session-orphan", "sessions/codex/pending-1") in \
+        [(f.kind, f.location_hint) for f in report.findings]
+    assert "invalid-row" not in [f.kind for f in report.findings
+                                 if f.location_hint == "sessions/codex/pending-1"]
+
+
+def test_a_session_with_a_dangling_project_id_is_a_session_orphan_finding(world):
+    _plant_session(world["store"], harness="claude-code", session_id="reg-1",
+                   status="registered", origin="start", project_id="zzzzzzzzzz")
+    report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+    assert ("session-orphan", "sessions/claude-code/reg-1") in \
+        [(f.kind, f.location_hint) for f in report.findings]
+
+
+def test_a_healthy_session_row_is_not_a_finding(world):
+    _plant_session(world["store"], harness="codex", session_id="ok-1", status="registered",
+                   origin="start", project_id=world["project"])
+    report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+    assert report.findings == ()
 
 
 def test_an_undecodable_project_column_is_invalid_row_not_a_crash(world):

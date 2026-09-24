@@ -18,6 +18,7 @@ from memriver_core.models import (
     ID_RE,
     InspectedMemory,
     InspectedProject,
+    SessionKey,
     StoreFinding,
     StoreReport,
 )
@@ -34,6 +35,7 @@ from .database import (
     project_from_row,
     upgrade_if_needed,
 )
+from .session_store import SESSION_COLUMNS, session_from_row
 
 # the names the file store of earlier versions used at the store root
 _LEGACY_NAMES = ("global", "memories", "projects", "registry", "store.toml")
@@ -48,6 +50,7 @@ _REASONS = {
     "unverifiable-root": "bound directory could not be checked",
     "legacy-layout": "file-store layout from an earlier version; this version does not read it",
     "root-conflict": "two projects are bound to the same directory under different spellings",
+    "session-orphan": "session refers to a project that does not exist",
 }
 
 
@@ -64,6 +67,21 @@ def _sorted_findings(findings: list[StoreFinding]) -> tuple[StoreFinding, ...]:
 def _shaped_id(value: object) -> str | None:
     """`value` as an addressable id, or None -- never runs a str-only regex on non-str."""
     return value if isinstance(value, str) and ID_RE.fullmatch(value) else None
+
+
+def _session_location(harness: object, session_id: object) -> str:
+    """`sessions/<harness>/<session_id>`, or the bare table name when either
+    column is not a session id memriver could have written (never runs
+    `SessionKey`'s printability check against a non-str, and never shows a raw
+    control character or non-str value in a location hint)."""
+    if isinstance(harness, str) and isinstance(session_id, str):
+        try:
+            key = SessionKey(harness, session_id)
+        except ValueError:
+            pass
+        else:
+            return f"sessions/{key.harness}/{key.session_id}"
+    return "sessions"
 
 
 class SqliteStoreInspector:
@@ -178,7 +196,33 @@ class SqliteStoreInspector:
             if memory.deleted_at is None:
                 entries.append(InspectedMemory(memory=memory,
                                                location_hint=f"memories/{memory.id}"))
+        self._sessions(conn, findings)
         return initialized, entries, rows
+
+    def _sessions(self, conn: sqlite3.Connection, findings: list[StoreFinding]) -> None:
+        """Session-row findings only: `memriver sessions` reads sessions itself
+        (spec section 9); the doctor's own entries/counts stay memory-only."""
+        orphans = {(row[0], row[1]) for row in conn.execute(
+            "SELECT s.harness, s.session_id FROM sessions s "
+            "LEFT JOIN projects p ON p.id = s.project_id "
+            "WHERE s.project_id IS NOT NULL AND p.id IS NULL "
+            "UNION "
+            "SELECT s.harness, s.session_id FROM sessions s "
+            "LEFT JOIN projects p ON p.id = s.candidate_id "
+            "WHERE s.candidate_id IS NOT NULL AND p.id IS NULL")}
+        # a session key can mix str and bytes the same way an undecodable
+        # memory/project id can (see _lenient_text); sort by a type-stable key
+        for harness, session_id in sorted(orphans, key=repr):
+            findings.append(_finding("session-orphan", _session_location(harness, session_id)))
+        for row in conn.execute(f"SELECT {SESSION_COLUMNS} FROM sessions "
+                                "ORDER BY harness, session_id"):
+            key = (row[0], row[1])
+            if key in orphans:
+                continue                    # already filed as session-orphan, not invalid-row
+            try:
+                session_from_row(row)
+            except ValueError:
+                findings.append(_finding("invalid-row", _session_location(*key)))
 
     def _projects(self, conn: sqlite3.Connection,
                   findings: list[StoreFinding]) -> tuple[list[InspectedProject], bool]:

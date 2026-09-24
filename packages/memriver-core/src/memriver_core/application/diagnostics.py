@@ -36,6 +36,8 @@ _BACKEND_SUGGESTIONS = {
     "unverifiable-root": "restore access to the directory, then run memriver doctor again",
     "root-conflict": "unbind one of them with memriver project unbind",
     "legacy-layout": "migrate it, or remove it once migrated",
+    "session-orphan": ("restore the missing project from a backup; until then the session's "
+                       "project is unreachable"),
 }
 _DEFAULT_BACKEND_SUGGESTION = "inspect this entry manually; its finding kind is unrecognized"
 

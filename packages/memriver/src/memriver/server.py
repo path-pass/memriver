@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import os
-import shlex
 from pathlib import Path
 from typing import Literal, NoReturn
 
@@ -16,17 +15,11 @@ from memriver_core import (
     VersionConflict,
 )
 from memriver_core.bootstrap import build_service
-from memriver_core.models import (
-    ID_RE,
-    Memory,
-    ProjectContext,
-    PromptEntry,
-    Session,
-    SessionKey,
-)
+from memriver_core.models import ID_RE, Memory, ProjectContext, SessionKey
 from memriver_core.settings import SEARCH_SNIPPET_CHARS, Settings
 
 from .protocol_text import INSTRUCTIONS, SESSION_INSTRUCTIONS, UNTRUSTED_DATA_NOTICE
+from .views import session_item
 
 logger = logging.getLogger("memriver")
 
@@ -188,29 +181,6 @@ def _hit(memory: Memory, collection: str) -> dict:
             "description": memory.description, "snippet": snippet}
 
 
-def _prompt(entry: PromptEntry | None) -> dict | None:
-    if entry is None:
-        return None
-    if entry.text is not None:
-        return {"at": entry.at, "text": entry.text}
-    return {"at": entry.at, "omitted": entry.omitted}
-
-
-_RESUME = {"claude-code": "claude --resume", "codex": "codex resume"}
-
-
-def _session_item(session: Session) -> dict:
-    key = session.key
-    return {"harness": key.harness, "session_id": key.session_id,
-            "project": session.project_id, "branch": session.branch,
-            "entry_cwd": session.entry_cwd, "first_recorded": session.started_at,
-            "last_active_at": session.last_active_at,
-            "last_end_event_at": session.ended_at,
-            "first_prompt": _prompt(session.first_prompt),
-            "recent_prompts": [_prompt(entry) for entry in session.recent_prompts],
-            "resume_command": f"{_RESUME[key.harness]} {shlex.quote(key.session_id)}"}
-
-
 def _session_key(harness: str, ctx: Context) -> SessionKey | None:
     """The calling session, read from this call alone; None when it names none validly."""
     if harness == "claude-code":
@@ -367,7 +337,7 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
         if not session_mode:
             raise ToolError(_SESSION_TOOLS_UNAVAILABLE, log_level=logging.DEBUG)
         try:
-            return [_session_item(session)
+            return [session_item(session)
                     for session in service.search_sessions(query, context_of(ctx), limit)]
         except Exception as err:  # noqa: BLE001
             _fail("list", err)

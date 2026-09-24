@@ -91,7 +91,7 @@ def capture_dispatch(argv: list[str], monkeypatch):
         return record
 
     for name in ("_serve", "_hook", "_install", "_view_list", "_view_show", "_view_search",
-                "_view_export", "_view_delete"):
+                "_view_export", "_view_delete", "_view_sessions"):
         monkeypatch.setattr(cli, name, make_recorder(name))
     assert cli.main(list(argv)) == 0
     return seen[0]
@@ -142,6 +142,11 @@ def test_project_subcommands_parse(argv, handler, expected):
     (["search", "query text", "--project", "aaaaaaaaaa", "--limit", "3"], "_view_search",
      {"query": "query text", "project": "aaaaaaaaaa", "limit": 3}),
     (["export", "/tmp/out"], "_view_export", {"directory": Path("/tmp/out")}),
+    (["sessions"], "_view_sessions", {"query": "", "project": None, "limit": None,
+                                      "json": False}),
+    (["sessions", "login bug", "--project", "aaaaaaaaaa", "--limit", "3", "--json"],
+     "_view_sessions", {"query": "login bug", "project": "aaaaaaaaaa", "limit": 3,
+                        "json": True}),
     (["delete", "mmmmmmmmmm", "--version", "2"], "_view_delete",
      {"memory_id": "mmmmmmmmmm", "version": 2, "hard": False, "yes": False}),
     (["delete", "mmmmmmmmmm", "--version", "2", "--hard", "--yes"], "_view_delete",

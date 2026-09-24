@@ -201,6 +201,16 @@ def _add_view_commands(commands) -> None:
     export.add_argument("directory", type=Path, help="a directory that does not exist yet")
     export.set_defaults(handler=_view_export)
 
+    sessions = add("sessions", "list every recorded session, or one project's")
+    sessions.add_argument("query", nargs="?", default="",
+                          help="only sessions matching this word in a prompt, "
+                               "branch or entry directory")
+    sessions.add_argument("--project", default=None, help="only this project id")
+    sessions.add_argument("--limit", type=_positive_int, default=None)
+    sessions.add_argument("--json", action="store_true",
+                          help="emit the session_search item shape as JSON")
+    sessions.set_defaults(handler=_view_sessions)
+
     delete = add("delete", "delete one memory of the current directory's project")
     delete.add_argument("memory_id")
     delete.add_argument("--version", type=_positive_int, required=True,
@@ -389,6 +399,13 @@ def _view_export(args: argparse.Namespace) -> int:
 
     return run_export(args.directory, root=args.root, stdout=sys.stdout, home=Path.home(),
                       cwd=Path.cwd())
+
+
+def _view_sessions(args: argparse.Namespace) -> int:
+    from .views import run_sessions
+
+    return run_sessions(args.query, root=args.root, project_id=args.project, limit=args.limit,
+                        json_output=args.json, stdout=sys.stdout, home=Path.home())
 
 
 def _view_delete(args: argparse.Namespace) -> int:

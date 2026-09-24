@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import unicodedata
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO
 
@@ -20,14 +22,19 @@ from memriver_core import (
     StorageFailure,
     VersionConflict,
 )
-from memriver_core.models import Memory, Project, single_line
+from memriver_core.models import Memory, Project, PromptEntry, Session, single_line
+from memriver_core.models import now as _now
 from memriver_core.settings import INDEX_CUE_CHARS
 
 from .project_context import _INVISIBLE_CATEGORIES, visible
 
 STORE_UNREADABLE = "refused: the memory store could not be read"
 _EXPORT_FIELDS = ("id", "project_id", "type", "source_harness", "source_method", "trust",
-                  "sync", "created", "updated", "version", "description")
+                  "sync", "created", "updated", "version", "last_read_at", "description")
+
+# claude-code/codex only (spec section 7.2): the two harnesses `session_search`
+# and `memriver sessions` ever see a row for
+_RESUME_COMMANDS = {"claude-code": "claude --resume", "codex": "codex resume"}
 
 
 def _export_value(memory: Memory, field: str) -> object:
@@ -104,7 +111,9 @@ def run_show(memory_id: str, *, root: Path | None, deleted: bool, stdout: IO[str
              f"source: {visible(memory.source['harness'])}/{visible(memory.source['method'])}",
              f"trust: {memory.trust}", f"sync: {str(memory.sync).lower()}",
              f"created: {visible(memory.created)}", f"updated: {visible(memory.updated)}",
-             f"version: {memory.version}", f"description: {visible(single_line(memory.description))}"]
+             f"version: {memory.version}",
+             f"last_read_at: {visible(memory.last_read_at) if memory.last_read_at else 'never'}",
+             f"description: {visible(single_line(memory.description))}"]
     if memory.deleted_at is not None:
         lines.append(f"deleted: {visible(memory.deleted_at)}")
     stdout.write("\n".join(lines) + "\n---\n" + _body(memory.body) + "\n")
@@ -122,6 +131,119 @@ def run_search(query: str, *, root: Path | None, project_id: str | None, limit: 
         stdout.write(STORE_UNREADABLE + "\n")
         return 2
     stdout.write("".join(_line(m) for m in hits) or "(no matches)\n")
+    return 0
+
+
+def _prompt_payload(entry: PromptEntry | None) -> dict | None:
+    if entry is None:
+        return None
+    if entry.text is not None:
+        return {"at": entry.at, "text": entry.text}
+    return {"at": entry.at, "omitted": entry.omitted}
+
+
+def session_item(session: Session) -> dict:
+    """The `session_search`/`memriver sessions --json` item (spec section 7.1),
+    built once and shared verbatim by the MCP server and this CLI: an agent and
+    a human script both read the same keys off the same session."""
+    key = session.key
+    return {"harness": key.harness, "session_id": key.session_id,
+            "project": session.project_id, "branch": session.branch,
+            "entry_cwd": session.entry_cwd, "first_recorded": session.started_at,
+            "last_active_at": session.last_active_at,
+            "last_end_event_at": session.ended_at,
+            "first_prompt": _prompt_payload(session.first_prompt),
+            "recent_prompts": [_prompt_payload(entry) for entry in session.recent_prompts],
+            "resume_command": (f"{_RESUME_COMMANDS[key.harness]} "
+                               f"{shlex.quote(key.session_id)}")}
+
+
+# thresholds for the text view's relative age (spec section 9): under a
+# minute is "just now", under an hour is "N minutes ago", under a day is
+# "N hours ago", otherwise "N days ago". A `timestamp` after `reference` (a
+# clock skew, or a caller-injected `reference` earlier than the row) clamps
+# to "just now" rather than showing a negative age.
+_MINUTE_S, _HOUR_S, _DAY_S = 60, 3600, 86400
+
+
+def _parse_timestamp(value: str) -> datetime:
+    return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=UTC)
+
+
+def _plural(count: int, unit: str) -> str:
+    return f"{count} {unit}{'' if count == 1 else 's'} ago"
+
+
+def _relative_age(timestamp: str, reference: str) -> str:
+    delta = (_parse_timestamp(reference) - _parse_timestamp(timestamp)).total_seconds()
+    if delta < _MINUTE_S:
+        return "just now"
+    if delta < _HOUR_S:
+        return _plural(int(delta // _MINUTE_S), "minute")
+    if delta < _DAY_S:
+        return _plural(int(delta // _HOUR_S), "hour")
+    return _plural(int(delta // _DAY_S), "day")
+
+
+def _project_cell(session: Session, names: dict[str, str]) -> str:
+    if session.status == "pending":
+        if session.candidate_id is None:
+            return "pending"
+        name = names.get(session.candidate_id, "unknown project")
+        return f"pending -> {name} ({session.candidate_id})"
+    if session.project_id is None:
+        return "(unbound)"
+    name = names.get(session.project_id, "unknown project")
+    return f"{name} ({session.project_id})"
+
+
+def _prompt_cell(entry: PromptEntry | None) -> str:
+    if entry is None:
+        return "-"
+    if entry.text is not None:
+        return entry.text
+    return f"(omitted: {entry.omitted})"
+
+
+def _session_block(session: Session, *, names: dict[str, str], reference: str) -> str:
+    key = session.key
+    latest = session.recent_prompts[-1] if session.recent_prompts else None
+    lines = [
+        f"{visible(key.harness)} {visible(key.session_id)}",
+        (f"  last active: {visible(session.last_active_at)} "
+         f"({_relative_age(session.last_active_at, reference)})"),
+        f"  project: {visible(_project_cell(session, names))}",
+        f"  branch: {visible(session.branch) if session.branch else '-'}",
+        f"  first recorded: {visible(session.started_at)}",
+        f"  last end event: {visible(session.ended_at) if session.ended_at else '-'}",
+        f"  first prompt: {visible(_prompt_cell(session.first_prompt))}",
+        f"  latest prompt: {visible(_prompt_cell(latest))}",
+        f"  resume: {visible(session_item(session)['resume_command'])}",
+    ]
+    return "\n".join(lines)
+
+
+def run_sessions(query: str, *, root: Path | None, project_id: str | None, limit: int | None,
+                 json_output: bool, stdout: IO[str], home: Path, now: str | None = None) -> int:
+    try:
+        service = _service(root, home)
+        sessions = service.list_sessions(project_id=project_id, query=query, limit=limit)
+    except StorageFailure:
+        stdout.write(STORE_UNREADABLE + "\n")
+        return 2
+    if json_output:
+        stdout.write(json.dumps([session_item(s) for s in sessions], indent=2) + "\n")
+        return 0
+    if not sessions:
+        stdout.write("(no sessions)\n")
+        return 0
+    try:
+        names = {p.id: visible(p.name) for p in service.list_projects()}
+    except StorageFailure:
+        names = {}
+    reference = now if now is not None else _now()
+    stdout.write("\n".join(_session_block(s, names=names, reference=reference)
+                          for s in sessions) + "\n")
     return 0
 
 
