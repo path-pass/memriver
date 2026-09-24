@@ -37,7 +37,7 @@ UNAVAILABLE = ("no writable project: the memory store could not be read. No memo
 STORE_UNREADABLE_HEADER = ("project: unavailable — the memory store could not be read; "
                            "ask the user to run memriver doctor")
 TOOLS = {"memory_index", "memory_read", "memory_search", "memory_write", "memory_update",
-         "memory_delete", "session_search", "session_confirm"}
+         "memory_delete", "session_search", "session_confirm", "session_register"}
 PENDING_HEADER = ("project: awaiting confirmation — this session is not registered; "
                   "ask the user, then call session_confirm")
 UNIDENTIFIED_HEADER = ("project: none — this session is not registered with memriver: its "
@@ -56,8 +56,16 @@ UNIDENTIFIED = ("this session is not registered with memriver: its hooks may not
                 "(memriver install) or trusted (Codex asks on start), or the harness sent no "
                 "session id; ask the user to fix that, then start a new session")
 SESSION_NO_PROJECT = ("no writable project: this session was registered with no project. No "
-                      "memory was saved. Ask the user to run memriver project init, then start "
-                      "a new session to save there; do not run it yourself.")
+                      "memory was saved. Ask the user to run memriver project init where this "
+                      "session started, then call session_register; do not run it yourself "
+                      "unless they ask.")
+PENDING_NO_CANDIDATE = ("this session is not registered, and the directory it was first observed "
+                        "in is not in any registered project; once the user has run memriver "
+                        "project init covering this session's start directory, call "
+                        "session_register")
+NOTHING_TO_REGISTER = ("no registered project covers the directory this session started in; "
+                       "nothing was registered")
+COULD_NOT_REGISTER = "could not register this session; ask the user to run memriver doctor"
 SESSION_PROJECT_GONE = ("no writable project: this session's project no longer exists or became "
                         "global. No memory was saved. Ask the user to start a new session.")
 CANDIDATE_CHANGED = ("the proposed project changed since memriver proposed it; ask the user "
@@ -180,7 +188,7 @@ async def test_failures_are_mcp_tool_errors_successes_are_not(server, world):
                                 "created", "updated", "description", "body", "version"}
 
 
-async def test_the_tool_list_is_the_eight_tools_and_no_dream(server):
+async def test_the_tool_list_is_the_nine_tools_and_no_dream(server):
     async with Client(server) as c:
         assert {t.name for t in await c.list_tools()} == TOOLS
 
@@ -755,6 +763,7 @@ async def test_a_codex_call_without_a_valid_session_id_is_unidentified(world, me
     assert await _error(server, "memory_write", meta=meta, content="x", type="user") == \
         UNIDENTIFIED
     assert await _error(server, "session_confirm", meta=meta) == UNIDENTIFIED
+    assert await _error(server, "session_register", meta=meta) == UNIDENTIFIED
     assert await _call(server, "session_search", meta=meta) == []
     assert _snapshot(world["store"]) == before
 
@@ -791,6 +800,7 @@ async def test_a_pending_session_reads_global_only_until_the_user_confirms(world
     assert await _error(server, "memory_delete", meta=meta, memory_id=candidate.id,
                         expected_version=1) == PENDING
     assert await _call(server, "session_search", meta=meta) == []
+    assert await _error(server, "session_register", meta=meta) == PENDING
     assert _snapshot(world["store"]) == before
 
     confirmed = await _call(server, "session_confirm", meta=meta)
@@ -829,12 +839,16 @@ def _bad_session_row(world, key):
     _sql(world["store"], "UPDATE sessions SET recent_prompts = '{}'")
 
 
-@contextlib.contextmanager
-def _store_locked(world, monkeypatch):
-    """Another process holding the write lock past memriver's (shortened) busy wait."""
+def _shorten_busy_wait(monkeypatch):
+    """memriver's busy wait, shortened; the stores read it when they are built."""
     from memriver_core import bootstrap
 
     monkeypatch.setattr(bootstrap, "BUSY_TIMEOUT_MS", 50)
+
+
+@contextlib.contextmanager
+def _store_locked(world):
+    """Another process holding the write lock past memriver's (shortened) busy wait."""
     with closing(sqlite3.connect(world["store"] / "memriver.db",
                                  isolation_level=None)) as holder:
         holder.execute("BEGIN EXCLUSIVE")
@@ -858,10 +872,12 @@ async def test_a_session_without_a_usable_project_never_falls_back_to_the_server
      "project-gone": _session_whose_project_is_gone,
      "bad-row": _bad_session_row,
      "lock-timeout": lambda world, key: _start(world, key, world["dir"])}[case](world, key)
+    if case == "lock-timeout":
+        _shorten_busy_wait(monkeypatch)
     server = build_server(root=world["store"], project_dir=world["dir"], harness="codex")
     meta = CODEX_META["root"]
     before = _snapshot(world["store"])
-    with _store_locked(world, monkeypatch) if case == "lock-timeout" \
+    with _store_locked(world) if case == "lock-timeout" \
             else contextlib.nullcontext():
         index = await _call(server, "memory_index", meta=meta)
         written = await _error(server, "memory_write", meta=meta, content="x", type="project")
@@ -887,6 +903,7 @@ async def test_directory_mode_answers_for_its_start_directory(world, monkeypatch
     assert read["source"] == {"harness": harness or "unknown", "method": "agent"}
     assert await _error(server, "session_search") == NOT_AVAILABLE
     assert await _error(server, "session_confirm") == NOT_AVAILABLE
+    assert await _error(server, "session_register") == NOT_AVAILABLE
 
 
 @pytest.mark.parametrize("harness", ["codex", "claude-code"])
@@ -1006,7 +1023,7 @@ async def test_a_store_failure_in_the_session_tools_is_a_fixed_message(
 
     def broken_build_service(settings, *, root):
         service = real_build_service(settings, root=root)
-        for name in ("search_sessions", "confirm_session"):
+        for name in ("search_sessions", "confirm_session", "register_session"):
             monkeypatch.setattr(service, name,
                                 lambda *a, **k: (_ for _ in ()).throw(StorageFailure()))
         return service
@@ -1020,5 +1037,52 @@ async def test_a_store_failure_in_the_session_tools_is_a_fixed_message(
         "could not read the memory store"
     assert await _error(server, "session_confirm", meta=meta) == \
         "could not confirm this session; ask the user to run memriver doctor"
+    assert await _error(server, "session_register", meta=meta) == COULD_NOT_REGISTER
     assert [r.message for r in caplog.records if r.name == "memriver"] == \
-        ["memory_list failed: StorageFailure", "session_confirm failed: StorageFailure"]
+        ["memory_list failed: StorageFailure", "session_confirm failed: StorageFailure",
+         "session_register failed: StorageFailure"]
+
+
+# --- session_register (U14) ------------------------------------------------------
+
+
+@pytest.mark.parametrize("harness", ["codex", "claude-code"])
+async def test_session_register_binds_the_project_inited_where_the_session_started(
+        world, monkeypatch, harness):
+    session_id = CODEX_ID if harness == "codex" else "claude-session-1"
+    later = world["dir"].parent / "later"
+    later.mkdir()
+    _start(world, SessionKey(harness, session_id), later)
+    meta = _as_session(harness, session_id, monkeypatch)
+    server = build_server(root=world["store"], project_dir=world["dir"], harness=harness)
+    assert await _error(server, "memory_write", meta=meta, content="x", type="project") == \
+        SESSION_NO_PROJECT
+    assert await _call(server, "session_register", meta=meta) == \
+        {"header": SESSION_NONE_HEADER, "note": NOTHING_TO_REGISTER}
+
+    service = _service(world["store"])
+    project = service.init_project("later", service.plan_root(str(later)))
+    registered = await _call(server, "session_register", meta=meta)
+    assert registered == {"header": _registered_header(world, later)}
+    assert f"[{project.id}]" in registered["header"]
+    written = await _call(server, "memory_write", meta=meta, content="fact", type="project")
+    assert written["project_id"] == project.id
+    # registering again is a no-op
+    assert await _call(server, "session_register", meta=meta) == registered
+
+
+async def test_a_pending_session_without_a_candidate_is_pointed_at_session_register(world):
+    later = world["dir"].parent / "later"
+    later.mkdir()
+    _start(world, SessionKey("codex", CODEX_ID), later, source="resume")
+    server = build_server(root=world["store"], project_dir=world["dir"], harness="codex")
+    meta = CODEX_META["root"]
+    refusal = await _error(server, "memory_write", meta=meta, content="x", type="project")
+    assert refusal == PENDING_NO_CANDIDATE
+    assert "session_confirm" not in refusal
+    service = _service(world["store"])
+    project = service.init_project("later", service.plan_root(str(later)))
+    assert await _call(server, "session_register", meta=meta) == \
+        {"header": _registered_header(world, later)}
+    written = await _call(server, "memory_write", meta=meta, content="fact", type="project")
+    assert written["project_id"] == project.id

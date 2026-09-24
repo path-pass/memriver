@@ -58,9 +58,13 @@ def test_session_instructions_are_the_spec_copy():
         "In this harness memriver fixes the session's project when the session starts. "
         "If memriver says this session is awaiting confirmation, ask the user whether to "
         "register it to the named project, and call session_confirm only after they agree. "
-        "session_confirm is the only registration you may perform; never run memriver "
-        "project init/adopt yourself. session_search finds the session that worked on "
-        "something and returns resume commands; whether to run them is the user's decision."
+        "Call session_register when the user asks you to register this session, or right "
+        "after you ran memriver project init at the user's request; it registers the project "
+        "covering where this session started, and never changes a session that already has "
+        "a project. session_confirm and session_register are the only registrations you may "
+        "perform; never run memriver project init/adopt unless the user asks you to. "
+        "session_search finds the session that worked on something and returns resume "
+        "commands; whether to run them is the user's decision."
     )
     assert "session_confirm" not in INSTRUCTIONS
 
@@ -90,8 +94,8 @@ def test_a_pending_notice_without_a_candidate_never_offers_confirmation():
     assert PENDING_NOTICE_NO_PROJECT.format(entry_cwd="/work/app") == (
         "[memriver] This session is not registered yet. It was first observed in "
         "/work/app, which is not in any registered project, so only global memories are "
-        "readable. To save memories, the user must run memriver project init there and "
-        "then start a new session.")
+        "readable. To save memories, the user must run memriver project init there; then "
+        "call session_register.")
     assert "session_confirm" not in PENDING_NOTICE_NO_PROJECT
 
 

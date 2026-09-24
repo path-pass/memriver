@@ -44,9 +44,13 @@ SESSION_INSTRUCTIONS = (
     "In this harness memriver fixes the session's project when the session starts. "
     "If memriver says this session is awaiting confirmation, ask the user whether to "
     "register it to the named project, and call session_confirm only after they agree. "
-    "session_confirm is the only registration you may perform; never run memriver "
-    "project init/adopt yourself. session_search finds the session that worked on "
-    "something and returns resume commands; whether to run them is the user's decision."
+    "Call session_register when the user asks you to register this session, or right "
+    "after you ran memriver project init at the user's request; it registers the project "
+    "covering where this session started, and never changes a session that already has "
+    "a project. session_confirm and session_register are the only registrations you may "
+    "perform; never run memriver project init/adopt unless the user asks you to. "
+    "session_search finds the session that worked on something and returns resume "
+    "commands; whether to run them is the user's decision."
 )
 
 # The static Cursor/Kiro surface renders this heading + INSTRUCTIONS into a
@@ -93,13 +97,13 @@ PENDING_NOTICE = (
     "session_confirm only if they agree. Until then only global memories are readable."
 )
 PENDING_TARGET_PROJECT = "project {name} [{id}]"
-# no candidate: confirming would register the session to no project for good,
-# so the agent is not asked to offer it
+# no candidate: there is nothing to confirm, so the agent is not asked to offer
+# it; a project inited there later is registered with session_register
 PENDING_NOTICE_NO_PROJECT = (
     "[memriver] This session is not registered yet. It was first observed in "
     "{entry_cwd}, which is not in any registered project, so only global memories are "
-    "readable. To save memories, the user must run memriver project init there and then "
-    "start a new session."
+    "readable. To save memories, the user must run memriver project init there; then "
+    "call session_register."
 )
 
 # --- stop hook: at most one continuation per nudge interval ---

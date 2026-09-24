@@ -28,7 +28,7 @@ logger = logging.getLogger("memriver")
 # response -- every call site passes the operation it is translating for.
 # "list" covers memory_index/memory_search/session_search: none names a single
 # entry, so any failure there is reported the same way.
-Operation = Literal["read", "write", "update", "delete", "list", "confirm"]
+Operation = Literal["read", "write", "update", "delete", "list", "confirm", "register"]
 
 # the harnesses whose every call names its own session (spec §7.1); any other
 # registration answers for the directory it started in (§7.2)
@@ -59,12 +59,13 @@ _NO_PROJECT = {
 }
 
 # The same states for a context that came from a session row: its project was
-# fixed when the session registered and never re-resolves, so the way out is a
-# new session, not the directory the session happens to be in.
+# fixed when the session registered and never re-resolves on its own, so the
+# way out is session_register from where it started (no project yet) or a new
+# session (its project is gone), never the directory the session happens to be in.
 _SESSION_NO_PROJECT = {
     "none": ("no writable project: this session was registered with no project. No memory "
-             "was saved. Ask the user to run memriver project init, then start a new session "
-             "to save there; do not run it yourself."),
+             "was saved. Ask the user to run memriver project init where this session "
+             "started, then call session_register; do not run it yourself unless they ask."),
     "degraded": ("no writable project: this session's project no longer exists or became "
                  "global. No memory was saved. Ask the user to start a new session."),
 }
@@ -75,6 +76,11 @@ _SESSION_NO_PROJECT = {
 _SESSION_REFUSAL = {
     "pending": ("this session is awaiting the user's confirmation; ask the user, then call "
                 "session_confirm"),
+    # nothing to confirm: confirming would register no project for good
+    "pending-no-candidate": ("this session is not registered, and the directory it was first "
+                             "observed in is not in any registered project; once the user has "
+                             "run memriver project init covering this session's start "
+                             "directory, call session_register"),
     "unidentified": ("this session is not registered with memriver: its hooks may not be "
                      "installed (memriver install) or trusted (Codex asks on start), or the "
                      "harness sent no session id; ask the user to fix that, then start a new "
@@ -84,6 +90,11 @@ _SESSION_REFUSAL = {
 }
 
 _SESSION_TOOLS_UNAVAILABLE = "session tools are not available for this harness registration"
+
+# session_register found no project to register: the header alone would only
+# repeat the state, not that the call looked and found nothing
+_NOTHING_TO_REGISTER = ("no registered project covers the directory this session started in; "
+                        "nothing was registered")
 
 
 def _map_error(operation: Operation, err: Exception, *, memory_id: str | None = None,
@@ -103,8 +114,8 @@ def _map_error(operation: Operation, err: Exception, *, memory_id: str | None = 
         refusal = _SESSION_REFUSAL.get(err.reason) or _SESSION_REFUSAL.get(context_state or "")
         if refusal is not None:
             return refusal
-    if operation == "confirm":
-        return "could not confirm this session; ask the user to run memriver doctor"
+    if operation in ("confirm", "register"):
+        return f"could not {operation} this session; ask the user to run memriver doctor"
     if operation == "write":
         if isinstance(err, ProjectUnavailable):
             state = context_state or "none"
@@ -169,7 +180,8 @@ def _fail(operation: Operation, err: Exception, *, memory_id: str | None = None,
                          and not isinstance(err, UnicodeError))
     expected = isinstance(err, _NAMED_ERRORS) or write_value_error
     if not expected:
-        tool = "session_confirm" if operation == "confirm" else f"memory_{operation}"
+        tool = f"session_{operation}" if operation in ("confirm", "register") \
+            else f"memory_{operation}"
         logger.warning("%s failed: %s", tool, type(err).__name__)
     # An expected refusal (a named core error, or the write path's non-Unicode
     # ValueError) is routine agent behaviour, not an operational problem: it
@@ -373,5 +385,24 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
             return {"header": service.confirm_session(key).header}
         except Exception as err:  # noqa: BLE001
             _fail("confirm", err)
+
+    @mcp.tool
+    def session_register(ctx: Context) -> dict:
+        """Register this session, when it has no project, to the registered project
+        covering the directory it started in. Call when the user asks you to, or right
+        after you ran memriver project init at their request; a session that already
+        has a project never changes. Returns the session's project header."""
+        if not session_mode:
+            raise ToolError(_SESSION_TOOLS_UNAVAILABLE, log_level=logging.DEBUG)
+        try:
+            key = _session_key(harness, ctx)
+            if key is None:
+                raise ProjectUnavailable(reason="unidentified")
+            context = service.register_session(key)
+        except Exception as err:  # noqa: BLE001
+            _fail("register", err)
+        if context.state in ("none", "pending"):
+            return {"header": context.header, "note": _NOTHING_TO_REGISTER}
+        return {"header": context.header}
 
     return mcp
