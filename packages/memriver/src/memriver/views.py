@@ -218,7 +218,7 @@ def run_delete(memory_id: str, *, version: int, hard: bool, yes: bool, root: Pat
                home: Path) -> int:
     try:
         service = _service(root, home)
-        read_write_set = service.open_session(str(cwd)).read_write_set
+        read_write_set = service.open_project_context(str(cwd)).read_write_set
         memory = service.show(memory_id, include_deleted=hard)
     except MemoryNotFound:
         stdout.write(f"no such memory: {visible(memory_id[:255])}\n")

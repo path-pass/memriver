@@ -64,9 +64,9 @@ def test_write_mapping(err, expected):
     ("unavailable", "the memory store could not be read"),
     ("registered", "the registered project could not be found in the store"),
 ])
-def test_write_without_a_project_states_the_session_not_a_path(state, fragment):
+def test_write_without_a_project_states_the_project_context_not_a_path(state, fragment):
     result = _map_error("write", ProjectUnavailable("no writable project in this session"),
-                        session_state=state)
+                        context_state=state)
     assert fragment in result and "No memory was saved" in result
     assert "/" not in result.replace("memriver project", "")
 

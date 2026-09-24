@@ -9,9 +9,9 @@ from .helpers import (
 )
 from .memory import Memory, MemoryType, Trust
 from .project import Project, RootPlan, UnbindPlan, project_name
+from .project_context import ProjectContext, ProjectContextState
 from .read_write_set import ReadWriteSet
 from .resolution import Resolution, ResolutionState
-from .session import Session, SessionState
 from .store_diagnostics import (
     DiagnosticFinding,
     DiagnosticsReport,
@@ -35,13 +35,13 @@ __all__ = [
     "Memory",
     "MemoryType",
     "Project",
+    "ProjectContext",
+    "ProjectContextState",
     "ReadWriteSet",
     "Resolution",
     "ResolutionState",
     "RootPlan",
     "RootState",
-    "Session",
-    "SessionState",
     "StoreFinding",
     "StoreReport",
     "Trust",

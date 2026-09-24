@@ -276,10 +276,11 @@ def run_unbind(project_id: str, directory: Path, *, root: Path | None, yes: bool
 
 def run_explain(*, root: Path | None, project_dir: Path | None, stdout, cwd: Path,
                 home: Path) -> int:
-    """What a directory resolves to and what a session there may actually read and write.
+    """What a directory resolves to and what its project context may actually read and write.
 
-    The rights come from the same ``open_session`` the server and the hook use,
-    so a damaged store is reported here exactly as it would degrade a session.
+    The rights come from the same ``open_project_context`` the server and the
+    hook use, so a damaged store is reported here exactly as it would degrade
+    a project context.
     """
     store_root = _configured_root(root, home, cwd)
     start = Path(_absolute(project_dir, cwd))
@@ -288,25 +289,26 @@ def run_explain(*, root: Path | None, project_dir: Path | None, stdout, cwd: Pat
     except (OSError, RuntimeError, ValueError):
         canonical = str(start)
     try:
-        session = _service(store_root, home).open_session(str(start))
+        project_context = _service(store_root, home).open_project_context(str(start))
     except StorageFailure:          # settings could not even be built
-        from memriver_core.models import ReadWriteSet, Session
+        from memriver_core.models import ProjectContext, ReadWriteSet
 
-        session = Session("unavailable", "", ReadWriteSet(project_id=None,
-                                                          global_project_id=None))
+        project_context = ProjectContext("unavailable", "", ReadWriteSet(project_id=None,
+                                                                         global_project_id=None))
     lines = [f"store: {visible(_display_root(store_root))}", f"cwd: {visible(canonical)}",
-             f"state: {session.state}"]
+             f"state: {project_context.state}"]
     code = 0
-    if session.state == "degraded":
-        lines.append(f"diagnostic: {visible(session.diagnostic or '')}")
+    if project_context.state == "degraded":
+        lines.append(f"diagnostic: {visible(project_context.diagnostic or '')}")
         code = 1
-    elif session.state == "registered" and session.project is not None:
-        lines += [f"project: {session.project.id}", f"name: {visible(session.project.name)}",
-                  f"root: {visible(session.project.root or '')}"]
-    elif session.state == "unavailable":
+    elif project_context.state == "registered" and project_context.project is not None:
+        lines += [f"project: {project_context.project.id}",
+                  f"name: {visible(project_context.project.name)}",
+                  f"root: {visible(project_context.project.root or '')}"]
+    elif project_context.state == "unavailable":
         lines.append("diagnostic: the memory store could not be read")
         code = 1
-    read_write_set = session.read_write_set
+    read_write_set = project_context.read_write_set
     reads = [read_write_set.project_id] if read_write_set.project_id else []
     if read_write_set.global_project_id:
         reads.append("global")

@@ -96,22 +96,23 @@ def a_directory(tmp_path, name):
 
 
 def _registered_header(store, cwd) -> str:
-    """The real header, through the same `open_session` the hook uses -- never
-    rebuilt from the raw path, because header fields are capped and a long
-    tmp_path would make a hand-formatted expectation diverge."""
-    return _real_service(store).open_session(str(cwd)).header
+    """The real header, through the same `open_project_context` the hook uses
+    -- never rebuilt from the raw path, because header fields are capped and
+    a long tmp_path would make a hand-formatted expectation diverge."""
+    return _real_service(store).open_project_context(str(cwd)).header
 
 
 class FakeService:
-    """The real session for the directory, a fake index body; records the read/write set."""
+    """The real project context for the directory, a fake index body; records the
+    read/write set."""
 
     def __init__(self, index_text: str):
         self.index_text = index_text
         self.read_write_sets: list[ReadWriteSet] = []
         self.real = None
 
-    def open_session(self, start: str):
-        return self.real.open_session(start)
+    def open_project_context(self, start: str):
+        return self.real.open_project_context(start)
 
     def index(self, read_write_set: ReadWriteSet) -> str:
         self.read_write_sets.append(read_write_set)
@@ -618,8 +619,9 @@ def test_an_unreadable_root_never_fails_the_session(tmp_path, capsys):
         result = session_start("claude-code", {"cwd": str(tmp_path)}, root=root)
     finally:
         root.chmod(0o700)
-    # an unreadable store is a labelled, empty session -- the same header and
-    # body the MCP server shows through `open_session` -- not a failure
+    # an unreadable store is a labelled, empty project context -- the same
+    # header and body the MCP server shows through `open_project_context` --
+    # not a failure
     assert (result.stderr, result.exit_code) == ("", 0)
     text = additional_context(result)
     assert _line_after_begin(text) == ("project: unavailable — the memory store could not be "
@@ -720,7 +722,7 @@ def test_stop_is_silent_under_a_degraded_registry_and_never_fails(tmp_path):
 
 
 def test_stop_stays_light(tmp_path, registered):
-    # Stop opens a read-only session through the facade: the content policy
+    # Stop opens a read-only project context through the facade: the content policy
     # (the secret scanner and its rules) must never load on this path
     script = (
         "import json, sys\n"

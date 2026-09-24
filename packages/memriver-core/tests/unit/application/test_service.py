@@ -171,57 +171,57 @@ def _memory(project_id, body, updated, description=""):
     return m
 
 
-# --- sessions -------------------------------------------------------------
+# --- project contexts ------------------------------------------------------
 
-def test_open_session_registered_names_the_project_and_its_root():
+def test_open_project_context_registered_names_the_project_and_its_root():
     service, _, project_store, _ = _service()
     project_store.resolution = Resolution("registered",
                                           project=Project(id=P, name="demo", root="/w"))
-    session = service.open_session("/w")
-    assert session.state == "registered"
-    assert session.header == f"project: demo [{P}] (root /w)"
-    assert session.read_write_set == READ_WRITE_SET
+    project_context = service.open_project_context("/w")
+    assert project_context.state == "registered"
+    assert project_context.header == f"project: demo [{P}] (root /w)"
+    assert project_context.read_write_set == READ_WRITE_SET
 
 
-def test_open_session_none_and_degraded_keep_global_readable_and_write_nothing():
+def test_open_project_context_none_and_degraded_keep_global_readable_and_write_nothing():
     service, _, project_store, _ = _service()
-    assert service.open_session("/x").header.startswith("project: none")
+    assert service.open_project_context("/x").header.startswith("project: none")
     project_store.resolution = Resolution("degraded", diagnostic="/r: matched by more than one project")
-    session = service.open_session("/x")
-    assert session.state == "degraded" and session.read_write_set == NO_PROJECT
-    assert "/r: matched by more than one project" in session.header
-    assert "memriver project explain" in session.header
+    project_context = service.open_project_context("/x")
+    assert project_context.state == "degraded" and project_context.read_write_set == NO_PROJECT
+    assert "/r: matched by more than one project" in project_context.header
+    assert "memriver project explain" in project_context.header
 
 
-def test_open_session_turns_a_storage_failure_into_an_unavailable_session():
+def test_open_project_context_turns_a_storage_failure_into_an_unavailable_project_context():
     service, _, project_store, _ = _service()
 
     def broken(start, *, ignoring=None):
         raise StorageFailure
 
     project_store.resolve = broken
-    session = service.open_session("/x")
-    assert session.state == "unavailable"
-    assert session.read_write_set == ReadWriteSet(project_id=None, global_project_id=None)
+    project_context = service.open_project_context("/x")
+    assert project_context.state == "unavailable"
+    assert project_context.read_write_set == ReadWriteSet(project_id=None, global_project_id=None)
 
 
 def test_header_fields_are_single_line_and_capped():
     service, _, project_store, _ = _service()
     project_store.resolution = Resolution(
         "registered", project=Project(id=P, name="n\nx" + "y" * 200, root="/w\n" + "z" * 200))
-    header = service.open_session("/w").header
+    header = service.open_project_context("/w").header
     name, root = ("n x" + "y" * 200)[:120], ("/w " + "z" * 200)[:120]
     assert header == f"project: {name} [{P}] (root {root})"
     assert len(name) == len(root) == 120
 
     project_store.resolution = Resolution("degraded", diagnostic="/r:\n" + "d" * 200)
-    header = service.open_session("/x").header
+    header = service.open_project_context("/x").header
     diagnostic = ("/r: " + "d" * 200)[:120]
     assert "\n" not in header and len(diagnostic) == 120
     assert f"({diagnostic}); ask the user" in header
 
 
-def test_open_session_turns_an_unreadable_global_into_an_unavailable_session():
+def test_open_project_context_turns_an_unreadable_global_into_an_unavailable_project_context():
     service, _, project_store, _ = _service()
     project_store.resolution = Resolution("registered",
                                           project=Project(id=P, name="demo", root="/w"))
@@ -230,9 +230,9 @@ def test_open_session_turns_an_unreadable_global_into_an_unavailable_session():
         raise StorageFailure
 
     project_store.global_project_id = broken
-    session = service.open_session("/w")
-    assert session.state == "unavailable"
-    assert session.read_write_set == ReadWriteSet(project_id=None, global_project_id=None)
+    project_context = service.open_project_context("/w")
+    assert project_context.state == "unavailable"
+    assert project_context.read_write_set == ReadWriteSet(project_id=None, global_project_id=None)
 
 
 # --- record -----------------------------------------------------------------
@@ -294,7 +294,7 @@ def test_the_content_policy_is_built_only_when_a_write_needs_it():
                             search_limit_max=50, index_budget_lines=100, index_cue_chars=60,
                             header_field_chars=120, project_name_max_chars=120)
     service.index(READ_WRITE_SET)
-    service.open_session("/x")
+    service.open_project_context("/x")
     assert built == []
     service.record(content="c", type="user", sync=True, harness="h", description="",
                    read_write_set=READ_WRITE_SET)

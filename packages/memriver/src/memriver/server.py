@@ -37,7 +37,7 @@ _GLOBAL_READ_ONLY = ("global memories are read-only to agents; no change was mad
                      "the user; do not retry through another entry or edit the store directly.")
 
 # Why there is no writable project, and what the agent should ask for -- keyed
-# by the session state, never by a path.
+# by the project context state, never by a path.
 _NO_PROJECT = {
     "none": ("no writable project: this directory is not registered. No memory was saved. "
              "Ask the user to choose a project root and run memriver project init; do not "
@@ -54,7 +54,7 @@ _NO_PROJECT = {
 
 
 def _map_error(operation: Operation, err: Exception, *, memory_id: str | None = None,
-               session_state: str | None = None) -> str:
+               context_state: str | None = None) -> str:
     """Application error -> the tool's client-visible message. Tools never leak one raw.
 
     Every client-visible string for a storage-boundary error is written here,
@@ -68,7 +68,7 @@ def _map_error(operation: Operation, err: Exception, *, memory_id: str | None = 
         return _GLOBAL_READ_ONLY
     if operation == "write":
         if isinstance(err, ProjectUnavailable):
-            return _NO_PROJECT.get(session_state or "none", _NO_PROJECT["none"])
+            return _NO_PROJECT.get(context_state or "none", _NO_PROJECT["none"])
         # a codec failure (a lone surrogate) is a ValueError whose message is
         # the codec's, not policy copy
         if isinstance(err, ContentRejected | ValueError) and not isinstance(err, UnicodeError):
@@ -109,7 +109,7 @@ _NAMED_ERRORS: tuple[type[Exception], ...] = (
 
 
 def _fail(operation: Operation, err: Exception, *, memory_id: str | None = None,
-          session_state: str | None = None) -> NoReturn:
+          context_state: str | None = None) -> NoReturn:
     """Map `err` to its client message and raise it as the tool's failure.
 
     An exception outside `_NAMED_ERRORS` also logs one WARNING line naming
@@ -121,7 +121,7 @@ def _fail(operation: Operation, err: Exception, *, memory_id: str | None = None,
     on `write` both fall through to a generic message, so they log like any
     other unnamed exception.
     """
-    message = _map_error(operation, err, memory_id=memory_id, session_state=session_state)
+    message = _map_error(operation, err, memory_id=memory_id, context_state=context_state)
     write_value_error = (operation == "write" and isinstance(err, ValueError)
                          and not isinstance(err, UnicodeError))
     expected = isinstance(err, _NAMED_ERRORS) or write_value_error
@@ -168,25 +168,26 @@ def build_server(root: Path, project_dir: Path,
     # resolved once, at build time: every tool answers for the same project for
     # the life of the server, and the header cannot drift between calls. The
     # hook resolves on every call, so the two can still disagree (documented).
-    session = service.open_session(str(project_dir))
-    read_write_set = session.read_write_set
+    project_context = service.open_project_context(str(project_dir))
+    read_write_set = project_context.read_write_set
 
     mcp = FastMCP("memriver", instructions=INSTRUCTIONS)
 
     # Tools are plain `def`: FastMCP runs each in a worker thread, so a slow
     # SQLite wait for another process's write lock cannot stall the event
-    # loop. Shared state is safe under that: `service`/`session` are built
-    # once above and only read; each call opens its own SQLite connection;
-    # and the service's lazy content-policy build can race two callers, but
-    # Python serializes the scanner module's import and an attribute
-    # assignment never exposes a half-built object, so no lock is needed.
+    # loop. Shared state is safe under that: `service`/`project_context` are
+    # built once above and only read; each call opens its own SQLite
+    # connection; and the service's lazy content-policy build can race two
+    # callers, but Python serializes the scanner module's import and an
+    # attribute assignment never exposes a half-built object, so no lock is
+    # needed.
 
     @mcp.tool
     def memory_index() -> str:
-        """The session's project on the first line, then a compact index of the
-        current project's memories followed by global's."""
+        """The project context's project on the first line, then a compact index of
+        the current project's memories followed by global's."""
         try:
-            return session.header + "\n" + service.index(read_write_set)
+            return project_context.header + "\n" + service.index(read_write_set)
         except Exception as err:  # noqa: BLE001
             _fail("list", err)
 
@@ -225,7 +226,7 @@ def build_server(root: Path, project_dir: Path,
             memory = service.record(content=content, type=type, sync=sync, harness=harness,
                                     description=description, read_write_set=read_write_set)
         except Exception as err:  # noqa: BLE001
-            _fail("write", err, session_state=session.state)
+            _fail("write", err, context_state=project_context.state)
         return {"id": memory.id, "project_id": memory.project_id}
 
     @mcp.tool

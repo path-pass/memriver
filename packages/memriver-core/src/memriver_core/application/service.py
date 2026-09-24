@@ -17,10 +17,10 @@ from memriver_core.models import (
     DiagnosticsReport,
     Memory,
     Project,
+    ProjectContext,
     ReadWriteSet,
     Resolution,
     RootPlan,
-    Session,
     UnbindPlan,
     single_line,
 )
@@ -56,8 +56,8 @@ _HARNESS_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 # source transports compare against.
 EMPTY_INDEX = "(no memories yet)"
 
-# The session header's fixed lines; the registered and degraded lines are
-# composed per session in open_session.
+# The project context header's fixed lines; the registered and degraded lines
+# are composed per project context in open_project_context.
 NONE_HEADER = "project: none — global is read-only; ask the user to run memriver project init"
 STORE_UNREADABLE_HEADER = ("project: unavailable — the memory store could not be read; "
                            "ask the user to run memriver doctor")
@@ -97,21 +97,21 @@ class MemoryService:
         """One stored value as it may appear in the agent-facing header."""
         return single_line(value)[:self._header_field_chars]
 
-    # --- sessions ---
+    # --- project contexts ---
 
-    def open_session(self, start: str) -> Session:
+    def open_project_context(self, start: str) -> ProjectContext:
         """The header, state and read/write set for one directory. Never raises for a
-        store problem: an unreadable store is an empty, clearly labelled session."""
+        store problem: an unreadable store is an empty, clearly labelled project context."""
         try:
             resolution = self._project_store.resolve(start)
             global_project_id = self._project_store.global_project_id()
         except StorageFailure:
-            return Session("unavailable", STORE_UNREADABLE_HEADER,
-                           ReadWriteSet(project_id=None, global_project_id=None))
+            return ProjectContext("unavailable", STORE_UNREADABLE_HEADER,
+                                  ReadWriteSet(project_id=None, global_project_id=None))
         project = resolution.project
         if resolution.state == "registered" and project is not None \
                 and project.id != global_project_id:
-            return Session(
+            return ProjectContext(
                 "registered",
                 f"project: {self._field(project.name)} [{project.id}] "
                 f"(root {self._field(project.root or '')})",
@@ -120,12 +120,12 @@ class MemoryService:
         read_write_set = ReadWriteSet(project_id=None, global_project_id=global_project_id)
         if resolution.state == "degraded":
             diagnostic = resolution.diagnostic or ""
-            return Session(
+            return ProjectContext(
                 "degraded",
                 f"project: unavailable — this directory could not be matched to one project "
                 f"({self._field(diagnostic)}); ask the user to run memriver project explain",
                 read_write_set, diagnostic=diagnostic)
-        return Session("none", NONE_HEADER, read_write_set)
+        return ProjectContext("none", NONE_HEADER, read_write_set)
 
     # --- projects ---
 
