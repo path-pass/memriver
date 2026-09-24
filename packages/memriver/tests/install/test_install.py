@@ -61,7 +61,9 @@ def _bind_new(store: Path, directory: Path, name: str) -> str:
 
 CODEX_TRUST_TEXT = (
     "Run /hooks in Codex, review the memriver hook definitions, and trust them.\n"
-    "If this reinstall changed a hook definition, Codex may require re-trust."
+    "Codex will ask to trust the new UserPromptSubmit and SessionEnd hooks on "
+    "its next start, and will require re-trust for SessionStart/Stop too if "
+    "this run changed either of those definitions."
 )
 
 SECRET = "top-s3cr3t-value"

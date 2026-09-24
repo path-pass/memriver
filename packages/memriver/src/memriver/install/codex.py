@@ -53,11 +53,12 @@ HOOKS_DISABLED_NOTE = (
 )
 
 # The same switch, with the hook set it points at incomplete: consent is per
-# change, so a user can accept the MCP registration and decline one or both
-# hooks, or decline replacing a stale hook definition -- and a dry run writes
-# nothing at all. Any of those leaves fewer than both SessionStart and Stop in
-# hooks.json, so this wording only ever claims "not the complete pair", never
-# "neither one", which is the one fact every one of those cases shares.
+# change, so a user can accept the MCP registration and decline any of the
+# four hooks, or decline replacing a stale hook definition -- and a dry run
+# writes nothing at all. Any of those leaves fewer than all four of
+# SessionStart/Stop/UserPromptSubmit/SessionEnd in hooks.json, so this wording
+# only ever claims "not the complete set", never "none at all", which is the
+# one fact every one of those cases shares.
 HOOKS_DISABLED_WITHOUT_DEFINITIONS_NOTE = (
     "codex: features.hooks = false in ~/.codex/config.toml, so no Codex hook "
     "runs, and ~/.codex/hooks.json does not hold the complete expected "

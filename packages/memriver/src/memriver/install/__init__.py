@@ -153,7 +153,9 @@ BACKUP_INFIX = ".memriver-backup-"
 # invalidates the trust the user already gave. Both lines are fixed text.
 CODEX_TRUST_NOTE = (
     "Run /hooks in Codex, review the memriver hook definitions, and trust them.\n"
-    "If this reinstall changed a hook definition, Codex may require re-trust."
+    "Codex will ask to trust the new UserPromptSubmit and SessionEnd hooks on "
+    "its next start, and will require re-trust for SessionStart/Stop too if "
+    "this run changed either of those definitions."
 )
 
 # Spec 11: a previous-release MCP server refuses the v2 store the upgraded
@@ -164,7 +166,7 @@ CODEX_TRUST_NOTE = (
 # a session-routed harness -- a property of which harness is installed, not
 # of what this particular run happened to change.
 RESTART_SESSIONS_NOTE = (
-    "restart any running Claude Code/Codex session: its memriver MCP server "
+    "Restart any running Claude Code/Codex session: its memriver MCP server "
     "from before this install refuses the upgraded memory store. A session "
     "that was already running when the store upgraded will ask once, at its "
     "next turn, to confirm which project it belongs to."

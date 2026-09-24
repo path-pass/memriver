@@ -1016,6 +1016,32 @@ def test_claude_code_round_trip_removes_memriver_and_keeps_foreign_content(home,
     assert settings["env"] == {"OTHER": "1"}  # foreign key survives untouched
 
 
+def test_uninstalling_a_previous_release_claude_code_install_leaves_no_new_hook_keys(
+        home, project):
+    """A pre-task-9 install only ever wrote SessionStart/Stop and the old-style
+    MCP args (``["memriver"]``, no ``serve --harness``). Uninstall must still
+    exit cleanly, remove the MCP entry, and must not invent UserPromptSubmit/
+    SessionEnd keys in a config that never had them -- removal is a no-op on
+    an absent event, not a reason to create one."""
+    write(home / ".claude.json", json.dumps(
+        {"mcpServers": {"memriver": {"command": "uvx", "args": ["memriver"]}}}))
+    write(home / ".claude" / "settings.json", json.dumps({"hooks": {
+        "SessionStart": [
+            hook_group("uvx memriver hook session-start --harness claude-code")],
+        "Stop": [hook_group("uvx memriver hook stop --harness claude-code")],
+    }}))
+
+    result = uninstall(["claude-code"], home=home, cwd=project, yes=True)
+
+    config = json.loads((home / ".claude.json").read_text())
+    settings = json.loads((home / ".claude" / "settings.json").read_text())
+    assert result.exit_code == 0
+    assert config == {"mcpServers": {}}
+    assert settings["hooks"] == {"SessionStart": [], "Stop": []}
+    assert "UserPromptSubmit" not in settings["hooks"]
+    assert "SessionEnd" not in settings["hooks"]
+
+
 def test_codex_round_trip_restores_the_exact_original_bytes(home, project):
     config = write(home / ".codex" / "config.toml", 'model = "gpt"\nforeign = "keep"\n')
     original = config.read_bytes()
