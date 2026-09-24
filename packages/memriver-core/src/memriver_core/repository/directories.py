@@ -244,17 +244,18 @@ def _resolve(path: Path) -> Path:
 
     The fallback's result is resolved strictly once more: ``<missing>/..``
     collapses in the non-strict form, so what it returns can still end in the
-    loop the missing component hid. Only "still missing" is accepted there.
+    loop the missing component hid. Only "still missing" is accepted there;
+    when that re-check succeeds its result is the answer, since the fallback
+    may have read a link it could not lstat as a plain component.
     """
     try:
         return path.resolve(strict=True)
     except (FileNotFoundError, NotADirectoryError):
         resolved = path.resolve()
     try:
-        resolved.resolve(strict=True)
+        return resolved.resolve(strict=True)
     except (FileNotFoundError, NotADirectoryError):
-        pass
-    return resolved
+        return resolved
 
 
 def _refuse_purge_target(given: Path, canonical: Path, *, home: Path,

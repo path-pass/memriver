@@ -193,6 +193,42 @@ def test_a_protected_base_turned_into_a_loop_after_confirmation_is_refused(
     assert (store / "memriver.db").exists()
 
 
+@pytest.mark.parametrize("base", ["home", "cwd"])
+def test_a_base_resolved_after_a_one_off_error_is_checked_where_it_really_is(
+        places, tmp_path, monkeypatch, base):
+    """The non-strict fallback reads a link it could not lstat as a plain
+    component; the strict re-check that then succeeds is where the base
+    really is, and that is what the store must not hold."""
+    home, cwd, store = places
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (store / "protected").mkdir()
+    (store / "protected" / "keep").write_text("k")
+    link = tmp_path / "link"
+    link.symlink_to(outside)
+    bases = {"home": home, "cwd": cwd, base: tmp_path / "missing" / ".." / "link"}
+    real_lstat = os.lstat
+    armed = []
+
+    def flaky_lstat(target, *args, **kwargs):
+        if armed and str(target) == str(link):
+            armed.clear()
+            raise OSError(errno.EIO, os.strerror(errno.EIO), str(target))
+        return real_lstat(target, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", flaky_lstat)
+    with plan_purge(store, **bases) as plan:
+        assert isinstance(plan, PurgePlan)
+        link.unlink()
+        link.symlink_to(store / "protected")
+        armed.append(True)
+        result = purge(plan)
+    assert not armed                              # the one-off error was hit
+    assert result.outcome == "refused"
+    assert result.refusal.kind == "too-broad"
+    assert (store / "protected" / "keep").exists()
+
+
 def test_purge_without_an_opened_plan_is_a_programming_error(places):
     home, cwd, store = places
     with pytest.raises(ValueError):
