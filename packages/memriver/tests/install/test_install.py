@@ -370,6 +370,30 @@ def test_an_unreadable_target_is_a_planning_failure_not_a_traceback(setup, home,
     assert "codec" not in result.stderr  # no underlying exception text
 
 
+def test_a_target_that_cannot_be_stat_ed_is_not_read_as_absent(home, project,
+                                                               monkeypatch):
+    """The link check's `lstat` succeeds, the following `stat` fails: the file
+    is there but unreadable, and planning it as absent would replace the
+    user's file with one holding only memriver's entry."""
+    target = write(home / ".claude.json", '{"foreign": true}')
+    before_tree = snapshot_tree(home)
+    real_stat = os.stat
+
+    def fake_stat(path, *args, follow_symlinks=True, **kwargs):
+        if follow_symlinks and str(path) == str(target):
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(path))
+        return real_stat(path, *args, follow_symlinks=follow_symlinks, **kwargs)
+
+    monkeypatch.setattr(os, "stat", fake_stat)
+    result = install(["claude-code"], home=home, cwd=project, yes=True)
+    monkeypatch.undo()
+
+    assert result.exit_code == 1
+    assert "could not be read" in result.stderr
+    assert snapshot_tree(home) == before_tree
+    assert result.replace.calls == []
+
+
 def test_deeply_nested_json_is_one_line_not_a_recursion_traceback(home, project):
     harnesses, cwd = deeply_nested_json(home, project)
     before_tree = snapshot_tree(home)
