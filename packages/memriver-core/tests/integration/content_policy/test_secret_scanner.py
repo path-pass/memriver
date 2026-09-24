@@ -275,8 +275,9 @@ RE2_TRANSLATED_BLOCKED = [
     ("token " + "SG." + "a1" * 33 + " end", "SG." + "a1" * 33, "sendgrid-api-token"),
     # curl-auth-header: two quoted alternatives, each with its own
     # mid-pattern (?i) inside the shared enclosing group -- proves both the
-    # double- and the single-quoted branch stay reachable (a fix-round bug
-    # made the flag scoping fold the second alternative out of the pattern)
+    # double- and the single-quoted branch stay reachable. A scope that
+    # swallowed the '|' would make the double-quote prefix mandatory and
+    # drop this (single-quoted) branch entirely.
     ('curl -H "Authorization: Bearer abcdefghij12345"',
      "abcdefghij12345", "curl-auth-header"),
     ("curl -H 'Authorization: Bearer abcdefghij12345'",
@@ -445,6 +446,12 @@ def test_uncompilable_rule_is_skipped_not_fatal(tmp_path, caplog):
     # Python with a *different* meaning and must be rejected, not silently
     # mis-matched
     assert "unknown-posix-class" in caplog.text
+    # a dropped rule is a coverage loss an operator must see, not a detail
+    # buried at DEBUG
+    dropped = [r for r in caplog.records
+               if r.name == "memriver_core.content_policy.secret_scanner"
+               and "skipping rule" in r.getMessage()]
+    assert dropped and all(r.levelno == logging.WARNING for r in dropped)
 
 
 # --- [policy] honor_entropy_only_for --------------------------------------

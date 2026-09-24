@@ -44,10 +44,11 @@ _POSIX_CLASSES = {
 }
 
 # A "global flags" group: `(?` followed by one or more RE2/`re` flag letters
-# (optionally a `-` and more letters to turn some off) and a closing `)`,
-# with nothing else inside -- so it never matches `(?:`, `(?=`, `(?<name>`,
-# `(?P<name>`, `(?#...)` or an already-scoped `(?flags:...)`.
-_FLAG_GROUP_RE = re.compile(r"\(\?([aiLmsux]+(?:-[aiLmsux]+)?)\)")
+# to turn on, optionally followed by `-` and more letters to turn off --
+# or, with nothing to turn on, just `-` and letters to turn off -- and a
+# closing `)`, with nothing else inside. Never matches `(?:`, `(?=`,
+# `(?<name>`, `(?P<name>`, `(?#...)` or an already-scoped `(?flags:...)`.
+_FLAG_GROUP_RE = re.compile(r"\(\?([aiLmsux]+(?:-[aiLmsux]+)?|-[aiLmsux]+)\)")
 
 
 def _re2_to_python(pattern: str) -> str:

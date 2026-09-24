@@ -73,6 +73,24 @@ def test_flag_inside_one_alternative_does_not_leak_past_the_pipe_boundary():
     assert compiled.fullmatch("xAC") is None
 
 
+def test_negative_only_mid_pattern_flag_group_is_translated():
+    # ground truth: (?i)a(?-i)b matches Ab -> true, AB -> false -- (?-i) has
+    # no leading positive flags, and must still be recognised as a flag
+    # group (not left untranslated, which Python cannot compile)
+    translated = _re2_to_python(r"(?i)a(?-i)b")
+    compiled = re.compile(translated)
+    assert compiled.fullmatch("Ab") is not None
+    assert compiled.fullmatch("AB") is None
+
+
+def test_negative_only_flag_group_after_a_mid_pattern_positive_one():
+    # ground truth: x(?i)a(?-i)b fullmatch xAb -> true, xAB -> false
+    translated = _re2_to_python(r"x(?i)a(?-i)b")
+    compiled = re.compile(translated)
+    assert compiled.fullmatch("xAb") is not None
+    assert compiled.fullmatch("xAB") is None
+
+
 def test_redundant_inner_flag_group_becomes_a_scoped_group():
     # planetscale-password, verbatim: leading (?i) stays, the inner
     # redundant one becomes a scoped group
