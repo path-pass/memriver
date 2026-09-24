@@ -59,9 +59,10 @@ body:        All language runtimes on this machine are managed by mise, not nvm/
   incrementing on every update or soft delete (`--hard` removes the row
   instead, so there is no new version to see). `memory_read` returns it so
   `memory_update`/`memory_delete` can require it back (*Updates, deletion,
-  and history*). A row also carries `deleted_at`, set only by a soft delete;
-  it is never part of what an agent can read — the fields above are the whole
-  set an agent may know.
+  and history*). A row also carries `deleted_at` (set only by a soft delete)
+  and `last_read_at` (set by a successful `memory_read`); neither is ever
+  part of what an agent can read — the fields above are the whole set an
+  agent may know.
 - **sync** — per-entry privacy boundary: `false` means this entry never
   leaves the machine, regardless of mode.
 - **trust** — provenance of the *source material*: `user` (stated
@@ -79,10 +80,12 @@ no separate index or manifest to go stale. A project has at most one bound
 directory; global has none. Nothing about a memory says where its project's
 directory is — readers resolve a directory to a project, never a memory to a
 location. A directory-mode surface (Cursor, Kiro, a bare `memriver` process)
-resolves the current directory on every call; a session-routed harness
-(Claude Code, Codex) resolves it once, from a session's own persistent row,
-and keeps that project for as long as the session lives, even after its
-working directory changes.
+resolves one directory -- `--project-dir`, defaulting to the server's own
+working directory -- once, when the server starts, and every call for the
+life of that process answers for it. A session-routed harness (Claude Code,
+Codex) also resolves a directory once, but per session rather than per
+process: at the session's own start, into its persistent row, kept for as
+long as that session lives, even after its working directory changes.
 
 ## Identity
 

@@ -35,22 +35,23 @@ Symlinked targets are refused. What it writes, per harness:
 | Kiro | `uvx memriver serve --harness kiro` | — | `.kiro/steering/memriver.md` |
 
 Claude Code and Codex are session-routed: `--harness claude-code|codex`
-decides each session's project once -- at its `SessionStart`, or, for a
-session memriver has not registered before, at its first observed prompt --
-and every hook and every MCP call for that session then read the same stored
-decision, so the hook and the server can no longer name different projects
-for it. Cursor and Kiro stay directory mode: `--harness cursor|kiro` resolves
-`--project-dir` once, when the server starts, and that never changes for the
-life of the process.
+decides each session's project once, at its `SessionStart`, and every hook
+and every MCP call for that session then read the same stored decision, so
+the hook and the server always agree on it. A session memriver has not
+registered before -- one resumed without memriver ever having seen its
+`SessionStart` -- gets a proposed project from its first observed prompt
+instead, and stays pending until the user agrees and the agent calls
+`session_confirm` (see *What your agent sees*). Cursor and Kiro stay
+directory mode: `--harness cursor|kiro` resolves `--project-dir` once, when
+the server starts, and that never changes for the life of the process.
 
 Turning off the harness's own memory feature (Claude Code, Codex) is a
 separately confirmed change, never implied by the rest. Codex only runs hooks
 it has been told to trust: after installing, open `/hooks` in the Codex TUI
-and review and trust the memriver entries, or they are skipped -- this
-release adds the `UserPromptSubmit` and `SessionEnd` hooks, so Codex asks to
-trust those on its next start, and will ask again for `SessionStart`/`Stop`
-too if their definitions changed. `--dry-run` prints the exact files and
-entries for your machine.
+and review and trust the memriver entries -- `SessionStart`, `UserPromptSubmit`,
+`Stop` and `SessionEnd` -- or they are skipped; a hook whose definition
+changes needs re-trusting the same way. `--dry-run` prints the exact files
+and entries for your machine.
 
 Until memriver is on PyPI, the `uvx memriver` commands above need a local
 wheel source — see *Installing before the PyPI release*.
@@ -97,7 +98,8 @@ reports go to stderr.
 - **`memory_read`** records that a memory was read (`last_read_at`); it is
   not returned to the agent, but `memriver show`/`export` print it.
 - **Cursor / Kiro** use the static instructions block instead of hooks, and
-  have no session routing: they resolve `--project-dir` once, like before.
+  have no session routing: they resolve `--project-dir` once, when the
+  server starts, and never re-resolve it for the life of that process.
 
 Hooks never fail the harness: an unreadable store is stated inline, in the
 injected header itself, as a labelled "unavailable" session -- exit 0, empty
@@ -137,8 +139,11 @@ wins, so registering a sub-directory carves it out as its own project. An
 unregistered directory has no project: agents can read global memory
 but have nowhere to save, and the session-start injection says so. Global
 memory is read-only to agents; it is written by hand (see *Storage
-layout*). Changing a binding takes effect when the affected harness sessions
-and their MCP servers restart.
+layout*). A binding change reaches Cursor/Kiro at their MCP server's next
+start. It reaches Claude Code/Codex only in a new session: a session's
+stored project never changes once registered, existing and resumed sessions
+included, so a session started in a directory before `memriver project init`
+has to be replaced by a new session to save there.
 
 Known limits:
 
@@ -146,22 +151,25 @@ Known limits:
 - A root as wide as a whole workspace is, in effect, a writable global.
 - Kiro multi-root workspaces start every MCP server in the first root:
   resolving a different project per root is not supported there.
-- git is queried with the user's global and system git config ignored (its
-  global config is pointed at the OS's null device, its system config
-  disabled): a repository whose ownership needs a global `safe.directory`
-  entry -- on an external disk or a container mount, say -- cannot be mapped
-  to its main working tree, and a session started there is not registered to
-  any project.
-- A repository created with `git init --separate-git-dir <X>/.git <work>`
-  maps its linked worktrees into `<X>`, not `<work>`.
+- Mapping a linked git worktree to the project of its main working tree is a
+  Claude Code/Codex session-registration feature only; directory mode
+  (Cursor, Kiro, a bare `memriver` process) resolves the worktree path
+  itself, never its main tree. Two limits apply to that mapping: git is
+  queried with the user's global and system git config ignored (its global
+  config is pointed at the OS's null device, its system config disabled), so
+  a repository whose ownership needs a global `safe.directory` entry -- on an
+  external disk or a container mount, say -- cannot be mapped, and a session
+  started there is not registered to any project; and a repository created
+  with `git init --separate-git-dir <X>/.git <work>` maps its linked
+  worktrees into `<X>`, not `<work>`.
 - After upgrading memriver, restart every harness session and MCP server that
   shares the store; a running server keeps its old rules. This matters more
-  than usual across a schema change like this release's: it upgrades the
-  store in place, and a memriver of the previous release refuses the upgraded
-  store outright as an unrecognized schema rather than merely behaving as
-  before. A session that was already running when you upgraded is not lost --
-  it is asked once, the next time it resumes, whether to register to the
-  project its directory suggests (see *What your agent sees*).
+  with a schema upgrade: a memriver of the previous release refuses the
+  upgraded store outright as an unrecognized schema, rather than merely
+  behaving as before. A session that was already running when you upgraded
+  is not lost -- it is asked once, the next time it resumes, whether to
+  register to the project its directory suggests (see *What your agent
+  sees*).
 - A store written by the pre-SQLite file layout (`global/`, `store.toml`,
   `projects/`, `memories/`, `registry/`) is not read or migrated; `memriver
   doctor` reports it as `legacy-layout`.
@@ -175,7 +183,7 @@ Known limits:
 | `memory_index()` | The session's project on the first line, then a compact index: the project's memories, then global's (tagged `global`) |
 | `memory_read(memory_id)` | One memory in full, by id: eleven fields, including the `version` that `memory_update`/`memory_delete` must be given back. An entry that exists but cannot be read is reported as such, not as missing |
 | `memory_search(query, limit=None)` | Memories relevant to a task: the project's hits first, then global's; `limit` caps the whole answer, so a query with many project hits can leave no room for global ones |
-| `memory_write(content, type, sync=True, description="")` | Save one durable fact to the current project; memriver assigns the id and fills `source.harness` from the server's own `--harness` registration ("unknown" in directory mode) -- agents no longer pass it; global is read-only to agents; `type` is `user` / `feedback` / `project` / `reference` |
+| `memory_write(content, type, sync=True, description="")` | Save one durable fact to the current project; memriver assigns the id and stamps `source.harness` with the server's own `--harness` value (an installed Cursor/Kiro server records `cursor`/`kiro`; `unknown` only when the server was started with no `--harness` at all); global is read-only to agents; `type` is `user` / `feedback` / `project` / `reference` |
 | `memory_update(memory_id, expected_version, content, description=None)` | Rewrite a memory's content in place (id, project and type stay); returns `{id, updated, version}`; refused for global memories or a stale `expected_version` |
 | `memory_delete(memory_id, expected_version)` | Remove a memory that is no longer true or wanted; returns `{deleted: memory_id}`; refused for global memories or a stale `expected_version` |
 | `session_search(query="", limit=None)` | Claude Code/Codex only: find this project's recorded sessions (newest activity first) by a word in their prompts, branch or entry directory; each result carries a `resume_command` to show the user -- whether to run it is the user's decision |
@@ -208,9 +216,10 @@ uvx memriver delete ID --version N [--hard] [--yes]
 These are read-only views for a person, not the MCP surface agents use:
 `list`/`search`/`export` see every project, including global, but never a
 soft-deleted memory; `show --deleted` is the one view that can, and it prints
-the memory's `deleted_at`. `show` and `export` also print `last_read_at`,
-set by a successful `memory_read` and printed as `never` until the first one
--- it is not part of what an agent can read.
+the memory's `deleted_at`. `show` and `export` also expose `last_read_at`,
+set by a successful `memory_read`: `show` prints it as `never` until the
+first one, `export` writes the same field as JSON, `null` until then --
+neither is part of what an agent can read.
 `delete` needs the `version` that `memriver show`
 printed and is scoped to the current directory's project exactly like an
 agent -- global stays undeletable through it too. It soft-deletes by default
@@ -247,9 +256,9 @@ at all -- a garbage file, a missing table -- doctor takes the inaccessible
 branch below instead, exit 2), a failed SQLite integrity check (`integrity`),
 `memriver.db` as a symlink or anything but a regular file
 (`unsafe-database`), a memory whose project row no longer exists (`orphan`), a
-session whose project row no longer exists (`session-orphan`), a memory or
-session row holding a value memriver could not have written (`invalid-row`),
-a bound directory that is no longer canonical or could not be checked, two projects
+session whose project or proposed project no longer exists (`session-orphan`),
+a memory or session row holding a value memriver could not have written
+(`invalid-row`), a bound directory that is no longer canonical or could not be checked, two projects
 bound to the same directory under different spellings (`root-conflict`), the
 pre-SQLite file layout (`legacy-layout`), invalid `updated` timestamps, stale
 memories and near-duplicates. It also lists every project -- id, name, its
@@ -304,25 +313,41 @@ be present, and the directory you run it in has to be a registered project.
 
 ## Hook up a harness by hand
 
-Claude Code: `claude mcp add memriver -- uv run --project /path/to/repo memriver`
+A hand registration with no `--harness` is directory mode, the same as a
+plain `memriver serve`: the project is resolved once, from `--project-dir`,
+when the server starts, and `source.harness` is `unknown`.
+
+Claude Code: `claude mcp add memriver -- uv run --project /path/to/repo memriver serve --harness claude-code`
 
 Codex (`~/.codex/config.toml`):
 
 ```toml
 [mcp_servers.memriver]
 command = "uv"
-args = ["run", "--project", "/path/to/repo", "memriver"]
+args = ["run", "--project", "/path/to/repo", "memriver", "serve", "--harness", "codex"]
 ```
 
-Cursor (`~/.cursor/mcp.json`) / Kiro: same `command`/`args` shape under
-`mcpServers.memriver`.
+Cursor (`~/.cursor/mcp.json`) / Kiro: the same `command`/`args` shape under
+`mcpServers.memriver`, ending in `"serve", "--harness", "cursor"` or
+`"kiro"` -- directory mode either way, since Cursor and Kiro have no session
+hooks.
 
-The MCP client's working directory determines project attribution: `--project`
-runs memriver from this checkout while keeping that directory, so memories land
-under the project you are actually working in (use `--directory` and every
-session would resolve against memriver's own checkout). `--project-dir` on the
-`memriver` command is where project discovery starts (the nearest directory
-bound to a project decides the id); pass it to pin a directory.
+`--harness claude-code|codex` alone only makes the MCP server session-routed;
+session registration also needs the four hooks run by hand, one per event,
+e.g. `uv run --project /path/to/repo memriver hook session-start --harness
+claude-code` (and `user-prompt-submit`, `stop`, `session-end`), wired into
+`~/.claude/settings.json`'s `hooks.SessionStart` etc. (or Codex's
+`~/.codex/hooks.json`) the way `memriver install` does. Without them the
+server still answers per session, but no session is ever registered, so
+every call stays "not registered with memriver".
+
+`--project-dir` on the `memriver` command is where directory-mode project
+discovery starts (the nearest directory bound to a project decides the id).
+In directory mode, the MCP client's working directory determines project
+attribution through it: `--project` runs memriver from this checkout while
+keeping that directory, so memories land under the project you are actually
+working in (use `--directory` and every session would resolve against
+memriver's own checkout).
 
 ## Storage layout
 
