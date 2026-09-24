@@ -187,7 +187,7 @@ def build_server(root: Path, project_dir: Path,
         """The project context's project on the first line, then a compact index of
         the current project's memories followed by global's."""
         try:
-            return project_context.header + "\n" + service.index(read_write_set)
+            return project_context.header + "\n" + service.index(project_context)
         except Exception as err:  # noqa: BLE001
             _fail("list", err)
 
@@ -196,7 +196,7 @@ def build_server(root: Path, project_dir: Path,
         """Read one memory in full by id, including the version that
         memory_update and memory_delete must name."""
         try:
-            return _full(service.read(memory_id, read_write_set))
+            return _full(service.read(memory_id, project_context))
         except Exception as err:  # noqa: BLE001
             _fail("read", err, memory_id=memory_id)
 
@@ -207,7 +207,7 @@ def build_server(root: Path, project_dir: Path,
         try:
             return [_hit(m, "global" if m.project_id == read_write_set.global_project_id
                          else "project")
-                    for m in service.search(query, read_write_set, limit)]
+                    for m in service.search(query, project_context, limit)]
         except Exception as err:  # noqa: BLE001
             _fail("list", err)
 
@@ -224,7 +224,7 @@ def build_server(root: Path, project_dir: Path,
         session recall this?"""
         try:
             memory = service.record(content=content, type=type, sync=sync, harness=harness,
-                                    description=description, read_write_set=read_write_set)
+                                    description=description, context=project_context)
         except Exception as err:  # noqa: BLE001
             _fail("write", err, context_state=project_context.state)
         return {"id": memory.id, "project_id": memory.project_id}
@@ -239,7 +239,7 @@ def build_server(root: Path, project_dir: Path,
         description: omit to keep the existing one; pass a string to replace
         it, or "" to clear it."""
         try:
-            memory = service.update(memory_id, content, read_write_set,
+            memory = service.update(memory_id, content, project_context,
                                     expected_version=expected_version, description=description)
         except Exception as err:  # noqa: BLE001
             _fail("update", err, memory_id=memory_id)
@@ -251,7 +251,7 @@ def build_server(root: Path, project_dir: Path,
         expected_version: the version memory_read returned.
         Global entries are read-only; the call is refused."""
         try:
-            service.delete(memory_id, read_write_set, expected_version=expected_version)
+            service.delete(memory_id, project_context, expected_version=expected_version)
         except Exception as err:  # noqa: BLE001
             _fail("delete", err, memory_id=memory_id)
         return {"deleted": memory_id}

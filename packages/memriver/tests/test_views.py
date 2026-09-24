@@ -22,7 +22,7 @@ def world(tmp_path):
     project = service.init_project("demo", service.plan_root(str(work)))
     project_context = service.open_project_context(str(work))
     memory = service.record(content="line one\nline two", type="project", sync=True,
-                            harness="t", description="the cue", read_write_set=project_context.read_write_set)
+                            harness="t", description="the cue", context=project_context)
     return {"store": store, "work": work, "home": home, "service": service,
             "project": project, "memory": memory, "project_context": project_context}
 
@@ -52,13 +52,13 @@ def test_show_prints_fields_then_the_body_with_its_newlines(world):
 def test_show_neutralises_terminal_escapes_in_the_body_but_keeps_newlines(world):
     service, project_context = world["service"], world["project_context"]
     memory = service.record(content="a\x1b[2Jb\nc", type="project", sync=True, harness="t",
-                            description="", read_write_set=project_context.read_write_set)
+                            description="", context=project_context)
     _, out = _out(run_show, memory.id, root=world["store"], deleted=False, home=world["home"])
     assert "\x1b" not in out and "a [2Jb\nc" in out
 
 
 def test_show_of_a_soft_deleted_memory_needs_the_flag(world):
-    world["service"].delete(world["memory"].id, world["project_context"].read_write_set,
+    world["service"].delete(world["memory"].id, world["project_context"],
                             expected_version=1)
     code, out = _out(run_show, world["memory"].id, root=world["store"], deleted=False,
                      home=world["home"])
@@ -76,7 +76,7 @@ def test_search_finds_across_projects_and_by_project(world, tmp_path):
     other_project_context = service.open_project_context(str(other_work))
     other_memory = service.record(content="another line entirely", type="project", sync=True,
                                   harness="t", description="",
-                                  read_write_set=other_project_context.read_write_set)
+                                  context=other_project_context)
 
     code, out = _out(run_search, "LINE", root=world["store"], project_id=None, limit=None,
                      home=world["home"])
@@ -369,7 +369,7 @@ def test_show_reports_a_fixed_sentence_when_the_service_cannot_be_built(world, m
 
 
 def test_export_skips_a_soft_deleted_memory(world, tmp_path):
-    world["service"].delete(world["memory"].id, world["project_context"].read_write_set,
+    world["service"].delete(world["memory"].id, world["project_context"],
                             expected_version=1)
     target = tmp_path / "snap"
     code, out = _out(run_export, target, root=world["store"], home=world["home"], cwd=tmp_path)

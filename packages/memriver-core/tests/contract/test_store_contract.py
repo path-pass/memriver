@@ -14,7 +14,14 @@ from pathlib import Path
 
 import pytest
 from memriver_core.application.service import MemoryService
-from memriver_core.models import Memory, Project, ReadWriteSet, new_id, now
+from memriver_core.models import (
+    Memory,
+    Project,
+    ProjectContext,
+    ReadWriteSet,
+    new_id,
+    now,
+)
 from memriver_core.models.errors import (
     GlobalReadOnly,
     IdCollision,
@@ -570,8 +577,12 @@ def test_an_undecodable_row_in_the_same_project_is_skipped_by_search_and_index_n
         world["memory_store"], world["project_store"], content_policy_factory=lambda: None,
         diagnostics=None, max_body_chars=10_000, metadata_max_chars=1_000,
         search_limit_default=20, search_limit_max=100, index_budget_lines=50,
-        index_cue_chars=80, header_field_chars=80, project_name_max_chars=120)
-    assert good.id in service.index(world["read_write_set"])
+        index_cue_chars=80, header_field_chars=80, project_name_max_chars=120,
+        session_store=None, main_tree_path=None, current_branch=None, root_is_intact=None,
+        session_prompt_chars=512, session_recent_prompts=5, session_prompt_scan_max_bytes=65536,
+        stop_nudge_min_prompts=5, stop_nudge_interval_prompts=5,
+        session_search_limit_default=10, session_search_limit_max=50)
+    assert good.id in service.index(ProjectContext("registered", "", world["read_write_set"]))
     assert world["memory_store"].read(good.id, world["read_write_set"]) == good
     with pytest.raises(StorageFailure):
         world["memory_store"].read(bad.id, world["read_write_set"])

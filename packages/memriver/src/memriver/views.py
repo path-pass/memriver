@@ -218,7 +218,8 @@ def run_delete(memory_id: str, *, version: int, hard: bool, yes: bool, root: Pat
                home: Path) -> int:
     try:
         service = _service(root, home)
-        read_write_set = service.open_project_context(str(cwd)).read_write_set
+        project_context = service.open_project_context(str(cwd))
+        read_write_set = project_context.read_write_set
         memory = service.show(memory_id, include_deleted=hard)
     except MemoryNotFound:
         stdout.write(f"no such memory: {visible(memory_id[:255])}\n")
@@ -255,7 +256,7 @@ def run_delete(memory_id: str, *, version: int, hard: bool, yes: bool, root: Pat
             stdout.write("aborted; nothing was changed\n")
             return 1
     try:
-        service.delete(memory_id, read_write_set, expected_version=version, hard=hard)
+        service.delete(memory_id, project_context, expected_version=version, hard=hard)
     except MemoryNotFound:
         stdout.write(f"no such memory: {visible(memory_id[:255])}\n")
         return 2

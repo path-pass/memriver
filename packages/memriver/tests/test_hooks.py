@@ -114,8 +114,8 @@ class FakeService:
     def open_project_context(self, start: str):
         return self.real.open_project_context(start)
 
-    def index(self, read_write_set: ReadWriteSet) -> str:
-        self.read_write_sets.append(read_write_set)
+    def index(self, context) -> str:
+        self.read_write_sets.append(context.read_write_set)
         return self.index_text
 
 

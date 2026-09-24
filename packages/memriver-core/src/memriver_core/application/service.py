@@ -10,6 +10,7 @@ or settings: every limit is injected.
 from __future__ import annotations
 
 import re
+import sys
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol
 
@@ -18,22 +19,31 @@ from memriver_core.models import (
     Memory,
     Project,
     ProjectContext,
+    PromptEntry,
     ReadWriteSet,
     Resolution,
     RootPlan,
+    Session,
+    SessionKey,
     UnbindPlan,
+    now,
     single_line,
 )
 from memriver_core.models.errors import (
     ContentRejected,
     IdCollision,
+    ProjectNotFound,
     ProjectUnavailable,
     StorageFailure,
 )
 
 if TYPE_CHECKING:
     from memriver_core.content_policy.protocol import ContentPolicy
-    from memriver_core.repository.protocol import MemoryStore, ProjectStore
+    from memriver_core.repository.protocol import (
+        MemoryStore,
+        ProjectStore,
+        SessionStore,
+    )
 
 
 class Diagnostics(Protocol):
@@ -61,17 +71,40 @@ EMPTY_INDEX = "(no memories yet)"
 NONE_HEADER = "project: none — global is read-only; ask the user to run memriver project init"
 STORE_UNREADABLE_HEADER = ("project: unavailable — the memory store could not be read; "
                            "ask the user to run memriver doctor")
+PENDING_HEADER = ("project: awaiting confirmation — this session is not registered; "
+                  "ask the user, then call session_confirm")
+UNIDENTIFIED_HEADER = ("project: none — this session is not registered with memriver; "
+                       "restart the session after memriver install")
+
+# a new session with no row: these sources start one afresh, so it registers
+# at once; resume/compact continue one memriver never saw, so it waits for
+# the user (spec §5.2)
+_FRESH_SOURCES = frozenset({"startup", "clear", "fork"})
+_WORKTREE_UNMAPPED = "the git worktree could not be mapped to its main working tree"
+_SESSION_PROJECT_MISSING = "session project missing"
 
 
 class MemoryService:
     def __init__(self, memory_store: MemoryStore, project_store: ProjectStore,
                  content_policy_factory: Callable[[], ContentPolicy],
-                 diagnostics: Diagnostics, *, max_body_chars: int,
+                 diagnostics: Diagnostics, *, session_store: SessionStore,
+                 main_tree_path: Callable[[str], str | None],
+                 current_branch: Callable[[str], str | None],
+                 root_is_intact: Callable[[str], bool], max_body_chars: int,
                  metadata_max_chars: int, search_limit_default: int, search_limit_max: int,
                  index_budget_lines: int, index_cue_chars: int, header_field_chars: int,
-                 project_name_max_chars: int) -> None:
+                 project_name_max_chars: int, session_prompt_chars: int,
+                 session_recent_prompts: int, session_prompt_scan_max_bytes: int,
+                 stop_nudge_min_prompts: int, stop_nudge_interval_prompts: int,
+                 session_search_limit_default: int, session_search_limit_max: int) -> None:
         self._memory_store = memory_store
         self._project_store = project_store
+        self._session_store = session_store
+        # the directory questions a session registration asks (spec §5.1),
+        # injected so this layer runs no git and reads no filesystem
+        self._main_tree_path = main_tree_path
+        self._current_branch = current_branch
+        self._root_is_intact = root_is_intact
         # built on first use: a read-only caller (the Stop hook, doctor, the
         # human views) never pays for loading and compiling the scanner rules
         self._content_policy_factory = content_policy_factory
@@ -87,6 +120,13 @@ class MemoryService:
         self._index_cue_chars = index_cue_chars
         self._header_field_chars = header_field_chars
         self._project_name_max_chars = project_name_max_chars
+        self._session_prompt_chars = session_prompt_chars
+        self._session_recent_prompts = session_recent_prompts
+        self._session_prompt_scan_max_bytes = session_prompt_scan_max_bytes
+        self._stop_nudge_min_prompts = stop_nudge_min_prompts
+        self._stop_nudge_interval_prompts = stop_nudge_interval_prompts
+        self._session_search_limit_default = session_search_limit_default
+        self._session_search_limit_max = session_search_limit_max
 
     def _policy(self) -> ContentPolicy:
         if self._content_policy is None:
@@ -106,26 +146,219 @@ class MemoryService:
             resolution = self._project_store.resolve(start)
             global_project_id = self._project_store.global_project_id()
         except StorageFailure:
-            return ProjectContext("unavailable", STORE_UNREADABLE_HEADER,
-                                  ReadWriteSet(project_id=None, global_project_id=None))
+            return _unavailable_context(None)
         project = resolution.project
         if resolution.state == "registered" and project is not None \
                 and project.id != global_project_id:
-            return ProjectContext(
-                "registered",
-                f"project: {self._field(project.name)} [{project.id}] "
-                f"(root {self._field(project.root or '')})",
-                ReadWriteSet(project_id=project.id, global_project_id=global_project_id),
-                project)
-        read_write_set = ReadWriteSet(project_id=None, global_project_id=global_project_id)
+            return self._registered_context(project, global_project_id)
         if resolution.state == "degraded":
-            diagnostic = resolution.diagnostic or ""
-            return ProjectContext(
-                "degraded",
-                f"project: unavailable — this directory could not be matched to one project "
-                f"({self._field(diagnostic)}); ask the user to run memriver project explain",
-                read_write_set, diagnostic=diagnostic)
-        return ProjectContext("none", NONE_HEADER, read_write_set)
+            return self._degraded_context(resolution.diagnostic or "", global_project_id)
+        return _no_project_context("none", NONE_HEADER, global_project_id)
+
+    def _registered_context(self, project: Project, global_project_id: str | None,
+                            session_key: SessionKey | None = None) -> ProjectContext:
+        return ProjectContext(
+            "registered",
+            f"project: {self._field(project.name)} [{project.id}] "
+            f"(root {self._field(project.root or '')})",
+            ReadWriteSet(project_id=project.id, global_project_id=global_project_id),
+            project, session_key=session_key)
+
+    def _degraded_context(self, diagnostic: str, global_project_id: str | None,
+                          session_key: SessionKey | None = None) -> ProjectContext:
+        return ProjectContext(
+            "degraded",
+            f"project: unavailable — this directory could not be matched to one project "
+            f"({self._field(diagnostic)}); ask the user to run memriver project explain",
+            ReadWriteSet(project_id=None, global_project_id=global_project_id),
+            diagnostic=diagnostic, session_key=session_key)
+
+    # --- sessions (spec §5) ---
+
+    def start_session(self, key: SessionKey, *, source: str, entry_dir: str,
+                      transcript_path: str | None) -> ProjectContext:
+        """SessionStart: the stored row's context, registering the session when it has none."""
+        try:
+            stored = self._session_store.get(key)
+            if stored is not None:
+                touched = self._session_store.touch(key, now(),
+                                                    transcript_path=transcript_path)
+                return self._context_of(touched or stored)
+            seed = self._new_session(key, entry_dir, transcript_path,
+                                     fresh=source in _FRESH_SOURCES)
+            if isinstance(seed, ProjectContext):
+                return seed
+            # the stored winner answers, never this call's own computation
+            winner = self._session_store.register(seed)
+            if winner is None:
+                return self._storeless_context(key)
+            return self._context_of(winner)
+        except StorageFailure:
+            return _unavailable_context(key)
+
+    def observe_prompt(self, key: SessionKey, *, prompt: str, entry_dir: str,
+                       transcript_path: str | None) -> tuple[ProjectContext, bool]:
+        """UserPromptSubmit: count and record one prompt; True when this call created the row."""
+        entry = self._prompt_entry(prompt, now())
+        try:
+            seed = self._session_store.get(key)
+            if seed is None:
+                pending = self._new_session(key, entry_dir, transcript_path, fresh=False)
+                if isinstance(pending, ProjectContext):
+                    return pending, False
+                seed = pending
+            added = self._session_store.add_prompt(key, entry, seed=seed,
+                                                   keep_recent=self._session_recent_prompts)
+            if added is None:
+                return self._storeless_context(key), False
+            session, created = added
+            return self._context_of(session), created
+        except StorageFailure:
+            return _unavailable_context(key), False
+
+    def end_session(self, key: SessionKey) -> None:
+        self._session_store.end(key, now())
+
+    def stop_decision(self, key: SessionKey) -> bool:
+        """Stop: True when the session is due a save nudge (the nudge is recorded)."""
+        try:
+            return self._session_store.nudge_if_due(
+                key, now(), min_prompts=self._stop_nudge_min_prompts,
+                interval=self._stop_nudge_interval_prompts)
+        except StorageFailure:
+            return False
+
+    def session_context(self, key: SessionKey | None) -> ProjectContext:
+        """The context a session's stored row grants. Never resolves a directory."""
+        try:
+            stored = None if key is None else self._session_store.get(key)
+            if stored is None:
+                return _no_project_context("unidentified", UNIDENTIFIED_HEADER,
+                                           self._project_store.global_project_id(), key)
+            return self._context_of(stored)
+        except StorageFailure:
+            return _unavailable_context(key)
+
+    def confirm_session(self, key: SessionKey) -> ProjectContext:
+        """The user confirmed a pending session: register it with its candidate (or none)."""
+        stored = self._session_store.get(key)
+        # a candidate without a root would confirm to any root-NULL project; the
+        # root's integrity is a filesystem question, asked outside the store's
+        # transaction
+        if stored is not None and stored.status == "pending" \
+                and stored.candidate_id is not None \
+                and (stored.candidate_root is None
+                     or not self._root_is_intact(stored.candidate_root)):
+            raise ProjectUnavailable(reason="candidate-changed")
+        confirmed = self._session_store.confirm(key)
+        if confirmed is None:
+            raise ProjectUnavailable(reason="unidentified")
+        return self._context_of(confirmed)
+
+    def search_sessions(self, query: str, context: ProjectContext,
+                        limit: int | None = None) -> list[Session]:
+        project_id = context.read_write_set.project_id
+        if project_id is None:
+            return []
+        limit = self._session_search_limit_default if limit is None else limit
+        return self._session_store.search(
+            project_id, query, max(1, min(limit, self._session_search_limit_max)))
+
+    def list_sessions(self, *, project_id: str | None = None, query: str = "",
+                      limit: int | None = None) -> list[Session]:
+        """The human read: every project's sessions (or one's), pending ones included."""
+        return self._session_store.search(project_id, query,
+                                          sys.maxsize if limit is None else limit)
+
+    def pending_candidate(self, context: ProjectContext) -> Project | None:
+        """The project a pending session would be confirmed to, if it has one."""
+        stored = self._stored_session(context)
+        if stored is None or stored.status != "pending" or stored.candidate_id is None:
+            return None
+        try:
+            return self._project_store.read(stored.candidate_id)
+        except ProjectNotFound:
+            return None
+
+    def entry_of(self, context: ProjectContext) -> str | None:
+        """The directory the session was first seen in, for the pending notice."""
+        stored = self._stored_session(context)
+        return None if stored is None else stored.entry_cwd
+
+    def _stored_session(self, context: ProjectContext) -> Session | None:
+        if context.session_key is None:
+            return None
+        return self._session_store.get(context.session_key)
+
+    def _context_of(self, session: Session) -> ProjectContext:
+        """What a stored row grants: its project, none, or pending (read global only)."""
+        global_project_id = self._project_store.global_project_id()
+        if session.status == "pending":
+            return _no_project_context("pending", PENDING_HEADER, global_project_id,
+                                       session.key)
+        if session.project_id is None:
+            return _no_project_context("none", NONE_HEADER, global_project_id, session.key)
+        try:
+            project = self._project_store.read(session.project_id)
+        except ProjectNotFound:
+            project = None
+        if project is None or project.id == global_project_id:
+            return self._degraded_context(_SESSION_PROJECT_MISSING, global_project_id,
+                                          session.key)
+        return self._registered_context(project, global_project_id, session.key)
+
+    def _storeless_context(self, key: SessionKey) -> ProjectContext:
+        # no store: nothing was written, and no project exists to grant
+        return _no_project_context("none", NONE_HEADER, None, key)
+
+    def _new_session(self, key: SessionKey, entry_dir: str, transcript_path: str | None, *,
+                     fresh: bool) -> Session | ProjectContext:
+        """The row a new session gets from its entry directory (spec §5.1, §5.2).
+
+        A context instead when the directory cannot be resolved: nothing is
+        registered, and the next event tries again.
+        """
+        mapped = self._main_tree_path(entry_dir)
+        if mapped is None:
+            return self._degraded_context(_WORKTREE_UNMAPPED,
+                                          self._project_store.global_project_id(), key)
+        resolution = self._project_store.resolve(entry_dir, logical=mapped)
+        if resolution.state == "degraded":
+            return self._degraded_context(resolution.diagnostic or "",
+                                          self._project_store.global_project_id(), key)
+        project = resolution.project if resolution.state == "registered" else None
+        at = now()
+        return Session(
+            key=key, status="registered" if fresh else "pending",
+            origin="start" if fresh else "first-seen",
+            project_id=project.id if fresh and project is not None else None,
+            candidate_id=None if fresh or project is None else project.id,
+            candidate_root=None if fresh or project is None else project.root,
+            entry_cwd=entry_dir, branch=self._current_branch(entry_dir),
+            transcript_path=transcript_path, started_at=at, last_active_at=at, ended_at=None,
+            prompt_count=0, last_write_prompt_count=0, last_nudge_prompt_count=0,
+            first_prompt=None, recent_prompts=())
+
+    def _prompt_entry(self, prompt: object, at: str) -> PromptEntry:
+        """One prompt as it may be stored: its first line-folded characters, or why not.
+
+        Built before any transaction; the text never reaches an error or a log.
+        """
+        try:
+            encoded = prompt.encode("utf-8") if isinstance(prompt, str) else None
+        except UnicodeEncodeError:          # a lone surrogate
+            encoded = None
+        if encoded is None or single_line(prompt) == "":
+            return PromptEntry(at, omitted="invalid")
+        if len(encoded) > self._session_prompt_scan_max_bytes:
+            return PromptEntry(at, omitted="too-large")
+        try:
+            self._policy().check(prompt, max_chars=len(prompt))
+        except ContentRejected:
+            return PromptEntry(at, omitted="secret")
+        except Exception:  # noqa: BLE001 - any scanner fault omits the text, never fails the hook
+            return PromptEntry(at, omitted="scan-error")
+        return PromptEntry(at, text=single_line(prompt)[:self._session_prompt_chars])
 
     # --- projects ---
 
@@ -167,8 +400,22 @@ class MemoryService:
 
     # --- single memories ---
 
+    def _refuse_pending(self, context: ProjectContext) -> None:
+        if context.state == "pending":
+            raise ProjectUnavailable(reason="pending")
+
+    def _mark_saved(self, context: ProjectContext) -> None:
+        """The save watermark (spec §3.3): best effort, never fails the save."""
+        if context.session_key is not None:
+            try:
+                self._session_store.mark_saved(context.session_key)
+            except StorageFailure:
+                pass
+
     def record(self, *, content: str, type: str, sync: bool, harness: str,
-               description: str, read_write_set: ReadWriteSet) -> Memory:
+               description: str, context: ProjectContext) -> Memory:
+        self._refuse_pending(context)
+        read_write_set = context.read_write_set
         if read_write_set.project_id is None:
             # no reason: the transport resolved the project, so it says why
             # there is none
@@ -190,24 +437,34 @@ class MemoryService:
             self._memory_store.record(memory, read_write_set)
         except IdCollision as err:
             raise StorageFailure from err
+        self._mark_saved(context)
         return memory
 
-    def read(self, memory_id: str, read_write_set: ReadWriteSet) -> Memory:
-        return self._memory_store.read(memory_id, read_write_set)
+    def read(self, memory_id: str, context: ProjectContext) -> Memory:
+        memory = self._memory_store.read(memory_id, context.read_write_set)
+        try:
+            self._memory_store.touch_read(memory.id, now())
+        except StorageFailure:
+            pass                            # best effort (spec §3.3): never fails the read
+        return memory
 
-    def update(self, memory_id: str, content: str, read_write_set: ReadWriteSet, *,
+    def update(self, memory_id: str, content: str, context: ProjectContext, *,
                expected_version: int, description: str | None = None) -> Memory:
+        self._refuse_pending(context)
         policy = self._policy()
         policy.check(content, self._max_body_chars)
         if description is not None and description.strip():
             policy.check(description, self._metadata_max_chars)
-        return self._memory_store.update(memory_id, read_write_set,
-                                         expected_version=expected_version, body=content,
-                                         description=description)
+        memory = self._memory_store.update(memory_id, context.read_write_set,
+                                           expected_version=expected_version, body=content,
+                                           description=description)
+        self._mark_saved(context)
+        return memory
 
-    def delete(self, memory_id: str, read_write_set: ReadWriteSet, *, expected_version: int,
+    def delete(self, memory_id: str, context: ProjectContext, *, expected_version: int,
                hard: bool = False) -> int:
-        return self._memory_store.delete(memory_id, read_write_set,
+        self._refuse_pending(context)
+        return self._memory_store.delete(memory_id, context.read_write_set,
                                          expected_version=expected_version, hard=hard)
 
     # --- collections ---
@@ -217,13 +474,14 @@ class MemoryService:
         limit = self._search_limit_default if limit is None else limit
         return max(1, min(limit, self._search_limit_max))
 
-    def search(self, query: str, read_write_set: ReadWriteSet,
+    def search(self, query: str, context: ProjectContext,
                limit: int | None = None) -> list[Memory]:
         """The current project first, then global, in one budget.
 
         One clamp for the whole answer, then two single-project searches; a
         spent budget skips global rather than being clamped back to one.
         """
+        read_write_set = context.read_write_set
         remaining = self.normalize_search_limit(limit)
         hits: list[Memory] = []
         for project_id in (read_write_set.project_id, read_write_set.global_project_id):
@@ -244,8 +502,9 @@ class MemoryService:
         return (f"- [{memory.type}{tag}] {single_line(memory.id)}: {cue} "
                 f"({single_line(memory.updated[:10])})")
 
-    def index(self, read_write_set: ReadWriteSet) -> str:
+    def index(self, context: ProjectContext) -> str:
         """The current project's entries, then global's, in one line budget."""
+        read_write_set = context.read_write_set
         sections = [(project_id, tag) for project_id, tag in
                     ((read_write_set.project_id, ""),
                      (read_write_set.global_project_id, ", global"))
@@ -298,3 +557,17 @@ class MemoryService:
                  jaccard_threshold: float = 0.6) -> DiagnosticsReport:
         return self._diagnostics.run(now=now, stale_days=stale_days,
                                      jaccard_threshold=jaccard_threshold)
+
+
+def _no_project_context(state: str, header: str, global_project_id: str | None,
+                        session_key: SessionKey | None = None) -> ProjectContext:
+    """A context that may read global only."""
+    return ProjectContext(state, header,
+                          ReadWriteSet(project_id=None, global_project_id=global_project_id),
+                          session_key=session_key)
+
+
+def _unavailable_context(session_key: SessionKey | None) -> ProjectContext:
+    return ProjectContext("unavailable", STORE_UNREADABLE_HEADER,
+                          ReadWriteSet(project_id=None, global_project_id=None),
+                          session_key=session_key)

@@ -218,7 +218,7 @@ def _read_index(root: Path | None, project_dir: Path) -> str:
         # the same project context the MCP server opens: same directory, same
         # header and body
         project_context = service.open_project_context(str(project_dir))
-        body = service.index(project_context.read_write_set)
+        body = service.index(project_context)
     return project_context.header + "\n" + body
 
 

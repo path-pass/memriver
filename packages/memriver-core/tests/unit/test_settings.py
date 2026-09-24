@@ -274,3 +274,17 @@ def test_the_fixed_length_and_timeout_constants_live_in_settings():
     for name in ("INDEX_CUE_CHARS", "SEARCH_SNIPPET_CHARS", "HEADER_FIELD_CHARS",
                  "PROJECT_NAME_MAX_CHARS", "BUSY_TIMEOUT_MS"):
         assert name in settings.__all__
+
+
+SESSION_CONSTANTS = {
+    "SESSION_PROMPT_CHARS": 512, "SESSION_RECENT_PROMPTS": 5,
+    "SESSION_PROMPT_SCAN_MAX_BYTES": 65536, "STOP_NUDGE_MIN_PROMPTS": 5,
+    "STOP_NUDGE_INTERVAL_PROMPTS": 5, "GIT_QUERY_TIMEOUT_S": 2,
+    "SESSION_SEARCH_LIMIT_DEFAULT": 10, "SESSION_SEARCH_LIMIT_MAX": 50,
+}
+
+
+def test_the_session_constants_live_in_settings():
+    from memriver_core import settings
+    assert {name: getattr(settings, name) for name in SESSION_CONSTANTS} == SESSION_CONSTANTS
+    assert set(SESSION_CONSTANTS) <= set(settings.__all__)

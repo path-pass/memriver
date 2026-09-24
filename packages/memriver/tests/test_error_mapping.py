@@ -261,7 +261,14 @@ def other_backend_server(tmp_path, monkeypatch):
                                  index_budget_lines=settings.index_budget_lines,
                                  index_cue_chars=INDEX_CUE_CHARS,
                                  header_field_chars=HEADER_FIELD_CHARS,
-                                 project_name_max_chars=PROJECT_NAME_MAX_CHARS)
+                                 project_name_max_chars=PROJECT_NAME_MAX_CHARS,
+                                 session_store=None, main_tree_path=None,
+                                 current_branch=None, root_is_intact=None,
+                                 session_prompt_chars=512, session_recent_prompts=5,
+                                 session_prompt_scan_max_bytes=65536,
+                                 stop_nudge_min_prompts=5, stop_nudge_interval_prompts=5,
+                                 session_search_limit_default=10,
+                                 session_search_limit_max=50)
 
         monkeypatch.setattr(server_module, "build_service", build_service_over_other)
         return build_server(root=store, project_dir=directory)
