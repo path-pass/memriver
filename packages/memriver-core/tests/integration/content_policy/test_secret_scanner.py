@@ -429,11 +429,16 @@ def test_uncompilable_rule_is_skipped_not_fatal(tmp_path, caplog):
     # gitleaks patterns are RE2; some are invalid Python `re`, and which ones
     # varies by interpreter. One bad rule must not take the whole scanner down.
     # A *known* POSIX class such as [[:alnum:]] is translated and now loads
-    # (see test_rules_loader.py); an unknown class name is left untouched, so
-    # it still hits Python's nested-set reading and is still dropped.
+    # (see test_rules_loader.py). An unknown class name raises instead of
+    # being left verbatim -- at the start of a bracket ('unknown-posix-class')
+    # Python's own nested-set reading would have caught it anyway, but
+    # elsewhere in the bracket ('posix-class-not-at-start') Python reads a
+    # bare '[' as a literal character and would otherwise compile the rule
+    # silently, with the wrong meaning.
     (tmp_path / "rules.toml").write_text(
         '[[rules]]\nid = "bad-regex"\nregex = "(unclosed"\n\n'
         '[[rules]]\nid = "unknown-posix-class"\nregex = "[[:nonsense:]]{10}"\n\n'
+        '[[rules]]\nid = "posix-class-not-at-start"\nregex = "[x[:blank:]]+"\n\n'
         '[[rules]]\nid = "path-only"\npath = "\\\\.pem$"\n\n'
         '[[rules]]\nid = "good"\nregex = "ZQ9[0-9]{4}"\n'
     )
@@ -442,10 +447,10 @@ def test_uncompilable_rule_is_skipped_not_fatal(tmp_path, caplog):
     assert [rid for rid, *_ in rules] == ["good"]
     # each dropped rule is named, so a sync that loses coverage is diagnosable
     assert "bad-regex" in caplog.text
-    # an unrecognised POSIX class name is left as-is; it still compiles in
-    # Python with a *different* meaning and must be rejected, not silently
-    # mis-matched
+    # an unrecognised POSIX class name now raises during translation, so it
+    # is reported and dropped rather than silently mis-compiled
     assert "unknown-posix-class" in caplog.text
+    assert "posix-class-not-at-start" in caplog.text
     # a dropped rule is a coverage loss an operator must see, not a detail
     # buried at DEBUG
     dropped = [r for r in caplog.records

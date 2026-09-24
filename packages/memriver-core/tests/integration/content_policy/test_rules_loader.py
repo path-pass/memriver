@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 import tomllib
 
+import pytest
 from memriver_core.content_policy.rules_loader import _load_rules, _re2_to_python
 from memriver_core.content_policy.secret_scanner import _RULES, _RULES_DIR
 
@@ -119,11 +120,34 @@ def test_posix_alnum_class_inside_brackets_expands_to_ascii_ranges():
     assert re.compile(translated).fullmatch("a1B") is not None
 
 
-def test_unknown_posix_class_name_is_left_alone():
-    # not one of the eight named classes: left as-is, so compilation still
-    # fails downstream and the rule is reported, not silently mismatched
-    pattern = r"[[:nonsense:]]"
-    assert _re2_to_python(pattern) == pattern
+def test_mapped_posix_class_translates_even_when_not_first_in_the_bracket():
+    # the mapping check itself does not care about position; only the old
+    # "leave it verbatim" fallback for an *unmapped* name relied on Python's
+    # own start-of-bracket nested-set reading
+    translated = _re2_to_python(r"[x[:alnum:]]+")
+    assert translated == r"[xa-zA-Z0-9]+"
+    assert re.compile(translated).fullmatch("xa1B") is not None
+
+
+def test_unmapped_posix_class_at_bracket_start_raises():
+    # not one of the eight named classes: raises so the rule is reported and
+    # dropped, rather than silently compiling with Python's nested-set
+    # reading of a leading '['
+    with pytest.raises(re.error):
+        _re2_to_python(r"[[:nonsense:]]")
+
+
+def test_unmapped_posix_class_not_at_bracket_start_raises():
+    # ground truth: RE2 accepts [x[:blank:]]+ (blank = space and tab, not one
+    # of the eight names this translator supports) and Go's regexp matches
+    # x/space/tab; left verbatim, Python reads '[' here as a literal
+    # character (no nested-set warning fires away from the bracket's start)
+    # and silently compiles a completely different, wrong class -- matching
+    # 'b]', never x/space/tab. Must raise instead of loading unnoticed.
+    with pytest.raises(re.error):
+        _re2_to_python(r"[x[:blank:]]+")
+    with pytest.raises(re.error):
+        _re2_to_python(r"[x[:nonsense:]]")
 
 
 def test_airtable_pattern_verbatim_translates_and_matches():

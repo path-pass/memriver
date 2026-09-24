@@ -72,8 +72,15 @@ def _re2_to_python(pattern: str) -> str:
     - `\\z` (absolute end of text) is Python's `\\Z`; an escaped `\\\\z` (a
       literal backslash followed by 'z') is left alone.
     - A POSIX class such as `[:alnum:]` inside a bracket expression is
-      expanded to its ASCII range; an unrecognised class name is left as-is,
-      so it still fails to compile rather than silently mismatching.
+      expanded to its ASCII range; an unrecognised class name raises
+      `re.error` naming it, so the rule is reported and dropped rather than
+      compiled with a different meaning. Python has no `[:name:]` syntax of
+      its own, so leaving an unrecognised name verbatim only fails safely
+      when it happens to sit at the very start of the bracket (where Python
+      reads the leading `[` as an attempted nested set and raises) --
+      anywhere else inside the bracket, `[` is just a literal character to
+      Python and `[x[:blank:]]` silently compiles as a handful of literal
+      characters, not the class RE2 would have matched.
 
     The pattern is scanned once, left to right, tracking backslash escapes
     (so `\\\\z` is never misread as `\\z`) and bracket expressions (so none of
@@ -101,10 +108,21 @@ def _re2_to_python(pattern: str) -> str:
         if in_class:
             if ch == "[" and pattern[i + 1:i + 2] == ":":
                 end = pattern.find(":]", i + 2)
-                if end != -1 and pattern[i + 2:end] in _POSIX_CLASSES:
-                    out.append(_POSIX_CLASSES[pattern[i + 2:end]])
-                    i = end + 2
-                    continue
+                if end != -1:
+                    name = pattern[i + 2:end]
+                    if name in _POSIX_CLASSES:
+                        out.append(_POSIX_CLASSES[name])
+                        i = end + 2
+                        continue
+                    # Leaving this verbatim only fails safely when it sits
+                    # at the very start of the bracket expression, where
+                    # Python's own "nested set" reading of `[` happens to
+                    # raise; anywhere else inside the bracket, `[` has no
+                    # special meaning to Python and it silently compiles
+                    # `[:name:]` as a handful of literal characters instead
+                    # -- a different match, not a compile failure. Raising
+                    # here catches both positions the same way.
+                    raise re.error(f"unsupported POSIX class [:{name}:]")
                 out.append(ch)
                 i += 1
                 continue
@@ -176,9 +194,11 @@ def _load_rules(*sources: Traversable) -> list[_Rule]:
     operator must see.
 
     Warnings are promoted to errors so that a construct Python merely tolerates
-    with a *different* meaning -- an unrecognised POSIX class name, which
-    `_re2_to_python` leaves untouched and Python then reads as a nested set --
-    is skipped rather than silently mis-matching.
+    with a *different* meaning -- such as reading a `[`-led bracket expression
+    as a nested set -- is skipped rather than silently mis-matching. An
+    unrecognised POSIX class name is caught earlier, by `_re2_to_python`
+    itself raising `re.error`, since Python's own nested-set warning only
+    fires when that name happens to sit at the very start of the bracket.
 
     Sources are read in order and ids are deduplicated first-wins, so memriver's
     own floor rules take precedence over an upstream rule of the same id.
