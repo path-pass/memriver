@@ -87,11 +87,12 @@ class SqliteMemoryStore:
             # deleted rows keep their id: an id is never reused
             if conn.execute("SELECT 1 FROM memories WHERE id = ?", (memory.id,)).fetchone():
                 raise IdCollision(memory.id)
-            row = memory_to_row(memory)
+            memory_row = memory_to_row(memory)
             # a row the read path would reject is never committed: the same
             # decoder that would refuse it on the next read refuses it now
-            memory_from_row(row)
-            conn.execute(f"INSERT INTO memories ({MEMORY_COLUMNS}) VALUES ({_PLACEHOLDERS})", row)
+            memory_from_row(memory_row)
+            conn.execute(f"INSERT INTO memories ({MEMORY_COLUMNS}) VALUES ({_PLACEHOLDERS})",
+                         memory_row)
 
     def read(self, memory_id: str, read_write_set: ReadWriteSet) -> Memory:
         if not _addressable(memory_id):

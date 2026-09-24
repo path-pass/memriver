@@ -69,7 +69,8 @@ def _map_error(operation: Operation, err: Exception, *, memory_id: str | None = 
         # the codec's, not policy copy
         if isinstance(err, ContentRejected | ValueError) and not isinstance(err, UnicodeError):
             # policy copy is authored in the core and never echoes the value;
-            # ValueError reaches here from the model constructors
+            # ValueError reaches here from the model constructors or from a
+            # store's pre-write validation of the row it is about to write
             return {"error": str(err)}
         return {"error": "could not write entry"}
     if isinstance(err, ContentRejected):

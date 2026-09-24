@@ -61,10 +61,16 @@ def _bound_elsewhere(conn: sqlite3.Connection, root: str) -> BindingRefused | No
     """After an IntegrityError on writing `root`: "bound-elsewhere" if a row now holds it.
 
     None for any other constraint; the caller re-raises it and the write turns
-    it into StorageFailure.
+    it into StorageFailure. An owner id the lenient text_factory could not
+    decode, or one that is not addressable, is damage, not a binding to name.
     """
     owner = conn.execute("SELECT id FROM projects WHERE root = ?", (root,)).fetchone()
-    return None if owner is None else BindingRefused("bound-elsewhere", owner[0])
+    if owner is None:
+        return None
+    owner_id = owner[0]
+    if not isinstance(owner_id, str) or not ID_RE.fullmatch(owner_id):
+        raise StorageFailure
+    return BindingRefused("bound-elsewhere", owner_id)
 
 
 def _same(a: str, b: str) -> bool:

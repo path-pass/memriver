@@ -10,7 +10,12 @@ from pathlib import Path
 
 import pytest
 from memriver_core.models import Project, new_id
-from memriver_core.models.errors import BindingRefused, IdCollision, ProjectNotFound
+from memriver_core.models.errors import (
+    BindingRefused,
+    IdCollision,
+    ProjectNotFound,
+    StorageFailure,
+)
 from memriver_core.repository import directories
 from memriver_core.repository.sqlite import SqliteProjectStore
 
@@ -202,6 +207,21 @@ def test_bind_refuses_a_project_a_peer_bound_elsewhere_after_planning(env):
     store.bind(project.id, store.plan_root(str(third), project.id))     # the peer
     _refused("has-directory", store.bind, project.id, plan)
     assert store.read(project.id).root == str(third.resolve())
+
+
+def test_an_undecodable_binding_owner_id_is_damage_not_a_bound_elsewhere_refusal(env):
+    from memriver_core.repository.sqlite.database import Database
+    from memriver_core.repository.sqlite.project_store import _bound_elsewhere
+
+    project = _init(env["project_store"], env["work"])
+    with closing(sqlite3.connect(env["store"] / "memriver.db")) as conn, conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        # an outside writer can plant an id the lenient text_factory cannot decode;
+        # _bound_elsewhere must report that as damage, never as a binding to name
+        conn.execute("UPDATE projects SET id = CAST(X'80' AS TEXT) WHERE id = ?", (project.id,))
+    database = Database(env["store"], busy_timeout_ms=2000)
+    with pytest.raises(StorageFailure), database.write() as conn:
+        _bound_elsewhere(conn, str(env["work"].resolve()))
 
 
 def test_bind_and_unbind_against_a_deleted_store_create_nothing(env):
