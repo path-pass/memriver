@@ -85,7 +85,13 @@ reports go to stderr.
   later never moves it, and a session started inside a linked git worktree
   registers under the project of the worktree's main working tree, keeping
   the sub-directory it started in. The same session id keeps its row however
-  and wherever it is later resumed.
+  and wherever it is later resumed. A session started in no registered
+  project has none, and memriver never looks again on its own: it gets one
+  only when the agent calls `session_register` -- because you asked it to,
+  or right after it ran `memriver project init` at your request -- which
+  resolves the directory the session started in (as stored when it
+  registered, not wherever it is now) and registers the project covering
+  it. A session that already has a project never changes.
 - **A session memriver has never registered** (typically one resumed for the
   first time since before you installed, or across a store upgrade) is not
   silently bound to whatever directory it happens to be resumed in. It is
@@ -93,8 +99,8 @@ reports go to stderr.
   is refused, and the agent is told to ask you and call `session_confirm`
   only once you agree to the project it proposes. When the directory it was
   first observed in is in no registered project there is nothing to propose:
-  the agent is told that saving needs `memriver project init` there and a new
-  session, and is not asked to confirm.
+  the agent is told that saving needs `memriver project init` there followed
+  by `session_register`, and is not asked to confirm.
 - **Stop**: a reminder to save durable facts, but only for a session's own
   prompts (not a sub-agent's) and only once it has made at least 5 prompts
   since its last save -- a successful `memory_write` or `memory_update`
@@ -153,10 +159,12 @@ unregistered directory has no project: agents can read global memory
 but have nowhere to save, and the session-start injection says so. Global
 memory is read-only to agents; it is written by hand (see *Storage
 layout*). A binding change reaches Cursor/Kiro at their MCP server's next
-start. It reaches Claude Code/Codex only in a new session: a session's
-stored project never changes once registered, existing and resumed sessions
-included, so a session started in a directory before `memriver project init`
-has to be replaced by a new session to save there.
+start. It reaches Claude Code/Codex in a new session, or in a session that
+has no project yet once its agent calls `session_register` (on your request,
+or right after running `memriver project init` for you): a session's stored
+project never changes once it has one, existing and resumed sessions
+included, so a session already registered to another project has to be
+replaced by a new session to save under the new binding.
 
 Known limits:
 
@@ -204,6 +212,7 @@ Known limits:
 | `memory_delete(memory_id, expected_version)` | Remove a memory that is no longer true or wanted; returns `{deleted: memory_id}`; refused for global memories or a stale `expected_version` |
 | `session_search(query="", limit=None)` | Claude Code/Codex only: find this project's recorded sessions (newest activity first) by a word in their prompts, branch or entry directory; each result carries a `resume_command` to show the user -- whether to run it is the user's decision |
 | `session_confirm()` | Claude Code/Codex only: register the calling session to the project memriver proposed for it; call only after the user agrees; returns the session's new project header |
+| `session_register()` | Claude Code/Codex only: register the calling session, when it has no project, to the registered project covering the directory it started in (the one stored when it registered); called when the user asks, or right after the agent ran `memriver project init` at the user's request; never changes a session that already has a project; returns the session's project header, with a note when no project covers that directory |
 
 `expected_version` is the value `memory_read` last returned; if the memory
 changed since, the call is refused and nothing is written -- read it again and
