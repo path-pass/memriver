@@ -36,6 +36,7 @@ import json
 import os
 import shlex
 import shutil
+import stat
 import tempfile
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -609,44 +610,81 @@ def _remove_created_dirs(created_dirs: Sequence[_CreatedDir]) -> None:
             return
 
 
+# a path that exists but is a symlink or another non-regular file (FIFO,
+# device, ...): never read through it -- that could follow the link
+# somewhere this run never wrote, or block forever on a FIFO -- so its
+# content never equals anything and it always falls to the "changed" branch
+_NOT_A_REGULAR_FILE = object()
+
+
+def _current_bytes(path: Path) -> bytes | None | object:
+    """The bytes at ``path`` right now: ``None`` if absent, the sentinel
+    above if it is not a plain file, otherwise its contents.
+
+    ``lstat`` rather than ``stat``, consistent with ``_refuse_symlinks``:
+    a symlink swapped in for the target is refused, not followed.
+    """
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(info.st_mode):
+        return _NOT_A_REGULAR_FILE
+    return path.read_bytes()
+
+
 def _roll_back(writes: Sequence[_Write],
                replace_file: Callable[[Path, Path], None]) -> list[str]:
     """Undo completed writes newest-first. Backups survive every outcome.
 
-    Before touching a path, its current bytes (``None`` if absent) are
-    compared against ``write.written`` -- what this run itself left there.
-    A match means nothing has touched the file since, so the backup is
-    restored, or the file this run created is removed, exactly as before.
-    A mismatch -- another process edited it, recreated a path this run
-    deleted, or changed a file this run created -- leaves it exactly as it
-    is: the backup is the pre-run state, and overwriting or deleting the
-    current content would destroy an edit no backup holds. The directories
-    this run created are only reclaimed once their file was actually rolled
-    back; one left in place keeps its directory.
+    Before touching a path, its current bytes (``None`` if absent, or the
+    not-a-regular-file sentinel for a symlink or special file) are compared
+    against ``write.written`` -- what this run itself left there. A match
+    means nothing has touched the file since, so the backup is restored, or
+    the file this run created is removed, exactly as before.
+
+    Two mismatches are not a foreign edit, only this run's own write never
+    actually landing, and are treated as already undone rather than reported:
+    a deletion whose ``unlink`` never happened (it raised, or an interrupt
+    landed between recording the write and running it) leaves the file
+    holding exactly the bytes the backup does, so restoring the backup over
+    it would be a no-op; and a file this run created that is already absent
+    needs nothing restored either, only its created directories reclaimed.
+
+    Any other mismatch -- another process edited a rewritten target,
+    recreated a path this run deleted, or changed a file this run created --
+    leaves it exactly as it is: the backup is the pre-run state, and
+    overwriting or deleting the current content would destroy an edit no
+    backup holds. The directories this run created are only reclaimed once
+    their file was actually rolled back (or found already gone); one left in
+    place keeps its directory.
     """
     report: list[str] = []
     for write in reversed(writes):
         path = write.target.path
         try:
-            try:
-                current = path.read_bytes()
-            except FileNotFoundError:
-                current = None
-            if current != write.written:
-                report.append(
-                    f"{path} changed after this run wrote it; left as is -- "
-                    + (f"merge your changes from {write.backup}" if write.backup
-                       else "this run created it, and there is no backup")
-                )
+            current = _current_bytes(path)
+            if current == write.written:
+                if write.backup is None:
+                    path.unlink(missing_ok=True)
+                    report.append(f"removed {path} (this run created it)")
+                else:
+                    _replace_atomically(path, write.backup.read_bytes(),
+                                        write.original_mode, replace_file)
+                    report.append(f"restored {path} from {write.backup}")
+                _remove_created_dirs(write.created_dirs)
                 continue
-            if write.backup is None:
-                path.unlink(missing_ok=True)
-                report.append(f"removed {path} (this run created it)")
-            else:
-                _replace_atomically(path, write.backup.read_bytes(),
-                                    write.original_mode, replace_file)
-                report.append(f"restored {path} from {write.backup}")
-            _remove_created_dirs(write.created_dirs)
+            if (write.written is None and write.backup is not None
+                    and current == write.backup.read_bytes()):
+                continue  # this run's own unlink never happened; already fine
+            if write.backup is None and current is None:
+                _remove_created_dirs(write.created_dirs)
+                continue  # this run's own file is already gone; already fine
+            report.append(
+                f"{path} changed after this run wrote it; left as is -- "
+                + (f"merge your changes from {write.backup}" if write.backup
+                   else "this run created it, and there is no backup")
+            )
         except Exception as error:  # noqa: BLE001 - every outcome gets reported
             report.append(
                 f"COULD NOT recover {path}"

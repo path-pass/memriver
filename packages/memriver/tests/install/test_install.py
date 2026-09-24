@@ -1248,6 +1248,75 @@ def test_rollback_does_not_delete_a_created_file_someone_modified_afterward(
     assert "changed after this run wrote it" in result.stderr
 
 
+def test_rollback_refuses_to_touch_a_path_swapped_for_a_symlink(home, project):
+    """`_roll_back` must not follow a symlink into place of the target it is
+    about to restore: a symlink could point anywhere, and even one pointing
+    at a file with byte-identical content is a different path this run never
+    wrote to. Reading through it (or restoring/removing it) would touch or
+    hide whatever it actually resolves to -- and a FIFO in its place would
+    hang the read outright, so the check has to happen before any read, via
+    `lstat` rather than `stat`, the same way `_refuse_symlinks` does."""
+    claude_json = write(home / ".claude.json", json.dumps({"original": True}))
+    elsewhere = home / "elsewhere.json"
+    calls: list[int] = []
+
+    def replace(source, destination) -> None:
+        calls.append(len(calls) + 1)
+        if calls[-1] == 2:
+            # swaps ~/.claude.json for a symlink to a file with byte-identical
+            # content, in the window between this run's own write (call 1)
+            # and the second target's replacement, which then fails
+            elsewhere.write_bytes(claude_json.read_bytes())
+            claude_json.unlink()
+            claude_json.symlink_to(elsewhere)
+            raise OSError("injected replacement failure #2")
+        os.replace(source, destination)
+
+    result = install(["claude-code"], home=home, cwd=project, yes=True,
+                     replace=replace)
+
+    assert result.exit_code == 1
+    assert claude_json.is_symlink()
+    assert claude_json.resolve() == elsewhere.resolve()
+    assert str(claude_json) in result.stderr
+    assert "changed after this run wrote it" in result.stderr
+
+
+def test_rollback_treats_a_created_file_already_deleted_as_undone(home, project):
+    """The mirror of the modified-in-place case: once a file this run created
+    is already gone by the time rollback reaches it, the state rollback wants
+    already holds -- nothing to restore (no backup exists) and nothing to
+    remove (it is already absent) -- so this is reported as nothing, not as a
+    foreign change, and the directory this run made for it is still reclaimed
+    like any other completed rollback."""
+    claude_json = write(home / ".claude.json", json.dumps({"original": True}))
+    original_json = claude_json.read_bytes()
+    write(home / ".codex" / "config.toml", 'model = "gpt"\n')
+    settings_json = home / ".claude" / "settings.json"
+    calls: list[int] = []
+
+    def replace(source, destination) -> None:
+        calls.append(len(calls) + 1)
+        if calls[-1] == 3:
+            # ~/.claude/settings.json (call 2) was created fresh by this run,
+            # including its ~/.claude parent; this simulates another process
+            # (or a cleanup of its own) removing it before the third target
+            # (codex's config.toml) fails
+            settings_json.unlink()
+            raise OSError("injected replacement failure #3")
+        os.replace(source, destination)
+
+    result = install(["claude-code", "codex"], home=home, cwd=project, yes=True,
+                     replace=replace)
+
+    assert result.exit_code != 0
+    assert not settings_json.exists()
+    assert not settings_json.parent.exists()
+    assert claude_json.read_bytes() == original_json
+    assert str(settings_json) not in result.stderr
+    assert "changed after this run wrote it" not in result.stderr
+
+
 def test_success_reports_backup_paths_and_restore_commands_never_contents(home,
                                                                          project):
     write(home / ".claude.json", json.dumps({"apiKey": SECRET}))

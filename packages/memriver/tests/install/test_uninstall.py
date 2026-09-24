@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -1224,7 +1225,6 @@ def test_rollback_of_a_deletion_does_not_overwrite_a_file_someone_recreated(
     calls: list[int] = []
 
     def replace(source, destination) -> None:
-        import os
         calls.append(len(calls) + 1)
         if calls[-1] == 3:
             # simulates another process recreating the steering file (deleted
@@ -1241,6 +1241,38 @@ def test_rollback_of_a_deletion_does_not_overwrite_a_file_someone_recreated(
     assert steering.read_text() == "someone recreated this\n"
     assert mcp_json.read_bytes() == original_mcp
     assert "changed after this run wrote it" in result.stdout
+
+
+def test_rollback_treats_an_incomplete_deletion_as_already_undone(
+        home, project, monkeypatch):
+    """The steering file's rollback record is written *before* the `unlink`
+    that deletes it (see `_write_target`), so an `unlink` that raises (or an
+    interrupt landing between the two) leaves the file exactly as it was --
+    holding the same bytes the backup does. Comparing the current bytes only
+    against `written=None` would call that a foreign change and report it;
+    comparing against the backup's bytes first recognizes there is nothing
+    left to undo, since restoring the backup over it would be a no-op."""
+    install(["kiro"], home=home, cwd=project, yes=True)
+    mcp_json = home / ".kiro" / "settings" / "mcp.json"
+    steering = project / ".kiro" / "steering" / "memriver.md"
+    original_mcp = mcp_json.read_bytes()
+    original_steering = steering.read_bytes()
+    real_unlink = Path.unlink
+
+    def failing_unlink(self, *args, **kwargs):
+        if self == steering:
+            raise OSError("injected unlink failure")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", failing_unlink)
+
+    result = uninstall(["kiro"], home=home, cwd=project, yes=True)
+
+    assert result.exit_code != 0
+    assert steering.read_bytes() == original_steering
+    assert mcp_json.read_bytes() == original_mcp
+    assert f"{steering} changed after this run wrote it" not in result.stdout
+    assert "restored" in result.stdout  # mcp.json still gets rolled back
 
 
 def test_an_interrupt_the_instant_the_steering_file_is_unlinked_still_rolls_back(
