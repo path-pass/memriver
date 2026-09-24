@@ -50,6 +50,13 @@ def _build_parser() -> argparse.ArgumentParser:
                        project_dir_help="directory where project discovery starts "
                                         "(the bound directories decide the project; "
                                         "default: the current working directory)")
+    # claude-code/codex route every call through the calling session's
+    # registration; cursor/kiro/absent answer for --project-dir. An unknown
+    # value is a usage error, never a silent switch between the two modes.
+    serve.add_argument("--harness", choices=["claude-code", "codex", "cursor", "kiro"],
+                       default=None,
+                       help="the harness this server is registered with (default: none; "
+                            "the project is decided by --project-dir)")
     serve.set_defaults(handler=_serve)
 
     hook = commands.add_parser("hook", help="run a harness hook over stdin/stdout")
@@ -238,7 +245,7 @@ def _serve(args: argparse.Namespace) -> int:
         # failing on -- but as a readable message, not a bare traceback
         raise SystemExit(f"memriver: invalid MEMRIVER_* environment setting\n{err}")
     build_server(root=settings.root, project_dir=args.project_dir,
-                 settings=settings).run()  # stdio
+                 settings=settings, harness=args.harness).run()  # stdio
     return 0
 
 

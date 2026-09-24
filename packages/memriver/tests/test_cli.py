@@ -594,3 +594,38 @@ def test_install_with_an_unreadable_store_stops_before_touching_any_harness(
     assert result.exit_code == 1 and ran == []
     assert result.stderr == ("memriver install: the memory store could not be read; "
                              "run memriver doctor\n")
+
+
+@pytest.mark.parametrize(("argv", "harness"), [
+    (["serve"], None),
+    (["--root", "ROOT"], None),
+    *((["serve", "--harness", name], name) for name in ("claude-code", "codex", "cursor",
+                                                        "kiro")),
+])
+def test_serve_harness_names_the_registration(argv, harness, monkeypatch):
+    assert capture_dispatch(argv, monkeypatch).harness == harness
+
+
+def test_serve_with_an_unknown_harness_is_a_usage_error(capsys):
+    with pytest.raises(SystemExit) as exited:
+        cli.main(["serve", "--harness", "bogus"])
+    assert exited.value.code == 2
+    assert "invalid choice" in capsys.readouterr().err
+
+
+def test_serve_hands_its_harness_to_the_server(tmp_path, monkeypatch):
+    from memriver import server
+
+    built: list[dict] = []
+
+    class Stub:
+        def run(self) -> None:
+            pass
+
+    def build(**kwargs):
+        built.append(kwargs)
+        return Stub()
+
+    monkeypatch.setattr(server, "build_server", build)
+    assert cli.main(["serve", "--root", str(tmp_path), "--harness", "codex"]) == 0
+    assert built[0]["harness"] == "codex"

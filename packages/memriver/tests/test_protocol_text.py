@@ -17,6 +17,7 @@ from memriver.protocol_text import (
     PENDING_TARGET_NONE,
     PENDING_TARGET_PROJECT,
     PROTOCOL_BLOCK,
+    SESSION_INSTRUCTIONS,
     SESSION_START_PREFIX,
     STOP_NUDGE,
     UNTRUSTED_DATA_NOTICE,
@@ -50,6 +51,18 @@ def test_instructions_and_protocol_block_carry_the_project_scoped_write_rules():
 def test_mcp_server_instructions_are_the_same_object(tmp_path):
     mcp = build_server(root=tmp_path / "root", project_dir=tmp_path)
     assert mcp.instructions == INSTRUCTIONS
+
+
+def test_session_instructions_are_the_spec_copy():
+    assert SESSION_INSTRUCTIONS == (
+        "In this harness memriver fixes the session's project when the session starts. "
+        "If memriver says this session is awaiting confirmation, ask the user whether to "
+        "register it to the named project, and call session_confirm only after they agree. "
+        "session_confirm is the only registration you may perform; never run memriver "
+        "project init/adopt yourself. session_search finds the session that worked on "
+        "something and returns resume commands; whether to run them is the user's decision."
+    )
+    assert "session_confirm" not in INSTRUCTIONS
 
 
 def test_stop_nudge_is_the_spec_copy():

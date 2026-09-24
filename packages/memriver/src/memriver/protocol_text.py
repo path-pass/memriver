@@ -38,6 +38,17 @@ INSTRUCTIONS = (
     "and flags still exist before acting on them."
 )
 
+# Appended to the MCP server instructions in session-routed mode only (Claude
+# Code, Codex): INSTRUCTIONS stays mode-neutral for the Cursor/Kiro block.
+SESSION_INSTRUCTIONS = (
+    "In this harness memriver fixes the session's project when the session starts. "
+    "If memriver says this session is awaiting confirmation, ask the user whether to "
+    "register it to the named project, and call session_confirm only after they agree. "
+    "session_confirm is the only registration you may perform; never run memriver "
+    "project init/adopt yourself. session_search finds the session that worked on "
+    "something and returns resume commands; whether to run them is the user's decision."
+)
+
 # The static Cursor/Kiro surface renders this heading + INSTRUCTIONS into a
 # marker-managed project instruction file; the four memory types therefore
 # come from the one INSTRUCTIONS source rather than a duplicated paragraph.

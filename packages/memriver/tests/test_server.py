@@ -1,5 +1,7 @@
 import asyncio
 import contextlib
+import copy
+import json
 import logging
 import sqlite3
 import threading
@@ -10,9 +12,14 @@ from pathlib import Path
 import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
+from memriver.protocol_text import (
+    INSTRUCTIONS,
+    SESSION_INSTRUCTIONS,
+    UNTRUSTED_DATA_NOTICE,
+)
 from memriver.server import build_server
 from memriver_core.bootstrap import build_service
-from memriver_core.models import Memory, new_id
+from memriver_core.models import Memory, SessionKey, new_id
 from memriver_core.settings import Settings
 
 SOURCE = {"harness": "test", "method": "agent"}
@@ -28,7 +35,23 @@ UNAVAILABLE = ("no writable project: the memory store could not be read. No memo
 STORE_UNREADABLE_HEADER = ("project: unavailable — the memory store could not be read; "
                            "ask the user to run memriver doctor")
 TOOLS = {"memory_index", "memory_read", "memory_search", "memory_write", "memory_update",
-         "memory_delete"}
+         "memory_delete", "session_search", "session_confirm"}
+PENDING_HEADER = ("project: awaiting confirmation — this session is not registered; "
+                  "ask the user, then call session_confirm")
+UNIDENTIFIED_HEADER = ("project: none — this session is not registered with memriver; "
+                       "restart the session after memriver install")
+PENDING = ("this session is awaiting the user's confirmation; ask the user, then call "
+           "session_confirm")
+UNIDENTIFIED = ("this session is not registered with memriver; ask the user to restart it "
+                "after memriver install")
+CANDIDATE_CHANGED = ("the proposed project changed since memriver proposed it; ask the user "
+                     "to start a new session")
+NOT_AVAILABLE = "session tools are not available for this harness registration"
+
+# the `_meta` of real Codex tool calls: a root thread, a sub-agent it spawned,
+# the root resumed, and a fork of it
+CODEX_META = json.loads((Path(__file__).parent / "fixtures" / "codex_mcp_meta.json").read_text())
+CODEX_ID = CODEX_META["root"]["x-codex-turn-metadata"]["session_id"]
 
 
 def _service(store: Path):
@@ -86,6 +109,12 @@ def world(tmp_path):
             "other": other_id}
 
 
+@pytest.fixture(autouse=True)
+def no_claude_code_session(monkeypatch):
+    """A test run inside Claude Code inherits its session id."""
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+
+
 @pytest.fixture
 def server(world):
     return build_server(root=world["store"], project_dir=world["dir"])
@@ -96,15 +125,15 @@ def _global_memory(world, body="uv manages python", description=""):
                                             source=SOURCE, description=description))
 
 
-async def _call(server, tool, **arguments):
+async def _call(server, tool, *, meta=None, **arguments):
     async with Client(server) as c:
-        return (await c.call_tool(tool, arguments)).data
+        return (await c.call_tool(tool, arguments, meta=meta)).data
 
 
-async def _error(server, tool, **arguments) -> str:
+async def _error(server, tool, *, meta=None, **arguments) -> str:
     """Call `tool`, assert it fails as an MCP tool error, and return its message."""
     async with Client(server) as c:
-        result = await c.call_tool(tool, arguments, raise_on_error=False)
+        result = await c.call_tool(tool, arguments, raise_on_error=False, meta=meta)
     assert result.is_error is True
     assert len(result.content) == 1
     return result.content[0].text
@@ -135,14 +164,14 @@ async def test_failures_are_mcp_tool_errors_successes_are_not(server, world):
                                 "created", "updated", "description", "body", "version"}
 
 
-async def test_the_tool_list_is_the_six_tools_and_no_dream(server):
+async def test_the_tool_list_is_the_eight_tools_and_no_dream(server):
     async with Client(server) as c:
         assert {t.name for t in await c.list_tools()} == TOOLS
 
 
 async def test_write_then_read_returns_the_eleven_agent_fields(server, world):
     written = await _call(server, "memory_write", content="本项目用 uv", type="project",
-                          harness="claude-code", description="包管理", sync=False)
+                          description="包管理", sync=False)
     assert set(written) == {"id", "project_id"} and written["project_id"] == world["project"]
     read = await _call(server, "memory_read", memory_id=written["id"])
     assert set(read) == {"id", "project_id", "type", "source", "trust", "sync", "created",
@@ -150,7 +179,7 @@ async def test_write_then_read_returns_the_eleven_agent_fields(server, world):
     assert "deleted_at" not in read
     assert (read["body"], read["description"], read["sync"], read["trust"]) == \
         ("本项目用 uv", "包管理", False, "agent")
-    assert read["source"] == {"harness": "claude-code", "method": "agent"}
+    assert read["source"] == {"harness": "unknown", "method": "agent"}
 
 
 async def test_index_shows_the_header_then_project_then_global_entries(server, world):
@@ -283,8 +312,6 @@ async def test_an_unknown_schema_still_starts_the_server_and_writes_nothing(worl
 @pytest.mark.parametrize(("arguments", "fragment"), [
     ({"content": "token ghp_" + "a" * 36, "type": "user"}, "secret"),
     ({"content": "   ", "type": "user"}, "empty"),
-    ({"content": "fine", "type": "user", "harness": "ghp_" + "a" * 36}, "secret"),
-    ({"content": "fine", "type": "user", "harness": "has space"}, "invalid harness"),
     ({"content": "fine", "type": "user", "description": "ghp_" + "a" * 36}, "secret"),
 ])
 async def test_write_rejections_never_echo_the_value(server, arguments, fragment):
@@ -606,3 +633,279 @@ async def test_an_unexpected_failure_logs_at_error_and_memriver_still_warns(
     assert len(memriver_records) == 1
     assert memriver_records[0].levelno == logging.WARNING
     assert "memory_read failed: StorageFailure" in memriver_records[0].message
+
+
+# --- session-routed mode (spec §7.1) and directory mode (§7.2) ---------------
+
+
+def _codex_meta(session_id, base="root"):
+    meta = copy.deepcopy(CODEX_META[base])
+    meta["x-codex-turn-metadata"]["session_id"] = session_id
+    return meta
+
+
+def _start(world, key, directory, source="startup"):
+    """Start a session the way the SessionStart hook does, through the service."""
+    return _service(world["store"]).start_session(key, source=source,
+                                                  entry_dir=str(directory),
+                                                  transcript_path=None)
+
+
+def _registered_header(world, directory) -> str:
+    return _service(world["store"]).open_project_context(str(directory)).header
+
+
+def _as_session(harness, session_id, monkeypatch):
+    """The per-call routing input: `meta=` for Codex, the env var for Claude Code."""
+    if harness == "codex":
+        return _codex_meta(session_id)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", session_id)
+    return None
+
+
+@pytest.mark.parametrize("harness", ["codex", "claude-code"])
+async def test_a_session_answers_for_its_project_wherever_the_server_starts(
+        world, monkeypatch, harness):
+    """Spec acceptance 1: a session registered at A, a server started in B."""
+    session_id = CODEX_ID if harness == "codex" else "claude-session-1"
+    _start(world, SessionKey(harness, session_id), world["dir"])
+    meta = _as_session(harness, session_id, monkeypatch)
+    first = build_server(root=world["store"], project_dir=world["dir"].parent / "other",
+                         harness=harness)
+    index = await _call(first, "memory_index", meta=meta)
+    assert index.splitlines()[0] == _registered_header(world, world["dir"])
+    written = await _call(first, "memory_write", meta=meta, content="fact", type="project")
+    assert written["project_id"] == world["project"]
+    read = await _call(first, "memory_read", meta=meta, memory_id=written["id"])
+    assert read["source"] == {"harness": harness, "method": "agent"}
+    # a new server process for the same session answers the same
+    second = build_server(root=world["store"], project_dir=world["dir"].parent / "other",
+                          harness=harness)
+    assert await _call(second, "memory_index", meta=meta) == \
+        await _call(first, "memory_index", meta=meta)
+    assert (await _call(second, "memory_read", meta=meta,
+                        memory_id=written["id"]))["body"] == "fact"
+
+
+async def test_codex_root_sub_agent_and_resume_route_to_one_row_and_a_fork_is_its_own(world):
+    _start(world, SessionKey("codex", CODEX_ID), world["dir"])
+    server = build_server(root=world["store"], project_dir=world["dir"], harness="codex")
+    header = _registered_header(world, world["dir"])
+    for name in ("root", "sub_agent", "resume"):
+        index = await _call(server, "memory_index", meta=CODEX_META[name])
+        assert index.splitlines()[0] == header, name
+    # the fork is a new session memriver has not seen: never the directory's project
+    fork = await _call(server, "memory_index", meta=CODEX_META["fork"])
+    assert fork.splitlines()[0] == UNIDENTIFIED_HEADER
+
+
+def _nested_as_json_string():
+    meta = copy.deepcopy(CODEX_META["root"])
+    meta["x-codex-turn-metadata"] = json.dumps(meta["x-codex-turn-metadata"])
+    return meta
+
+
+def _without_nested():
+    meta = copy.deepcopy(CODEX_META["root"])
+    del meta["x-codex-turn-metadata"]
+    return meta
+
+
+@pytest.mark.parametrize("meta", [
+    None,
+    _nested_as_json_string(),
+    _without_nested(),
+    _codex_meta("has space"),
+    _codex_meta(CODEX_ID + chr(0x202E)),
+    _codex_meta(""),
+    _codex_meta(12345),
+], ids=["no-meta", "json-string", "no-nested", "space", "bidi", "empty", "not-a-string"])
+async def test_a_codex_call_without_a_valid_session_id_is_unidentified(world, meta):
+    # registered in the very directory the server starts in: never a fallback
+    _start(world, SessionKey("codex", CODEX_ID), world["dir"])
+    server = build_server(root=world["store"], project_dir=world["dir"], harness="codex")
+    assert (await _call(server, "memory_index", meta=meta)).splitlines()[0] == \
+        UNIDENTIFIED_HEADER
+    before = _snapshot(world["store"])
+    assert await _error(server, "memory_write", meta=meta, content="x", type="user") == \
+        UNIDENTIFIED
+    assert await _error(server, "session_confirm", meta=meta) == UNIDENTIFIED
+    assert await _call(server, "session_search", meta=meta) == []
+    assert _snapshot(world["store"]) == before
+
+
+async def test_claude_code_reads_its_session_id_per_call(world, monkeypatch):
+    _start(world, SessionKey("claude-code", "s-demo"), world["dir"])
+    server = build_server(root=world["store"], project_dir=world["dir"], harness="claude-code")
+    assert (await _call(server, "memory_index")).splitlines()[0] == UNIDENTIFIED_HEADER
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "s-demo")
+    assert (await _call(server, "memory_index")).splitlines()[0] == \
+        _registered_header(world, world["dir"])
+
+
+async def test_a_pending_session_reads_global_only_until_the_user_confirms(world):
+    candidate = _plant(world["store"], Memory.new(body="candidate fact", type="project",
+                                                  project_id=world["project"], source=SOURCE))
+    shared = _global_memory(world, body="global fact")
+    # a resumed session memriver never saw waits for the user
+    assert _start(world, SessionKey("codex", CODEX_ID), world["dir"], source="resume").state \
+        == "pending"
+    server = build_server(root=world["store"], project_dir=world["dir"], harness="codex")
+    meta = CODEX_META["root"]
+    index = await _call(server, "memory_index", meta=meta)
+    assert index.splitlines()[0] == PENDING_HEADER
+    assert candidate.id not in index and shared.id in index
+    assert await _error(server, "memory_read", meta=meta, memory_id=candidate.id) == \
+        f"no such entry: {candidate.id}"
+    assert [h["id"] for h in await _call(server, "memory_search", meta=meta,
+                                         query="fact")] == [shared.id]
+    before = _snapshot(world["store"])
+    assert await _error(server, "memory_write", meta=meta, content="x", type="user") == PENDING
+    assert await _error(server, "memory_update", meta=meta, memory_id=candidate.id,
+                        expected_version=1, content="x") == PENDING
+    assert await _error(server, "memory_delete", meta=meta, memory_id=candidate.id,
+                        expected_version=1) == PENDING
+    assert await _call(server, "session_search", meta=meta) == []
+    assert _snapshot(world["store"]) == before
+
+    confirmed = await _call(server, "session_confirm", meta=meta)
+    assert confirmed == {"header": _registered_header(world, world["dir"])}
+    assert (await _call(server, "memory_read", meta=meta,
+                        memory_id=candidate.id))["body"] == "candidate fact"
+    written = await _call(server, "memory_write", meta=meta, content="now", type="project")
+    assert written["project_id"] == world["project"]
+    # confirming again is a no-op
+    assert await _call(server, "session_confirm", meta=meta) == confirmed
+
+
+async def test_a_changed_candidate_is_refused_and_the_row_stays_pending(world):
+    _start(world, SessionKey("codex", CODEX_ID), world["dir"], source="resume")
+    _sql(world["store"], "UPDATE projects SET root = ? WHERE id = ?",
+         str(world["dir"].parent / "moved"), world["project"])
+    server = build_server(root=world["store"], project_dir=world["dir"], harness="codex")
+    meta = CODEX_META["root"]
+    assert await _error(server, "session_confirm", meta=meta) == CANDIDATE_CHANGED
+    assert (await _call(server, "memory_index", meta=meta)).splitlines()[0] == PENDING_HEADER
+
+
+@pytest.mark.parametrize("harness", [None, "cursor", "kiro"])
+async def test_directory_mode_answers_for_its_start_directory(world, monkeypatch, harness):
+    # a session registered elsewhere cannot steer a directory-mode server
+    _start(world, SessionKey("claude-code", "elsewhere"), world["dir"].parent / "other")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "elsewhere")
+    server = build_server(root=world["store"], project_dir=world["dir"], harness=harness)
+    async with Client(server) as c:
+        assert c.initialize_result.instructions == INSTRUCTIONS
+    index = await _call(server, "memory_index", meta=_codex_meta("elsewhere"))
+    assert index.splitlines()[0] == _registered_header(world, world["dir"])
+    written = await _call(server, "memory_write", content="fact", type="project")
+    assert written["project_id"] == world["project"]
+    read = await _call(server, "memory_read", memory_id=written["id"])
+    assert read["source"] == {"harness": harness or "unknown", "method": "agent"}
+    assert await _error(server, "session_search") == NOT_AVAILABLE
+    assert await _error(server, "session_confirm") == NOT_AVAILABLE
+
+
+@pytest.mark.parametrize("harness", ["codex", "claude-code"])
+async def test_session_mode_appends_the_session_instructions(world, harness):
+    server = build_server(root=world["store"], project_dir=world["dir"], harness=harness)
+    async with Client(server) as c:
+        assert c.initialize_result.instructions == INSTRUCTIONS + "\n\n" + SESSION_INSTRUCTIONS
+
+
+async def test_concurrent_calls_each_answer_for_their_own_session(world):
+    _start(world, SessionKey("codex", "session-demo"), world["dir"])
+    _start(world, SessionKey("codex", "session-other"), world["dir"].parent / "other")
+    server = build_server(root=world["store"], project_dir=world["dir"], harness="codex")
+    expected = {"session-demo": _registered_header(world, world["dir"]),
+                "session-other": _registered_header(world, world["dir"].parent / "other")}
+    order = ["session-demo", "session-other"] * 8
+    async with Client(server) as c:
+        results = await asyncio.gather(*(
+            c.call_tool("memory_index", {}, meta=_codex_meta(session_id))
+            for session_id in order))
+    assert [r.data.splitlines()[0] for r in results] == [expected[s] for s in order]
+
+
+def _observe(world, key, directory, prompt):
+    _service(world["store"]).observe_prompt(key, prompt=prompt, entry_dir=str(directory),
+                                            transcript_path=None)
+
+
+async def test_session_search_is_limited_to_the_callers_project(world):
+    other = world["dir"].parent / "other"
+    me = SessionKey("codex", CODEX_ID)
+    sibling = SessionKey("claude-code", "it's-$HOME")
+    _start(world, me, world["dir"])
+    _observe(world, me, world["dir"], "first: fix the login bug")
+    _start(world, sibling, world["dir"])
+    _observe(world, sibling, world["dir"], "tidy the login page")
+    _observe(world, sibling, world["dir"], "token ghp_" + "a" * 36)
+    _start(world, SessionKey("codex", "session-other"), other)
+    _observe(world, SessionKey("codex", "session-other"), other, "login elsewhere")
+    _start(world, SessionKey("codex", "session-pending"), world["dir"], source="resume")
+    server = build_server(root=world["store"], project_dir=other, harness="codex")
+    meta = CODEX_META["root"]
+
+    found = await _call(server, "session_search", meta=meta)
+    assert {(s["harness"], s["session_id"]) for s in found} == \
+        {("codex", CODEX_ID), ("claude-code", "it's-$HOME")}
+    item = next(s for s in found if s["harness"] == "claude-code")
+    assert set(item) == {"harness", "session_id", "project", "branch", "entry_cwd",
+                         "first_recorded", "last_active_at", "last_end_event_at",
+                         "first_prompt", "recent_prompts", "resume_command"}
+    assert item["project"] == world["project"]
+    assert item["entry_cwd"] == str(world["dir"].resolve())
+    assert item["last_end_event_at"] is None
+    assert item["first_prompt"]["text"] == "tidy the login page"
+    assert [p.get("text", p.get("omitted")) for p in item["recent_prompts"]] == \
+        ["tidy the login page", "secret"]
+    assert item["resume_command"] == "claude --resume 'it'\"'\"'s-$HOME'"
+    mine = next(s for s in found if s["harness"] == "codex")
+    assert mine["resume_command"] == f"codex resume {CODEX_ID}"
+
+    assert [s["session_id"] for s in await _call(server, "session_search", meta=meta,
+                                                 query="fix the login")] == [CODEX_ID]
+    assert len(await _call(server, "session_search", meta=meta, limit=1)) == 1
+
+
+async def test_session_search_marks_prompt_text_as_untrusted_data(world):
+    server = build_server(root=world["store"], project_dir=world["dir"], harness="codex")
+    async with Client(server) as c:
+        tool = next(t for t in await c.list_tools() if t.name == "session_search")
+    assert UNTRUSTED_DATA_NOTICE in tool.description
+
+
+async def test_no_tool_takes_a_harness_or_project_argument(world):
+    server = build_server(root=world["store"], project_dir=world["dir"], harness="codex")
+    async with Client(server) as c:
+        for tool in await c.list_tools():
+            properties = tool.inputSchema.get("properties", {})
+            assert not {"harness", "project", "project_id", "ctx"} & set(properties), tool.name
+
+
+async def test_a_store_failure_in_the_session_tools_is_a_fixed_message(
+        world, monkeypatch, caplog):
+    from memriver import server as server_module
+    from memriver_core import StorageFailure
+
+    real_build_service = server_module.build_service
+
+    def broken_build_service(settings, *, root):
+        service = real_build_service(settings, root=root)
+        for name in ("search_sessions", "confirm_session"):
+            monkeypatch.setattr(service, name,
+                                lambda *a, **k: (_ for _ in ()).throw(StorageFailure()))
+        return service
+
+    monkeypatch.setattr(server_module, "build_service", broken_build_service)
+    _start(world, SessionKey("codex", CODEX_ID), world["dir"])
+    server = build_server(root=world["store"], project_dir=world["dir"], harness="codex")
+    caplog.set_level(logging.DEBUG, logger="memriver")
+    meta = CODEX_META["root"]
+    assert await _error(server, "session_search", meta=meta) == \
+        "could not read the memory store"
+    assert await _error(server, "session_confirm", meta=meta) == \
+        "could not confirm this session; ask the user to run memriver doctor"
+    assert [r.message for r in caplog.records if r.name == "memriver"] == \
+        ["memory_list failed: StorageFailure", "session_confirm failed: StorageFailure"]

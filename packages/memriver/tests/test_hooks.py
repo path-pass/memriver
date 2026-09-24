@@ -1081,9 +1081,11 @@ def test_a_failing_store_never_fails_the_harness(event, tmp_path, monkeypatch, r
 # --- hook and server -----------------------------------------------------
 
 
-def test_hook_and_server_can_still_name_different_projects(tmp_path):
-    """Known limitation (not fixed): the server resolves its own start directory
-    once, whatever project the session was registered to."""
+def test_hook_and_server_cannot_name_different_projects(tmp_path, monkeypatch):
+    """Spec acceptance 1: the session's row decides, not where either process starts.
+
+    Registered at A by its SessionStart hook; a resume hook with cwd B and a
+    server started in B both still name A, and so does a second server."""
     import asyncio
 
     from fastmcp import Client
@@ -1094,17 +1096,28 @@ def test_hook_and_server_can_still_name_different_projects(tmp_path):
     b.mkdir()
     store = tmp_path / "mem"
     a_id, _ = _bind_new(store, a, "a"), _bind_new(store, b, "b")
-    server = build_server(root=store, project_dir=a)
+    a_header = _registered_header(store, a)
+    session_start("claude-code", {"cwd": str(a)}, root=store)
+    resumed = session_start("claude-code", {"cwd": str(b), "source": "resume"}, root=store)
+    assert _line_after_begin(additional_context(resumed)) == a_header
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", SESSION_ID)
 
-    async def probe():
+    async def probe(server, memory_id=None):
         async with Client(server) as c:
             idx = (await c.call_tool("memory_index", {})).data
-            written = (await c.call_tool("memory_write", {"content": "fact", "type": "project"})).data
-        return idx, written
+            if memory_id is None:
+                memory_id = (await c.call_tool("memory_write",
+                                               {"content": "fact", "type": "project"})).data["id"]
+            read = (await c.call_tool("memory_read", {"memory_id": memory_id})).data
+        return idx, read
 
-    idx, written = asyncio.run(probe())
-    assert idx.startswith(f"project: a [{a_id}]")
-    assert written["project_id"] == a_id
+    idx, read = asyncio.run(probe(build_server(root=store, project_dir=b,
+                                               harness="claude-code")))
+    assert idx.splitlines()[0] == a_header
+    assert read["project_id"] == a_id
+    again, reread = asyncio.run(probe(build_server(root=store, project_dir=b,
+                                                   harness="claude-code"), read["id"]))
+    assert again.splitlines()[0] == a_header and reread == read
 
 
 def test_hook_and_memory_index_render_the_same_project_identically(tmp_path):
