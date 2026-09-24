@@ -74,8 +74,11 @@ class ProjectStore(Protocol):
       a single invalid memory row is skipped. `query=None` lists everything,
       `query=""` matches nothing, any other query is a case-insensitive
       substring of description or body. Newest `updated` first, then id.
-    - `resolve(start, ignoring=None)`: which project `start` belongs to;
-      `ignoring=(project_id, root)` previews the answer without that binding.
+    - `resolve(start, ignoring=None, logical=None)`: which project `start`
+      belongs to; `ignoring=(project_id, root)` previews the answer without
+      that binding; `logical` walks that path's ancestors instead of
+      `start`'s (a linked worktree mapped onto its main tree), `start` still
+      having to be a real directory.
     - `plan_root` / `bind` / `plan_unbind` / `unbind`: the directory rules of
       the spec, every refusal a `BindingRefused(reason, project_id)`. A
       confirmed plan pins its store: a store that no longer canonicalizes to
@@ -89,8 +92,8 @@ class ProjectStore(Protocol):
     def ensure_global(self) -> str: ...
     def search(self, project_id: str, read_write_set: ReadWriteSet | None, *,
                query: str | None, limit: int | None) -> list[Memory]: ...
-    def resolve(self, start: str, *,
-                ignoring: tuple[str, str] | None = None) -> Resolution: ...
+    def resolve(self, start: str, *, ignoring: tuple[str, str] | None = None,
+                logical: str | None = None) -> Resolution: ...
     def plan_root(self, directory: str, project_id: str | None) -> RootPlan: ...
     def bind(self, project_id: str, plan: RootPlan) -> None: ...
     def plan_unbind(self, project_id: str, root: str,

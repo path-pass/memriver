@@ -189,3 +189,42 @@ def test_start_that_is_a_file_missing_or_unaddressable_is_degraded(tmp_path):
     for start in (f, tmp_path / "does-not-exist", Path("/SENTINEL\x00cwd")):
         match = nearest_bound(str(start), [])
         assert match == Match("degraded", diagnostic="working directory could not be resolved")
+
+
+def test_logical_walk_matches_an_ancestor_of_a_path_that_does_not_exist(tmp_path):
+    base = tmp_path.resolve()
+    main, worktree = base / "main", base / "wt"
+    main.mkdir()
+    worktree.mkdir()
+    logical = str(main / "newdir")
+    assert nearest_bound(str(worktree), [(A, str(main))], logical=logical) == Match("registered", A)
+    assert nearest_bound(str(worktree), [(A, str(main))]) == Match("none")
+
+
+def test_logical_walk_picks_the_nearest_bound_ancestor(tmp_path):
+    base = tmp_path.resolve()
+    main, worktree = base / "main", base / "wt"
+    (main / "sub").mkdir(parents=True)
+    worktree.mkdir()
+    bound = [(A, str(main)), (B, str(main / "sub"))]
+    assert nearest_bound(str(worktree), bound, logical=str(main / "sub" / "x")).project_id == B
+
+
+def test_logical_walk_degrades_on_an_uncheckable_alias_never_falls_through(tmp_path, monkeypatch):
+    base = tmp_path.resolve()
+    main, worktree = base / "main", base / "wt"
+    (main / "sub").mkdir(parents=True)
+    worktree.mkdir()
+    alias = str(main / "SUB")
+    real = directories.same_directory
+    monkeypatch.setattr(directories, "same_directory",
+                        lambda a, b: None if b == alias else real(a, b))
+    bound = [(A, str(main)), (B, str(main / "sub"))]
+    match = nearest_bound(str(worktree), bound, logical=str(main / "SUB" / "x"))
+    assert match.state == "degraded"
+
+
+def test_logical_walk_still_needs_a_real_start(tmp_path):
+    base = tmp_path.resolve()
+    match = nearest_bound(str(base / "gone"), [(A, str(base))], logical=str(base / "x"))
+    assert match == Match("degraded", diagnostic="working directory could not be resolved")

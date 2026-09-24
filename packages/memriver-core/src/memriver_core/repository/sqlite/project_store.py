@@ -189,12 +189,14 @@ class SqliteProjectStore:
 
     # --- directories ---
 
-    def resolve(self, start: str, *, ignoring: tuple[str, str] | None = None) -> Resolution:
+    def resolve(self, start: str, *, ignoring: tuple[str, str] | None = None,
+                logical: str | None = None) -> Resolution:
         with self._database.read() as conn:
             bound = _bound(conn)
         if ignoring is not None:
             bound = [p for p in bound if (p.id, p.root) != ignoring]
-        match = directories.nearest_bound(start, [(p.id, p.root) for p in bound])
+        match = directories.nearest_bound(start, [(p.id, p.root) for p in bound],
+                                          logical=logical)
         if match.state != "registered":
             return Resolution(match.state, diagnostic=match.diagnostic)
         return Resolution("registered", project=next(p for p in bound if p.id == match.project_id))
