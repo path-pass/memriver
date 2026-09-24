@@ -13,6 +13,15 @@ from .project import Project, RootPlan, UnbindPlan, project_name
 from .project_context import ProjectContext, ProjectContextState
 from .read_write_set import ReadWriteSet
 from .resolution import Resolution, ResolutionState
+from .session import (
+    Harness,
+    PromptEntry,
+    PromptOmission,
+    Session,
+    SessionKey,
+    SessionOrigin,
+    SessionStatus,
+)
 from .store_diagnostics import (
     DiagnosticFinding,
     DiagnosticsReport,
@@ -31,6 +40,7 @@ __all__ = [
     "DiagnosticFinding",
     "DiagnosticsReport",
     "DiagnosticsState",
+    "Harness",
     "InspectedMemory",
     "InspectedProject",
     "Memory",
@@ -38,11 +48,17 @@ __all__ = [
     "Project",
     "ProjectContext",
     "ProjectContextState",
+    "PromptEntry",
+    "PromptOmission",
     "ReadWriteSet",
     "Resolution",
     "ResolutionState",
     "RootPlan",
     "RootState",
+    "Session",
+    "SessionKey",
+    "SessionOrigin",
+    "SessionStatus",
     "StoreFinding",
     "StoreReport",
     "Trust",

@@ -5,9 +5,12 @@ from typing import Protocol
 from memriver_core.models import (
     Memory,
     Project,
+    PromptEntry,
     ReadWriteSet,
     Resolution,
     RootPlan,
+    Session,
+    SessionKey,
     UnbindPlan,
 )
 
@@ -93,3 +96,53 @@ class ProjectStore(Protocol):
     def plan_unbind(self, project_id: str, root: str,
                     cwd: str) -> tuple[UnbindPlan, Resolution]: ...
     def unbind(self, plan: UnbindPlan) -> None: ...
+
+
+class SessionStore(Protocol):
+    """One row per harness session (spec §3.1, §3.3); the stored row is the answer.
+
+    - Every method is one short transaction. Nothing here creates a store:
+      every write opens without creating, and a store that is absent -- or
+      removed between the check and the connect -- makes it a no-op that
+      returns None (False for `nudge_if_due`).
+    - A row the adapter returns is validated like a memory row: a bad row is
+      `StorageFailure` on a direct lookup and skipped by `search`. A row a
+      write would leave behind that would not read back is a `ValueError`,
+      and nothing is written. Other store trouble is `StorageFailure`.
+    - `register`: insert if absent, never overwrite; returns the stored row,
+      which may be a concurrent peer's.
+    - `touch`: `last_active_at = max(stored, at)`; a non-None
+      `transcript_path` replaces the stored one. None for an unknown key.
+    - `add_prompt`: inserts `seed` when no row exists (the bool: this call
+      inserted it), then counts the prompt, sets `first_prompt` once, keeps
+      the last `keep_recent` entries of `recent_prompts` (newest last) and
+      moves `last_active_at` forward.
+    - `end`: `ended_at = at`, touching `last_active_at`.
+    - `nudge_if_due`: registered rows only (anything else: False, nothing
+      written). Touches the row; True, recording the nudge, iff it has a
+      project, at least `min_prompts` prompts since the last save, and either
+      no nudge yet or at least `interval` prompts since the last one.
+    - `mark_saved`: the save watermark moves to the prompt count.
+    - `confirm`: a pending row becomes registered -- with no project when it
+      has no candidate, else with its candidate, provided that project still
+      exists, is not global and has the root the candidate was computed
+      from; otherwise `ProjectUnavailable(reason="candidate-changed")` and
+      the row is unchanged. A registered row is returned unchanged; None for
+      an unknown key.
+    - `search`: `project_id=None` is every row (the human CLI); otherwise
+      that project's registered rows. A case-insensitive substring of a
+      prompt text, `entry_cwd` or `branch`; newest `last_active_at` first.
+    """
+
+    def get(self, key: SessionKey) -> Session | None: ...
+    def register(self, session: Session) -> Session | None: ...
+    def touch(self, key: SessionKey, at: str, *,
+              transcript_path: str | None = None) -> Session | None: ...
+    def add_prompt(self, key: SessionKey, entry: PromptEntry, *, seed: Session,
+                   keep_recent: int) -> tuple[Session, bool] | None: ...
+    def end(self, key: SessionKey, at: str) -> None: ...
+    def nudge_if_due(self, key: SessionKey, at: str, *, min_prompts: int,
+                     interval: int) -> bool: ...
+    def mark_saved(self, key: SessionKey) -> None: ...
+    def confirm(self, key: SessionKey) -> Session | None: ...
+    def search(self, project_id: str | None, query: str, limit: int) -> list[Session]: ...

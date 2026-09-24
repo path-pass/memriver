@@ -24,8 +24,6 @@ from memriver_core.models.errors import (
 
 from .database import MEMORY_COLUMNS, Database, memory_from_row, memory_to_row
 
-_NO_WRITABLE_PROJECT = "no writable project in this session"
-
 # joined to its project, so an orphan (a writer ignored foreign keys) answers
 # like any other hidden id
 _SELECT_JOINED = (
@@ -75,17 +73,17 @@ class SqliteMemoryStore:
         if memory.project_id == read_write_set.global_project_id:
             raise GlobalReadOnly()
         if memory.project_id not in read_write_set.writable():
-            raise ProjectUnavailable(_NO_WRITABLE_PROJECT)
+            raise ProjectUnavailable()
         if not _addressable(memory.id):
             raise ValueError("invalid memory id")
         # like update/delete: a removed store is never recreated by a write
         if not self._database.exists():
-            raise ProjectUnavailable(_NO_WRITABLE_PROJECT)
+            raise ProjectUnavailable()
         with self._database.write() as conn:
             row = conn.execute("SELECT is_global FROM projects WHERE id = ?",
                                (memory.project_id,)).fetchone()
             if row is None:
-                raise ProjectUnavailable(_NO_WRITABLE_PROJECT)
+                raise ProjectUnavailable()
             # the cached global_project_id above is only an early refusal: the
             # database can be replaced or restored under a running server, so
             # the role that decides is the one on the row, read just now

@@ -3,16 +3,16 @@
 Two kinds of error live here, and they differ in who owns the words:
 
 - **Storage-boundary errors** -- `MemoryNotFound`, `ProjectNotFound`,
-  `IdCollision`, `StorageFailure`, `VersionConflict`, `BindingRefused` -- carry
-  structured *fields* only. Their `str()` is a
+  `IdCollision`, `StorageFailure`, `VersionConflict`, `BindingRefused`,
+  `ProjectUnavailable` -- carry structured *fields* only. Their `str()` is a
   developer-facing line for logs and must never reach a client: a transport
   composes client copy from the operation plus these fields, so a second
   backend cannot change a byte of what a client sees, nor leak SQL, driver or
   path detail through a message it happened to author.
-- **Application/policy errors** -- `ContentRejected`, `ProjectUnavailable`,
-  `GlobalReadOnly` -- carry a message authored inside the core, where the
-  wording *is* the rule being explained and is written to be client-safe (it
-  never echoes the rejected value). Transports may forward these verbatim.
+- **Application/policy errors** -- `ContentRejected`, `GlobalReadOnly` --
+  carry a message authored inside the core, where the wording *is* the rule
+  being explained and is written to be client-safe (it never echoes the
+  rejected value). Transports may forward these verbatim.
 """
 
 from __future__ import annotations
@@ -59,7 +59,16 @@ class IdCollision(MemoryError):
 class ContentRejected(MemoryError): ...      # from ContentPolicy; the message is the rule
 
 
-class ProjectUnavailable(MemoryError): ...   # no writable project in this session
+class ProjectUnavailable(MemoryError):
+    """No project this session may use; nothing was written.
+
+    Fields only: `reason` names the cause where one applies (for example
+    "candidate-changed"), "" where the caller's context already says why.
+    """
+
+    def __init__(self, reason: str = "") -> None:
+        super().__init__(f"project unavailable: {reason}")
+        self.reason = reason
 
 
 class GlobalReadOnly(MemoryError):

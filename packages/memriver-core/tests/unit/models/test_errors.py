@@ -62,6 +62,11 @@ def test_version_conflict_and_binding_refused_carry_fields_not_words():
     assert BindingRefused("plan-changed").project_id is None
 
 
+def test_project_unavailable_carries_a_reason_field_that_defaults_to_empty():
+    assert ProjectUnavailable().reason == ""
+    assert ProjectUnavailable(reason="candidate-changed").reason == "candidate-changed"
+
+
 def test_binding_reasons_are_the_eleven_the_spec_lists():
     from memriver_core.models.errors import BINDING_REASONS
     assert BINDING_REASONS == {

@@ -65,8 +65,7 @@ def test_write_mapping(err, expected):
     ("registered", "the registered project could not be found in the store"),
 ])
 def test_write_without_a_project_states_the_project_context_not_a_path(state, fragment):
-    result = _map_error("write", ProjectUnavailable("no writable project in this session"),
-                        context_state=state)
+    result = _map_error("write", ProjectUnavailable(), context_state=state)
     assert fragment in result and "No memory was saved" in result
     assert "/" not in result.replace("memriver project", "")
 
@@ -126,7 +125,7 @@ def test_an_unnamed_error_logs_only_the_operation_and_its_type(caplog):
 
 
 @pytest.mark.parametrize("err", [MemoryNotFound(M), GlobalReadOnly(),
-                                 ProjectUnavailable("x"), VersionConflict(M),
+                                 ProjectUnavailable(), VersionConflict(M),
                                  ContentRejected("looks like a secret")])
 def test_a_named_error_never_logs(caplog, err):
     with caplog.at_level(logging.WARNING, logger="memriver"), pytest.raises(ToolError):

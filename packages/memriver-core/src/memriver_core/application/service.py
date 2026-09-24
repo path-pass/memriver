@@ -170,9 +170,9 @@ class MemoryService:
     def record(self, *, content: str, type: str, sync: bool, harness: str,
                description: str, read_write_set: ReadWriteSet) -> Memory:
         if read_write_set.project_id is None:
-            # path-free on purpose, and one message for every cause: the
-            # transport resolved the project, so it says why there is none
-            raise ProjectUnavailable("no writable project in this session")
+            # no reason: the transport resolved the project, so it says why
+            # there is none
+            raise ProjectUnavailable()
         if not _HARNESS_RE.fullmatch(harness):
             raise ContentRejected("invalid harness identifier "
                                   "(allowed: letters, digits, ., _, -, max 64 chars)")
