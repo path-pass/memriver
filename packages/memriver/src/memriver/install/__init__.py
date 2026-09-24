@@ -281,9 +281,15 @@ def _read_snapshot(target: Target, root: Path | None,
     path = target.path
     _refuse_symlinks(target, root, command_name)
     try:
-        if not path.exists():
+        # `stat` directly, not `Path.exists()/is_file()`: on 3.14 those swallow
+        # every OSError, and a target that is there but cannot be checked
+        # would be planned as absent -- then replaced by a file holding only
+        # memriver's entry. Only "nothing here" is absent.
+        try:
+            mode = path.stat().st_mode
+        except (FileNotFoundError, NotADirectoryError):
             return Snapshot(target=target, text=None, mode=None)
-        if not path.is_file():
+        if not stat.S_ISREG(mode):
             raise PlanningError(f"{path} is not a regular file")
         # decoded from bytes, never `read_text`: text mode translates CRLF and
         # CR to LF, and a single accepted change then writes the whole
@@ -292,7 +298,7 @@ def _read_snapshot(target: Target, root: Path | None,
         # carry the original separators through untouched; the write side is
         # already binary.
         return Snapshot(target=target, text=path.read_bytes().decode("utf-8"),
-                        mode=_mode_of(path))
+                        mode=mode & 0o777)
     except (UnicodeError, OSError) as err:
         # the whole read is one boundary, not just the decode: a target that
         # exists but cannot be decoded, opened or stat'ed is a planning
@@ -436,10 +442,6 @@ class _Write:
     # the parents this write had to create, deepest first, so rollback can put
     # the tree back the way it found it
     created_dirs: tuple[_CreatedDir, ...] = ()
-
-
-def _mode_of(path: Path) -> int:
-    return path.stat().st_mode & 0o777
 
 
 def _umask_mode() -> int:

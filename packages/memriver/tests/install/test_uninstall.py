@@ -1889,6 +1889,44 @@ def test_purge_data_reports_a_symlink_loop_instead_of_raising(home, project,
     assert "nothing was removed" in result.stdout
 
 
+def test_purge_data_reports_a_symlink_loop_above_the_store(home, project, tmp_path):
+    """A loop in an ancestor, not the leaf: the store path cannot be resolved,
+    which is not the same as a store that is simply absent."""
+    looping = tmp_path / "a"
+    other = tmp_path / "b"
+    looping.symlink_to(other)
+    other.symlink_to(looping)
+    root = looping / "agent-memory"
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                            purge_data=True, root=root)
+
+    assert result.exit_code == 1
+    assert f"cannot resolve {root}" in result.stdout
+    assert "nothing was removed" in result.stdout
+
+
+def test_purge_data_refuses_a_home_whose_loop_hides_behind_a_missing_prefix(tmp_path):
+    """`<missing>/../<loop>`: strict resolution stops at the missing component,
+    and the fallback must not hand back the loop it collapsed onto as if it
+    were a resolved home the store cannot hold."""
+    looping = tmp_path / "loop"
+    looping.symlink_to(looping)
+    home = tmp_path / "missing" / ".." / "loop"
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    store = tmp_path / "store"
+    store.mkdir()
+    (store / "index.db").write_text("db")
+
+    result = full_uninstall(["claude-code"], home=home, cwd=cwd, yes=True,
+                            purge_data=True, root=store)
+
+    assert result.exit_code == 1
+    assert f"cannot resolve {home}" in result.stdout
+    assert (store / "index.db").read_text() == "db"
+
+
 def test_the_purge_guard_reports_a_current_directory_it_cannot_resolve(home,
                                                                        tmp_path):
     """The protected bases are resolved too, and a loop in one of them is the
@@ -2182,8 +2220,10 @@ def json_number_outside_the_standard(home: Path, project: Path):
 
 def deeply_nested_json(home: Path, project: Path):
     # deep enough to fail on the parse side, which a removal always reaches --
-    # unlike the render side, which only a document it actually changes does
-    nested = "[" * 100_000 + "]" * 100_000
+    # unlike the render side, which only a document it actually changes does;
+    # past every supported interpreter's parser limit (3.14's scales with the
+    # C stack)
+    nested = "[" * 1_000_000 + "]" * 1_000_000
     write(home / ".claude.json", '{"foreign": ' + nested + "}")
     return ["claude-code"], project
 

@@ -8,6 +8,7 @@ characters before a store- or path-derived string is printed.
 
 from __future__ import annotations
 
+import errno
 import os
 import unicodedata
 from pathlib import Path
@@ -30,8 +31,17 @@ def find_git_root(start: Path) -> Path | None:
     """The nearest ``.git`` root at or above ``start``, or ``None`` outside a repo."""
     cur = start.resolve()
     for p in [cur, *cur.parents]:
-        if (p / ".git").exists():
-            return p
+        # `stat` directly, not `Path.exists()`: on 3.14 that swallows every
+        # OSError, so a `.git` that cannot be checked would read as absent and
+        # the climb would settle on an enclosing repository. The errors 3.12's
+        # `exists()` read as "nothing here" keep climbing; any other propagates.
+        try:
+            (p / ".git").stat()
+        except OSError as error:
+            if error.errno in (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP):
+                continue
+            raise
+        return p
     return None
 
 

@@ -506,11 +506,12 @@ def test_unusable_session_input_is_a_silent_invalid_input_line(harness, payload_
 def test_a_decoder_failure_that_is_not_a_json_error_is_still_invalid_input(tmp_path):
     """The parse boundary is about the decoder, not one exception class.
 
-    100k nested arrays exhaust the recursion limit inside ``json.loads``, which
+    1,000,000 nested arrays exhaust the recursion limit inside ``json.loads``
+    on every supported interpreter (3.14's scales with the C stack), which
     raises ``RecursionError`` -- not ``JSONDecodeError``, not ``TypeError``. A
     hook that lets that through fails the harness session it exists to help.
     """
-    payload_text = "[" * 100_000 + "]" * 100_000
+    payload_text = "[" * 1_000_000 + "]" * 1_000_000
     result = run_hook("session-start", "claude-code", payload_text,
                       root=tmp_path / "root", project_dir=None, cwd=tmp_path)
     assert result == HookResult(stderr="memriver hook: invalid input\n")

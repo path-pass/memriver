@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import errno
+import os
 from pathlib import Path
 
 import pytest
@@ -100,6 +102,131 @@ def test_a_failing_walk_reports_partial_removal(places, monkeypatch):
     with plan_purge(store, home=home, cwd=cwd) as plan:
         result = purge(plan)
     assert (result.outcome, result.detail) == ("partly-removed", "denied")
+
+
+def _deny_stat(monkeypatch, path: Path, *, follow_only: bool = False) -> None:
+    """Make every stat of ``path`` fail with EACCES (only the following ones
+    when ``follow_only``). Python 3.14's ``Path.exists/is_dir/is_symlink``
+    swallow that error and answer False; 3.12's raised it."""
+    real_stat, real_lstat = os.stat, os.lstat
+
+    def denied(*args):
+        return PermissionError(errno.EACCES, os.strerror(errno.EACCES), *args)
+
+    def fake_stat(target, *args, follow_symlinks=True, **kwargs):
+        if str(target) == str(path) and (follow_symlinks or not follow_only):
+            raise denied(str(target))
+        return real_stat(target, *args, follow_symlinks=follow_symlinks, **kwargs)
+
+    def fake_lstat(target, *args, **kwargs):
+        if str(target) == str(path) and not follow_only:
+            raise denied(str(target))
+        return real_lstat(target, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", fake_stat)
+    monkeypatch.setattr(os, "lstat", fake_lstat)
+
+
+def test_a_target_whose_existence_cannot_be_checked_is_refused(places, monkeypatch):
+    """Not a plan with nothing to remove: the store may well be there."""
+    home, cwd, store = places
+    _deny_stat(monkeypatch, store.resolve(), follow_only=True)
+    refusal = plan_purge(store, home=home, cwd=cwd)
+    assert isinstance(refusal, PurgeRefusal)
+    assert (refusal.kind, refusal.path) == ("unresolvable", store.resolve())
+    assert "denied" in refusal.detail.lower()
+
+
+def test_a_target_whose_link_check_fails_after_confirmation_is_left_alone(places,
+                                                                          monkeypatch):
+    """The post-prompt guard re-checks the given leaf for a link; a check that
+    cannot run proves nothing and must not read as "no link"."""
+    home, cwd, store = places
+    with plan_purge(store, home=home, cwd=cwd) as plan:
+        _deny_stat(monkeypatch, store)
+        result = purge(plan)
+    assert result.outcome == "refused"
+    assert (result.refusal.kind, result.refusal.path) == ("unresolvable", store)
+    monkeypatch.undo()
+    assert (store / "memriver.db").exists()
+
+
+def _loop_behind(tmp_path: Path, prefix: str) -> Path:
+    """A spelling whose strict resolution stops before a symlink loop: a
+    missing component, or a component below a regular file, then `..`."""
+    looping = tmp_path / "loop"
+    looping.symlink_to(looping)
+    if prefix == "missing":
+        return tmp_path / "missing" / ".." / "loop"
+    (tmp_path / "file").write_text("x")
+    return tmp_path / "file" / "below" / ".." / ".." / "loop"
+
+
+@pytest.mark.parametrize("prefix", ["missing", "not-directory"])
+@pytest.mark.parametrize("base", ["home", "cwd"])
+def test_a_protected_base_looping_behind_an_unresolvable_prefix_is_refused(
+        places, tmp_path, base, prefix):
+    home, cwd, store = places
+    bases = {"home": home, "cwd": cwd, base: _loop_behind(tmp_path, prefix)}
+    refusal = plan_purge(store, **bases)
+    assert isinstance(refusal, PurgeRefusal)
+    assert (refusal.kind, refusal.path) == ("unresolvable", bases[base])
+    assert store.exists()
+
+
+@pytest.mark.parametrize("base", ["home", "cwd"])
+def test_a_protected_base_turned_into_a_loop_after_confirmation_is_refused(
+        places, tmp_path, base):
+    home, cwd, store = places
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    bases = {"home": home, "cwd": cwd, base: tmp_path / "missing" / ".." / "link"}
+    with plan_purge(store, **bases) as plan:
+        assert isinstance(plan, PurgePlan)
+        link.unlink()
+        link.symlink_to(link)
+        result = purge(plan)
+    assert result.outcome == "refused"
+    assert (result.refusal.kind, result.refusal.path) == ("unresolvable", bases[base])
+    assert (store / "memriver.db").exists()
+
+
+@pytest.mark.parametrize("base", ["home", "cwd"])
+def test_a_base_resolved_after_a_one_off_error_is_checked_where_it_really_is(
+        places, tmp_path, monkeypatch, base):
+    """The non-strict fallback reads a link it could not lstat as a plain
+    component; the strict re-check that then succeeds is where the base
+    really is, and that is what the store must not hold."""
+    home, cwd, store = places
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (store / "protected").mkdir()
+    (store / "protected" / "keep").write_text("k")
+    link = tmp_path / "link"
+    link.symlink_to(outside)
+    bases = {"home": home, "cwd": cwd, base: tmp_path / "missing" / ".." / "link"}
+    real_lstat = os.lstat
+    armed = []
+
+    def flaky_lstat(target, *args, **kwargs):
+        if armed and str(target) == str(link):
+            armed.clear()
+            raise OSError(errno.EIO, os.strerror(errno.EIO), str(target))
+        return real_lstat(target, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", flaky_lstat)
+    with plan_purge(store, **bases) as plan:
+        assert isinstance(plan, PurgePlan)
+        link.unlink()
+        link.symlink_to(store / "protected")
+        armed.append(True)
+        result = purge(plan)
+    assert not armed                              # the one-off error was hit
+    assert result.outcome == "refused"
+    assert result.refusal.kind == "too-broad"
+    assert (store / "protected" / "keep").exists()
 
 
 def test_purge_without_an_opened_plan_is_a_programming_error(places):

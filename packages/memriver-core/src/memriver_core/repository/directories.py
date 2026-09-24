@@ -233,6 +233,31 @@ class PurgeResult:
     refusal: PurgeRefusal | None = None
 
 
+def _resolve(path: Path) -> Path:
+    """``path.resolve()`` that raises on a symlink loop on every interpreter.
+
+    Since Python 3.13 a non-strict ``resolve()`` returns a loop unresolved
+    instead of raising, which would let a guard reason about a path that names
+    nothing. Strict resolution raises on a loop everywhere (``OSError`` on
+    3.13+, ``RuntimeError`` on 3.12); only a missing component falls back to
+    the non-strict form, since a purge target that does not exist yet is legal.
+
+    The fallback's result is resolved strictly once more: ``<missing>/..``
+    collapses in the non-strict form, so what it returns can still end in the
+    loop the missing component hid. Only "still missing" is accepted there;
+    when that re-check succeeds its result is the answer, since the fallback
+    may have read a link it could not lstat as a plain component.
+    """
+    try:
+        return path.resolve(strict=True)
+    except (FileNotFoundError, NotADirectoryError):
+        resolved = path.resolve()
+    try:
+        return resolved.resolve(strict=True)
+    except (FileNotFoundError, NotADirectoryError):
+        return resolved
+
+
 def _refuse_purge_target(given: Path, canonical: Path, *, home: Path,
                          cwd: Path) -> PurgeRefusal | None:
     """The refusal for a target too dangerous to delete, or ``None``.
@@ -246,14 +271,22 @@ def _refuse_purge_target(given: Path, canonical: Path, *, home: Path,
     followed: ``--root`` names the store, and a link standing in for it is an
     arrangement memriver will not delete through.
     """
-    if given.is_symlink():
+    # `lstat` directly, not `Path.is_symlink()`: on 3.14 that answers False
+    # for any failed check, reading "could not look" as "not a link"
+    try:
+        is_link = stat.S_ISLNK(given.lstat().st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        is_link = False
+    except OSError as error:
+        return PurgeRefusal("unresolvable", given, canonical, str(error))
+    if is_link:
         return PurgeRefusal("symlink", given, canonical)
     # `home`/`cwd` being relative to the target covers the target *being* one of
     # them and the target being any ancestor of one -- the filesystem root
     # included, since every path is relative to it
     for base in (home, cwd):
         try:
-            resolved = base.resolve()
+            resolved = _resolve(base)
         except (OSError, RuntimeError) as error:
             return PurgeRefusal("unresolvable", base, canonical, str(error))
         if resolved.is_relative_to(canonical):
@@ -296,15 +329,22 @@ def plan_purge(given: Path, *, home: Path, cwd: Path,
     if not given.is_absolute():
         given = cwd / given
     try:
-        canonical = given.resolve()
+        canonical = _resolve(given)
     except (OSError, RuntimeError) as error:
         return PurgeRefusal("unresolvable", given, None, str(error))
     refusal = _refuse_purge_target(given, canonical, home=home, cwd=cwd)
     if refusal is not None:
         return refusal
-    if not canonical.exists():
+    # `stat` directly, not `Path.exists()/is_dir()`: on 3.14 those swallow
+    # every OSError, and a store that cannot be checked would be reported as
+    # no data to remove
+    try:
+        mode = canonical.stat().st_mode
+    except (FileNotFoundError, NotADirectoryError):
         return PurgePlan(given, canonical, home, cwd, exists=False)
-    if not canonical.is_dir():
+    except OSError as error:
+        return PurgeRefusal("unresolvable", canonical, canonical, str(error))
+    if not stat.S_ISDIR(mode):
         return PurgeRefusal("not-directory", canonical, canonical)
     if dry_run:
         return PurgePlan(given, canonical, home, cwd, exists=True)

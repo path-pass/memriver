@@ -189,14 +189,33 @@ def test_json_object_merge_maps_a_too_deeply_nested_document_to_planning_error()
     syntactically legal document nests past the interpreter's limit -- a
     distinct exception that needs its own boundary mapping alongside the
     duplicate-name and non-finite-number guards. 2,000 levels still parses on
-    CPython 3.12 (it only trips the render-side catch once re-serialized);
-    100,000 reliably fails on the parse side itself, which is the branch this
-    pins."""
-    nested = "[" * 100_000 + "]" * 100_000
+    CPython 3.12 and 3.14, and 3.14's C-stack guard admits tens of thousands
+    of levels (more on a larger stack); 1,000,000 fails on the parse side
+    itself on every supported interpreter, which is the branch this pins."""
+    nested = "[" * 1_000_000 + "]" * 1_000_000
     source = '{"foreign": ' + nested + "}"
 
     with pytest.raises(PlanningError) as raised:
         json_object_merge(source, ("mcpServers", "memriver"), MEMRIVER_MCP)
+
+    assert str(raised.value) == (
+        "file nests too deeply for memriver to parse; flatten it and run "
+        "install again"
+    )
+    assert isinstance(raised.value.__cause__, RecursionError)
+
+
+def test_json_object_merge_maps_an_encoder_recursion_error_to_planning_error(monkeypatch):
+    """The render side has its own catch: where the `indent` encoder is pure
+    Python (CPython 3.12) it recurses once per level and can give up on a
+    document the C decoder accepted. On 3.14 the C encoder handles `indent`,
+    so no real document reaches this branch -- force it instead."""
+    def too_deep(*args, **kwargs):
+        raise RecursionError("maximum recursion depth exceeded")
+    monkeypatch.setattr("memriver.install.editors.json.dumps", too_deep)
+
+    with pytest.raises(PlanningError) as raised:
+        json_object_merge("{}", ("mcpServers", "memriver"), MEMRIVER_MCP)
 
     assert str(raised.value) == (
         "file nests too deeply for memriver to parse; flatten it and run "
