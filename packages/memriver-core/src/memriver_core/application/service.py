@@ -1,7 +1,7 @@
 """The application facade: orchestrates the stores, the content policy and the limits.
 
 MemoryStore owns single-memory actions and ProjectStore owns collections and
-directories; this facade sequences policy checks, builds sessions and
+directories; this facade sequences policy checks, builds project contexts and
 read/write sets, renders the index and the project header, and hands the
 CLI its planning and management reads. Nothing here touches a file, a table
 or settings: every limit is injected.
