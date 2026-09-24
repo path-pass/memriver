@@ -32,8 +32,27 @@ def single_line(value: str) -> str:
 
 # the exact shape `now()` produces: strftime's %f always pads to six digits,
 # so this is a fixed-width form, and two of them compare lexicographically in
-# chronological order (see now_strictly_after)
-TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z")
+# chronological order (see now_strictly_after). [0-9], not \d: \d matches any
+# Unicode decimal digit (full-width, Arabic-indic, ...), not just ASCII.
+_TIMESTAMP_SHAPE_RE = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z")
+
+
+def is_timestamp(value: object) -> bool:
+    """Whether `value` is exactly the fixed-width UTC form `now()` produces.
+
+    The shape alone is not enough: it accepts a calendar `strptime` would
+    reject (month 99, February 30), and `strptime` alone is not enough either
+    -- CPython's own %d/%m/%Y parsing uses \\d too, so it accepts the same
+    non-ASCII digits the shape check exists to keep out. Both must pass.
+    """
+    if not (isinstance(value, str) and _TIMESTAMP_SHAPE_RE.fullmatch(value)):
+        return False
+    try:
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=UTC)
+    except ValueError:
+        return False
+    return True
 
 
 def now() -> str:

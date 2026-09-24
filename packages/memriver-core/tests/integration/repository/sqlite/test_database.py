@@ -348,10 +348,20 @@ def test_a_valid_last_read_at_round_trips():
     assert memory_from_row(memory_to_row(memory)) == memory
 
 
+# built with chr(...), never a raw non-ASCII digit in the file: fullwidth 0-9
+# are U+FF10..U+FF19, one codepoint above their ASCII counterpart's ordinal
+# shifted by the same offset as '0' -> U+FF10
+_FULLWIDTH_DIGITS = str.maketrans("0123456789", "".join(chr(0xFF10 + i) for i in range(10)))
+_FULLWIDTH_TIMESTAMP = "2026-09-24T00:00:01.000000Z".translate(_FULLWIDTH_DIGITS)
+
+
 @pytest.mark.parametrize("change", [
     {"id": "../../evil"}, {"project_id": "ABCDEFGHJK"}, {"type": "note"}, {"trust": "high"},
     {"sync": 2}, {"version": 0}, {"body": b"bytes"}, {"deleted_at": 5}, {"last_read_at": 5},
     {"last_read_at": "not-a-timestamp"},
+    {"last_read_at": "9999-99-99T99:99:99.999999Z"},          # right shape, no such calendar date
+    {"last_read_at": "2026-02-30T00:00:00.000000Z"},          # right shape, February has no 30th
+    {"last_read_at": _FULLWIDTH_TIMESTAMP},                    # right shape, not ASCII digits
 ])
 def test_a_memory_row_memriver_could_not_have_written_is_invalid(change):
     memory = Memory.new(body="b", type="project", project_id=new_id(),

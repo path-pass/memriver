@@ -7,9 +7,9 @@ from pathlib import Path
 
 from memriver_core.models import (
     ID_RE,
-    TIMESTAMP_RE,
     Memory,
     ReadWriteSet,
+    is_timestamp,
     now,
     now_strictly_after,
 )
@@ -154,8 +154,7 @@ class SqliteMemoryStore:
             return expected_version + 1
 
     def touch_read(self, memory_id: str, at: str) -> None:
-        if (not _addressable(memory_id) or not isinstance(at, str)
-                or not TIMESTAMP_RE.fullmatch(at)):
+        if not _addressable(memory_id) or not is_timestamp(at):
             return
         try:
             with self._database.write(create=False) as conn:

@@ -292,13 +292,24 @@ def test_touch_read_sets_last_read_at_and_nothing_else(root, world):
     memory_store.touch_read(memory.id, "2026-09-24T00:00:01.000000Z")  # absent store: a no-op
 
 
-def test_touch_read_with_a_malformed_at_is_a_no_op(world):
+# built with chr(...), never a raw non-ASCII digit in the file
+_FULLWIDTH_DIGITS = str.maketrans("0123456789", "".join(chr(0xFF10 + i) for i in range(10)))
+_FULLWIDTH_AT = "2026-09-24T00:00:01.000000Z".translate(_FULLWIDTH_DIGITS)
+
+
+@pytest.mark.parametrize("bad_at", [
+    "not-a-timestamp",
+    "9999-99-99T99:99:99.999999Z",     # right shape, no such calendar date
+    "2026-02-30T00:00:00.000000Z",     # right shape, February has no 30th
+    _FULLWIDTH_AT,                      # right shape, not ASCII digits
+])
+def test_touch_read_with_a_malformed_at_is_a_no_op(world, bad_at):
     memory_store, read_write_set = world["memory_store"], world["read_write_set"]
     memory = _record(world)
-    memory_store.touch_read(memory.id, "not-a-timestamp")
+    memory_store.touch_read(memory.id, bad_at)
     assert memory_store.read(memory.id, read_write_set).last_read_at is None
     memory_store.touch_read(memory.id, "2026-09-24T00:00:01.000000Z")
-    memory_store.touch_read(memory.id, "not-a-timestamp")   # a bad value never overwrites a good one
+    memory_store.touch_read(memory.id, bad_at)   # a bad value never overwrites a good one
     assert memory_store.read(memory.id, read_write_set).last_read_at == \
         "2026-09-24T00:00:01.000000Z"
 
