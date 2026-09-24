@@ -2,8 +2,9 @@
 
 The serving read paths skip what they cannot trust, which is right for an
 agent and wrong for a doctor. This inspector walks the same tables and keeps
-what reads drop, each finding with a fixed reason. It opens the database
-read-only and never creates it.
+what reads drop, each finding with a fixed reason. It never creates the
+database; the one change it may make is the v1 -> v2 schema upgrade every
+opener runs first (`upgrade_if_needed`), after which it reads read-only.
 """
 
 from __future__ import annotations
@@ -85,7 +86,8 @@ def _session_location(harness: object, session_id: object) -> str:
 
 
 class SqliteStoreInspector:
-    """`StoreInspector` over the SQLite store: every row, nothing modified."""
+    """`StoreInspector` over the SQLite store: every row, read-only once the
+    v1 -> v2 upgrade (if one is due) has run."""
 
     def __init__(self, root: Path, *, busy_timeout_ms: int) -> None:
         self.root = Path(root)

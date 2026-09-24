@@ -121,10 +121,11 @@ session's first prompt and its five most recent, each saved as at most 512
 characters; a prompt that is too large, looks like a secret, is invalid, or
 fails the scan is stored with no text at all, only a fixed reason. A keyword
 that appears only in a middle prompt that got dropped, or in text that was
-truncated or omitted, will not be found -- the first prompt itself still
-matches however early in the session it was. And memriver never checks
-whether a session can still be resumed -- the harness may already have
-deleted its transcript (Claude Code prunes transcripts after
+truncated or omitted, will not be found. The first prompt is never dropped,
+so its saved text still matches however early in the session it was -- but
+a first prompt that was omitted has no text to match. And memriver never
+checks whether a session can still be resumed -- the harness may already
+have deleted its transcript (Claude Code prunes transcripts after
 `cleanupPeriodDays`, 30 days by default).
 
 ## Projects
@@ -174,14 +175,17 @@ Known limits:
   started there is not registered to any project; and a repository created
   with `git init --separate-git-dir <X>/.git <work>` maps its linked
   worktrees into `<X>`, not `<work>`.
-- After upgrading memriver, restart every harness session and MCP server that
-  shares the store; a running server keeps its old rules. This matters more
-  with a schema upgrade: a memriver of the previous release refuses the
-  upgraded store outright as an unrecognized schema, rather than merely
-  behaving as before. A session that was already running when you upgraded
-  is not lost -- it is asked once, the next time it resumes, whether to
-  register to the project its directory suggests (see *What your agent
-  sees*).
+- After upgrading memriver, run `memriver install` again: the harness
+  configuration an earlier release wrote lacks the newer hooks and the
+  `serve --harness` argument, so without it prompts are not counted, `Stop`
+  never nudges, and the MCP server stays in directory mode. Then restart
+  every harness session and MCP server that shares the store; a running
+  server keeps its old rules. This matters more with a schema upgrade: a
+  memriver of the previous release refuses the upgraded store outright as an
+  unrecognized schema, rather than merely behaving as before. A session that
+  was already running when you upgraded is not lost -- it is asked once, the
+  next time it resumes, whether to register to the project its directory
+  suggests (see *What your agent sees*).
 - A store written by the pre-SQLite file layout (`global/`, `store.toml`,
   `projects/`, `memories/`, `registry/`) is not read or migrated; `memriver
   doctor` reports it as `legacy-layout`.

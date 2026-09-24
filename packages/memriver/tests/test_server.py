@@ -413,6 +413,14 @@ async def test_settings_tune_the_body_index_and_search_budgets(world):
     assert [h["collection"] for h in hits] == ["project"]
 
 
+async def test_the_index_tool_describes_its_first_line_in_the_agents_terms(server):
+    async with Client(server) as c:
+        tool = next(t for t in await c.list_tools() if t.name == "memory_index")
+    assert " ".join(tool.description.split()) == (
+        "The current project on the first line, then a compact index of its memories "
+        "followed by global's.")
+
+
 async def test_search_limit_stays_a_plain_integer_in_the_tool_schema(server):
     async with Client(server) as c:
         tool = next(t for t in await c.list_tools() if t.name == "memory_search")

@@ -12,9 +12,10 @@ Three rules shape this module.
 *Never fail the harness.* A hook that exits non-zero, or writes a traceback to
 stdout, degrades the session it was meant to help. Every path here returns
 exit code 0. A store fault the core can degrade (an unreadable store) is
-injected as the labelled "unavailable" project context with an empty index;
-any other hook failure costs the user one fixed, path-free stderr line, never
-a message the agent can read as instructions.
+injected as the labelled "unavailable" project context with an empty index.
+Any other SessionStart failure costs the user one fixed, path-free stderr
+line, never a message the agent can read as instructions; UserPromptSubmit,
+Stop and SessionEnd fail silently, with nothing on stdout or stderr.
 
 *Per-harness envelopes stay separate.* Every event keeps one encoder per
 harness even where both currently build the same object: the schemas are owned

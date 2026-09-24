@@ -273,8 +273,8 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
 
     @mcp.tool
     def memory_index(ctx: Context) -> str:
-        """The project context's project on the first line, then a compact index of
-        the current project's memories followed by global's."""
+        """The current project on the first line, then a compact index of its
+        memories followed by global's."""
         try:
             context = context_of(ctx)
             return context.header + "\n" + service.index(context)

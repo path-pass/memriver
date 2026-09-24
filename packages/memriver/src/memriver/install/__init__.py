@@ -168,8 +168,9 @@ CODEX_TRUST_NOTE = (
 RESTART_SESSIONS_NOTE = (
     "Restart any running Claude Code/Codex session: its memriver MCP server "
     "from before this install refuses the upgraded memory store. A session "
-    "that was already running when the store upgraded will ask once, at its "
-    "next turn, to confirm which project it belongs to."
+    "that was already running when the store upgraded is asked once, the "
+    "next time it resumes, whether to register to the project its directory "
+    "suggests."
 )
 
 MISSING_UVX_NOTE = (
