@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NoReturn
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 from memriver_core import (
     ContentRejected,
     GlobalReadOnly,
@@ -16,6 +18,8 @@ from memriver_core.models import ID_RE, Memory
 from memriver_core.settings import SEARCH_SNIPPET_CHARS, Settings
 
 from .protocol_text import INSTRUCTIONS
+
+logger = logging.getLogger("memriver")
 
 # read, update, delete and write map the same core errors to different
 # client-visible strings, so the exception type alone cannot decide the
@@ -50,8 +54,8 @@ _NO_PROJECT = {
 
 
 def _map_error(operation: Operation, err: Exception, *, memory_id: str | None = None,
-               session_state: str | None = None) -> dict:
-    """Application error -> the tool's error dict. Tools never raise.
+               session_state: str | None = None) -> str:
+    """Application error -> the tool's client-visible message. Tools never leak one raw.
 
     Every client-visible string for a storage-boundary error is written here,
     from (operation, error type, structured fields): a second backend raising
@@ -59,37 +63,62 @@ def _map_error(operation: Operation, err: Exception, *, memory_id: str | None = 
     a path, an errno or a driver message into one.
     """
     if operation == "list":
-        return {"error": _COULD_NOT_READ_STORE}
+        return _COULD_NOT_READ_STORE
     if isinstance(err, GlobalReadOnly):
-        return {"error": _GLOBAL_READ_ONLY}
+        return _GLOBAL_READ_ONLY
     if operation == "write":
         if isinstance(err, ProjectUnavailable):
-            return {"error": _NO_PROJECT.get(session_state or "none", _NO_PROJECT["none"])}
+            return _NO_PROJECT.get(session_state or "none", _NO_PROJECT["none"])
         # a codec failure (a lone surrogate) is a ValueError whose message is
         # the codec's, not policy copy
         if isinstance(err, ContentRejected | ValueError) and not isinstance(err, UnicodeError):
             # policy copy is authored in the core and never echoes the value;
             # ValueError reaches here from the model constructors or from a
             # store's pre-write validation of the row it is about to write
-            return {"error": str(err)}
-        return {"error": "could not write entry"}
+            return str(err)
+        return "could not write entry"
     if isinstance(err, ContentRejected):
-        return {"error": str(err)}
+        return str(err)
     # the id is the caller's string: echo it only when it is a well-formed id,
     # so newlines, injected text or unencodable characters never come back
     valid = memory_id is not None and ID_RE.fullmatch(memory_id)
     suffix = f": {memory_id}" if valid else ""
     if isinstance(err, MemoryNotFound):
-        return {"error": f"no such entry{suffix}"}
+        return f"no such entry{suffix}"
     if isinstance(err, VersionConflict) and operation in ("update", "delete"):
         subject = f"entry {memory_id}" if valid else "entry"
-        return {"error": f"{subject} changed since you read it; no change was made. "
-                         "Call memory_read again and retry with its version."}
+        return (f"{subject} changed since you read it; no change was made. "
+                "Call memory_read again and retry with its version.")
     if operation == "read":
-        return {"error": f"could not read entry{suffix}"}
+        return f"could not read entry{suffix}"
     if operation == "update":
-        return {"error": f"could not update entry{suffix}"}
-    return {"error": f"could not delete entry{suffix}"}
+        return f"could not update entry{suffix}"
+    return f"could not delete entry{suffix}"
+
+
+# The error types _map_error gives a specific message of their own; anything
+# else (StorageFailure included) falls through to one of the generic
+# messages above and is logged below, so a lock timeout, corruption and a
+# genuine bug stay distinguishable in the log even though the client sees
+# the same text either way.
+_NAMED_ERRORS: tuple[type[Exception], ...] = (
+    ContentRejected, GlobalReadOnly, MemoryNotFound, ProjectUnavailable, VersionConflict,
+    ValueError,
+)
+
+
+def _fail(operation: Operation, err: Exception, *, memory_id: str | None = None,
+          session_state: str | None = None) -> NoReturn:
+    """Map `err` to its client message and raise it as the tool's failure.
+
+    An exception outside `_NAMED_ERRORS` also logs one WARNING line naming
+    only the operation and the exception's type -- never its message,
+    arguments or any path/value it might carry.
+    """
+    message = _map_error(operation, err, memory_id=memory_id, session_state=session_state)
+    if not isinstance(err, _NAMED_ERRORS):
+        logger.warning("memory_%s failed: %s", operation, type(err).__name__)
+    raise ToolError(message) from None
 
 
 def _full(memory: Memory) -> dict:
@@ -127,30 +156,34 @@ def build_server(root: Path, project_dir: Path,
 
     mcp = FastMCP("memriver", instructions=INSTRUCTIONS)
 
-    # Tools stay async so their bodies run inline on the event loop thread;
-    # they are local and fast, with no await points, so calls serialize
-    # without extra locking.
+    # Tools are plain `def`: FastMCP runs each in a worker thread, so a slow
+    # SQLite wait for another process's write lock cannot stall the event
+    # loop. Shared state is safe under that: `service`/`session` are built
+    # once above and only read; each call opens its own SQLite connection;
+    # and the service's lazy content-policy build can race two callers, but
+    # Python serializes the scanner module's import and an attribute
+    # assignment never exposes a half-built object, so no lock is needed.
 
     @mcp.tool
-    async def memory_index() -> str:
+    def memory_index() -> str:
         """The session's project on the first line, then a compact index of the
         current project's memories followed by global's."""
         try:
             return session.header + "\n" + service.index(read_write_set)
         except Exception as err:  # noqa: BLE001
-            return _map_error("list", err)["error"]
+            _fail("list", err)
 
     @mcp.tool
-    async def memory_read(memory_id: str) -> dict:
+    def memory_read(memory_id: str) -> dict:
         """Read one memory in full by id, including the version that
         memory_update and memory_delete must name."""
         try:
             return _full(service.read(memory_id, read_write_set))
         except Exception as err:  # noqa: BLE001
-            return _map_error("read", err, memory_id=memory_id)
+            _fail("read", err, memory_id=memory_id)
 
     @mcp.tool
-    async def memory_search(query: str, limit: int | None = None) -> list[dict]:
+    def memory_search(query: str, limit: int | None = None) -> list[dict]:
         """Search the current project's memories, then global's. `limit` caps the
         whole answer: project hits first, global fills what is left."""
         try:
@@ -158,13 +191,13 @@ def build_server(root: Path, project_dir: Path,
                          else "project")
                     for m in service.search(query, read_write_set, limit)]
         except Exception as err:  # noqa: BLE001
-            return [_map_error("list", err)]
+            _fail("list", err)
 
     @mcp.tool
-    async def memory_write(content: str,
-                           type: Literal["user", "feedback", "project", "reference"],
-                           sync: bool = True, harness: str = "unknown",
-                           description: str = "") -> dict:
+    def memory_write(content: str,
+                     type: Literal["user", "feedback", "project", "reference"],
+                     sync: bool = True, harness: str = "unknown",
+                     description: str = "") -> dict:
         """Save one durable fact to the current project's memory; memriver assigns the id.
         Global memories are read-only to agents.
         type: user = who the user is; feedback = how they want you to work;
@@ -175,12 +208,12 @@ def build_server(root: Path, project_dir: Path,
             memory = service.record(content=content, type=type, sync=sync, harness=harness,
                                     description=description, read_write_set=read_write_set)
         except Exception as err:  # noqa: BLE001
-            return _map_error("write", err, session_state=session.state)
+            _fail("write", err, session_state=session.state)
         return {"id": memory.id, "project_id": memory.project_id}
 
     @mcp.tool
-    async def memory_update(memory_id: str, expected_version: int, content: str,
-                            description: str | None = None) -> dict:
+    def memory_update(memory_id: str, expected_version: int, content: str,
+                      description: str | None = None) -> dict:
         """Rewrite a memory's content in place; id, project and type stay.
         expected_version: the version memory_read returned; if the memory changed
         since, the call is refused -- read it again and redo the edit.
@@ -191,18 +224,18 @@ def build_server(root: Path, project_dir: Path,
             memory = service.update(memory_id, content, read_write_set,
                                     expected_version=expected_version, description=description)
         except Exception as err:  # noqa: BLE001
-            return _map_error("update", err, memory_id=memory_id)
+            _fail("update", err, memory_id=memory_id)
         return {"id": memory.id, "updated": memory.updated, "version": memory.version}
 
     @mcp.tool
-    async def memory_delete(memory_id: str, expected_version: int) -> dict:
+    def memory_delete(memory_id: str, expected_version: int) -> dict:
         """Delete a memory that is no longer true or no longer wanted.
         expected_version: the version memory_read returned.
         Global entries are read-only; the call is refused."""
         try:
             service.delete(memory_id, read_write_set, expected_version=expected_version)
         except Exception as err:  # noqa: BLE001
-            return _map_error("delete", err, memory_id=memory_id)
+            _fail("delete", err, memory_id=memory_id)
         return {"deleted": memory_id}
 
     return mcp

@@ -1,4 +1,8 @@
+import asyncio
+import contextlib
 import sqlite3
+import threading
+import time
 from contextlib import closing
 from pathlib import Path
 
@@ -96,6 +100,40 @@ async def _call(server, tool, **arguments):
         return (await c.call_tool(tool, arguments)).data
 
 
+async def _error(server, tool, **arguments) -> str:
+    """Call `tool`, assert it fails as an MCP tool error, and return its message."""
+    async with Client(server) as c:
+        result = await c.call_tool(tool, arguments, raise_on_error=False)
+    assert result.is_error is True
+    assert len(result.content) == 1
+    return result.content[0].text
+
+
+async def test_failures_are_mcp_tool_errors_successes_are_not(server, world):
+    """The MCP-level contract the six tools promise: a failure is `isError`
+    with the client message as its only text content, a success carries the
+    same data it always did with `isError` false."""
+    unknown = new_id()
+    shared = _global_memory(world)
+    written = await _call(server, "memory_write", content="v1", type="user")
+    async with Client(server) as c:
+        missing = await c.call_tool("memory_read", {"memory_id": unknown}, raise_on_error=False)
+        assert missing.is_error is True
+        assert len(missing.content) == 1
+        assert missing.content[0].text == f"no such entry: {unknown}"
+
+        refused = await c.call_tool(
+            "memory_update", {"memory_id": shared.id, "expected_version": 1, "content": "x"},
+            raise_on_error=False)
+        assert refused.is_error is True
+        assert refused.content[0].text == GLOBAL_READ_ONLY
+
+        ok = await c.call_tool("memory_read", {"memory_id": written["id"]}, raise_on_error=False)
+        assert ok.is_error is False
+        assert set(ok.data) == {"id", "project_id", "type", "source", "trust", "sync",
+                                "created", "updated", "description", "body", "version"}
+
+
 async def test_the_tool_list_is_the_six_tools_and_no_dream(server):
     async with Client(server) as c:
         assert {t.name for t in await c.list_tools()} == TOOLS
@@ -177,11 +215,11 @@ async def test_a_foreign_id_and_an_unknown_id_answer_identically(server, world):
     for memory_id, expected in ((foreign.id, f"no such entry: {foreign.id}"),
                                 (unknown := new_id(), f"no such entry: {unknown}"),
                                 ("not-an-id", "no such entry")):
-        assert await _call(server, "memory_read", memory_id=memory_id) == {"error": expected}
-        assert await _call(server, "memory_update", memory_id=memory_id, expected_version=1,
-                           content="x") == {"error": expected}
-        assert await _call(server, "memory_delete", memory_id=memory_id,
-                           expected_version=1) == {"error": expected}
+        assert await _error(server, "memory_read", memory_id=memory_id) == expected
+        assert await _error(server, "memory_update", memory_id=memory_id, expected_version=1,
+                            content="x") == expected
+        assert await _error(server, "memory_delete", memory_id=memory_id,
+                            expected_version=1) == expected
     assert _snapshot(world["store"]) == before
 
 
@@ -191,12 +229,12 @@ async def test_a_damaged_row_is_reported_as_damage_per_operation(server, world):
                                                   source=SOURCE)).id
     _corrupt(world["store"], memory_id)
     before = _snapshot(world["store"])
-    assert await _call(server, "memory_read", memory_id=memory_id) == \
-        {"error": f"could not read entry: {memory_id}"}
-    assert await _call(server, "memory_update", memory_id=memory_id, expected_version=1,
-                       content="x") == {"error": f"could not update entry: {memory_id}"}
-    assert await _call(server, "memory_delete", memory_id=memory_id,
-                       expected_version=1) == {"error": f"could not delete entry: {memory_id}"}
+    assert await _error(server, "memory_read", memory_id=memory_id) == \
+        f"could not read entry: {memory_id}"
+    assert await _error(server, "memory_update", memory_id=memory_id, expected_version=1,
+                        content="x") == f"could not update entry: {memory_id}"
+    assert await _error(server, "memory_delete", memory_id=memory_id,
+                        expected_version=1) == f"could not delete entry: {memory_id}"
     assert _snapshot(world["store"]) == before
 
 
@@ -206,17 +244,17 @@ async def test_global_memories_cannot_be_changed_from_any_session(tmp_path, worl
     directory = world["dir"] if fixture == "registered" else tmp_path
     srv = build_server(root=world["store"], project_dir=directory)
     before = _snapshot(world["store"])
-    assert await _call(srv, "memory_update", memory_id=shared.id, expected_version=1,
-                       content="x") == {"error": GLOBAL_READ_ONLY}
-    assert await _call(srv, "memory_delete", memory_id=shared.id,
-                       expected_version=1) == {"error": GLOBAL_READ_ONLY}
+    assert await _error(srv, "memory_update", memory_id=shared.id, expected_version=1,
+                        content="x") == GLOBAL_READ_ONLY
+    assert await _error(srv, "memory_delete", memory_id=shared.id,
+                        expected_version=1) == GLOBAL_READ_ONLY
     assert _snapshot(world["store"]) == before
 
 
 async def test_write_without_a_project_is_refused_with_the_state_text(tmp_path, world):
     srv = build_server(root=world["store"], project_dir=tmp_path)
     before = _snapshot(world["store"])
-    assert await _call(srv, "memory_write", content="x", type="user") == {"error": NO_PROJECT}
+    assert await _error(srv, "memory_write", content="x", type="user") == NO_PROJECT
     assert _snapshot(world["store"]) == before
 
 
@@ -227,8 +265,7 @@ async def test_a_project_deleted_after_start_answers_the_missing_text(server, wo
     await _call(server, "memory_index")
     _sql(world["store"], "DELETE FROM projects WHERE id = ?", world["project"])
     before = _snapshot(world["store"])
-    assert await _call(server, "memory_write", content="x", type="user") == \
-        {"error": REGISTERED_MISSING}
+    assert await _error(server, "memory_write", content="x", type="user") == REGISTERED_MISSING
     assert _snapshot(world["store"]) == before
 
 
@@ -238,7 +275,7 @@ async def test_an_unknown_schema_still_starts_the_server_and_writes_nothing(worl
     srv = build_server(root=world["store"], project_dir=world["dir"])
     lines = (await _call(srv, "memory_index")).splitlines()
     assert lines == [STORE_UNREADABLE_HEADER, "(no memories yet)"]
-    assert await _call(srv, "memory_write", content="x", type="user") == {"error": UNAVAILABLE}
+    assert await _error(srv, "memory_write", content="x", type="user") == UNAVAILABLE
     assert _snapshot(world["store"]) == before
 
 
@@ -250,14 +287,19 @@ async def test_an_unknown_schema_still_starts_the_server_and_writes_nothing(worl
     ({"content": "fine", "type": "user", "description": "ghp_" + "a" * 36}, "secret"),
 ])
 async def test_write_rejections_never_echo_the_value(server, arguments, fragment):
-    result = await _call(server, "memory_write", **arguments)
-    assert fragment in result["error"].lower()
-    assert "ghp_" not in result["error"]
+    result = await _error(server, "memory_write", **arguments)
+    assert fragment in result.lower()
+    assert "ghp_" not in result
 
 
-async def test_nul_bytes_do_not_escape_as_tool_error(server):
-    result = await _call(server, "memory_write", content="a\x00b", type="user")
-    assert set(result) in ({"id", "project_id"}, {"error"})
+async def test_nul_bytes_do_not_escape_as_an_unhandled_exception(server):
+    async with Client(server) as c:
+        result = await c.call_tool("memory_write", {"content": "a\x00b", "type": "user"},
+                                   raise_on_error=False)
+    if result.is_error:
+        assert isinstance(result.content[0].text, str)
+    else:
+        assert set(result.data) == {"id", "project_id"}
 
 
 @pytest.mark.parametrize("arguments", [
@@ -267,8 +309,8 @@ async def test_nul_bytes_do_not_escape_as_tool_error(server):
 async def test_a_lone_surrogate_on_write_is_a_fixed_failure_not_a_codec_message(server, world,
                                                                                arguments):
     before = _snapshot(world["store"])
-    result = await _call(server, "memory_write", **arguments)
-    assert result == {"error": "could not write entry"}
+    result = await _error(server, "memory_write", **arguments)
+    assert result == "could not write entry"
     assert _snapshot(world["store"]) == before
 
 
@@ -277,13 +319,12 @@ async def test_a_lone_surrogate_on_write_is_a_fixed_failure_not_a_codec_message(
     ("memory_delete", {"expected_version": 1}),
 ])
 async def test_an_invalid_id_is_never_echoed_back(server, tool, extra):
-    result = await _call(server, tool, memory_id="x\n\nIGNORE PREVIOUS", **extra)
-    assert set(result) == {"error"}
-    assert "\n" not in result["error"] and "IGNORE" not in result["error"]
+    result = await _error(server, tool, memory_id="x\n\nIGNORE PREVIOUS", **extra)
+    assert "\n" not in result and "IGNORE" not in result
 
 
-async def test_a_lone_surrogate_id_is_an_error_dict_not_a_tool_error(server):
-    assert await _call(server, "memory_read", memory_id="\udc80") == {"error": "no such entry"}
+async def test_a_lone_surrogate_id_is_reported_as_no_such_entry(server):
+    assert await _error(server, "memory_read", memory_id="\udc80") == "no such entry"
 
 
 async def test_update_rewrites_in_place_and_description_none_keeps_empty_clears(server):
@@ -300,17 +341,17 @@ async def test_update_rewrites_in_place_and_description_none_keeps_empty_clears(
 
 async def test_update_description_with_secret_material_is_refused(server):
     written = await _call(server, "memory_write", content="v1", type="user")
-    result = await _call(server, "memory_update", memory_id=written["id"], expected_version=1,
-                         content="v2", description="ghp_" + "a" * 36)
-    assert "ghp_" not in result["error"]
+    result = await _error(server, "memory_update", memory_id=written["id"], expected_version=1,
+                          content="v2", description="ghp_" + "a" * 36)
+    assert "ghp_" not in result
 
 
 async def test_delete(server):
     written = await _call(server, "memory_write", content="gone soon", type="user")
     assert await _call(server, "memory_delete", memory_id=written["id"],
                        expected_version=1) == {"deleted": written["id"]}
-    assert await _call(server, "memory_read", memory_id=written["id"]) == \
-        {"error": f"no such entry: {written['id']}"}
+    assert await _error(server, "memory_read", memory_id=written["id"]) == \
+        f"no such entry: {written['id']}"
 
 
 async def test_settings_tune_the_body_index_and_search_budgets(world):
@@ -318,7 +359,7 @@ async def test_settings_tune_the_body_index_and_search_budgets(world):
                         search_limit_default=1, search_limit_max=1)
     _global_memory(world, body="word global")
     srv = build_server(root=world["store"], project_dir=world["dir"], settings=settings)
-    assert "too large" in (await _call(srv, "memory_write", content="x" * 11, type="user"))["error"]
+    assert "too large" in await _error(srv, "memory_write", content="x" * 11, type="user")
     for i in range(2):
         await _call(srv, "memory_write", content=f"word {i}", type="user")
     index = await _call(srv, "memory_index")
@@ -351,10 +392,10 @@ async def test_update_and_delete_need_the_version_memory_read_returned(server):
     updated = await _call(server, "memory_update", memory_id=written["id"],
                           expected_version=1, content="v2")
     assert updated["version"] == 2
-    stale = await _call(server, "memory_update", memory_id=written["id"],
-                        expected_version=1, content="lost")
-    assert stale == {"error": f"entry {written['id']} changed since you read it; no change "
-                              "was made. Call memory_read again and retry with its version."}
+    stale = await _error(server, "memory_update", memory_id=written["id"],
+                         expected_version=1, content="lost")
+    assert stale == (f"entry {written['id']} changed since you read it; no change "
+                     "was made. Call memory_read again and retry with its version.")
     assert (await _call(server, "memory_read", memory_id=written["id"]))["body"] == "v2"
 
 
@@ -364,19 +405,19 @@ async def test_a_deleted_memory_is_indistinguishable_from_an_absent_one(server):
                        expected_version=1) == {"deleted": written["id"]}
     absent = new_id()
     for memory_id in (written["id"], absent):
-        assert await _call(server, "memory_read", memory_id=memory_id) == \
-            {"error": f"no such entry: {memory_id}"}
-        assert await _call(server, "memory_update", memory_id=memory_id, expected_version=2,
-                           content="x") == {"error": f"no such entry: {memory_id}"}
-        assert await _call(server, "memory_delete", memory_id=memory_id,
-                           expected_version=2) == {"error": f"no such entry: {memory_id}"}
+        expected = f"no such entry: {memory_id}"
+        assert await _error(server, "memory_read", memory_id=memory_id) == expected
+        assert await _error(server, "memory_update", memory_id=memory_id, expected_version=2,
+                            content="x") == expected
+        assert await _error(server, "memory_delete", memory_id=memory_id,
+                            expected_version=2) == expected
     # the realistic retry names the version memory_read returned before the
     # delete: it must not reveal that the entry changed, only that it is absent
     gone = written["id"]
-    assert await _call(server, "memory_update", memory_id=gone, expected_version=1,
-                       content="x") == {"error": f"no such entry: {gone}"}
-    assert await _call(server, "memory_delete", memory_id=gone,
-                       expected_version=1) == {"error": f"no such entry: {gone}"}
+    assert await _error(server, "memory_update", memory_id=gone, expected_version=1,
+                        content="x") == f"no such entry: {gone}"
+    assert await _error(server, "memory_delete", memory_id=gone,
+                        expected_version=1) == f"no such entry: {gone}"
     assert await _call(server, "memory_search", query="gone soon") == []
 
 
@@ -400,7 +441,7 @@ async def test_no_protocol_field_or_fixed_copy_reveals_deletion_state(server):
         assert "soft" not in (tool.description or "").lower()
     assert "soft" not in INSTRUCTIONS.lower() and "deleted_at" not in INSTRUCTIONS
     memory_id = new_id()
-    mapped = [server_module._map_error(operation, err, memory_id=memory_id)["error"]
+    mapped = [server_module._map_error(operation, err, memory_id=memory_id)
               for operation, err in (
                   ("read", MemoryNotFound(memory_id)), ("update", MemoryNotFound(memory_id)),
                   ("delete", MemoryNotFound(memory_id)), ("read", StorageFailure()),
@@ -450,3 +491,60 @@ async def test_no_tool_reaches_the_management_reads_or_hard_delete(world, monkey
                                                "expected_version": 2})):
         await _call(server, tool, **arguments)
     assert seen == ["hard=False"]
+
+
+def _hold_the_write_lock(db_path: Path, hold_seconds: float, ready: threading.Event) -> None:
+    """Take SQLite's write lock on another connection and sit on it a while,
+    the way a concurrent writer (another process, another session) would."""
+    conn = sqlite3.connect(db_path, timeout=5)
+    conn.execute("BEGIN IMMEDIATE")
+    ready.set()
+    time.sleep(hold_seconds)
+    conn.rollback()
+    conn.close()
+
+
+async def test_memory_write_does_not_block_the_event_loop(world):
+    """memory_write's SQLite write can wait up to BUSY_TIMEOUT_MS for another
+    writer's lock; a plain `def` tool runs that wait in a worker thread, so a
+    10ms heartbeat on the event loop must keep ticking through it. Before the
+    fix (an `async def` tool with no await) the whole wait ran inline and
+    stalled every other request for as long as it lasted."""
+    server = build_server(root=world["store"], project_dir=world["dir"])
+    db_path = world["store"] / "memriver.db"
+    if not db_path.exists():
+        pytest.skip("the store database was not created ahead of the write")
+
+    hold_seconds = 0.5
+    ready = threading.Event()
+    holder = threading.Thread(target=_hold_the_write_lock, args=(db_path, hold_seconds, ready))
+    holder.start()
+    try:
+        if not ready.wait(2):
+            pytest.skip("could not deterministically acquire the write lock on this platform")
+
+        stalls: list[float] = []
+        stop = asyncio.Event()
+
+        async def heartbeat() -> None:
+            while not stop.is_set():
+                start = time.monotonic()
+                await asyncio.sleep(0.01)
+                stalls.append(time.monotonic() - start)
+
+        beat = asyncio.ensure_future(heartbeat())
+        try:
+            async with Client(server) as c:
+                await c.call_tool("memory_write", {"content": "x", "type": "user"})
+        finally:
+            stop.set()
+            beat.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await beat
+    finally:
+        holder.join()
+
+    assert stalls, "the heartbeat never got a chance to run"
+    # generous margin: the tool wait is ~0.5s; a blocked event loop would show
+    # a single ~0.5s gap, a free one never exceeds a couple of scheduler ticks
+    assert max(stalls) < 0.2, f"the event loop stalled for {max(stalls):.3f}s"

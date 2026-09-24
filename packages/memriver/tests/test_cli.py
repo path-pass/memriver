@@ -291,7 +291,7 @@ def test_settings_file_in_root_is_honoured_end_to_end(tmp_path):
 
     response = _write_over_stdio(root, cwd=git_repo, extra_args=[],
                                  content="x" * 11)
-    assert response["result"]["isError"] is False  # tools report, never raise
+    assert response["result"]["isError"] is True  # a refusal is an MCP tool error
     assert "too large" in json.dumps(response["result"])
     assert _active_memories(root, project_id) == 0
 

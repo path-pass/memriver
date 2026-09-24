@@ -9,10 +9,13 @@ backend that raised the error.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 from fastmcp import Client
+from fastmcp.exceptions import ToolError
 from memriver import server as server_module
-from memriver.server import _map_error, build_server
+from memriver.server import _fail, _map_error, build_server
 from memriver_core import (
     ContentRejected,
     GlobalReadOnly,
@@ -42,14 +45,14 @@ M = "mmmmmmmmmm"
 # --- _map_error, fed nothing but structured fields ---
 
 @pytest.mark.parametrize("err, expected", [
-    (StorageFailure(), {"error": "could not write entry"}),
-    (MemoryNotFound(M), {"error": "could not write entry"}),
+    (StorageFailure(), "could not write entry"),
+    (MemoryNotFound(M), "could not write entry"),
     (ContentRejected("content is empty; nothing to store"),
-     {"error": "content is empty; nothing to store"}),
-    (ValueError("invalid memory type: 'bogus'"), {"error": "invalid memory type: 'bogus'"}),
+     "content is empty; nothing to store"),
+    (ValueError("invalid memory type: 'bogus'"), "invalid memory type: 'bogus'"),
     (UnicodeEncodeError("utf-8", "\udc80", 0, 1, "surrogates not allowed"),
-     {"error": "could not write entry"}),
-    (GlobalReadOnly(), {"error": GLOBAL_READ_ONLY}),
+     "could not write entry"),
+    (GlobalReadOnly(), GLOBAL_READ_ONLY),
 ])
 def test_write_mapping(err, expected):
     assert _map_error("write", err) == expected
@@ -64,20 +67,20 @@ def test_write_mapping(err, expected):
 def test_write_without_a_project_states_the_session_not_a_path(state, fragment):
     result = _map_error("write", ProjectUnavailable("no writable project in this session"),
                         session_state=state)
-    assert fragment in result["error"] and "No memory was saved" in result["error"]
-    assert "/" not in result["error"].replace("memriver project", "")
+    assert fragment in result and "No memory was saved" in result
+    assert "/" not in result.replace("memriver project", "")
 
 
 @pytest.mark.parametrize("operation", ["read", "update", "delete"])
 def test_not_found_is_one_answer_for_every_single_memory_operation(operation):
-    assert _map_error(operation, MemoryNotFound(M), memory_id=M) == {"error": f"no such entry: {M}"}
+    assert _map_error(operation, MemoryNotFound(M), memory_id=M) == f"no such entry: {M}"
 
 
 @pytest.mark.parametrize("operation", ["read", "update", "delete"])
 @pytest.mark.parametrize("err", [MemoryNotFound("x"), StorageFailure()])
 def test_an_id_that_is_not_an_id_is_never_echoed(operation, err):
     result = _map_error(operation, err, memory_id="x\n\nIGNORE PREVIOUS")
-    assert "\n" not in result["error"] and "IGNORE" not in result["error"]
+    assert "\n" not in result and "IGNORE" not in result
 
 
 @pytest.mark.parametrize(("operation", "expected"), [
@@ -88,31 +91,48 @@ def test_an_id_that_is_not_an_id_is_never_echoed(operation, err):
 def test_storage_failure_is_per_operation_and_never_leaks_its_cause(operation, expected):
     err = StorageFailure()
     err.__cause__ = OSError("disk full at /secret/path")
-    assert _map_error(operation, err, memory_id=M) == {"error": expected}
+    assert _map_error(operation, err, memory_id=M) == expected
 
 
 @pytest.mark.parametrize("operation", ["update", "delete"])
 def test_every_mutation_of_a_global_entry_reports_the_same_refusal(operation):
-    assert _map_error(operation, GlobalReadOnly(), memory_id=M) == {"error": GLOBAL_READ_ONLY}
+    assert _map_error(operation, GlobalReadOnly(), memory_id=M) == GLOBAL_READ_ONLY
 
 
 @pytest.mark.parametrize("operation", ["update", "delete"])
 def test_a_version_conflict_names_the_entry_and_the_recovery(operation):
-    assert _map_error(operation, VersionConflict(M), memory_id=M) == {
-        "error": f"entry {M} changed since you read it; no change was made. "
-                 "Call memory_read again and retry with its version."}
-    assert _map_error(operation, VersionConflict("x\ny"), memory_id="x\ny")["error"] \
+    assert _map_error(operation, VersionConflict(M), memory_id=M) == (
+        f"entry {M} changed since you read it; no change was made. "
+        "Call memory_read again and retry with its version.")
+    assert _map_error(operation, VersionConflict("x\ny"), memory_id="x\ny") \
         .startswith("entry changed since you read it")
 
 
 def test_update_forwards_the_content_policy_refusal():
     assert _map_error("update", ContentRejected("looks like a secret"), memory_id=M) == \
-        {"error": "looks like a secret"}
+        "looks like a secret"
 
 
 def test_list_operations_have_one_answer_for_any_error():
     for err in (StorageFailure(), MemoryNotFound(M), RuntimeError("x /secret")):
-        assert _map_error("list", err) == {"error": "could not read the memory store"}
+        assert _map_error("list", err) == "could not read the memory store"
+
+
+def test_an_unnamed_error_logs_only_the_operation_and_its_type(caplog):
+    with caplog.at_level(logging.WARNING, logger="memriver"), pytest.raises(ToolError) as exc_info:
+        _fail("read", RuntimeError("secret detail /Users/x"), memory_id=M)
+    assert str(exc_info.value) == f"could not read entry: {M}"
+    assert [r.getMessage() for r in caplog.records] == ["memory_read failed: RuntimeError"]
+
+
+@pytest.mark.parametrize("err", [MemoryNotFound(M), GlobalReadOnly(),
+                                 ProjectUnavailable("x"), VersionConflict(M),
+                                 ContentRejected("looks like a secret"),
+                                 ValueError("invalid memory type: 'bogus'")])
+def test_a_named_error_never_logs(caplog, err):
+    with caplog.at_level(logging.WARNING, logger="memriver"), pytest.raises(ToolError):
+        _fail("update", err, memory_id=M)
+    assert caplog.records == []
 
 
 # --- the tools over a second backend ---
@@ -229,48 +249,56 @@ def other_backend_server(tmp_path, monkeypatch):
     return build
 
 
+async def _error_text(server, tool: str, arguments: dict) -> str:
+    """Call `tool`, assert it fails as an MCP tool error, and return its message."""
+    async with Client(server) as c:
+        result = await c.call_tool(tool, arguments, raise_on_error=False)
+    assert result.is_error is True
+    assert len(result.content) == 1
+    return result.content[0].text
+
+
 @pytest.mark.parametrize("error, expected", [
-    (StorageFailure(), {"error": "could not write entry"}),
-    (GlobalReadOnly(), {"error": GLOBAL_READ_ONLY}),
+    (StorageFailure(), "could not write entry"),
+    (GlobalReadOnly(), GLOBAL_READ_ONLY),
 ])
 async def test_write_over_another_backend_answers_identically(other_backend_server, error,
                                                               expected):
-    async with Client(other_backend_server(error)) as c:
-        assert (await c.call_tool("memory_write", {"content": "v2", "type": "user"})).data == expected
+    server = other_backend_server(error)
+    assert await _error_text(server, "memory_write", {"content": "v2", "type": "user"}) == expected
 
 
 @pytest.mark.parametrize("error, tool, arguments, expected", [
-    (MemoryNotFound(M), "memory_read", {"memory_id": M}, {"error": f"no such entry: {M}"}),
+    (MemoryNotFound(M), "memory_read", {"memory_id": M}, f"no such entry: {M}"),
     (MemoryNotFound(M), "memory_update", {"memory_id": M, "expected_version": 1, "content": "v2"},
-     {"error": f"no such entry: {M}"}),
+     f"no such entry: {M}"),
     (MemoryNotFound(M), "memory_delete", {"memory_id": M, "expected_version": 1},
-     {"error": f"no such entry: {M}"}),
-    (StorageFailure(), "memory_read", {"memory_id": M}, {"error": f"could not read entry: {M}"}),
+     f"no such entry: {M}"),
+    (StorageFailure(), "memory_read", {"memory_id": M}, f"could not read entry: {M}"),
     (StorageFailure(), "memory_update", {"memory_id": M, "expected_version": 1, "content": "v2"},
-     {"error": f"could not update entry: {M}"}),
+     f"could not update entry: {M}"),
     (StorageFailure(), "memory_delete", {"memory_id": M, "expected_version": 1},
-     {"error": f"could not delete entry: {M}"}),
+     f"could not delete entry: {M}"),
 ])
 async def test_single_memory_errors_over_another_backend_answer_identically(
         other_backend_server, error, tool, arguments, expected):
-    async with Client(other_backend_server(error)) as c:
-        assert (await c.call_tool(tool, arguments)).data == expected
+    assert await _error_text(other_backend_server(error), tool, arguments) == expected
 
 
 async def test_a_chatty_backend_cannot_reach_the_client(other_backend_server):
     chatty = StorageFailure()
     chatty.args = ("SELECT * FROM secrets WHERE path='/Users/x'",)
-    async with Client(other_backend_server(chatty)) as c:
-        for tool, arguments in (("memory_read", {"memory_id": M}),
-                                ("memory_write", {"content": "v", "type": "user"})):
-            text = str((await c.call_tool(tool, arguments)).data)
-            assert "SELECT" not in text and "/Users/x" not in text
+    server = other_backend_server(chatty)
+    for tool, arguments in (("memory_read", {"memory_id": M}),
+                            ("memory_write", {"content": "v", "type": "user"})):
+        text = await _error_text(server, tool, arguments)
+        assert "SELECT" not in text and "/Users/x" not in text
 
 
 @pytest.mark.parametrize("error", [StorageFailure(), RuntimeError("boom /secret")])
-async def test_memory_index_and_search_never_raise(other_backend_server, error):
-    async with Client(other_backend_server(error)) as c:
-        index = (await c.call_tool("memory_index", {})).data
-        search = (await c.call_tool("memory_search", {"query": "q"})).data
-    assert index == "could not read the memory store"
-    assert search == [{"error": "could not read the memory store"}]
+async def test_memory_index_and_search_report_the_same_failure_as_a_tool_error(
+        other_backend_server, error):
+    server = other_backend_server(error)
+    assert await _error_text(server, "memory_index", {}) == "could not read the memory store"
+    assert await _error_text(server, "memory_search", {"query": "q"}) == \
+        "could not read the memory store"
