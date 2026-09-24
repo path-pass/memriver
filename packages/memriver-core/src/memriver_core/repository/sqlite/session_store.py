@@ -262,6 +262,18 @@ class SqliteSessionStore:
                                                    project_id=stored.candidate_id))
         return self._write(confirm)
 
+    def assign_project(self, key: SessionKey, project_id: str) -> Session | None:
+        def assign(conn: sqlite3.Connection) -> Session | None:
+            stored = _stored(conn, key)
+            # decided under the write lock: a project set meanwhile is never
+            # overwritten, and a candidate is session_confirm's to decide
+            if stored is None or stored.project_id is not None \
+                    or stored.candidate_id is not None:
+                return stored
+            return _save(conn, dataclasses.replace(stored, status="registered",
+                                                   project_id=project_id))
+        return self._write(assign)
+
     def search(self, project_id: str | None, query: str, limit: int) -> list[Session]:
         sql, params = _SELECT, ()
         if project_id is not None:

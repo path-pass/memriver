@@ -78,16 +78,18 @@ PENDING_HEADER = ("project: awaiting confirmation — this session is not regist
 PENDING_NO_CANDIDATE_HEADER = (
     "project: none — this session is not registered, and the directory it was first "
     "observed in is not in any registered project, so global is read-only; to save, ask "
-    "the user to run memriver project init there, then start a new session")
+    "the user to run memriver project init there, then call session_register")
 UNIDENTIFIED_HEADER = ("project: none — this session is not registered with memriver: its "
                        "hooks may not be installed (memriver install) or trusted (Codex asks "
                        "on start), or the harness sent no session id; ask the user to fix "
                        "that, then start a new session")
-# a session row's project never re-resolves, so these two point at a new
-# session rather than at the directory the session happens to be in
+# a session row's project never re-resolves on its own: one registered with
+# no project gets one only through session_register, from where it started,
+# and one whose project is gone needs a new session -- never the directory the
+# session happens to be in
 SESSION_NONE_HEADER = ("project: none — this session was registered with no project, so global "
-                       "is read-only; to save, ask the user to run memriver project init, then "
-                       "start a new session")
+                       "is read-only; to save, ask the user to run memriver project init where "
+                       "this session started, then call session_register")
 SESSION_PROJECT_GONE_HEADER = ("project: unavailable — this session's project no longer exists "
                                "or became global, so global is read-only; to save, ask the "
                                "user to start a new session")
@@ -289,6 +291,35 @@ class MemoryService:
             raise ProjectUnavailable(reason="unidentified")
         return self._context_of(confirmed)
 
+    def register_session(self, key: SessionKey) -> ProjectContext:
+        """On request: give a session with no project the one covering where it started.
+
+        Resolved from the stored entry directory exactly like a first
+        registration (spec §5.1, U14); a row that already has a project, or
+        nothing covering the entry, answers unchanged.
+        """
+        # first: without a store no directory question (git included) is asked
+        if not self.store_exists():
+            return self._storeless_context(key)
+        stored = self._session_store.get(key)
+        if stored is None:
+            raise ProjectUnavailable(reason="unidentified")
+        if stored.project_id is not None:
+            return self._context_of(stored)
+        if stored.candidate_id is not None:
+            raise ProjectUnavailable(reason="pending")      # session_confirm's to decide
+        # outside any transaction: git may run here
+        resolved = self._resolve_entry(key, stored.entry_cwd)
+        if isinstance(resolved, ProjectContext):
+            return resolved
+        _, project = resolved
+        if project is None:
+            return self._context_of(stored)
+        assigned = self._session_store.assign_project(key, project.id)
+        if assigned is None:
+            return self._storeless_context(key)
+        return self._context_of(assigned)
+
     def search_sessions(self, query: str, context: ProjectContext,
                         limit: int | None = None) -> list[Session]:
         project_id = context.read_write_set.project_id
@@ -361,6 +392,28 @@ class MemoryService:
         A context instead when the directory cannot be resolved: nothing is
         registered, and the next event tries again.
         """
+        resolved = self._resolve_entry(key, entry_dir)
+        if isinstance(resolved, ProjectContext):
+            return resolved
+        entry, project = resolved
+        at = now()
+        return Session(
+            key=key, status="registered" if fresh else "pending",
+            origin="start" if fresh else "first-seen",
+            project_id=project.id if fresh and project is not None else None,
+            candidate_id=None if fresh or project is None else project.id,
+            candidate_root=None if fresh or project is None else project.root,
+            entry_cwd=entry, branch=self._current_branch(entry),
+            transcript_path=transcript_path, started_at=at, last_active_at=at, ended_at=None,
+            prompt_count=0, last_write_prompt_count=0, last_nudge_prompt_count=0,
+            first_prompt=None, recent_prompts=())
+
+    def _resolve_entry(self, key: SessionKey,
+                       entry_dir: str) -> tuple[str, Project | None] | ProjectContext:
+        """A registration directory's canonical spelling and project (spec §5.1).
+
+        The degraded context instead when it cannot be resolved.
+        """
         # only the canonical spelling is registered and walked: an alias (a
         # symlink) belongs where it points, never where it is written
         entry = self._canonical_directory(entry_dir)
@@ -373,18 +426,7 @@ class MemoryService:
         if resolution.state == "degraded":
             return self._degraded_context(resolution.diagnostic or "",
                                           self._project_store.global_project_id(), key)
-        project = resolution.project if resolution.state == "registered" else None
-        at = now()
-        return Session(
-            key=key, status="registered" if fresh else "pending",
-            origin="start" if fresh else "first-seen",
-            project_id=project.id if fresh and project is not None else None,
-            candidate_id=None if fresh or project is None else project.id,
-            candidate_root=None if fresh or project is None else project.root,
-            entry_cwd=entry, branch=self._current_branch(entry),
-            transcript_path=transcript_path, started_at=at, last_active_at=at, ended_at=None,
-            prompt_count=0, last_write_prompt_count=0, last_nudge_prompt_count=0,
-            first_prompt=None, recent_prompts=())
+        return entry, resolution.project if resolution.state == "registered" else None
 
     def _prompt_entry(self, prompt: object, at: str) -> PromptEntry:
         """One prompt as it may be stored: its first line-folded characters, or why not.
@@ -449,7 +491,11 @@ class MemoryService:
 
     def _refuse_pending(self, context: ProjectContext) -> None:
         if context.state == "pending":
-            raise ProjectUnavailable(reason="pending")
+            # no candidate: there is nothing to confirm, only a project to init
+            stored = self._stored_session(context)
+            raise ProjectUnavailable(
+                reason="pending-no-candidate" if stored is not None
+                and stored.candidate_id is None else "pending")
 
     def _mark_saved(self, context: ProjectContext) -> None:
         """The save watermark (spec §3.3): best effort, never fails the save."""

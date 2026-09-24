@@ -45,8 +45,8 @@ UNIDENTIFIED_HEADER = ("project: none — this session is not registered with me
                        "on start), or the harness sent no session id; ask the user to fix "
                        "that, then start a new session")
 SESSION_NONE_HEADER = ("project: none — this session was registered with no project, so global "
-                       "is read-only; to save, ask the user to run memriver project init, then "
-                       "start a new session")
+                       "is read-only; to save, ask the user to run memriver project init where "
+                       "this session started, then call session_register")
 SESSION_PROJECT_GONE_HEADER = ("project: unavailable — this session's project no longer exists "
                                "or became global, so global is read-only; to save, ask the "
                                "user to start a new session")

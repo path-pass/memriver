@@ -52,10 +52,10 @@ UNIDENTIFIED_HEADER = ("project: none — this session is not registered with me
 PENDING_NO_CANDIDATE_HEADER = (
     "project: none — this session is not registered, and the directory it was first "
     "observed in is not in any registered project, so global is read-only; to save, ask "
-    "the user to run memriver project init there, then start a new session")
+    "the user to run memriver project init there, then call session_register")
 SESSION_NONE_HEADER = ("project: none — this session was registered with no project, so global "
-                       "is read-only; to save, ask the user to run memriver project init, then "
-                       "start a new session")
+                       "is read-only; to save, ask the user to run memriver project init where "
+                       "this session started, then call session_register")
 SESSION_PROJECT_GONE_HEADER = ("project: unavailable — this session's project no longer exists "
                                "or became global, so global is read-only; to save, ask the "
                                "user to start a new session")
@@ -538,6 +538,155 @@ def test_confirming_an_unknown_session_is_unidentified(world):
     assert caught.value.reason == "unidentified"
 
 
+# --- register_session ----------------------------------------------------------------
+
+def _projectless_start(world, *parts: str, key=KEY) -> Path:
+    """A session started in a directory no project covers yet."""
+    entry = world.base.joinpath("later", *parts)
+    entry.mkdir(parents=True)
+    assert world.start(entry=entry, key=key).state == "none"
+    return entry
+
+
+def _init(world, directory: Path, name: str = "later"):
+    directory.mkdir(parents=True, exist_ok=True)
+    return world.service.init_project(name, world.service.plan_root(str(directory)))
+
+
+def _registered_to(world, project, key=KEY) -> ProjectContext:
+    return ProjectContext(
+        "registered", f"project: {project.name} [{project.id}] (root {project.root[:120]})",
+        ReadWriteSet(project_id=project.id, global_project_id=world.global_id), project,
+        session_key=key)
+
+
+def test_register_binds_a_projectless_session_to_a_project_inited_at_its_entry(world):
+    entry = _projectless_start(world)
+    before = world.row()
+    project = _init(world, entry)
+    assert world.service.register_session(KEY) == _registered_to(world, project)
+    assert world.service.session_context(KEY) == _registered_to(world, project)
+    after = world.row()
+    assert (after.status, after.project_id) == ("registered", project.id)
+    # only the project changes: where and how the session started stays
+    assert (after.origin, after.entry_cwd, after.branch) == (
+        before.origin, before.entry_cwd, before.branch)
+
+
+def test_register_binds_the_project_inited_at_an_ancestor_of_the_entry(world):
+    _projectless_start(world, "deep", "sub")
+    project = _init(world, world.base / "later")
+    assert world.service.register_session(KEY) == _registered_to(world, project)
+
+
+def test_register_with_no_project_covering_the_entry_changes_nothing(world):
+    _projectless_start(world)
+    _init(world, world.base / "unrelated")
+    before = world.row()
+    assert world.service.register_session(KEY) == _no_project(world, "none",
+                                                              SESSION_NONE_HEADER)
+    assert world.row() == before
+
+
+def test_register_makes_a_pending_session_without_a_candidate_registered(world):
+    entry = world.base / "later"
+    entry.mkdir()
+    world.prompt(entry=entry)
+    assert world.service.register_session(KEY) == _no_project(
+        world, "pending", PENDING_NO_CANDIDATE_HEADER)
+    assert world.row().status == "pending"
+    project = _init(world, entry)
+    assert world.service.register_session(KEY) == _registered_to(world, project)
+    row = world.row()
+    assert (row.status, row.origin, row.project_id, row.candidate_id) == (
+        "registered", "first-seen", project.id, None)
+
+
+def test_register_refuses_a_pending_session_with_a_candidate(world):
+    world.prompt()
+    before = world.row()
+    with pytest.raises(ProjectUnavailable) as caught:
+        world.service.register_session(KEY)
+    assert caught.value.reason == "pending"
+    assert world.row() == before
+
+
+def test_register_never_changes_a_session_that_has_a_project(world):
+    (world.work / "sub").mkdir()
+    assert world.start(entry=world.work / "sub") == _registered(world)
+    before = world.row()
+    _init(world, world.work / "sub", "sub")     # the entry now has a nearer project
+    assert world.service.register_session(KEY) == _registered(world)
+    assert world.row() == before
+
+
+def test_register_keeps_a_project_the_row_got_in_the_meantime(world):
+    entry = _projectless_start(world)
+    project = _init(world, entry)
+    other = _init(world, world.base / "other", "other")
+
+    class GotOneMeanwhile:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+
+        def assign_project(self, key, project_id):
+            world.sql("UPDATE sessions SET project_id = ?", other.id)
+            return self._inner.assign_project(key, project_id)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    world.session_store = GotOneMeanwhile(world.session_store)
+    assert world.build().register_session(KEY) == _registered_to(world, other)
+    assert world.row().project_id == other.id != project.id
+
+
+def test_register_maps_a_linked_worktree_entry_to_the_main_trees_project(world):
+    worktree_sub = world.base / "wt" / "sub"
+    worktree_sub.mkdir(parents=True)
+    world.main_tree = lambda path: (str(world.base / "main" / "sub")
+                                    if path == str(worktree_sub) else path)
+    assert world.start(entry=worktree_sub).state == "none"
+    project = _init(world, world.base / "main", "main")
+    assert world.service.register_session(KEY) == _registered_to(world, project)
+    assert world.row().entry_cwd == str(worktree_sub)
+
+
+@pytest.mark.parametrize("break_resolution", ["unmappable", "entry-gone"])
+def test_a_degraded_registration_writes_nothing(world, break_resolution):
+    entry = _projectless_start(world)
+    _init(world, entry)
+    if break_resolution == "unmappable":
+        world.main_tree = lambda path: None
+    else:
+        world.sql("UPDATE sessions SET entry_cwd = ?", str(world.base / "gone"))
+    before = world.row()
+    context = world.service.register_session(KEY)
+    assert context.state == "degraded" and context.read_write_set.project_id is None
+    assert context.session_key == KEY
+    assert world.row() == before
+
+
+def test_register_without_a_store_answers_none_and_creates_nothing(storeless):
+    context = storeless.service.register_session(KEY)
+    assert (context.state, context.header) == ("none", NONE_HEADER)
+    assert not storeless.store.exists()
+
+
+def test_registering_an_unknown_session_is_unidentified(world):
+    with pytest.raises(ProjectUnavailable) as caught:
+        world.service.register_session(KEY)
+    assert caught.value.reason == "unidentified"
+
+
+def test_a_store_failure_while_registering_propagates(world):
+    _projectless_start(world)
+    world.session_store = Broken(world.session_store, "assign_project")
+    _init(world, world.base / "later")
+    with pytest.raises(StorageFailure):
+        world.build().register_session(KEY)
+
+
 def _git(*args: str, cwd: Path) -> None:
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env |= {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
@@ -743,3 +892,19 @@ def test_a_pending_session_can_neither_write_update_nor_delete(world):
             attempt()
         assert caught.value.reason == "pending"
     assert world.service.read(memory.id, registered).version == memory.version
+
+
+def test_a_pending_session_without_a_candidate_is_refused_with_its_own_reason(world):
+    registered = world.start(key=OTHER_KEY)
+    memory = world.service.record(content="fact", type="user", sync=False, harness="codex",
+                                  description="", context=registered)
+    world.prompt(entry=world.base)
+    pending = world.service.session_context(KEY)
+    for attempt in (
+            lambda: world.write(pending),
+            lambda: world.service.update(memory.id, "x", pending,
+                                         expected_version=memory.version),
+            lambda: world.service.delete(memory.id, pending, expected_version=memory.version)):
+        with pytest.raises(ProjectUnavailable) as caught:
+            attempt()
+        assert caught.value.reason == "pending-no-candidate"

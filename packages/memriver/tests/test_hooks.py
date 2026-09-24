@@ -51,13 +51,13 @@ INDEX_LINE = "- [user] likes-tea: drinks oolong (2026-01-01)"
 # a session started outside every project is registered with none, for good
 SESSION_NONE_HEADER = ("project: none — this session was registered with no project, so "
                        "global is read-only; to save, ask the user to run memriver project "
-                       "init, then start a new session")
+                       "init where this session started, then call session_register")
 PENDING_HEADER = ("project: awaiting confirmation — this session is not registered; "
                   "ask the user, then call session_confirm")
 PENDING_NO_CANDIDATE_HEADER = (
     "project: none — this session is not registered, and the directory it was first "
     "observed in is not in any registered project, so global is read-only; to save, ask "
-    "the user to run memriver project init there, then start a new session")
+    "the user to run memriver project init there, then call session_register")
 
 SESSION_ID = "session-1"
 MISSING = object()          # a payload key left out

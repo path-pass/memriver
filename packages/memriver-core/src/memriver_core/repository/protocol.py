@@ -135,6 +135,11 @@ class SessionStore(Protocol):
       from; otherwise `ProjectUnavailable(reason="candidate-changed")` and
       the row is unchanged. A registered row is returned unchanged; None for
       an unknown key.
+    - `assign_project`: a row with no project and no candidate (registered,
+      or pending with a NULL candidate) becomes registered with `project_id`;
+      any other row is returned unchanged -- a project set meanwhile is never
+      overwritten. `origin`, `entry_cwd` and `branch` stay. None for an
+      unknown key.
     - `search`: `project_id=None` is every row (the human CLI); otherwise
       that project's registered rows. A case-insensitive substring of a
       prompt text, `entry_cwd` or `branch`; newest `last_active_at` first.
@@ -152,4 +157,5 @@ class SessionStore(Protocol):
                      interval: int) -> bool: ...
     def mark_saved(self, key: SessionKey) -> None: ...
     def confirm(self, key: SessionKey) -> Session | None: ...
+    def assign_project(self, key: SessionKey, project_id: str) -> Session | None: ...
     def search(self, project_id: str | None, query: str, limit: int) -> list[Session]: ...

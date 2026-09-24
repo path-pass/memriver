@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import sqlite3
 import threading
 from contextlib import closing
@@ -357,6 +358,35 @@ def test_confirm_of_an_unknown_key_is_none(session_store):
     assert session_store.confirm(KEY) is None
 
 
+# --- assign_project ---
+
+def test_assign_project_binds_a_registered_row_with_no_project(session_store):
+    before = session_store.register(_session(project_id=None))
+    assigned = session_store.assign_project(KEY, PROJECT)
+    assert assigned == dataclasses.replace(before, project_id=PROJECT)
+    assert session_store.get(KEY) == assigned
+
+
+def test_assign_project_registers_a_pending_row_without_a_candidate(session_store):
+    before = session_store.register(_pending(candidate_id=None, candidate_root=None))
+    assigned = session_store.assign_project(KEY, PROJECT)
+    assert assigned == dataclasses.replace(before, status="registered", project_id=PROJECT)
+    assert assigned.origin == "first-seen"
+
+
+@pytest.mark.parametrize("row", [_session(project_id=OTHER), _pending()],
+                         ids=["has-a-project", "pending-with-a-candidate"])
+def test_assign_project_leaves_a_row_with_a_project_or_candidate_unchanged(session_store, row):
+    before = session_store.register(row)
+    assert session_store.assign_project(KEY, PROJECT) == before
+    assert session_store.get(KEY) == before
+
+
+def test_assign_project_of_an_unknown_key_is_none(session_store, initialized):
+    assert session_store.assign_project(KEY, PROJECT) is None
+    assert _raw(initialized, "SELECT count(*) FROM sessions") == [(0,)]
+
+
 # --- search ---
 
 def _search_world(session_store):
@@ -428,6 +458,7 @@ def test_every_write_to_an_absent_store_is_a_no_op_that_creates_nothing(root):
     assert session_store.nudge_if_due(KEY, _at(1), min_prompts=5, interval=5) is False
     assert session_store.mark_saved(KEY) is None
     assert session_store.confirm(KEY) is None
+    assert session_store.assign_project(KEY, PROJECT) is None
     assert not root.exists()
 
 
