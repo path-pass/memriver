@@ -1,9 +1,10 @@
 """Declarative installation plan for Claude Code.
 
 Both managed files are user-level: ``~/.claude.json`` carries the MCP server
-registration, ``~/.claude/settings.json`` carries the SessionStart/Stop hooks
-and the optional native-memory toggle. This module only builds ``Target`` and
-``EditOperation`` values -- it never opens a file, prompts, or writes.
+registration, ``~/.claude/settings.json`` carries the SessionStart/Stop/
+UserPromptSubmit/SessionEnd hooks and the optional native-memory toggle. This
+module only builds ``Target`` and ``EditOperation`` values -- it never opens a
+file, prompts, or writes.
 """
 
 from __future__ import annotations
@@ -40,8 +41,9 @@ def targets(home: Path, project_root: Path | None,
         path=home / ".claude" / "settings.json",
         user_level=True,
         rollback_instruction=(
-            "remove the memriver SessionStart/Stop hooks (and, if present, "
-            "env.CLAUDE_CODE_DISABLE_AUTO_MEMORY) from ~/.claude/settings.json"
+            "remove the memriver SessionStart/Stop/UserPromptSubmit/SessionEnd "
+            "hooks (and, if present, env.CLAUDE_CODE_DISABLE_AUTO_MEMORY) from "
+            "~/.claude/settings.json"
         ),
     )
     return config, settings
@@ -50,7 +52,8 @@ def targets(home: Path, project_root: Path | None,
 def operations(
     snapshots: tuple[Snapshot, Snapshot], env: Mapping[str, str],
 ) -> tuple[EditOperation, ...]:
-    """MCP registration, both hooks, and -- when offered -- the native-memory toggle."""
+    """MCP registration, all four hooks, and -- when offered -- the
+    native-memory toggle."""
     config, settings = snapshots
     ops = [
         EditOperation(
@@ -58,7 +61,7 @@ def operations(
             target=config.target,
             label="register memriver MCP server",
             kind="json-object",
-            expected=mcp_server_payload(),
+            expected=mcp_server_payload(HARNESS),
             key_path=("mcpServers", "memriver"),
         ),
         EditOperation(
@@ -79,6 +82,24 @@ def operations(
             key_path=("hooks", "Stop"),
             identity=hook_identity("stop"),
         ),
+        EditOperation(
+            id="claude-code:hooks-user-prompt-submit",
+            target=settings.target,
+            label="install the user-prompt-submit hook",
+            kind="hook-array",
+            expected=hook_group("user-prompt-submit", HARNESS),
+            key_path=("hooks", "UserPromptSubmit"),
+            identity=hook_identity("user-prompt-submit"),
+        ),
+        EditOperation(
+            id="claude-code:hooks-session-end",
+            target=settings.target,
+            label="install the session-end hook",
+            kind="hook-array",
+            expected=hook_group("session-end", HARNESS),
+            key_path=("hooks", "SessionEnd"),
+            identity=hook_identity("session-end"),
+        ),
     ]
     if _offer_disabling_auto_memory(settings.text, env):
         ops.append(EditOperation(
@@ -96,7 +117,7 @@ def operations(
 def uninstall_operations(
     snapshots: tuple[Snapshot, Snapshot], env: Mapping[str, str],
 ) -> tuple[RemovalOperation, ...]:
-    """The exact inverse of ``operations()``: the MCP entry and both hooks.
+    """The exact inverse of ``operations()``: the MCP entry and all four hooks.
 
     The native-memory toggle ``operations()`` may add is never undone here --
     spec 5.3's setting stays exactly where install put it; see ``uninstall_notes``.
@@ -126,6 +147,22 @@ def uninstall_operations(
             kind="hook-array",
             key_path=("hooks", "Stop"),
             identity=hook_identity("stop"),
+        ),
+        RemovalOperation(
+            id="claude-code:hooks-user-prompt-submit",
+            target=settings.target,
+            label="remove the user-prompt-submit hook",
+            kind="hook-array",
+            key_path=("hooks", "UserPromptSubmit"),
+            identity=hook_identity("user-prompt-submit"),
+        ),
+        RemovalOperation(
+            id="claude-code:hooks-session-end",
+            target=settings.target,
+            label="remove the session-end hook",
+            kind="hook-array",
+            key_path=("hooks", "SessionEnd"),
+            identity=hook_identity("session-end"),
         ),
     )
 

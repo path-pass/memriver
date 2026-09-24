@@ -20,32 +20,28 @@ from memriver.protocol_text import PROTOCOL_BLOCK
 
 HOME = Path("/home/user")
 
-MCP = {"command": "uvx", "args": ["memriver"]}
 
-CLAUDE_SESSION = {
-    "hooks": [{
-        "type": "command",
-        "command": "uvx memriver hook session-start --harness claude-code",
-    }],
-}
-CLAUDE_STOP = {
-    "hooks": [{
-        "type": "command",
-        "command": "uvx memriver hook stop --harness claude-code",
-    }],
-}
-CODEX_SESSION = {
-    "hooks": [{
-        "type": "command",
-        "command": "uvx memriver hook session-start --harness codex",
-    }],
-}
-CODEX_STOP = {
-    "hooks": [{
-        "type": "command",
-        "command": "uvx memriver hook stop --harness codex",
-    }],
-}
+def mcp_payload(harness: str) -> dict:
+    return {"command": "uvx", "args": ["memriver", "serve", "--harness", harness]}
+
+
+def hook_payload(verb: str, harness: str) -> dict:
+    return {
+        "hooks": [{
+            "type": "command",
+            "command": f"uvx memriver hook {verb} --harness {harness}",
+        }],
+    }
+
+
+CLAUDE_SESSION = hook_payload("session-start", "claude-code")
+CLAUDE_STOP = hook_payload("stop", "claude-code")
+CLAUDE_PROMPT = hook_payload("user-prompt-submit", "claude-code")
+CLAUDE_END = hook_payload("session-end", "claude-code")
+CODEX_SESSION = hook_payload("session-start", "codex")
+CODEX_STOP = hook_payload("stop", "codex")
+CODEX_PROMPT = hook_payload("user-prompt-submit", "codex")
+CODEX_END = hook_payload("session-end", "codex")
 
 
 def _snapshot(target, text: str = "") -> Snapshot:
@@ -127,7 +123,7 @@ def test_claude_code_operation_payloads():
     mcp_op = by_id["claude-code:mcp"]
     assert mcp_op.kind == "json-object"
     assert mcp_op.key_path == ("mcpServers", "memriver")
-    assert mcp_op.expected == MCP
+    assert mcp_op.expected == mcp_payload("claude-code")
 
     session_op = by_id["claude-code:hooks-session-start"]
     assert session_op.kind == "hook-array"
@@ -141,6 +137,18 @@ def test_claude_code_operation_payloads():
     assert stop_op.identity == ("uvx", "memriver", "hook", "stop")
     assert stop_op.expected == CLAUDE_STOP
 
+    prompt_op = by_id["claude-code:hooks-user-prompt-submit"]
+    assert prompt_op.kind == "hook-array"
+    assert prompt_op.key_path == ("hooks", "UserPromptSubmit")
+    assert prompt_op.identity == ("uvx", "memriver", "hook", "user-prompt-submit")
+    assert prompt_op.expected == CLAUDE_PROMPT
+
+    end_op = by_id["claude-code:hooks-session-end"]
+    assert end_op.kind == "hook-array"
+    assert end_op.key_path == ("hooks", "SessionEnd")
+    assert end_op.identity == ("uvx", "memriver", "hook", "session-end")
+    assert end_op.expected == CLAUDE_END
+
 
 def test_codex_operation_payloads():
     snapshots = codex_snapshots()
@@ -150,7 +158,7 @@ def test_codex_operation_payloads():
     mcp_op = by_id["codex:mcp"]
     assert mcp_op.kind == "toml-table"
     assert mcp_op.key_path == ("mcp_servers", "memriver")
-    assert mcp_op.expected == MCP
+    assert mcp_op.expected == mcp_payload("codex")
 
     session_op = by_id["codex:hooks-session-start"]
     assert session_op.kind == "hook-array"
@@ -164,6 +172,18 @@ def test_codex_operation_payloads():
     assert stop_op.identity == ("uvx", "memriver", "hook", "stop")
     assert stop_op.expected == CODEX_STOP
 
+    prompt_op = by_id["codex:hooks-user-prompt-submit"]
+    assert prompt_op.kind == "hook-array"
+    assert prompt_op.key_path == ("hooks", "UserPromptSubmit")
+    assert prompt_op.identity == ("uvx", "memriver", "hook", "user-prompt-submit")
+    assert prompt_op.expected == CODEX_PROMPT
+
+    end_op = by_id["codex:hooks-session-end"]
+    assert end_op.kind == "hook-array"
+    assert end_op.key_path == ("hooks", "SessionEnd")
+    assert end_op.identity == ("uvx", "memriver", "hook", "session-end")
+    assert end_op.expected == CODEX_END
+
 
 def test_cursor_operation_payloads(tmp_path):
     mcp_target, instructions_target = cursor.targets(HOME, tmp_path, "install")
@@ -174,7 +194,7 @@ def test_cursor_operation_payloads(tmp_path):
     mcp_op = by_id["cursor:mcp"]
     assert mcp_op.kind == "json-object"
     assert mcp_op.key_path == ("mcpServers", "memriver")
-    assert mcp_op.expected == MCP
+    assert mcp_op.expected == mcp_payload("cursor")
 
     instructions_op = by_id["cursor:instructions"]
     assert instructions_op.kind == "marker-block"
@@ -190,7 +210,7 @@ def test_kiro_operation_payloads(tmp_path):
     mcp_op = by_id["kiro:mcp"]
     assert mcp_op.kind == "json-object"
     assert mcp_op.key_path == ("mcpServers", "memriver")
-    assert mcp_op.expected == MCP
+    assert mcp_op.expected == mcp_payload("kiro")
 
     instructions_op = by_id["kiro:instructions"]
     assert instructions_op.kind == "marker-block"

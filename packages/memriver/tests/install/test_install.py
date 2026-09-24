@@ -32,6 +32,7 @@ import pytest
 import tomlkit
 from memriver.install import (
     HARNESS_SETTING_TAKEOVER_NOTICE,
+    RESTART_SESSIONS_NOTE,
     TAKEOVER_NOTICE,
     StoreStep,
     _symlinked_component,
@@ -481,20 +482,21 @@ def test_an_unknown_harness_name_fails_before_any_target_is_read(tmp_path, home,
 
 def test_every_planned_change_is_printed_before_the_first_prompt(home, project):
     result = install(["claude-code"], home=home, cwd=project, yes=False,
-                     replies=["y", "y", "y", "y"])
+                     replies=["y"] * 6)
 
     shown = result.answers.output_at_first_prompt
     assert shown is not None
     for label in ("register memriver MCP server", "install the session-start hook",
-                  "install the stop hook", "disable built-in auto memory"):
+                  "install the stop hook", "install the user-prompt-submit hook",
+                  "install the session-end hook", "disable built-in auto memory"):
         assert label in shown
 
 
 def test_each_change_gets_its_own_labelled_confirmation(home, project):
     result = install(["claude-code"], home=home, cwd=project, yes=False,
-                     replies=["y", "y", "y", "y"])
+                     replies=["y"] * 6)
 
-    assert len(result.answers.prompts) == 4
+    assert len(result.answers.prompts) == 6
     joined = " ".join(result.answers.prompts)
     assert "claude-code: register memriver MCP server -> ~/.claude.json" in joined
     assert "disable built-in auto memory" in joined
@@ -504,7 +506,7 @@ def test_every_confirmation_names_its_harness_and_its_target(home, project):
     """`--all` asks four times to "register memriver MCP server"; without the
     harness and the file each prompt writes, the four are indistinguishable."""
     result = install(ALL_HARNESSES, home=home, cwd=project, yes=False,
-                     replies=["n"] * 12)
+                     replies=["n"] * 15)
 
     prompts = result.answers.prompts
     mcp = [p for p in prompts if "register memriver MCP server" in p]
@@ -527,12 +529,41 @@ def test_a_takeover_is_labelled_and_confirmed_without_showing_the_old_value(home
     }))
 
     result = install(["claude-code"], home=home, cwd=project, yes=False,
-                     replies=["y", "y", "y", "y"])
+                     replies=["y"] * 6)
 
     assert result.exit_code == 0
     assert TAKEOVER_NOTICE in result.stdout
     assert SECRET not in result.stdout
     assert json.loads((home / ".claude.json").read_text())["apiKey"] == SECRET
+
+
+def test_reinstall_updates_an_old_style_claude_code_mcp_entry_in_place(home, project):
+    """A pre-2 memriver installed args=["memriver"] with no `serve --harness`
+    suffix; reinstalling must update that one entry to the new args rather
+    than refusing it or leaving a second memriver key beside it."""
+    write(home / ".claude.json",
+          json.dumps({"mcpServers": {"memriver": {"command": "uvx", "args": ["memriver"]}}}))
+
+    result = install(["claude-code"], home=home, cwd=project, yes=True)
+
+    assert result.exit_code == 0
+    servers = json.loads((home / ".claude.json").read_text())["mcpServers"]
+    assert servers == {"memriver": {
+        "command": "uvx", "args": ["memriver", "serve", "--harness", "claude-code"]}}
+
+
+def test_reinstall_updates_an_old_style_codex_mcp_entry_in_place(home, project):
+    write(home / ".codex" / "config.toml",
+          '[mcp_servers.memriver]\ncommand = "uvx"\nargs = ["memriver"]\n')
+
+    result = install(["codex"], home=home, cwd=project, yes=True)
+
+    assert result.exit_code == 0
+    rendered = (home / ".codex" / "config.toml").read_text()
+    assert rendered.count("[mcp_servers.memriver]") == 1
+    parsed = tomlkit.parse(rendered)
+    assert parsed["mcp_servers"]["memriver"].unwrap() == {
+        "command": "uvx", "args": ["memriver", "serve", "--harness", "codex"]}
 
 
 def test_the_native_memory_takeover_does_not_call_it_a_memriver_entry(home, project):
@@ -543,7 +574,7 @@ def test_the_native_memory_takeover_does_not_call_it_a_memriver_entry(home, proj
           json.dumps({"env": {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "0"}}))
 
     result = install(["claude-code"], home=home, cwd=project, yes=False,
-                     replies=["y", "y", "y", "y"])
+                     replies=["y"] * 6)
 
     assert result.exit_code == 0
     assert HARNESS_SETTING_TAKEOVER_NOTICE in result.stdout
@@ -558,7 +589,7 @@ def mutate_at_last_prompt(path: Path, mutate) -> tuple[callable, list]:
 
     def answer(prompt: str) -> str:
         prompts.append(prompt)
-        if len(prompts) == 4:  # the last claude-code confirmation
+        if len(prompts) == 6:  # the last claude-code confirmation
             mutate(path)
         return "y"
 
@@ -581,7 +612,7 @@ def test_a_target_rewritten_between_planning_and_apply_aborts_the_run(home,
     result = install(["claude-code"], home=home, cwd=project, yes=False,
                      input_fn=answer)
 
-    assert len(prompts) == 4
+    assert len(prompts) == 6
     assert result.exit_code == 1
     assert "file changed since planning" in result.stderr
     abort = next(line for line in result.stderr.splitlines()
@@ -609,7 +640,7 @@ def test_a_target_created_between_planning_and_apply_aborts_the_run(home, projec
     result = install(["claude-code"], home=home, cwd=project, yes=False,
                      input_fn=answer)
 
-    assert len(prompts) == 4
+    assert len(prompts) == 6
     assert result.exit_code == 1
     assert "file changed since planning" in result.stderr
     assert settings.read_text() == concurrent
@@ -631,7 +662,7 @@ def test_a_permission_change_between_planning_and_apply_aborts_the_run(home,
     result = install(["claude-code"], home=home, cwd=project, yes=False,
                      input_fn=answer)
 
-    assert len(prompts) == 4
+    assert len(prompts) == 6
     assert result.exit_code == 1
     assert "file changed since planning" in result.stderr
     assert mode_of(settings) == 0o644
@@ -639,7 +670,7 @@ def test_a_permission_change_between_planning_and_apply_aborts_the_run(home,
 
 def test_declining_the_native_memory_change_keeps_the_accepted_ones(home, project):
     result = install(["claude-code"], home=home, cwd=project, yes=False,
-                     replies=["y", "y", "y", "n"])
+                     replies=["y", "y", "y", "y", "y", "n"])
 
     settings = json.loads((home / ".claude" / "settings.json").read_text())
     assert result.exit_code == 0
@@ -652,7 +683,7 @@ def test_declining_everything_writes_nothing(tmp_path, home, project):
     before_tree = snapshot_tree(tmp_path)
 
     result = install(["claude-code"], home=home, cwd=project, yes=False,
-                     replies=["n", "n", "n", "n"])
+                     replies=["n"] * 6)
 
     assert result.exit_code == 0
     assert snapshot_tree(tmp_path) == before_tree
@@ -670,6 +701,9 @@ def test_declining_every_codex_change_still_states_trust_and_native_memory(home,
         "SessionStart": [
             hook_group("uvx memriver hook session-start --harness codex")],
         "Stop": [hook_group("uvx memriver hook stop --harness codex")],
+        "UserPromptSubmit": [
+            hook_group("uvx memriver hook user-prompt-submit --harness codex")],
+        "SessionEnd": [hook_group("uvx memriver hook session-end --harness codex")],
     }}))
 
     result = install(["codex"], home=home, cwd=project, yes=False, replies=["n"])
@@ -744,6 +778,25 @@ def test_install_is_silent_about_uvx_when_it_is_on_path(home, project, monkeypat
 
     assert result.exit_code == 0
     assert "not found on PATH" not in result.stdout
+
+
+# --- spec 11: a session-routed harness needs its running sessions restarted -
+
+
+def test_install_tells_claude_code_and_codex_users_to_restart_running_sessions(
+        home, project):
+    result = install(["claude-code", "codex"], home=home, cwd=project, yes=True)
+
+    assert result.exit_code == 0
+    assert RESTART_SESSIONS_NOTE in result.stdout
+
+
+def test_install_says_nothing_about_restarting_sessions_for_directory_mode_harnesses(
+        home, project):
+    result = install(["cursor", "kiro"], home=home, cwd=project, yes=True)
+
+    assert result.exit_code == 0
+    assert RESTART_SESSIONS_NOTE not in result.stdout
 
 
 def test_a_reinstall_that_changes_nothing_reports_it_and_prompts_for_nothing(home,
@@ -1620,7 +1673,7 @@ def test_codex_hooks_disabled_note_never_claims_a_declined_hook_was_installed(
           "[features]\nhooks = false\nmemories = false\n")
 
     result = install(["codex"], home=home, cwd=project, yes=False,
-                     replies=["y", "n", "n"])
+                     replies=["y", "n", "n", "n", "n"])
 
     assert result.exit_code == 0
     assert not (home / ".codex" / "hooks.json").exists()
@@ -1639,6 +1692,10 @@ def test_codex_hooks_disabled_note_stands_when_the_definitions_already_exist(
         "SessionStart": [hook_group(
             "uvx memriver hook session-start --harness codex")],
         "Stop": [hook_group("uvx memriver hook stop --harness codex")],
+        "UserPromptSubmit": [hook_group(
+            "uvx memriver hook user-prompt-submit --harness codex")],
+        "SessionEnd": [hook_group(
+            "uvx memriver hook session-end --harness codex")],
     }}))
 
     result = install(["codex"], home=home, cwd=project, yes=False,
@@ -1658,7 +1715,7 @@ def test_codex_hooks_disabled_note_does_not_claim_completeness_for_one_accepted_
           "[features]\nhooks = false\nmemories = false\n")
 
     result = install(["codex"], home=home, cwd=project, yes=False,
-                     replies=["n", "y", "n"])
+                     replies=["n", "y", "n", "n", "n"])
 
     assert result.exit_code == 0
     hooks = json.loads((home / ".codex" / "hooks.json").read_text())["hooks"]
@@ -1676,7 +1733,7 @@ def test_codex_hooks_disabled_note_does_not_claim_completeness_for_the_other_hoo
           "[features]\nhooks = false\nmemories = false\n")
 
     result = install(["codex"], home=home, cwd=project, yes=False,
-                     replies=["n", "n", "y"])
+                     replies=["n", "n", "y", "n", "n"])
 
     assert result.exit_code == 0
     hooks = json.loads((home / ".codex" / "hooks.json").read_text())["hooks"]
@@ -1703,7 +1760,7 @@ def test_codex_hooks_disabled_note_does_not_claim_completeness_when_a_stale_take
     }}))
 
     result = install(["codex"], home=home, cwd=project, yes=False,
-                     replies=["y", "n"])
+                     replies=["y", "n", "n", "n"])
 
     assert result.exit_code == 0
     stop_command = json.loads(

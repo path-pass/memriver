@@ -69,7 +69,7 @@ def operations(
             target=mcp.target,
             label="register memriver MCP server",
             kind="json-object",
-            expected=mcp_server_payload(),
+            expected=mcp_server_payload("kiro"),
             key_path=("mcpServers", "memriver"),
         ),
         EditOperation(

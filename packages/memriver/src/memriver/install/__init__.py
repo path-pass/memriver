@@ -105,6 +105,7 @@ __all__ = [
     "HARNESS_SETTING_TAKEOVER_NOTICE",
     "MARKER_BEGIN",
     "MARKER_END",
+    "RESTART_SESSIONS_NOTE",
     "TAKEOVER_NOTICE",
     "EditOperation",
     "EditResult",
@@ -153,6 +154,20 @@ BACKUP_INFIX = ".memriver-backup-"
 CODEX_TRUST_NOTE = (
     "Run /hooks in Codex, review the memriver hook definitions, and trust them.\n"
     "If this reinstall changed a hook definition, Codex may require re-trust."
+)
+
+# Spec 11: a previous-release MCP server refuses the v2 store the upgraded
+# database moves to on first open, so a session already running against it
+# has to be restarted; one that was already running when the upgrade landed
+# gets a one-time confirmation prompt for its project (U11) instead of a
+# fallback to a directory guess. Fixed text, shown whenever this run touches
+# a session-routed harness -- a property of which harness is installed, not
+# of what this particular run happened to change.
+RESTART_SESSIONS_NOTE = (
+    "restart any running Claude Code/Codex session: its memriver MCP server "
+    "from before this install refuses the upgraded memory store. A session "
+    "that was already running when the store upgraded will ask once, at its "
+    "next turn, to confirm which project it belongs to."
 )
 
 MISSING_UVX_NOTE = (
@@ -796,6 +811,8 @@ def _write_completion_notes(plan: _Plan, harnesses: Sequence[str],
                 plan.harness_snapshots[name], plan.env, in_effect))
     if shutil.which("uvx") is None:
         stdout.write("\n" + MISSING_UVX_NOTE + "\n")
+    if "claude-code" in harnesses or "codex" in harnesses:
+        stdout.write("\n" + RESTART_SESSIONS_NOTE + "\n")
     if "codex" in harnesses:
         stdout.write("\n" + CODEX_TRUST_NOTE + "\n")
 

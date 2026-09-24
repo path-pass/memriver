@@ -897,7 +897,7 @@ def _snapshot(target, text: str = "{}"):
 HOME = Path("/home/user")
 
 
-def test_claude_code_uninstall_operations_target_the_mcp_entry_and_both_hooks():
+def test_claude_code_uninstall_operations_target_the_mcp_entry_and_all_four_hooks():
     config_target, settings_target = claude_code.targets(HOME, None, "uninstall")
     ops = claude_code.uninstall_operations(
         (_snapshot(config_target), _snapshot(settings_target)), {},
@@ -907,10 +907,13 @@ def test_claude_code_uninstall_operations_target_the_mcp_entry_and_both_hooks():
     assert by_id["claude-code:hooks-session-start"].key_path == ("hooks", "SessionStart")
     assert by_id["claude-code:hooks-session-start"].identity == SESSION_START_IDENTITY
     assert by_id["claude-code:hooks-stop"].key_path == ("hooks", "Stop")
+    assert by_id["claude-code:hooks-user-prompt-submit"].key_path == (
+        "hooks", "UserPromptSubmit")
+    assert by_id["claude-code:hooks-session-end"].key_path == ("hooks", "SessionEnd")
     assert not any(op.id == "claude-code:native-memory" for op in ops)
 
 
-def test_codex_uninstall_operations_target_the_mcp_table_and_both_hooks():
+def test_codex_uninstall_operations_target_the_mcp_table_and_all_four_hooks():
     config_target, hooks_target = codex.targets(HOME, None, "uninstall")
     ops = codex.uninstall_operations(
         (_snapshot(config_target, ""), _snapshot(hooks_target)), {},
@@ -919,6 +922,9 @@ def test_codex_uninstall_operations_target_the_mcp_table_and_both_hooks():
     assert by_id["codex:mcp"].kind == "toml-table"
     assert by_id["codex:mcp"].key_path == ("mcp_servers", "memriver")
     assert by_id["codex:hooks-session-start"].kind == "hook-array"
+    assert by_id["codex:hooks-user-prompt-submit"].key_path == (
+        "hooks", "UserPromptSubmit")
+    assert by_id["codex:hooks-session-end"].key_path == ("hooks", "SessionEnd")
     assert not any(op.id == "codex:native-memory" for op in ops)
 
 
@@ -1005,7 +1011,8 @@ def test_claude_code_round_trip_removes_memriver_and_keeps_foreign_content(home,
     # the memriver leaf is gone; the container install auto-created is left
     # behind empty rather than pruned away (P2-3)
     assert config == {"apiKey": "secret", "mcpServers": {}}
-    assert settings["hooks"] == {"SessionStart": [], "Stop": []}
+    assert settings["hooks"] == {
+        "SessionStart": [], "Stop": [], "UserPromptSubmit": [], "SessionEnd": []}
     assert settings["env"] == {"OTHER": "1"}  # foreign key survives untouched
 
 
@@ -1019,7 +1026,8 @@ def test_codex_round_trip_restores_the_exact_original_bytes(home, project):
     assert result.exit_code == 0
     assert config.read_bytes() == original
     assert json.loads((home / ".codex" / "hooks.json").read_text()) == {
-        "hooks": {"SessionStart": [], "Stop": []}}
+        "hooks": {"SessionStart": [], "Stop": [], "UserPromptSubmit": [],
+                  "SessionEnd": []}}
 
 
 def test_cursor_round_trip_restores_the_exact_original_bytes(home, project):
@@ -1083,9 +1091,10 @@ def test_installing_all_four_then_uninstalling_all_four_leaves_only_empty_shared
     assert result.exit_code == 0
     assert json.loads((home / ".claude.json").read_text()) == {"mcpServers": {}}
     assert json.loads((home / ".claude" / "settings.json").read_text())["hooks"] == {
-        "SessionStart": [], "Stop": []}
+        "SessionStart": [], "Stop": [], "UserPromptSubmit": [], "SessionEnd": []}
     assert json.loads((home / ".codex" / "hooks.json").read_text()) == {
-        "hooks": {"SessionStart": [], "Stop": []}}
+        "hooks": {"SessionStart": [], "Stop": [], "UserPromptSubmit": [],
+                  "SessionEnd": []}}
     assert json.loads((home / ".cursor" / "mcp.json").read_text()) == {"mcpServers": {}}
     assert json.loads((home / ".kiro" / "settings" / "mcp.json").read_text()) == {
         "mcpServers": {}}
@@ -1106,7 +1115,8 @@ def test_partial_state_removes_what_exists_and_reports_the_rest_clean(home, proj
 
     settings = json.loads((home / ".claude" / "settings.json").read_text())
     assert result.exit_code == 0
-    assert settings["hooks"] == {"SessionStart": [], "Stop": []}
+    assert settings["hooks"] == {
+        "SessionStart": [], "Stop": [], "UserPromptSubmit": [], "SessionEnd": []}
     # only one change was left to make -- the hooks -- so only one prompt-worthy
     # summary line names a target, and the MCP file was never rewritten
     assert not any(p.name.startswith(".claude.json.memriver-backup-")
@@ -1163,7 +1173,7 @@ def test_declining_a_change_leaves_it_in_place_and_removes_the_rest(home, projec
     install(["claude-code"], home=home, cwd=project, yes=True)
 
     result = uninstall(["claude-code"], home=home, cwd=project, yes=False,
-                       replies=["y", "n", "y"])
+                       replies=["y", "n", "y", "y", "y"])
 
     config = json.loads((home / ".claude.json").read_text())
     settings = json.loads((home / ".claude" / "settings.json").read_text())
@@ -1171,6 +1181,8 @@ def test_declining_a_change_leaves_it_in_place_and_removes_the_rest(home, projec
     assert "memriver" not in config.get("mcpServers", {})
     assert "SessionStart" in settings["hooks"]  # declined
     assert settings["hooks"]["Stop"] == []  # accepted, left as an empty array
+    assert settings["hooks"]["UserPromptSubmit"] == []  # accepted
+    assert settings["hooks"]["SessionEnd"] == []  # accepted
 
 
 def test_non_interactive_input_without_yes_fails_before_any_write(home, project,
@@ -2294,7 +2306,7 @@ def test_a_target_rewritten_between_planning_and_apply_aborts_uninstall_naming_u
 
     def answer(prompt: str) -> str:
         prompts.append(prompt)
-        if len(prompts) == 3:  # the last claude-code uninstall confirmation
+        if len(prompts) == 5:  # the last claude-code uninstall confirmation
             current = json.loads(settings.read_text())
             current["addedByAnotherAgent"] = True
             settings.write_text(json.dumps(current))
@@ -2303,7 +2315,7 @@ def test_a_target_rewritten_between_planning_and_apply_aborts_uninstall_naming_u
     result = uninstall(["claude-code"], home=home, cwd=project, yes=False,
                        input_fn=answer)
 
-    assert len(prompts) == 3
+    assert len(prompts) == 5
     assert result.exit_code == 1
     abort = next(line for line in result.stdout.splitlines()
                  if "file changed since planning" in line)
@@ -2318,7 +2330,7 @@ def test_a_removal_summary_never_prints_a_takeover_line(home, project):
     install(["claude-code"], home=home, cwd=project, yes=True)
 
     result = uninstall(["claude-code"], home=home, cwd=project, yes=False,
-                       replies=["y", "y", "y"])
+                       replies=["y"] * 5)
 
     assert HARNESS_SETTING_TAKEOVER_NOTICE not in result.stdout
 

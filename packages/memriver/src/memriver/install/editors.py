@@ -65,9 +65,18 @@ class PlanningError(Exception):
     """A file cannot be edited safely; the whole plan aborts, nothing is written."""
 
 
-def mcp_server_payload() -> dict:
-    """The memriver MCP server registration, identical across every harness."""
-    return {"command": "uvx", "args": ["memriver"]}
+def mcp_server_payload(harness: str) -> dict:
+    """The memriver MCP server registration for ``harness``.
+
+    ``serve --harness <harness>`` selects session-routed serving for
+    claude-code/codex and directory-mode serving for cursor/kiro (spec 11).
+    The key the payload lives under (``mcpServers.memriver`` /
+    ``mcp_servers.memriver``) is memriver's own namespace, so a reinstall
+    replaces whatever is there in place -- including an old-style entry whose
+    args were just ``["memriver"]`` -- rather than needing its own identity
+    check the way a hook array (shared with other handlers) does.
+    """
+    return {"command": "uvx", "args": ["memriver", "serve", "--harness", harness]}
 
 
 def hook_identity(verb: str) -> tuple[str, ...]:
