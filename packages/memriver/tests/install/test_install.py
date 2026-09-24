@@ -1317,6 +1317,106 @@ def test_rollback_treats_a_created_file_already_deleted_as_undone(home, project)
     assert "changed after this run wrote it" not in result.stderr
 
 
+def test_rollback_refuses_to_touch_a_target_reached_through_a_swapped_parent(
+        home, project, tmp_path):
+    """A symlink does not have to replace the target's own leaf to redirect
+    rollback -- swapping a *parent* directory the leaf path travels through
+    does the same thing, and comparing only the leaf's own bytes (even by
+    `lstat`) cannot see it: reading or writing `~/.claude/settings.json`
+    still resolves `~/.claude` first. Only re-running the same component walk
+    `_refuse_symlinks` already does before this run's own write -- this time
+    right before rollback touches anything -- catches a parent swapped in
+    afterwards. Without it, a byte-identical copy left at the link's target
+    makes the stale bytes-comparison alone believe nothing changed, and
+    `path.unlink()` (this write created ~/.claude/settings.json, so it has no
+    backup) deletes through the link -- someone else's file, not this run's."""
+    claude_json = write(home / ".claude.json", json.dumps({"original": True}))
+    original_json = claude_json.read_bytes()
+    settings_json = home / ".claude" / "settings.json"
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    calls: list[int] = []
+
+    def replace(source, destination) -> None:
+        calls.append(len(calls) + 1)
+        if calls[-1] == 3:
+            # ~/.claude/settings.json (call 2) already holds this run's own
+            # bytes; copy them to a foreign location, move the real ~/.claude
+            # out of the way, and put a symlink to the foreign directory in
+            # its place, before the third target (codex's config.toml) fails
+            (foreign / "settings.json").write_bytes(settings_json.read_bytes())
+            (home / ".claude").rename(home / ".claude.real")
+            (home / ".claude").symlink_to(foreign)
+            raise OSError("injected replacement failure #3")
+        os.replace(source, destination)
+
+    result = install(["claude-code", "codex"], home=home, cwd=project, yes=True,
+                     replace=replace)
+
+    assert result.exit_code != 0
+    assert (home / ".claude").is_symlink()
+    assert (foreign / "settings.json").exists()  # not deleted through the link
+    assert claude_json.read_bytes() == original_json
+    assert str(settings_json) in result.stderr
+    assert "changed after this run wrote it" in result.stderr
+
+
+def test_rollback_does_not_restore_a_backup_through_a_swapped_parent(
+        home, project, tmp_path):
+    """The rewrite half of the same defect: a target this run rewrote (so a
+    backup exists) must not have that backup restored *through* a parent
+    swapped for a symlink after this run's own write landed -- that would
+    silently overwrite whatever the link now points at instead of the file
+    this run actually touched."""
+    claude_json = write(home / ".claude.json", json.dumps({"original": True}))
+    original_json = claude_json.read_bytes()
+    codex_toml = write(home / ".codex" / "config.toml", 'model = "gpt"\n')
+    original_toml = codex_toml.read_bytes()
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    calls: list[int] = []
+    destinations: list[Path] = []
+    rewritten_bytes: list[bytes] = []
+
+    def replace(source, destination) -> None:
+        calls.append(len(calls) + 1)
+        destinations.append(Path(destination))
+        if calls[-1] == 4:
+            # ~/.codex/config.toml (call 3) already holds this run's own
+            # rewritten bytes, and its sibling backup this run wrote still
+            # holds the pre-run bytes; copy both to a foreign location (so a
+            # restore that follows the link can still find "its" backup),
+            # move the real ~/.codex out of the way, and put a symlink to the
+            # foreign directory in its place, before the fourth target
+            # (codex's hooks.json) fails
+            codex_dir = home / ".codex"
+            backup = next(codex_dir.glob("config.toml.memriver-backup-*"))
+            rewritten_bytes.append(codex_toml.read_bytes())
+            (foreign / "config.toml").write_bytes(rewritten_bytes[0])
+            (foreign / backup.name).write_bytes(backup.read_bytes())
+            codex_dir.rename(home / ".codex.real")
+            codex_dir.symlink_to(foreign)
+            raise OSError("injected replacement failure #4")
+        os.replace(source, destination)
+
+    result = install(["claude-code", "codex"], home=home, cwd=project, yes=True,
+                     replace=replace)
+
+    assert result.exit_code != 0
+    assert (home / ".codex").is_symlink()
+    assert rewritten_bytes[0] != original_toml  # this run did change it
+    # not restored through the link: the backup's pre-run bytes never landed
+    # on the foreign file the link now points at
+    assert (foreign / "config.toml").read_bytes() == rewritten_bytes[0]
+    # the only replace_file call after the injected failure restores
+    # ~/.claude.json (untouched); none targets ~/.codex/config.toml, which
+    # would only be reachable by writing through the symlink
+    assert destinations[4:] == [claude_json]
+    assert claude_json.read_bytes() == original_json
+    assert str(codex_toml) in result.stderr
+    assert "changed after this run wrote it" in result.stderr
+
+
 def test_success_reports_backup_paths_and_restore_commands_never_contents(home,
                                                                          project):
     write(home / ".claude.json", json.dumps({"apiKey": SECRET}))

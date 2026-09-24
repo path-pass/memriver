@@ -230,6 +230,22 @@ def _collect_targets(harnesses: Sequence[str],
     return classified, per_harness
 
 
+def _symlinked_component(target: Target, root: Path | None) -> Path | None:
+    """The first path component at or below ``target.path`` that is a link,
+    checked the same way ``_refuse_symlinks`` does -- ``root`` itself is
+    exempt, everything below it (including the leaf) is checked -- or
+    ``None`` if none of them is.
+    """
+    components = [target.path]
+    if root is not None and target.path.is_relative_to(root):
+        parts = target.path.relative_to(root).parts
+        components = [root.joinpath(*parts[:depth]) for depth in range(1, len(parts) + 1)]
+    for component in components:
+        if component.is_symlink():
+            return component
+    return None
+
+
 def _refuse_symlinks(target: Target, root: Path | None, command_name: str) -> None:
     """Refuse the target and every path component below ``root`` that is a link.
 
@@ -238,17 +254,13 @@ def _refuse_symlinks(target: Target, root: Path | None, command_name: str) -> No
     checked: a home or project directory reached through a link is the user's
     own arrangement, not something this edit redirects.
     """
-    components = [target.path]
-    if root is not None and target.path.is_relative_to(root):
-        parts = target.path.relative_to(root).parts
-        components = [root.joinpath(*parts[:depth]) for depth in range(1, len(parts) + 1)]
-    for component in components:
-        if component.is_symlink():
-            raise PlanningError(
-                f"{component} is a symlink; memriver will not write through it "
-                f"to {target.path}. Replace it with a regular file or directory "
-                f"(or remove it) and run {command_name} again"
-            )
+    component = _symlinked_component(target, root)
+    if component is not None:
+        raise PlanningError(
+            f"{component} is a symlink; memriver will not write through it "
+            f"to {target.path}. Replace it with a regular file or directory "
+            f"(or remove it) and run {command_name} again"
+        )
 
 
 def _read_snapshot(target: Target, root: Path | None,
@@ -397,12 +409,18 @@ class _Write:
     is on disk before touching anything: undoing a write that another process
     has since changed would destroy that change with no backup to recover it
     from, since the backup only ever holds the *pre*-run bytes.
+
+    ``root`` is the same root ``_write_target`` was given (``home`` or the
+    project root), kept so rollback can re-run the component check below it:
+    reading or writing through ``target.path`` alone would still follow a
+    parent directory swapped for a symlink after this run's own write landed.
     """
 
     target: Target
     backup: Path | None
     original_mode: int | None
     written: bytes | None
+    root: Path | None
     # the parents this write had to create, deepest first, so rollback can put
     # the tree back the way it found it
     created_dirs: tuple[_CreatedDir, ...] = ()
@@ -484,7 +502,8 @@ def _write_target(snapshot: Snapshot, text: str, root: Path | None, stamp: str,
         deleting = text == "" and target.delete_if_emptied and original_mode is not None
         data = text.encode("utf-8")
         write = _Write(target=target, backup=backup, original_mode=original_mode,
-                       written=None if deleting else data, created_dirs=created_dirs)
+                       written=None if deleting else data, root=root,
+                       created_dirs=created_dirs)
         mode = original_mode
         if mode is None:
             mode = 0o600 if target.user_level else _umask_mode()
@@ -633,15 +652,33 @@ def _current_bytes(path: Path) -> bytes | None | object:
     return path.read_bytes()
 
 
+def _left_as_is_report(path: Path, backup: Path | None) -> str:
+    return (
+        f"{path} changed after this run wrote it; left as is -- "
+        + (f"merge your changes from {backup}" if backup
+           else "this run created it, and there is no backup")
+    )
+
+
 def _roll_back(writes: Sequence[_Write],
                replace_file: Callable[[Path, Path], None]) -> list[str]:
     """Undo completed writes newest-first. Backups survive every outcome.
 
-    Before touching a path, its current bytes (``None`` if absent, or the
-    not-a-regular-file sentinel for a symlink or special file) are compared
-    against ``write.written`` -- what this run itself left there. A match
-    means nothing has touched the file since, so the backup is restored, or
-    the file this run created is removed, exactly as before.
+    Before touching a path at all, ``_symlinked_component`` re-runs the same
+    component check ``_refuse_symlinks`` already ran before this run's own
+    write: a parent directory swapped for a symlink after that write landed
+    would otherwise still be followed straight through by a plain
+    ``read_bytes``/``unlink``/atomic replace on the leaf path, which checking
+    only the leaf itself (even by ``lstat``) cannot catch. A link anywhere
+    below the root is treated exactly like any other foreign change below --
+    left alone and reported -- without reading through it or writing to
+    whatever it resolves to.
+
+    Past that check, the path's current bytes (``None`` if absent, or the
+    not-a-regular-file sentinel for a symlink or special file at the leaf)
+    are compared against ``write.written`` -- what this run itself left
+    there. A match means nothing has touched the file since, so the backup
+    is restored, or the file this run created is removed, exactly as before.
 
     Two mismatches are not a foreign edit, only this run's own write never
     actually landing, and are treated as already undone rather than reported:
@@ -658,11 +695,31 @@ def _roll_back(writes: Sequence[_Write],
     backup holds. The directories this run created are only reclaimed once
     their file was actually rolled back (or found already gone); one left in
     place keeps its directory.
+
+    None of this closes the check-then-act window between this check and the
+    restore/removal below -- POSIX has no atomic "check every component,
+    then act on the leaf" -- it only narrows the case a plain path operation
+    would miss outright: a link already in place by the time rollback looks.
+
+    An ``OSError`` from the component check itself (as opposed to it finding
+    a link) is not a reason to give up on this write: unlike planning's
+    ``_refuse_symlinks``, which surfaces that failure by raising, an
+    unrelated stat failure here -- one write's own directory-identity check
+    degraded earlier, say -- must not stop a *different* write from rolling
+    back normally, so it is treated as "no link found" rather than aborting
+    into the catch-all below.
     """
     report: list[str] = []
     for write in reversed(writes):
         path = write.target.path
         try:
+            try:
+                blocked_by_link = _symlinked_component(write.target, write.root) is not None
+            except OSError:
+                blocked_by_link = False
+            if blocked_by_link:
+                report.append(_left_as_is_report(path, write.backup))
+                continue
             current = _current_bytes(path)
             if current == write.written:
                 if write.backup is None:
@@ -680,11 +737,7 @@ def _roll_back(writes: Sequence[_Write],
             if write.backup is None and current is None:
                 _remove_created_dirs(write.created_dirs)
                 continue  # this run's own file is already gone; already fine
-            report.append(
-                f"{path} changed after this run wrote it; left as is -- "
-                + (f"merge your changes from {write.backup}" if write.backup
-                   else "this run created it, and there is no backup")
-            )
+            report.append(_left_as_is_report(path, write.backup))
         except Exception as error:  # noqa: BLE001 - every outcome gets reported
             report.append(
                 f"COULD NOT recover {path}"
