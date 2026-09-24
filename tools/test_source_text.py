@@ -8,7 +8,6 @@ Tab, newline and carriage return are the only control characters allowed.
 from __future__ import annotations
 
 import subprocess
-import sys
 import unicodedata
 from pathlib import Path
 
@@ -43,7 +42,11 @@ def _scan() -> dict[str, list[str]]:
         if path.suffix in SUFFIXES and path.exists():
             bad = _offenders(path.read_text(encoding="utf-8"))
             if bad:
-                found[str(path.relative_to(REPO))] = sorted(set(bad))
+                try:
+                    key = str(path.relative_to(REPO))
+                except ValueError:
+                    key = str(path)
+                found[key] = sorted(set(bad))
     return found
 
 
@@ -57,10 +60,27 @@ def test_no_raw_invisible_characters_in_committed_text():
     assert not found, found
 
 
-def test_scan_ignores_untracked_files(tmp_path, monkeypatch):
-    offender = tmp_path / "untracked.py"
+def test_scan_reports_what_tracked_files_yields(tmp_path, monkeypatch):
+    """_scan() must read the enumeration _tracked_files() returns, not a
+    hard-coded tree: an offender only reachable through that list is caught."""
+    offender = tmp_path / "offender.py"
     offender.write_text("bad" + chr(0x2028) + "\n", encoding="utf-8")
 
-    monkeypatch.setattr(sys.modules[__name__], "_tracked_files", lambda: [Path(__file__)])
+    monkeypatch.setattr(f"{__name__}._tracked_files", lambda: [offender])
+
+    assert _scan() == {str(offender): ["U+2028"]}
+
+
+def test_scan_does_not_walk_the_tree_itself(monkeypatch):
+    """_scan() must consult _tracked_files() exactly once and never fall back
+    to walking SCANNED directories on its own."""
+    calls = []
+
+    def fake_tracked_files():
+        calls.append(1)
+        return []
+
+    monkeypatch.setattr(f"{__name__}._tracked_files", fake_tracked_files)
 
     assert _scan() == {}
+    assert len(calls) == 1
