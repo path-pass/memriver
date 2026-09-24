@@ -21,6 +21,7 @@ created -- and never delete a backup, even when the restore itself fails.
 
 from __future__ import annotations
 
+import errno
 import io
 import json
 import os
@@ -1088,13 +1089,22 @@ def test_a_later_failure_still_rolls_back_a_directory_with_a_placeholder_record(
     ordinary transaction rollback: a *different*, later write failing must
     still unwind the earlier, already-completed write through `_roll_back`,
     and `_remove_created_dirs` must still take back that write's directory
-    even though its record was never verified."""
+    even though its record was never verified.
+
+    The mock fails only the one `lstat` call this is actually about --
+    `_make_dirs`'s post-`mkdir` identity capture for `settings`, the instant
+    it starts existing -- and behaves normally after: rollback's own
+    symlink-component check also calls `lstat` on this same directory later,
+    and it must see the truth (an ordinary directory, not a link) rather than
+    inherit a permanently degraded stat that has nothing to do with it."""
     settings = home / ".kiro" / "settings"
     kiro = home / ".kiro"
     real_lstat = Path.lstat
+    degraded = {"done": False}
 
     def failing_lstat(self, *args, **kwargs):
-        if self == settings and self.exists():
+        if self == settings and self.exists() and not degraded["done"]:
+            degraded["done"] = True
             raise OSError("injected identity-stat failure")
         return real_lstat(self, *args, **kwargs)
 
@@ -1415,6 +1425,64 @@ def test_rollback_does_not_restore_a_backup_through_a_swapped_parent(
     assert claude_json.read_bytes() == original_json
     assert str(codex_toml) in result.stderr
     assert "changed after this run wrote it" in result.stderr
+
+
+def test_rollback_reports_could_not_recover_when_the_link_check_itself_fails(
+        home, project, monkeypatch, tmp_path):
+    """A transient `OSError` from the symlink-component check's own `lstat`
+    -- as opposed to that check actually finding a link -- must not be read
+    as "no link here, safe to act": failing open would defeat the very check
+    this guards, since a parent really has been swapped for a symlink at this
+    point and the leaf alone (even by `lstat`) cannot see it. It is reported
+    as an ordinary recovery failure instead, exactly like any other
+    unexpected error hit while undoing a write, and the file -- now reachable
+    only through the link -- is left exactly as it is. Being inside the
+    per-write loop, this failing one write does not stop any other write in
+    the same run from rolling back normally."""
+    claude_json = write(home / ".claude.json", json.dumps({"original": True}))
+    original_json = claude_json.read_bytes()
+    settings_json = home / ".claude" / "settings.json"
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    calls: list[int] = []
+
+    def replace(source, destination) -> None:
+        calls.append(len(calls) + 1)
+        if calls[-1] == 3:
+            # swaps ~/.claude for a symlink to a foreign directory holding a
+            # byte-identical copy of settings.json (call 2), before the third
+            # target (codex's config.toml) fails
+            (foreign / "settings.json").write_bytes(settings_json.read_bytes())
+            (home / ".claude").rename(home / ".claude.real")
+            (home / ".claude").symlink_to(foreign)
+            raise OSError("injected replacement failure #3")
+        os.replace(source, destination)
+
+    claude_dir = home / ".claude"
+    real_lstat = Path.lstat
+    fired = {"done": False}
+
+    def flaky_lstat(self, *args, **kwargs):
+        # fires exactly once, and only once ~/.claude is genuinely a symlink
+        # -- i.e. the first time rollback's own component check looks at it,
+        # never during planning or this run's own write, when it is still an
+        # ordinary directory (or does not exist yet)
+        if self == claude_dir and not fired["done"] and os.path.islink(self):
+            fired["done"] = True
+            raise OSError(errno.EIO, "injected transient I/O error")
+        return real_lstat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", flaky_lstat)
+
+    result = install(["claude-code", "codex"], home=home, cwd=project, yes=True,
+                     replace=replace)
+
+    assert result.exit_code != 0
+    assert (foreign / "settings.json").exists()  # not deleted through the link
+    assert "COULD NOT recover" in result.stderr
+    assert str(settings_json) in result.stderr
+    # a different write in the same run still rolls back normally
+    assert claude_json.read_bytes() == original_json
 
 
 def test_success_reports_backup_paths_and_restore_commands_never_contents(home,

@@ -702,22 +702,19 @@ def _roll_back(writes: Sequence[_Write],
     would miss outright: a link already in place by the time rollback looks.
 
     An ``OSError`` from the component check itself (as opposed to it finding
-    a link) is not a reason to give up on this write: unlike planning's
-    ``_refuse_symlinks``, which surfaces that failure by raising, an
-    unrelated stat failure here -- one write's own directory-identity check
-    degraded earlier, say -- must not stop a *different* write from rolling
-    back normally, so it is treated as "no link found" rather than aborting
-    into the catch-all below.
+    a link) is never treated as "no link found": a stat failure proves
+    nothing was verified, not that nothing is wrong, and a parent really
+    could have been swapped for a link right where this failed to look. It
+    falls through to the catch-all below like any other unexpected failure,
+    reported as unable to recover and left exactly as it is -- this is one
+    write inside the loop, so it does not stop any other write in the same
+    run from rolling back normally.
     """
     report: list[str] = []
     for write in reversed(writes):
         path = write.target.path
         try:
-            try:
-                blocked_by_link = _symlinked_component(write.target, write.root) is not None
-            except OSError:
-                blocked_by_link = False
-            if blocked_by_link:
+            if _symlinked_component(write.target, write.root) is not None:
                 report.append(_left_as_is_report(path, write.backup))
                 continue
             current = _current_bytes(path)
