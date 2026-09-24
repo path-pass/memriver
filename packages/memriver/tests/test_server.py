@@ -57,8 +57,8 @@ UNIDENTIFIED = ("this session is not registered with memriver: its hooks may not
                 "session id; ask the user to fix that, then start a new session")
 SESSION_NO_PROJECT = ("no writable project: this session was registered with no project. No "
                       "memory was saved. Ask the user to run memriver project init where this "
-                      "session started, then call session_register; do not run it yourself "
-                      "unless they ask.")
+                      "session started, then call session_register; do not run memriver "
+                      "project init yourself unless they ask.")
 PENDING_NO_CANDIDATE = ("this session is not registered, and the directory it was first observed "
                         "in is not in any registered project; once the user has run memriver "
                         "project init covering this session's start directory, call "

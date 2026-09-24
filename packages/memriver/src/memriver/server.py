@@ -65,7 +65,8 @@ _NO_PROJECT = {
 _SESSION_NO_PROJECT = {
     "none": ("no writable project: this session was registered with no project. No memory "
              "was saved. Ask the user to run memriver project init where this session "
-             "started, then call session_register; do not run it yourself unless they ask."),
+             "started, then call session_register; do not run memriver project init "
+             "yourself unless they ask."),
     "degraded": ("no writable project: this session's project no longer exists or became "
                  "global. No memory was saved. Ask the user to start a new session."),
 }
