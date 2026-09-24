@@ -151,6 +151,48 @@ def test_a_target_whose_link_check_fails_after_confirmation_is_left_alone(places
     assert (store / "memriver.db").exists()
 
 
+def _loop_behind(tmp_path: Path, prefix: str) -> Path:
+    """A spelling whose strict resolution stops before a symlink loop: a
+    missing component, or a component below a regular file, then `..`."""
+    looping = tmp_path / "loop"
+    looping.symlink_to(looping)
+    if prefix == "missing":
+        return tmp_path / "missing" / ".." / "loop"
+    (tmp_path / "file").write_text("x")
+    return tmp_path / "file" / "below" / ".." / ".." / "loop"
+
+
+@pytest.mark.parametrize("prefix", ["missing", "not-directory"])
+@pytest.mark.parametrize("base", ["home", "cwd"])
+def test_a_protected_base_looping_behind_an_unresolvable_prefix_is_refused(
+        places, tmp_path, base, prefix):
+    home, cwd, store = places
+    bases = {"home": home, "cwd": cwd, base: _loop_behind(tmp_path, prefix)}
+    refusal = plan_purge(store, **bases)
+    assert isinstance(refusal, PurgeRefusal)
+    assert (refusal.kind, refusal.path) == ("unresolvable", bases[base])
+    assert store.exists()
+
+
+@pytest.mark.parametrize("base", ["home", "cwd"])
+def test_a_protected_base_turned_into_a_loop_after_confirmation_is_refused(
+        places, tmp_path, base):
+    home, cwd, store = places
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    bases = {"home": home, "cwd": cwd, base: tmp_path / "missing" / ".." / "link"}
+    with plan_purge(store, **bases) as plan:
+        assert isinstance(plan, PurgePlan)
+        link.unlink()
+        link.symlink_to(link)
+        result = purge(plan)
+    assert result.outcome == "refused"
+    assert (result.refusal.kind, result.refusal.path) == ("unresolvable", bases[base])
+    assert (store / "memriver.db").exists()
+
+
 def test_purge_without_an_opened_plan_is_a_programming_error(places):
     home, cwd, store = places
     with pytest.raises(ValueError):

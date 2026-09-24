@@ -241,11 +241,20 @@ def _resolve(path: Path) -> Path:
     nothing. Strict resolution raises on a loop everywhere (``OSError`` on
     3.13+, ``RuntimeError`` on 3.12); only a missing component falls back to
     the non-strict form, since a purge target that does not exist yet is legal.
+
+    The fallback's result is resolved strictly once more: ``<missing>/..``
+    collapses in the non-strict form, so what it returns can still end in the
+    loop the missing component hid. Only "still missing" is accepted there.
     """
     try:
         return path.resolve(strict=True)
     except (FileNotFoundError, NotADirectoryError):
-        return path.resolve()
+        resolved = path.resolve()
+    try:
+        resolved.resolve(strict=True)
+    except (FileNotFoundError, NotADirectoryError):
+        pass
+    return resolved
 
 
 def _refuse_purge_target(given: Path, canonical: Path, *, home: Path,

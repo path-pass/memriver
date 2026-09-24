@@ -1906,6 +1906,27 @@ def test_purge_data_reports_a_symlink_loop_above_the_store(home, project, tmp_pa
     assert "nothing was removed" in result.stdout
 
 
+def test_purge_data_refuses_a_home_whose_loop_hides_behind_a_missing_prefix(tmp_path):
+    """`<missing>/../<loop>`: strict resolution stops at the missing component,
+    and the fallback must not hand back the loop it collapsed onto as if it
+    were a resolved home the store cannot hold."""
+    looping = tmp_path / "loop"
+    looping.symlink_to(looping)
+    home = tmp_path / "missing" / ".." / "loop"
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    store = tmp_path / "store"
+    store.mkdir()
+    (store / "index.db").write_text("db")
+
+    result = full_uninstall(["claude-code"], home=home, cwd=cwd, yes=True,
+                            purge_data=True, root=store)
+
+    assert result.exit_code == 1
+    assert f"cannot resolve {home}" in result.stdout
+    assert (store / "index.db").read_text() == "db"
+
+
 def test_the_purge_guard_reports_a_current_directory_it_cannot_resolve(home,
                                                                        tmp_path):
     """The protected bases are resolved too, and a loop in one of them is the
