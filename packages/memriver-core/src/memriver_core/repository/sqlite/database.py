@@ -66,6 +66,25 @@ PROJECT_COLUMNS = "id, name, root, is_global"
 _BACKEND_ERRORS = (sqlite3.Error, OSError, UnicodeError)
 
 
+def _lenient_text(data: bytes) -> str | bytes:
+    """Decode a TEXT column as UTF-8; hand back the raw bytes when it is not.
+
+    A STRICT table's TEXT affinity does not stop a raw writer from planting
+    invalid UTF-8 (``CAST(X'80' AS TEXT)``). sqlite3's default text_factory
+    would raise `OperationalError` while fetching such a row, turning one
+    damaged row into a failure of the whole query -- every other row of the
+    same fetch, and every other row of the store the row shares a table with.
+    Bytes fail the `isinstance(value, str)` checks in
+    `memory_from_row`/`project_from_row`, so the row becomes a `ValueError`
+    instead of a crash: skipped where a caller can move on, `StorageFailure`
+    where it cannot.
+    """
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data
+
+
 def memory_to_row(memory: Memory) -> tuple:
     return (memory.id, memory.project_id, memory.type, memory.source["harness"],
             memory.source["method"], memory.trust, int(memory.sync), memory.description,
@@ -225,6 +244,7 @@ class Database:
         # the busy timeout is set here once; sqlite3 applies it at open
         conn = sqlite3.connect(uri, uri=True, isolation_level=None,
                                timeout=self._busy_timeout_ms / 1000)
+        conn.text_factory = _lenient_text
         try:
             conn.execute("PRAGMA foreign_keys = ON")
             if read_only:

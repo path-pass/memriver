@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from memriver_core.application.service import MemoryService
 from memriver_core.models import Memory, Project, ReadWriteSet, new_id, now
 from memriver_core.models.errors import (
     GlobalReadOnly,
@@ -171,6 +172,18 @@ def test_ensure_global_creates_a_named_unbound_project_once(stores):
     assert (read.name, read.root) == ("global", None)
 
 
+def test_create_with_a_name_the_read_path_would_reject_writes_nothing(stores, tmp_path):
+    _, project_store = stores
+    directory = tmp_path / "demo"
+    directory.mkdir()
+    plan = project_store.plan_root(str(directory), None)
+    project = Project(new_id(), "two\nlines")
+    with pytest.raises(ValueError):
+        project_store.create(project, plan)
+    with pytest.raises(ProjectNotFound):
+        project_store.read(project.id)
+
+
 def test_ensure_global_keeps_existing_global_memories(backend, root, stores):
     _, project_store = stores
     global_id = project_store.ensure_global()
@@ -229,11 +242,12 @@ def test_record_never_replaces_an_existing_id_even_a_deleted_one(world):
         world["memory_store"].record(clash, world["read_write_set"])
 
 
-def test_recording_a_memory_the_schema_refuses_is_storage_failure_not_a_driver_error(world):
+def test_recording_a_memory_the_read_path_would_reject_is_a_value_error_and_writes_nothing(world):
     bad = Memory(**{**_m(world["mine"]).__dict__, "type": "note"})
-    with pytest.raises(StorageFailure) as excinfo:
+    with pytest.raises(ValueError):
         world["memory_store"].record(bad, world["read_write_set"])
-    assert isinstance(excinfo.value.__cause__, sqlite3.IntegrityError)
+    with pytest.raises(MemoryNotFound):
+        world["memory_store"].read(bad.id, world["read_write_set"])
 
 
 # --- MemoryStore: read / update / delete ------------------------------------
@@ -503,6 +517,27 @@ def test_an_undecodable_row_of_another_project_answers_exactly_like_an_absent_id
         world["memory_store"].read_any(foreign.id, include_deleted=False)
 
 
+def test_an_undecodable_row_in_the_same_project_is_skipped_by_search_and_index_not_a_crash(
+        root, world):
+    good = _record(world, body="good")
+    bad = _record(world, body="will be corrupted")
+    with closing(sqlite3.connect(root / "memriver.db")) as conn, conn:
+        # STRICT accepts invalid UTF-8 in a TEXT column; sqlite3's default text_factory
+        # would raise OperationalError decoding it and fail the whole fetchall()
+        conn.execute("UPDATE memories SET body = CAST(X'80' AS TEXT) WHERE id = ?", (bad.id,))
+    assert world["project_store"].search(world["mine"], world["read_write_set"], query=None,
+                                         limit=None) == [good]
+    service = MemoryService(
+        world["memory_store"], world["project_store"], content_policy_factory=lambda: None,
+        diagnostics=None, max_body_chars=10_000, metadata_max_chars=1_000,
+        search_limit_default=20, search_limit_max=100, index_budget_lines=50,
+        index_cue_chars=80, header_field_chars=80, project_name_max_chars=120)
+    assert good.id in service.index(world["read_write_set"])
+    assert world["memory_store"].read(good.id, world["read_write_set"]) == good
+    with pytest.raises(StorageFailure):
+        world["memory_store"].read(bad.id, world["read_write_set"])
+
+
 def test_a_soft_delete_leaves_updated_unchanged(world):
     memory = _record(world)
     _delete(world, memory)
@@ -608,6 +643,38 @@ def test_search_does_not_match_on_the_id(world):
     memory = _record(world, body="b")
     assert world["project_store"].search(world["mine"], world["read_write_set"], query=memory.id,
                                          limit=None) == []
+
+
+def test_every_write_method_reads_back_what_it_wrote(stores, tmp_path):
+    memory_store, project_store = stores
+    directory = tmp_path / "proj"
+    directory.mkdir()
+    project = Project.new("proj", max_chars=120)
+    project_store.create(project, project_store.plan_root(str(directory), None))     # create
+    assert project_store.read(project.id).root == str(directory.resolve())
+
+    unbind_plan, _ = project_store.plan_unbind(project.id, str(directory.resolve()),
+                                               str(tmp_path))
+    project_store.unbind(unbind_plan)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    project_store.bind(project.id, project_store.plan_root(str(elsewhere), project.id))  # bind
+    assert project_store.read(project.id).root == str(elsewhere.resolve())
+
+    global_id = project_store.ensure_global()
+    read_write_set = ReadWriteSet(project_id=project.id, global_project_id=global_id)
+    memory = _m(project.id, body="first")
+    memory_store.record(memory, read_write_set)                                     # record
+    assert memory_store.read(memory.id, read_write_set) == memory
+
+    updated = memory_store.update(memory.id, read_write_set, body="second",
+                                  description=None, expected_version=memory.version)  # update
+    assert memory_store.read(memory.id, read_write_set) == updated
+
+    version = memory_store.delete(memory.id, read_write_set,                        # soft delete
+                                  expected_version=updated.version, hard=False)
+    seen = memory_store.read_any(memory.id, include_deleted=True)
+    assert seen.deleted_at is not None and seen.version == version
 
 
 # --- concurrency --------------------------------------------------------------

@@ -29,6 +29,7 @@ from .database import (
     MEMORY_COLUMNS,
     PROJECT_COLUMNS,
     SCHEMA_VERSION,
+    _lenient_text,
     memory_from_row,
     project_from_row,
 )
@@ -57,22 +58,6 @@ def _finding(kind: str, location: str, *, project_id: str | None = None,
 
 def _sorted_findings(findings: list[StoreFinding]) -> tuple[StoreFinding, ...]:
     return tuple(sorted(findings, key=lambda f: (f.location_hint, f.kind)))
-
-
-def _lenient_text(data: bytes) -> str | bytes:
-    """Decode a TEXT column as UTF-8; hand back the raw bytes when it is not.
-
-    A STRICT table's TEXT affinity does not stop a raw writer from planting
-    invalid UTF-8 (``CAST(X'80' AS TEXT)``). sqlite3's default text_factory
-    would raise `OperationalError` while fetching such a row, turning one
-    damaged memory into a failure of the whole inspection. Bytes fail the
-    `isinstance(value, str)` checks in `memory_from_row`/`project_from_row`,
-    so the row becomes an `invalid-row` finding instead of a crash.
-    """
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError:
-        return data
 
 
 def _shaped_id(value: object) -> str | None:

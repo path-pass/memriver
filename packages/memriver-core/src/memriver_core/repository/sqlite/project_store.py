@@ -92,6 +92,9 @@ class SqliteProjectStore:
             self._check_confirmed(conn, plan, project_id=None)
             if conn.execute("SELECT 1 FROM projects WHERE id = ?", (project.id,)).fetchone():
                 raise IdCollision(project.id)
+            # a row the read path would reject is never committed: the same
+            # decoder that would refuse it on the next read refuses it now
+            project_from_row((project.id, project.name, plan.root, 0))
             try:
                 conn.execute("INSERT INTO projects (id, name, root, is_global) VALUES (?, ?, ?, 0)",
                              (project.id, project.name, plan.root))
@@ -227,6 +230,8 @@ class SqliteProjectStore:
                 if _same(project.root, plan.root):
                     return
                 raise BindingRefused("has-directory")
+            # bind writes only root; validate the full row as it will stand
+            project_from_row((project.id, project.name, plan.root, 0))
             try:
                 conn.execute("UPDATE projects SET root = ? WHERE id = ? AND root IS NULL",
                              (plan.root, project_id))

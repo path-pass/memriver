@@ -163,6 +163,22 @@ def test_a_read_rolls_back_the_hot_journal_of_a_crashed_writer(tmp_path):
         assert conn.execute("SELECT id, name FROM projects").fetchall() == [(kept, "kept")]
     assert not (root / "memriver.db-journal").exists()
 
+
+def test_read_and_write_connections_tolerate_invalid_utf8_instead_of_crashing(tmp_path):
+    root = tmp_path / "store"
+    with _db(root).write() as conn:
+        conn.execute("INSERT INTO projects (id, name, root, is_global) VALUES (?, 'g', NULL, 1)",
+                     (new_id(),))
+    with closing(sqlite3.connect(root / "memriver.db")) as conn, conn:
+        conn.execute("UPDATE projects SET name = CAST(X'80' AS TEXT)")
+    # sqlite3's default text_factory raises OperationalError decoding this column;
+    # a lenient one hands back bytes instead of failing the whole fetch
+    with _db(root).read() as conn:
+        assert isinstance(conn.execute("SELECT name FROM projects").fetchone()[0], bytes)
+    with _db(root).write() as conn:
+        assert isinstance(conn.execute("SELECT name FROM projects").fetchone()[0], bytes)
+
+
 def test_a_memory_round_trips_through_its_row():
     memory = Memory.new(body="b", type="project", project_id=new_id(),
                         source={"harness": "h", "method": "agent"}, description="d")
