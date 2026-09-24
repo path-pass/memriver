@@ -662,7 +662,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastmcp", specifier = ">=3.0" },
+    { name = "fastmcp", specifier = ">=3.4.7" },
     { name = "memriver-core", editable = "packages/memriver-core" },
     { name = "pydantic", specifier = ">=2" },
     { name = "tomlkit" },
