@@ -127,12 +127,33 @@ def test_an_unnamed_error_logs_only_the_operation_and_its_type(caplog):
 
 @pytest.mark.parametrize("err", [MemoryNotFound(M), GlobalReadOnly(),
                                  ProjectUnavailable("x"), VersionConflict(M),
-                                 ContentRejected("looks like a secret"),
-                                 ValueError("invalid memory type: 'bogus'")])
+                                 ContentRejected("looks like a secret")])
 def test_a_named_error_never_logs(caplog, err):
     with caplog.at_level(logging.WARNING, logger="memriver"), pytest.raises(ToolError):
         _fail("update", err, memory_id=M)
     assert caplog.records == []
+
+
+def test_a_value_error_is_named_only_on_the_write_path(caplog):
+    """`_fail` mirrors `_map_error`'s own carve-out: a ValueError is an
+    already-worded, expected refusal only on `write`, and only when it is not
+    a UnicodeError. Everywhere else -- including a UnicodeError on `write` --
+    it reaches a generic message and must log like any other unnamed
+    exception, e.g. the pre-write round-trip check in
+    `SqliteMemoryStore.update` raises `ValueError` on `update`."""
+    with caplog.at_level(logging.WARNING, logger="memriver"), pytest.raises(ToolError):
+        _fail("write", ValueError("invalid memory type: 'bogus'"))
+    assert caplog.records == []
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="memriver"), pytest.raises(ToolError):
+        _fail("update", ValueError("row failed its round trip"), memory_id=M)
+    assert [r.getMessage() for r in caplog.records] == ["memory_update failed: ValueError"]
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="memriver"), pytest.raises(ToolError):
+        _fail("write", UnicodeEncodeError("utf-8", "\udc80", 0, 1, "surrogates not allowed"))
+    assert [r.getMessage() for r in caplog.records] == ["memory_write failed: UnicodeEncodeError"]
 
 
 # --- the tools over a second backend ---

@@ -512,13 +512,13 @@ async def test_memory_write_does_not_block_the_event_loop(world):
     stalled every other request for as long as it lasted."""
     server = build_server(root=world["store"], project_dir=world["dir"])
     db_path = world["store"] / "memriver.db"
-    if not db_path.exists():
-        pytest.skip("the store database was not created ahead of the write")
+    assert db_path.exists(), "the world fixture must have created the store database"
 
     hold_seconds = 0.5
     ready = threading.Event()
     holder = threading.Thread(target=_hold_the_write_lock, args=(db_path, hold_seconds, ready))
     holder.start()
+    call_elapsed = 0.0
     try:
         if not ready.wait(2):
             pytest.skip("could not deterministically acquire the write lock on this platform")
@@ -535,7 +535,9 @@ async def test_memory_write_does_not_block_the_event_loop(world):
         beat = asyncio.ensure_future(heartbeat())
         try:
             async with Client(server) as c:
+                call_start = time.monotonic()
                 await c.call_tool("memory_write", {"content": "x", "type": "user"})
+                call_elapsed = time.monotonic() - call_start
         finally:
             stop.set()
             beat.cancel()
@@ -543,6 +545,11 @@ async def test_memory_write_does_not_block_the_event_loop(world):
                 await beat
     finally:
         holder.join()
+
+    if call_elapsed < 0.25:
+        pytest.skip(f"memory_write only took {call_elapsed:.3f}s -- it did not actually wait "
+                    "on the lock (client setup likely outlasted the hold), so this run proves "
+                    "nothing either way")
 
     assert stalls, "the heartbeat never got a chance to run"
     # generous margin: the tool wait is ~0.5s; a blocked event loop would show

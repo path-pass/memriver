@@ -100,10 +100,11 @@ def _map_error(operation: Operation, err: Exception, *, memory_id: str | None = 
 # else (StorageFailure included) falls through to one of the generic
 # messages above and is logged below, so a lock timeout, corruption and a
 # genuine bug stay distinguishable in the log even though the client sees
-# the same text either way.
+# the same text either way. ValueError is deliberately not here: per
+# _map_error it is only a named, expected refusal on the write path (and
+# only when it is not a UnicodeError) -- see `_fail`.
 _NAMED_ERRORS: tuple[type[Exception], ...] = (
     ContentRejected, GlobalReadOnly, MemoryNotFound, ProjectUnavailable, VersionConflict,
-    ValueError,
 )
 
 
@@ -113,10 +114,17 @@ def _fail(operation: Operation, err: Exception, *, memory_id: str | None = None,
 
     An exception outside `_NAMED_ERRORS` also logs one WARNING line naming
     only the operation and the exception's type -- never its message,
-    arguments or any path/value it might carry.
+    arguments or any path/value it might carry. A `ValueError` mirrors
+    `_map_error`'s own write-only, non-Unicode carve-out instead of being
+    exempt everywhere: on `read`/`update`/`delete`/`list` (e.g. the pre-write
+    round-trip check in `SqliteMemoryStore.update`) and a `UnicodeError` even
+    on `write` both fall through to a generic message, so they log like any
+    other unnamed exception.
     """
     message = _map_error(operation, err, memory_id=memory_id, session_state=session_state)
-    if not isinstance(err, _NAMED_ERRORS):
+    write_value_error = (operation == "write" and isinstance(err, ValueError)
+                         and not isinstance(err, UnicodeError))
+    if not isinstance(err, _NAMED_ERRORS) and not write_value_error:
         logger.warning("memory_%s failed: %s", operation, type(err).__name__)
     raise ToolError(message) from None
 

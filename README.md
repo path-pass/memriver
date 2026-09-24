@@ -136,9 +136,10 @@ changed since, the call is refused and nothing is written -- read it again and
 redo the edit on the current text. Every write passes the content policy
 (secret-shaped content is refused, the value is never echoed back) and the
 size limits from *Settings*. An operational failure inside a tool comes back
-as a path-free error message rather than an exception through the transport; a
-call that does not match a tool's schema — an unknown argument, a missing one,
-a wrong type — is rejected by the MCP layer before the tool runs.
+as an MCP tool error (`isError: true`) carrying the same path-free message,
+never as a raw exception through the transport; a call that does not match a
+tool's schema — an unknown argument, a missing one, a wrong type — is
+rejected by the MCP layer before the tool runs.
 
 The memory model — its fields, the four types, id rules, the strict boolean
 and timestamp formats — is specified in
