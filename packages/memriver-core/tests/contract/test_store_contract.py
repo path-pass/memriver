@@ -355,6 +355,39 @@ def test_hard_delete_of_global_is_refused_too(backend, root, world):
         _delete(world, fact, hard=True)
 
 
+def _swap_global_role(root: Path, old_global: str, new_global: str) -> None:
+    """Make `new_global` the sole is_global row and `old_global` an ordinary
+    project, mimicking a database replaced or restored under a running
+    server: a read/write set built before the swap still names `old_global`
+    as global, so only a row read inside the write transaction knows better.
+    """
+    with closing(sqlite3.connect(root / "memriver.db")) as conn, conn:
+        conn.execute("UPDATE projects SET root = NULL WHERE id = ?", (new_global,))
+        conn.execute("UPDATE projects SET is_global = 0 WHERE id = ?", (old_global,))
+        conn.execute("UPDATE projects SET is_global = 1 WHERE id = ?", (new_global,))
+
+
+def test_record_is_refused_once_the_target_project_becomes_global(root, world):
+    _swap_global_role(root, world["global"], world["mine"])
+    memory = _m(world["mine"])
+    with pytest.raises(GlobalReadOnly):
+        world["memory_store"].record(memory, world["read_write_set"])
+    with pytest.raises(MemoryNotFound):
+        world["memory_store"].read_any(memory.id, include_deleted=True)
+
+
+@pytest.mark.parametrize("action", ["update", "soft-delete", "hard-delete"])
+def test_update_or_delete_is_refused_once_the_target_project_becomes_global(root, world, action):
+    memory = _record(world)
+    _swap_global_role(root, world["global"], world["mine"])
+    with pytest.raises(GlobalReadOnly):
+        if action == "update":
+            _update(world, memory)
+        else:
+            _delete(world, memory, hard=action == "hard-delete")
+    assert world["memory_store"].read_any(memory.id, include_deleted=True) == memory
+
+
 @pytest.mark.parametrize("action", ["update", "delete"])
 def test_a_foreign_memory_cannot_be_changed_and_is_not_revealed(world, action):
     foreign = _m(world["other"])

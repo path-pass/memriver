@@ -75,9 +75,15 @@ class SqliteMemoryStore:
         if not self._database.exists():
             raise ProjectUnavailable(_NO_WRITABLE_PROJECT)
         with self._database.write() as conn:
-            if conn.execute("SELECT 1 FROM projects WHERE id = ?",
-                            (memory.project_id,)).fetchone() is None:
+            row = conn.execute("SELECT is_global FROM projects WHERE id = ?",
+                               (memory.project_id,)).fetchone()
+            if row is None:
                 raise ProjectUnavailable(_NO_WRITABLE_PROJECT)
+            # the cached global_project_id above is only an early refusal: the
+            # database can be replaced or restored under a running server, so
+            # the role that decides is the one on the row, read just now
+            if row[0]:
+                raise GlobalReadOnly()
             # deleted rows keep their id: an id is never reused
             if conn.execute("SELECT 1 FROM memories WHERE id = ?", (memory.id,)).fetchone():
                 raise IdCollision(memory.id)
@@ -152,7 +158,14 @@ class SqliteMemoryStore:
         if memory is None:
             raise MemoryNotFound(memory_id)
         if memory.project_id == read_write_set.global_project_id:
-            # global is readable, so naming the rule reveals nothing
+            # global is readable, so naming the rule reveals nothing; this is
+            # only an early refusal from the cached id -- the database can be
+            # replaced or restored under a running server, so the row's own
+            # is_global, read just below, is the one that actually decides
+            raise GlobalReadOnly()
+        # `_joined` already required a project row to exist (it is a join)
+        if conn.execute("SELECT is_global FROM projects WHERE id = ?",
+                        (memory.project_id,)).fetchone()[0]:
             raise GlobalReadOnly()
         if memory.project_id not in read_write_set.writable():
             raise MemoryNotFound(memory_id)
