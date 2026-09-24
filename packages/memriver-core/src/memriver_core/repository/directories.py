@@ -261,7 +261,15 @@ def _refuse_purge_target(given: Path, canonical: Path, *, home: Path,
     followed: ``--root`` names the store, and a link standing in for it is an
     arrangement memriver will not delete through.
     """
-    if given.is_symlink():
+    # `lstat` directly, not `Path.is_symlink()`: on 3.14 that answers False
+    # for any failed check, reading "could not look" as "not a link"
+    try:
+        is_link = stat.S_ISLNK(given.lstat().st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        is_link = False
+    except OSError as error:
+        return PurgeRefusal("unresolvable", given, canonical, str(error))
+    if is_link:
         return PurgeRefusal("symlink", given, canonical)
     # `home`/`cwd` being relative to the target covers the target *being* one of
     # them and the target being any ancestor of one -- the filesystem root
@@ -317,9 +325,16 @@ def plan_purge(given: Path, *, home: Path, cwd: Path,
     refusal = _refuse_purge_target(given, canonical, home=home, cwd=cwd)
     if refusal is not None:
         return refusal
-    if not canonical.exists():
+    # `stat` directly, not `Path.exists()/is_dir()`: on 3.14 those swallow
+    # every OSError, and a store that cannot be checked would be reported as
+    # no data to remove
+    try:
+        mode = canonical.stat().st_mode
+    except (FileNotFoundError, NotADirectoryError):
         return PurgePlan(given, canonical, home, cwd, exists=False)
-    if not canonical.is_dir():
+    except OSError as error:
+        return PurgeRefusal("unresolvable", canonical, canonical, str(error))
+    if not stat.S_ISDIR(mode):
         return PurgeRefusal("not-directory", canonical, canonical)
     if dry_run:
         return PurgePlan(given, canonical, home, cwd, exists=True)

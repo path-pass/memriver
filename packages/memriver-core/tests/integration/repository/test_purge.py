@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import errno
+import os
 from pathlib import Path
 
 import pytest
@@ -100,6 +102,53 @@ def test_a_failing_walk_reports_partial_removal(places, monkeypatch):
     with plan_purge(store, home=home, cwd=cwd) as plan:
         result = purge(plan)
     assert (result.outcome, result.detail) == ("partly-removed", "denied")
+
+
+def _deny_stat(monkeypatch, path: Path, *, follow_only: bool = False) -> None:
+    """Make every stat of ``path`` fail with EACCES (only the following ones
+    when ``follow_only``). Python 3.14's ``Path.exists/is_dir/is_symlink``
+    swallow that error and answer False; 3.12's raised it."""
+    real_stat, real_lstat = os.stat, os.lstat
+
+    def denied(*args):
+        return PermissionError(errno.EACCES, os.strerror(errno.EACCES), *args)
+
+    def fake_stat(target, *args, follow_symlinks=True, **kwargs):
+        if str(target) == str(path) and (follow_symlinks or not follow_only):
+            raise denied(str(target))
+        return real_stat(target, *args, follow_symlinks=follow_symlinks, **kwargs)
+
+    def fake_lstat(target, *args, **kwargs):
+        if str(target) == str(path) and not follow_only:
+            raise denied(str(target))
+        return real_lstat(target, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", fake_stat)
+    monkeypatch.setattr(os, "lstat", fake_lstat)
+
+
+def test_a_target_whose_existence_cannot_be_checked_is_refused(places, monkeypatch):
+    """Not a plan with nothing to remove: the store may well be there."""
+    home, cwd, store = places
+    _deny_stat(monkeypatch, store.resolve(), follow_only=True)
+    refusal = plan_purge(store, home=home, cwd=cwd)
+    assert isinstance(refusal, PurgeRefusal)
+    assert (refusal.kind, refusal.path) == ("unresolvable", store.resolve())
+    assert "denied" in refusal.detail.lower()
+
+
+def test_a_target_whose_link_check_fails_after_confirmation_is_left_alone(places,
+                                                                          monkeypatch):
+    """The post-prompt guard re-checks the given leaf for a link; a check that
+    cannot run proves nothing and must not read as "no link"."""
+    home, cwd, store = places
+    with plan_purge(store, home=home, cwd=cwd) as plan:
+        _deny_stat(monkeypatch, store)
+        result = purge(plan)
+    assert result.outcome == "refused"
+    assert (result.refusal.kind, result.refusal.path) == ("unresolvable", store)
+    monkeypatch.undo()
+    assert (store / "memriver.db").exists()
 
 
 def test_purge_without_an_opened_plan_is_a_programming_error(places):
