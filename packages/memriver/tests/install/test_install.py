@@ -34,6 +34,7 @@ from memriver.install import (
     HARNESS_SETTING_TAKEOVER_NOTICE,
     TAKEOVER_NOTICE,
     StoreStep,
+    _symlinked_component,
     claude_code,
     cursor,
     run_install,
@@ -47,6 +48,7 @@ from memriver.install.codex import (
 from memriver.install.codex import (
     NATIVE_MEMORY_OFF_NOTE as CODEX_NATIVE_MEMORY_OFF_NOTE,
 )
+from memriver.install.editors import Target
 from memriver_core.bootstrap import build_service
 from memriver_core.settings import Settings
 
@@ -1425,6 +1427,28 @@ def test_rollback_does_not_restore_a_backup_through_a_swapped_parent(
     assert claude_json.read_bytes() == original_json
     assert str(codex_toml) in result.stderr
     assert "changed after this run wrote it" in result.stderr
+
+
+def test_symlinked_component_treats_a_failed_lstat_as_unverified_not_safe(
+        tmp_path, monkeypatch):
+    """A transient `OSError` from `lstat` on a path component must propagate
+    rather than be read as "no link here": a caller that took `None` back
+    from a failed check would treat an unverified component as safe to write
+    or roll back through."""
+    target_path = tmp_path / "target"
+    target_path.write_text("content")
+    target = Target(path=target_path, user_level=True, rollback_instruction="")
+    real_lstat = Path.lstat
+
+    def flaky_lstat(self, *args, **kwargs):
+        if self == target_path:
+            raise OSError(errno.EIO, "injected transient I/O error")
+        return real_lstat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", flaky_lstat)
+
+    with pytest.raises(OSError, match="injected transient I/O error"):
+        _symlinked_component(target, root=None)
 
 
 def test_rollback_reports_could_not_recover_when_the_link_check_itself_fails(

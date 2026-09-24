@@ -241,7 +241,19 @@ def _symlinked_component(target: Target, root: Path | None) -> Path | None:
         parts = target.path.relative_to(root).parts
         components = [root.joinpath(*parts[:depth]) for depth in range(1, len(parts) + 1)]
     for component in components:
-        if component.is_symlink():
+        # `lstat` directly, not `Path.is_symlink()`: on 3.14 that method
+        # routes through `os.path.islink`, which swallows every `OSError`
+        # (not just "nothing here") and reports False -- silently reading a
+        # failed check as "no link found, safe to proceed". A missing
+        # component (or one below a non-directory) genuinely has nothing to
+        # follow, so that alone is treated as "no link here"; any other
+        # OSError (a permission or I/O failure) proves nothing and must
+        # propagate to the caller's own unexpected-failure handling.
+        try:
+            mode = component.lstat().st_mode
+        except (FileNotFoundError, NotADirectoryError):
+            return None
+        if stat.S_ISLNK(mode):
             return component
     return None
 
