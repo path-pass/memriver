@@ -89,7 +89,10 @@ def main_tree_path(path: str, *, timeout_s: float) -> str | None:
         return None
     main = candidates[0]
     # the first record of a --separate-git-dir repository is its metadata
-    # directory, not a working tree: only the same query run there proves it
+    # directory, not a working tree: only the same query run there proves it.
+    # Known limitation: a metadata directory itself named <X>/.git is listed
+    # as <X>, git answers in <X> as a working tree of the same repository,
+    # and a linked worktree then maps into <X>
     confirmed = _locate(main, timeout_s)
     if confirmed is None:
         return None

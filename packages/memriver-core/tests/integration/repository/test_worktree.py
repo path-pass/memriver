@@ -125,6 +125,19 @@ def test_a_worktree_of_a_separate_git_dir_repository_is_degraded(base):
     assert main_tree_path(str(base / "wt2"), timeout_s=TIMEOUT_S) is None
 
 
+def test_a_separate_git_dir_named_dot_git_maps_into_its_parent_known_limitation(base):
+    # git lists <X> (the metadata directory minus "/.git") first, and asked in
+    # <X> it answers as a working tree of the same repository: the check in
+    # the main tree passes. Pinned so that changing this is a deliberate act.
+    work = base / "work"
+    (base / "x").mkdir()
+    _git("init", "-b", "main", "--separate-git-dir", str(base / "x" / ".git"), str(work),
+         cwd=base)
+    _git("commit", "--allow-empty", "-m", "init", cwd=work)
+    _git("worktree", "add", "-b", "feature", str(base / "wt2"), cwd=work)
+    assert main_tree_path(str(base / "wt2"), timeout_s=TIMEOUT_S) == str(base / "x")
+
+
 def test_a_main_tree_whose_git_names_another_toplevel_is_degraded(base, main, worktree):
     (base / "other").mkdir()
     _git("config", "core.worktree", str(base / "other"), cwd=main)
