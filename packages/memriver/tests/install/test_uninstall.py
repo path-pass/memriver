@@ -2199,8 +2199,10 @@ def json_number_outside_the_standard(home: Path, project: Path):
 
 def deeply_nested_json(home: Path, project: Path):
     # deep enough to fail on the parse side, which a removal always reaches --
-    # unlike the render side, which only a document it actually changes does
-    nested = "[" * 100_000 + "]" * 100_000
+    # unlike the render side, which only a document it actually changes does;
+    # past every supported interpreter's parser limit (3.14's scales with the
+    # C stack)
+    nested = "[" * 1_000_000 + "]" * 1_000_000
     write(home / ".claude.json", '{"foreign": ' + nested + "}")
     return ["claude-code"], project
 
