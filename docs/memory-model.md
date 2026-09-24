@@ -78,7 +78,11 @@ memory, bodies included, behind SQLite's own consistency guarantees; there is
 no separate index or manifest to go stale. A project has at most one bound
 directory; global has none. Nothing about a memory says where its project's
 directory is — readers resolve a directory to a project, never a memory to a
-location.
+location. A directory-mode surface (Cursor, Kiro, a bare `memriver` process)
+resolves the current directory on every call; a session-routed harness
+(Claude Code, Codex) resolves it once, from a session's own persistent row,
+and keeps that project for as long as the session lives, even after its
+working directory changes.
 
 ## Identity
 
