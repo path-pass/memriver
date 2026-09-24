@@ -1,6 +1,12 @@
-"""Harness hook composition: index injection at session start, one Stop nudge.
+"""Harness hooks: four events on the session's row in the store.
 
-Two rules shape this module.
+SessionStart registers the session (or finds its row) and injects the index
+its row grants; UserPromptSubmit counts and records the prompt; Stop decides
+the save nudge; SessionEnd records the end. Every event names its session by
+the payload's ``session_id``: without a valid one, or without a store, a hook
+does nothing -- and no hook ever creates the store.
+
+Three rules shape this module.
 
 *Never fail the harness.* A hook that exits non-zero, or writes a traceback to
 stdout, degrades the session it was meant to help. Every path here returns
@@ -14,33 +20,39 @@ harness even where both currently build the same object: the schemas are owned
 by two vendors and have diverged before. Composition of the text itself is
 shared, because that is ours.
 
-*Stop stays light.* The Stop path only needs to know whether the current
-directory belongs to a registered project. It asks the core facade
-(``open_project_context``), whose read opens the database read-only: it never
-loads the content policy, never writes, never scans memories and never
-creates the store.
+*Stop stays light.* The Stop path only moves the session's nudge watermark
+through the core facade (``stop_decision``): it never loads the content
+policy, never scans memories and never creates the store.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from .core_logging import quiet_core_logging
+from .project_context import visible
 from .protocol_text import (
     COMPACT_PREFIX,
     COMPACT_RESCUE_SUFFIX,
     INDEX_BEGIN_DELIMITER,
     INDEX_END_DELIMITER,
+    PENDING_NOTICE,
+    PENDING_TARGET_NONE,
+    PENDING_TARGET_PROJECT,
     SESSION_START_PREFIX,
     STOP_NUDGE,
 )
 
+if TYPE_CHECKING:
+    from memriver_core.models import ProjectContext, SessionKey
+
 Harness = Literal["claude-code", "codex"]
-HookEvent = Literal["session-start", "stop"]
+HookEvent = Literal["session-start", "user-prompt-submit", "stop", "session-end"]
 
 INVALID_INPUT = "memriver hook: invalid input\n"
 STORE_UNAVAILABLE = "memriver hook: memory store is unavailable\n"
@@ -124,8 +136,20 @@ def encode_codex_stop(text: str) -> dict[str, Any]:
     return {"decision": "block", "reason": text}
 
 
+def encode_claude_user_prompt_submit(text: str) -> dict[str, Any]:
+    return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
+                                   "additionalContext": text}}
+
+
+def encode_codex_user_prompt_submit(text: str) -> dict[str, Any]:
+    return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
+                                   "additionalContext": text}}
+
+
 _SESSION_START_ENCODERS = {"claude-code": encode_claude_session_start,
                            "codex": encode_codex_session_start}
+_USER_PROMPT_SUBMIT_ENCODERS = {"claude-code": encode_claude_user_prompt_submit,
+                                "codex": encode_codex_user_prompt_submit}
 _STOP_ENCODERS = {"claude-code": encode_claude_stop, "codex": encode_codex_stop}
 
 
@@ -138,14 +162,42 @@ def run_hook(event: HookEvent, harness: Harness, payload_text: str, *,
              cwd: Path) -> HookResult:
     """Run one hook event. Returns what to write; never raises, never exits."""
     if event == "stop":
-        return _stop(harness, payload_text, root=root, project_dir=project_dir,
-                    cwd=cwd)
+        return _stop(harness, payload_text, root=root)
+    if event == "user-prompt-submit":
+        return _user_prompt_submit(harness, payload_text, root=root,
+                                   project_dir=project_dir, cwd=cwd)
+    if event == "session-end":
+        return _session_end(harness, payload_text, root=root)
     return _session_start(harness, payload_text, root=root,
                           project_dir=project_dir, cwd=cwd)
 
 
-def _stop(harness: Harness, payload_text: str, *, root: Path | None,
-         project_dir: Path | None, cwd: Path) -> HookResult:
+def _session_key(harness: Harness, payload: dict[str, Any]) -> SessionKey | None:
+    """The payload's session, or None: an unknown harness or an invalid id names none."""
+    from memriver_core.models import SessionKey
+
+    try:
+        return SessionKey(harness, payload.get("session_id"))
+    except ValueError:
+        return None
+
+
+def _open_service(root: Path | None):
+    # imported inside the function, not at module scope, so importing this
+    # module (the CLI does, for every hook) does not pay for the core stack
+    from memriver_core.bootstrap import build_service
+    from memriver_core.settings import load_settings
+
+    settings = load_settings(root_override=root)
+    return build_service(settings, root=settings.root)
+
+
+def _transcript_path(payload: dict[str, Any]) -> str | None:
+    value = payload.get("transcript_path")
+    return value if isinstance(value, str) else None
+
+
+def _stop(harness: Harness, payload_text: str, *, root: Path | None) -> HookResult:
     try:
         payload = json.loads(payload_text)
         # only a literal JSON false is a first Stop. A missing key, a string
@@ -155,18 +207,62 @@ def _stop(harness: Harness, payload_text: str, *, root: Path | None,
         if not (isinstance(payload, dict)
                 and payload.get("stop_hook_active") is False):
             return HookResult()
-        # the facade's read-only project context: no content policy, no write,
-        # and a missing store stays missing
+        key = _session_key(harness, payload)
+        if key is None:
+            return HookResult()
+        # the watermark write only: no content policy, and a missing store
+        # stays missing
         from memriver_core.bootstrap import build_service
         from memriver_core.settings import Settings, storage_root
 
         store_root = Path(root) if root is not None else storage_root()
         service = build_service(Settings(root=store_root), root=store_root)
-        start = _resolve_dir(payload, project_dir, cwd)
-        if service.open_project_context(str(start)).state != "registered":
+        if not service.stop_decision(key):
             return HookResult()
         return HookResult(stdout=_emit(_STOP_ENCODERS[harness](STOP_NUDGE)))
     except Exception:  # noqa: BLE001 - a failed nudge is never worth a message
+        return HookResult()
+
+
+def _user_prompt_submit(harness: Harness, payload_text: str, *, root: Path | None,
+                        project_dir: Path | None, cwd: Path) -> HookResult:
+    try:
+        payload = json.loads(payload_text)
+        if not isinstance(payload, dict):
+            return HookResult()
+        # a Codex sub-agent's prompt is not the user's: never recorded or
+        # counted. Claude Code sub-agents do not fire UserPromptSubmit.
+        if harness == "codex" and (payload.get("agent_id") is not None
+                                   or payload.get("agent_type") is not None):
+            return HookResult()
+        key = _session_key(harness, payload)
+        if key is None:
+            return HookResult()
+        with quiet_core_logging():
+            service = _open_service(root)
+            context, created = service.observe_prompt(
+                key, prompt=payload.get("prompt"),
+                entry_dir=str(_resolve_dir(harness, payload, project_dir, cwd)),
+                transcript_path=_transcript_path(payload))
+            # only the prompt that created a pending row says so: SessionStart
+            # already told a session whose row it made
+            if not (created and context.state == "pending"):
+                return HookResult()
+            notice = _pending_notice(service, context)
+        return HookResult(stdout=_emit(_USER_PROMPT_SUBMIT_ENCODERS[harness](notice)))
+    except Exception:  # noqa: BLE001 - never a message: the prompt must not leak
+        return HookResult()
+
+
+def _session_end(harness: Harness, payload_text: str, *, root: Path | None) -> HookResult:
+    try:
+        payload = json.loads(payload_text)
+        key = _session_key(harness, payload) if isinstance(payload, dict) else None
+        if key is not None:
+            with quiet_core_logging():
+                _open_service(root).end_session(key)
+        return HookResult()
+    except Exception:  # noqa: BLE001 - a missed end is never worth a message
         return HookResult()
 
 
@@ -184,9 +280,26 @@ def _session_start(harness: Harness, payload_text: str, *, root: Path | None,
     if not isinstance(payload, dict):
         return HookResult(stderr=INVALID_INPUT)
     try:
+        key = _session_key(harness, payload)
+        if key is None:
+            return HookResult()
         encode = _SESSION_START_ENCODERS[harness]
-        index = _read_index(root, _resolve_dir(payload, project_dir, cwd))
-        text = _compose(index, payload.get("source"), harness)
+        source = payload.get("source")
+        with quiet_core_logging():
+            service = _open_service(root)
+            context = service.start_session(
+                key, source=source if isinstance(source, str) else "",
+                entry_dir=str(_resolve_dir(harness, payload, project_dir, cwd)),
+                transcript_path=_transcript_path(payload))
+            # a `none` context with no row behind it is the storeless answer:
+            # nothing was written and there is nothing to route
+            if context.state == "none" and service.entry_of(context) is None:
+                return HookResult()
+            notice = (_pending_notice(service, context) if context.state == "pending"
+                      else "")
+            # the same header and body the MCP server shows for this context
+            index = context.header + "\n" + service.index(context)
+        text = _compose(index, source, harness, notice)
         return HookResult(stdout=_emit(encode(text)))
     except Exception:  # noqa: BLE001 - the reason belongs in `memriver doctor`
         # one boundary around everything after the payload shape check --
@@ -197,29 +310,32 @@ def _session_start(harness: Harness, payload_text: str, *, root: Path | None,
         return HookResult(stderr=STORE_UNAVAILABLE)
 
 
-def _resolve_dir(payload: dict[str, Any], project_dir: Path | None,
+def _resolve_dir(harness: Harness, payload: dict[str, Any], project_dir: Path | None,
                  cwd: Path) -> Path:
-    """Explicit option > the harness's payload cwd > the process cwd."""
+    """The registration entry: the explicit option > Claude Code's own
+    ``CLAUDE_PROJECT_DIR`` > the harness's payload cwd > the process cwd.
+
+    Only a session with no row yet uses it; an existing row keeps its project
+    wherever the session is resumed.
+    """
     if project_dir is not None:
         return Path(project_dir)
+    if harness == "claude-code":
+        claude_project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "")
+        if claude_project_dir and os.path.isabs(claude_project_dir):
+            return Path(claude_project_dir)
     payload_cwd = payload.get("cwd")
     return Path(payload_cwd) if isinstance(payload_cwd, str) else Path(cwd)
 
 
-def _read_index(root: Path | None, project_dir: Path) -> str:
-    # imported inside the function, not at module scope, so the Stop path
-    # does not pay for SessionStart's dependencies
-    from memriver_core.bootstrap import build_service
-    from memriver_core.settings import load_settings
-
-    with quiet_core_logging():
-        settings = load_settings(root_override=root)
-        service = build_service(settings, root=settings.root)
-        # the same project context the MCP server opens: same directory, same
-        # header and body
-        project_context = service.open_project_context(str(project_dir))
-        body = service.index(project_context)
-    return project_context.header + "\n" + body
+def _pending_notice(service: Any, context: ProjectContext) -> str:
+    """The pending notice for ``context``, naming the stored entry and its candidate."""
+    candidate = service.pending_candidate(context)
+    target = (PENDING_TARGET_NONE if candidate is None
+              else PENDING_TARGET_PROJECT.format(name=visible(candidate.name),
+                                                 id=candidate.id))
+    return PENDING_NOTICE.format(entry_cwd=visible(service.entry_of(context) or ""),
+                                 target=target)
 
 
 def _neutralize_delimiters(index: str) -> str:
@@ -285,17 +401,19 @@ def _fit(index: str, wrap: Callable[[str], str], budget: _InlineBudget) -> str:
         [*lines[:kept], _omitted_line(already + len(lines) - kept)]))
 
 
-def _compose(index: str, source: object, harness: Harness) -> str:
-    # `index` is the project header, a newline, then the body `_read_index`
-    # built. The header is never dropped by `_fit`: it goes into the wrapper
-    # rather than the part that gets fitted to the harness's inline budget.
+def _compose(index: str, source: object, harness: Harness, notice: str = "") -> str:
+    # `index` is the project header, a newline, then the index body. The
+    # header and the pending notice ahead of everything are never dropped by
+    # `_fit`: they go into the wrapper rather than the part that gets fitted
+    # to the harness's inline budget.
     header, _, body = index.partition("\n")
     prefix, suffix = ((COMPACT_PREFIX, "\n" + COMPACT_RESCUE_SUFFIX)
                       if source == "compact" else (SESSION_START_PREFIX, ""))
     header = _neutralize_delimiters(header)
+    lead = _neutralize_delimiters(notice) + "\n" if notice else ""
 
     def wrap(body_text: str) -> str:
-        return (f"{prefix}\n{INDEX_BEGIN_DELIMITER}\n{header}\n{body_text}\n"
+        return (f"{lead}{prefix}\n{INDEX_BEGIN_DELIMITER}\n{header}\n{body_text}\n"
                 f"{INDEX_END_DELIMITER}{suffix}")
 
     return _fit(_neutralize_delimiters(body), wrap,

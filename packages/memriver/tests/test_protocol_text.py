@@ -13,6 +13,9 @@ from memriver.protocol_text import (
     INDEX_BEGIN_DELIMITER,
     INDEX_END_DELIMITER,
     INSTRUCTIONS,
+    PENDING_NOTICE,
+    PENDING_TARGET_NONE,
+    PENDING_TARGET_PROJECT,
     PROTOCOL_BLOCK,
     SESSION_START_PREFIX,
     STOP_NUDGE,
@@ -51,9 +54,26 @@ def test_mcp_server_instructions_are_the_same_object(tmp_path):
 
 def test_stop_nudge_is_the_spec_copy():
     assert STOP_NUDGE == (
-        "[memriver] Before finishing: if this session produced durable facts (user\n"
-        "preferences, project decisions, corrections), save them with memory_write."
+        "[memriver] Before finishing: if this session produced durable facts (user "
+        "preferences, project decisions, corrections) that are not saved yet, save them "
+        "with memory_write or memory_update; otherwise do nothing."
     )
+
+
+def test_pending_notice_is_the_spec_copy():
+    expected_tail = (
+        " This may differ from where the session originally started. Ask the user "
+        "whether to register this session there; call session_confirm only if they "
+        "agree. Until then only global memories are readable."
+    )
+    assert PENDING_NOTICE.format(
+        entry_cwd="/work/app",
+        target=PENDING_TARGET_PROJECT.format(name="app", id="abcdefghij")) == (
+        "[memriver] This session is not registered yet. It was first observed in "
+        "/work/app, which resolves to project app [abcdefghij]." + expected_tail)
+    assert PENDING_NOTICE.format(entry_cwd="/work/app", target=PENDING_TARGET_NONE) == (
+        "[memriver] This session is not registered yet. It was first observed in "
+        "/work/app, which resolves to no registered project." + expected_tail)
 
 
 def test_untrusted_data_notice_is_the_spec_copy():

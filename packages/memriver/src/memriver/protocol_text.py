@@ -1,7 +1,7 @@
 """The single source for every agent-facing protocol string.
 
 MCP tool instructions, the static Cursor/Kiro protocol block, and the
-session-start/stop hook payload fragments are all authored here once.
+session-start, user-prompt-submit and stop hook payload fragments are all authored here once.
 ``hooks.py`` composes full hook payloads from the pieces below rather than
 re-authoring copy locally, and the static installers (Cursor/Kiro) render
 ``PROTOCOL_BLOCK`` verbatim into project instruction files.
@@ -71,9 +71,23 @@ COMPACT_RESCUE_SUFFIX = (
     "them with memory_write now."
 )
 
-# --- stop hook: at most one continuation ---
+# --- pending session: SessionStart, or the first prompt of a row it never saw ---
+
+# filled by hooks.py: `entry_cwd` is the stored entry directory after the
+# display neutralizer, `target` one of the two PENDING_TARGET_* phrases
+PENDING_NOTICE = (
+    "[memriver] This session is not registered yet. It was first observed in "
+    "{entry_cwd}, which resolves to {target}. This may differ from where the session "
+    "originally started. Ask the user whether to register this session there; call "
+    "session_confirm only if they agree. Until then only global memories are readable."
+)
+PENDING_TARGET_PROJECT = "project {name} [{id}]"
+PENDING_TARGET_NONE = "no registered project"
+
+# --- stop hook: at most one continuation per nudge interval ---
 
 STOP_NUDGE = (
-    "[memriver] Before finishing: if this session produced durable facts (user\n"
-    "preferences, project decisions, corrections), save them with memory_write."
+    "[memriver] Before finishing: if this session produced durable facts (user "
+    "preferences, project decisions, corrections) that are not saved yet, save them "
+    "with memory_write or memory_update; otherwise do nothing."
 )

@@ -16,7 +16,8 @@ from memriver import cli, hooks
 from memriver.hooks import HookResult
 from memriver.protocol_text import STOP_NUDGE
 from memriver_core.bootstrap import build_service
-from memriver_core.settings import Settings
+from memriver_core.models import SessionKey
+from memriver_core.settings import STOP_NUDGE_MIN_PROMPTS, Settings
 
 PROTOCOL_VERSION = "2025-06-18"
 
@@ -173,10 +174,12 @@ def test_hook_subcommand_writes_only_hook_result_streams(tmp_path):
     """The Stop nudge fires inside a registered project, and only what the hook
     composed reaches stdout."""
     root = tmp_path / "mem"
-    repo = _git_repo(tmp_path, "hook-repo")
+    repo = tmp_path / "hook-repo"
+    repo.mkdir()
     _register(root, repo)
+    _due_session(root, repo)
     result = invoke_main(["hook", "stop", "--harness", "codex", "--root", str(root)],
-                         stdin=json.dumps({"stop_hook_active": False, "cwd": str(repo)}))
+                         stdin=json.dumps({"session_id": "s1", "stop_hook_active": False}))
     assert json.loads(result.stdout) == {"decision": "block", "reason": STOP_NUDGE}
     assert result.stderr == ""
     assert result.exit_code == 0
@@ -243,6 +246,17 @@ def _register(root, repo) -> str:
     """Create a project and bind the fixture repo, the way `memriver project init` would."""
     service = build_service(Settings(root=root), root=root)
     return service.init_project(repo.name, service.plan_root(str(repo))).id
+
+
+def _due_session(root, directory) -> None:
+    """A Codex session "s1" registered at ``directory``, due its first Stop nudge."""
+    service = build_service(Settings(root=root), root=root)
+    key = SessionKey("codex", "s1")
+    service.start_session(key, source="startup", entry_dir=str(directory),
+                          transcript_path=None)
+    for _ in range(STOP_NUDGE_MIN_PROMPTS):
+        service.observe_prompt(key, prompt="next step", entry_dir=str(directory),
+                               transcript_path=None)
 
 
 def _active_memories(root, project_id) -> int:
@@ -388,14 +402,16 @@ def test_importing_the_cli_does_not_import_the_server_stack():
 
 def test_running_a_hook_does_not_import_the_server_stack(tmp_path):
     root = tmp_path / "mem"
-    repo = _git_repo(tmp_path, "leak-check-repo")
+    repo = tmp_path / "leak-check-repo"
+    repo.mkdir()
     _register(root, repo)
+    _due_session(root, repo)
     out = _python_c("import sys\n"
                     "from memriver.cli import main\n"
                     f"assert main(['hook', 'stop', '--harness', 'codex', "
                     f"'--root', {str(root)!r}]) == 0\n"
                     + _LEAK_CHECK,
-                    stdin=json.dumps({"stop_hook_active": False, "cwd": str(repo)}))
+                    stdin=json.dumps({"session_id": "s1", "stop_hook_active": False}))
     assert out.returncode == 0, out.stderr
     assert json.loads(out.stdout)["decision"] == "block"
 
@@ -410,17 +426,18 @@ def test_install_harness_choices_match_the_installer(monkeypatch):
     assert "{" + ",".join(HARNESSES) + "}" in out.stdout
 
 
-def test_hook_harness_choices_match_the_literal():
-    """The hook subcommand's --harness choices are pinned to hooks.Harness the
-    same way install's are pinned to install.HARNESSES, so the two can never
-    silently drift apart."""
+def test_hook_harness_and_event_choices_match_the_literals():
+    """The hook subcommand's event and --harness choices are pinned to
+    hooks.HookEvent and hooks.Harness the same way install's are pinned to
+    install.HARNESSES, so neither can silently drift apart."""
     from typing import get_args
 
-    from memriver.hooks import Harness
+    from memriver.hooks import Harness, HookEvent
 
     out = _run_cli("hook", "--help")
     assert out.returncode == 0
     assert "{" + ",".join(get_args(Harness)) + "}" in out.stdout
+    assert "{" + ",".join(get_args(HookEvent)) + "}" in out.stdout
 
 
 @contextlib.contextmanager
