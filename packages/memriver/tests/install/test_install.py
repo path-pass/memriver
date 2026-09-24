@@ -256,8 +256,11 @@ def oversized_json_integer(home: Path, project: Path):
 def deeply_nested_json(home: Path, project: Path):
     # syntactically legal JSON that the decoder still refuses: nesting past
     # the interpreter's recursion limit raises RecursionError from inside
-    # json.loads -- not a ValueError, so it needs its own boundary mapping
-    nested = "[" * 2000 + "]" * 2000
+    # json.loads -- not a ValueError, so it needs its own boundary mapping.
+    # The depth has to beat every supported interpreter: CPython 3.12's
+    # decoder stops near 10,000 levels, 3.14's C-stack guard near 28,000 (and
+    # its C encoder handles `indent`, so a document that parses also renders)
+    nested = "[" * 1_000_000 + "]" * 1_000_000
     write(home / ".claude.json", '{"foreign": ' + nested + "}")
     return ["claude-code"], project
 
