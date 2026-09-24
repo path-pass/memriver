@@ -233,6 +233,21 @@ class PurgeResult:
     refusal: PurgeRefusal | None = None
 
 
+def _resolve(path: Path) -> Path:
+    """``path.resolve()`` that raises on a symlink loop on every interpreter.
+
+    Since Python 3.13 a non-strict ``resolve()`` returns a loop unresolved
+    instead of raising, which would let a guard reason about a path that names
+    nothing. Strict resolution raises on a loop everywhere (``OSError`` on
+    3.13+, ``RuntimeError`` on 3.12); only a missing component falls back to
+    the non-strict form, since a purge target that does not exist yet is legal.
+    """
+    try:
+        return path.resolve(strict=True)
+    except (FileNotFoundError, NotADirectoryError):
+        return path.resolve()
+
+
 def _refuse_purge_target(given: Path, canonical: Path, *, home: Path,
                          cwd: Path) -> PurgeRefusal | None:
     """The refusal for a target too dangerous to delete, or ``None``.
@@ -253,7 +268,7 @@ def _refuse_purge_target(given: Path, canonical: Path, *, home: Path,
     # included, since every path is relative to it
     for base in (home, cwd):
         try:
-            resolved = base.resolve()
+            resolved = _resolve(base)
         except (OSError, RuntimeError) as error:
             return PurgeRefusal("unresolvable", base, canonical, str(error))
         if resolved.is_relative_to(canonical):
@@ -296,7 +311,7 @@ def plan_purge(given: Path, *, home: Path, cwd: Path,
     if not given.is_absolute():
         given = cwd / given
     try:
-        canonical = given.resolve()
+        canonical = _resolve(given)
     except (OSError, RuntimeError) as error:
         return PurgeRefusal("unresolvable", given, None, str(error))
     refusal = _refuse_purge_target(given, canonical, home=home, cwd=cwd)

@@ -1889,6 +1889,23 @@ def test_purge_data_reports_a_symlink_loop_instead_of_raising(home, project,
     assert "nothing was removed" in result.stdout
 
 
+def test_purge_data_reports_a_symlink_loop_above_the_store(home, project, tmp_path):
+    """A loop in an ancestor, not the leaf: the store path cannot be resolved,
+    which is not the same as a store that is simply absent."""
+    looping = tmp_path / "a"
+    other = tmp_path / "b"
+    looping.symlink_to(other)
+    other.symlink_to(looping)
+    root = looping / "agent-memory"
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                            purge_data=True, root=root)
+
+    assert result.exit_code == 1
+    assert f"cannot resolve {root}" in result.stdout
+    assert "nothing was removed" in result.stdout
+
+
 def test_the_purge_guard_reports_a_current_directory_it_cannot_resolve(home,
                                                                        tmp_path):
     """The protected bases are resolved too, and a loop in one of them is the
