@@ -127,8 +127,8 @@ def _valid(kind: str, op: dict, sources: list[str], scope: _Scope) -> bool:
     if kind == "rewrite":                   # a rewrite names its evidence (spec §3.8)
         return op["op"] == "update" and target in own and bool(sources) and all(
             s in own and s != target for s in sources)
-    if kind == "unsafe":
-        return op["op"] == "soft_delete" and target in own
+    if kind == "unsafe":                    # a soft delete consumes nothing
+        return op["op"] == "soft_delete" and target in own and not sources
     if scope.is_global:
         return False                        # global's own pass never extracts
     if op["op"] == "create":
