@@ -1169,3 +1169,71 @@ async def test_a_pending_session_without_a_candidate_is_pointed_at_session_regis
         {"header": _registered_header(world, later)}
     written = await _call(server, "memory_write", meta=meta, content="fact", type="project")
     assert written["project_id"] == project.id
+
+
+# --- tolerant meta reading across fastmcp/mcp versions (Task 14 / R8) --------------
+
+
+class _PydanticLikeMeta:
+    """Stands in for the model fastmcp 3.4.7's mcp dependency hands over."""
+
+    def __init__(self, data):
+        self._data = data
+
+    def model_dump(self):
+        return self._data
+
+
+class _MetaThatRaisesOnDump:
+    def model_dump(self):
+        raise RuntimeError("boom")
+
+
+@pytest.mark.parametrize("meta, expected", [
+    ({"a": 1}, {"a": 1}),
+    (_PydanticLikeMeta({"b": 2}), {"b": 2}),
+    (None, {}),
+    ("not-a-mapping", {}),
+    (_MetaThatRaisesOnDump(), {}),
+], ids=["mapping", "pydantic-like", "none", "non-mapping", "model-dump-raises"])
+def test_meta_as_dict_reads_any_shape_without_raising(meta, expected):
+    from memriver.server import _meta_as_dict
+    assert _meta_as_dict(meta) == expected
+
+
+@pytest.fixture
+def meta_delivered_as_plain_dict(monkeypatch):
+    """fastmcp>=4's mcp dependency hands `ctx.request_context.meta` over as a
+    plain dict; the locked fastmcp 3.4.7 still hands a pydantic model. Mutates
+    the real RequestContext in place so a test server sees the newer shape."""
+    from fastmcp import Context as FastMCPContext
+    original = FastMCPContext.request_context.fget
+
+    def as_plain_dict(self):
+        request_context = original(self)
+        if request_context is not None and hasattr(request_context.meta, "model_dump"):
+            request_context.meta = request_context.meta.model_dump()
+        return request_context
+
+    monkeypatch.setattr(FastMCPContext, "request_context", property(as_plain_dict))
+
+
+async def test_a_codex_call_still_routes_when_meta_arrives_as_a_plain_dict(
+        world, meta_delivered_as_plain_dict):
+    _start(world, SessionKey("codex", CODEX_ID), world["dir"])
+    server = build_server(root=world["store"], project_dir=world["dir"], harness="codex")
+    index = await _call(server, "memory_index", meta=CODEX_META["root"])
+    assert index.splitlines()[0] == _registered_header(world, world["dir"])
+
+
+async def test_a_claude_code_call_id_still_routes_when_meta_arrives_as_a_plain_dict(
+        world, monkeypatch, meta_delivered_as_plain_dict):
+    other = world["dir"].parent / "other"
+    startup, current = SessionKey("claude-code", "s1"), SessionKey("claude-code", "s2")
+    _start(world, startup, world["dir"])
+    _start(world, current, other, source="clear")
+    _service(world["store"]).record_tool_call(current, "call-1")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "s1")
+    server = build_server(root=world["store"], project_dir=world["dir"], harness="claude-code")
+    index = await _call(server, "memory_index", meta=_claude_meta("call-1"))
+    assert index.splitlines()[0] == _registered_header(world, other)

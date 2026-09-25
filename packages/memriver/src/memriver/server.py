@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal, NoReturn
 
@@ -212,11 +213,27 @@ def _hit(memory: Memory, collection: str) -> dict:
             "description": memory.description, "snippet": snippet}
 
 
+def _meta_as_dict(meta: Any) -> dict:
+    """Request meta as a plain mapping, whichever shape this fastmcp/mcp version
+    hands over: the locked fastmcp 3.4.7 hands a pydantic model; fastmcp>=4's mcp
+    dependency hands a plain dict already. A malformed or unreadable meta must
+    never fail the call -- it is read as if no meta was sent."""
+    if isinstance(meta, Mapping):
+        return meta
+    model_dump = getattr(meta, "model_dump", None)
+    if model_dump is None:
+        return {}
+    try:
+        return model_dump()
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def _session_key(harness: str, ctx: Context, service: Any) -> SessionKey | None:
     """The calling session, read from this call alone; None when it names none validly."""
-    # FastMCP hands `_meta` over as a model object
-    meta = ctx.request_context.meta if ctx.request_context is not None else None
-    data = meta.model_dump() if meta is not None else {}
+    request_context = ctx.request_context
+    meta = request_context.meta if request_context is not None else None
+    data = _meta_as_dict(meta)
     if harness == "claude-code":
         # Claude Code keeps this server across /clear and an in-app /resume,
         # so its environment keeps naming the startup session; the PreToolUse
