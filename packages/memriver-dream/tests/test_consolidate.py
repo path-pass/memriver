@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from memriver_core.models import now
 from memriver_dream.consolidate import SYSTEM_PROMPT, run
 from memriver_dream.protocols import ExecutorResult
 from memriver_dream.report import PhaseReport
+from memriver_dream.run import run_dream
 
 SECRET = "token ghp_" + "a" * 36
 
@@ -174,9 +176,14 @@ def test_a_stale_version_is_a_conflict_that_skips_only_that_group(world):
     a = world.plant(world.project.id, "a")
     b = world.plant(world.project.id, "b")
     c = world.plant(world.project.id, "c")
-    world.executor.replies = [_groups(_merge(a, b, version=7), _merge(b, c))]
+    d = world.plant(world.project.id, "d")
+    rewrite = ("rewrite", "b says so", _op("update", id=a, version=1, description="a",
+                                           body="a, as b says", sources=((b, 1),)))
+    # the second rewrite read a at version 1, which the first moved on
+    world.executor.replies = [_groups(rewrite, rewrite, _merge(c, d))]
     phase = _phase(world)
-    assert (phase.outcomes["conflict"], phase.outcomes["merge"]) == (1, 1)
+    assert (phase.outcomes["rewrite"], phase.outcomes["conflict"],
+            phase.outcomes["merge"]) == (1, 1, 1)
     # the pass only partly applied: the scope is planned again
     assert world.maintenance.fingerprint_of(f"consolidate:{world.project.id}") is None
 
@@ -238,3 +245,92 @@ def test_a_source_named_twice_is_invalid_rather_than_failing_the_run(world):
                                           body="x", sources=((b, 1), (b, 1)))))]
     assert _phase(world).outcomes["invalid"] == 2
     assert world.maintenance.changes(10) == []
+
+
+def _correct(world, memory_id: str, body: str) -> None:
+    """Another writer's update, landing while the executor runs: version 1 -> 2."""
+    world.sql("UPDATE memories SET body = ?, version = 2 WHERE id = ?", body, memory_id)
+
+
+def test_a_target_version_the_model_never_saw_is_invalid(world):
+    old = world.plant(world.project.id, "the API runs on port 8000")
+    evidence = world.plant(world.project.id, "the API moved to port 9000")
+
+    def correct_then_answer(prompt, schema):
+        _correct(world, old, "the API runs on port 7000 (user correction)")
+        # the model names the version it guesses, not the one it was shown
+        return _groups(("rewrite", "port changed", _op(
+            "update", id=old, version=2, description="api port", body="Port 9000.",
+            sources=((evidence, 1),))))
+
+    world.executor.replies = [correct_then_answer]
+    assert _phase(world).outcomes["invalid"] == 1
+    kept = world.service.show(old)
+    assert (kept.version, kept.body) == (2, "the API runs on port 7000 (user correction)")
+    assert world.maintenance.changes(10) == []
+    assert world.maintenance.fingerprint_of(f"consolidate:{world.project.id}") is None
+
+
+def test_a_source_version_the_model_never_saw_is_invalid_and_later_groups_apply(world):
+    a, b, c, d = (world.plant(world.project.id, text) for text in ("a", "b", "c", "d"))
+
+    def correct_then_answer(prompt, schema):
+        _correct(world, a, "a, corrected")
+        return _groups(_merge(a, b, version=2), _merge(c, d))
+
+    world.executor.replies = [correct_then_answer]
+    phase = _phase(world)
+    assert (phase.outcomes["invalid"], phase.outcomes["merge"]) == (1, 1)
+    (change,) = world.maintenance.changes(10)
+    merged = change.rows[0].id
+    assert {s.source_id for s in world.maintenance.sources_of(merged)} == {c, d}
+    assert world.maintenance.fingerprint_of(f"consolidate:{world.project.id}") is None
+
+
+def test_model_text_that_cannot_be_stored_is_invalid_and_later_groups_apply(world):
+    a, b, c, d = (world.plant(world.project.id, text) for text in ("a", "b", "c", "d"))
+    lone = chr(0xD800)
+    bad_body = ("merge", "same fact", _op("create", description="c", body="x" + lone,
+                                          sources=((a, 1), (b, 1))))
+    bad_description = ("merge", "same fact", _op("create", description="c" + lone, body="x",
+                                                 sources=((a, 1), (b, 1))))
+    bad_reason = ("merge", "same fact" + lone, _op("create", description="c", body="x",
+                                                   sources=((a, 1), (b, 1))))
+    world.executor.replies = [_groups(bad_body, bad_description, bad_reason, _merge(c, d))]
+    phase = _phase(world)
+    assert (phase.outcomes["invalid"], phase.outcomes["merge"]) == (3, 1)
+    assert len(world.maintenance.changes(10)) == 1
+    assert world.maintenance.fingerprint_of(f"consolidate:{world.project.id}") is None
+
+
+def test_a_rejected_group_skips_only_itself(world):
+    a, b, c, d = (world.plant(world.project.id, text) for text in ("a", "b", "c", "d"))
+    world.executor.replies = [_groups(
+        ("merge", "same fact", _op("create", description="c", body="key " + SECRET,
+                                   sources=((a, 1), (b, 1)))),
+        _merge(c, d))]
+    phase = _phase(world)
+    assert (phase.outcomes["rejected"], phase.outcomes["merge"]) == (1, 1)
+    assert world.maintenance.fingerprint_of(f"consolidate:{world.project.id}") is None
+
+
+def test_an_answer_off_the_schema_applies_nothing(world):
+    a = world.plant(world.project.id, "a")
+    world.executor.replies = [{"groups": [{"kind": "delete-everything", "reason": "x",
+                                           "ops": [_op("soft_delete", id=a, version=1)]}]}]
+    assert _phase(world).outcomes["schema"] == 1
+    assert world.service.show(a).version == 1
+    assert world.maintenance.fingerprint_of(f"consolidate:{world.project.id}") is None
+
+
+def test_run_dream_runs_the_phase_and_never_sends_a_time_field_the_policy_refuses(world):
+    a = world.plant(world.project.id, "uv manages python")
+    b = world.plant(world.project.id, "python is managed with uv", created=SECRET)
+    world.executor.replies = [_groups(_merge(a, b))]
+    report = run_dream(world.maintenance, world.executor, world.transcripts, world.settings,
+                       now(), phases=("consolidate",))
+    assert report.status == "completed"
+    assert report.phases["consolidate"].outcomes["merge"] == 1
+    (change,) = world.maintenance.changes_of_run(report.run_id)
+    assert change.kind == "merge"
+    assert all("ghp_" not in call["prompt"] for call in world.executor.calls)
