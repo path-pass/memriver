@@ -39,6 +39,11 @@ RUN set -eux; \
 # `uvx memriver ...` command the installer writes -- and `uv run --with
 # memriver` -- resolve locally with no package index involved.
 ENV UV_FIND_LINKS=/wheels
+# The same setting as a uv config file, which is how a real machine points uv
+# at local wheels before the PyPI release: harnesses start MCP servers with a
+# filtered environment (Codex drops UV_FIND_LINKS), but uv reads this file
+# whatever the environment.
+RUN mkdir -p /root/.config/uv && printf 'find-links = ["/wheels"]\n' > /root/.config/uv/uv.toml
 # uv defaults to hardlinking from its cache; the wheel mount and uv's cache can
 # sit on different filesystems inside Docker, which turns that into a (harmless
 # but noisy) warning on every run. Copying instead silences it.
