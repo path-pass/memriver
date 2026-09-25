@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from memriver_core.settings import DREAM_CALL_TIMEOUT_S
 
-from .protocols import Executor, FailureKind
+from .protocols import Executor, FailureKind, Run
 from .schema_check import matches
 
 PROMPT_VERSION = "dream-1"      # recorded on reviews; bump it when a prompt changes
@@ -22,3 +22,10 @@ def call(executor: Executor, *, system_prompt: str, prompt: str,
     if not isinstance(result.value, dict) or not matches(result.value, schema):
         return "schema"
     return result.value
+
+
+def effective_sources(run: Run, memory_id: str) -> list[dict]:
+    """A memory's effective sources as a prompt shows them: ids, versions and projects,
+    never a source's text."""
+    return [{"id": s.source_id, "version": s.source_version, "project": s.source_project}
+            for s in run.maintenance.sources_of(memory_id)]
