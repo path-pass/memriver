@@ -8,10 +8,20 @@ import threading
 from contextlib import closing
 
 import pytest
-from memriver_core.models import PromptEntry, Session, SessionKey
+from memriver_core.models import (
+    PromptEntry,
+    Session,
+    SessionKey,
+    SummaryInput,
+    SummaryProgress,
+)
 from memriver_core.models.errors import ProjectUnavailable, StorageFailure
 from memriver_core.repository.sqlite import SqliteSessionStore
 from memriver_core.repository.sqlite.database import DATABASE_FILENAME, Database
+from memriver_core.repository.sqlite.session_store import (
+    session_from_row,
+    session_to_row,
+)
 
 PROJECT = "pppppppppp"
 OTHER = "qqqqqqqqqq"
@@ -580,3 +590,117 @@ def test_a_call_row_naming_an_invalid_session_is_ignored(session_store, initiali
     session_store.record_call(KEY, "call-1", _hour(10), retention_s=HOUR)
     _raw(initialized, "UPDATE tool_calls SET session_id = 'a b'")
     assert session_store.session_for_call("claude-code", "call-1") is None
+
+
+# --- summaries (spec section 4, 6) ---
+
+FINGERPRINT = SummaryInput("f1", 12, True)
+PROGRESS = SummaryProgress("f1", "dream-1", 900, 2, ("first part", "second part"))
+
+
+def _summarize(session_store, key=KEY, *, expected: str, at: str, summary: str | None = "did x",
+               status: str = "ok", summary_input: SummaryInput = FINGERPRINT) -> bool:
+    return session_store.write_summary(key, expected_last_active_at=expected, summary=summary,
+                                       status=status, summary_input=summary_input, at=at)
+
+
+def test_a_summary_round_trips_and_a_cas_loses_to_newer_activity(session_store):
+    session_store.register(_session())
+    assert _summarize(session_store, expected=_at(0), at=_at(5))
+    stored = session_store.get(KEY)
+    assert (stored.summary, stored.summary_at, stored.summary_input, stored.summary_status,
+            stored.summary_attempted_at) == ("did x", _at(5), FINGERPRINT, "ok", _at(5))
+    session_store.touch(KEY, _at(9))
+    assert not _summarize(session_store, expected=_at(0), at=_at(10), summary="stale")
+    assert session_store.get(KEY).summary == "did x"
+    assert not _summarize(session_store, SessionKey("codex", "nobody"), expected=_at(0),
+                          at=_at(10))
+
+
+@pytest.mark.parametrize("status", ["empty", "omitted", "failed"])
+def test_the_other_outcomes_store_no_text(session_store, status):
+    session_store.register(_session())
+    assert _summarize(session_store, expected=_at(0), at=_at(5), summary=None, status=status)
+    stored = session_store.get(KEY)
+    assert (stored.summary, stored.summary_status) == (None, status)
+
+
+def test_a_checkpoint_is_stored_under_a_cas_and_a_final_summary_clears_it(session_store):
+    session_store.register(_session())
+    assert session_store.write_summary_progress(KEY, expected_last_active_at=_at(0),
+                                                progress=PROGRESS, at=_at(3))
+    stored = session_store.get(KEY)
+    assert (stored.summary_progress, stored.summary_attempted_at, stored.summary_status) == (
+        PROGRESS, _at(3), None)
+    assert not session_store.write_summary_progress(KEY, expected_last_active_at=_at(1),
+                                                    progress=None, at=_at(4))
+    _summarize(session_store, expected=_at(0), at=_at(5))
+    assert session_store.get(KEY).summary_progress is None
+
+
+@pytest.mark.parametrize("fields", [
+    {"summary_status": "ok", "summary": None, "summary_at": _at(1),
+     "summary_input": FINGERPRINT},
+    {"summary_status": "empty", "summary": "text", "summary_at": _at(1),
+     "summary_input": FINGERPRINT},
+    {"summary_status": "failed", "summary": "", "summary_at": _at(1),
+     "summary_input": FINGERPRINT},                                  # NULL, not empty text
+    {"summary_status": None, "summary": "text"},
+    {"summary_status": "ok", "summary": "text", "summary_at": None,
+     "summary_input": FINGERPRINT},
+    {"summary_status": "ok", "summary": "text", "summary_at": _at(1), "summary_input": None},
+    {"summary_status": "ok", "summary": "text", "summary_at": _at(1),
+     "summary_input": SummaryInput("f", -1, True)},
+    {"summary_attempted_at": "later"},
+    {"summary_progress": SummaryProgress("f", "dream-1", 0, 1, ("p",))},
+    {"summary_progress": SummaryProgress("f", "dream-1", 900, 0, ("p",))},
+    {"summary_progress": SummaryProgress("f", "dream-1", 900, 1, ())},
+])
+def test_a_summary_row_memriver_could_not_have_written_is_invalid(fields):
+    with pytest.raises(ValueError):
+        session_from_row(session_to_row(dataclasses.replace(_session(), **fields)))
+
+
+def test_due_for_summary_lists_idle_registered_sessions_not_yet_summarized(session_store):
+    def key(name: str) -> SessionKey:
+        return SessionKey("codex", name)
+
+    for name, second in (("old", 10), ("new", 50), ("busy", 100)):
+        session_store.register(_session(key(name), started_at=_at(second),
+                                        last_active_at=_at(second)))
+    session_store.register(_session(key("unbound"), project_id=None, started_at=_at(10),
+                                    last_active_at=_at(10)))
+    session_store.register(_pending(key("pending"), started_at=_at(10), last_active_at=_at(10)))
+    assert [s.key.session_id for s in session_store.due_for_summary(_at(60), 10)] == [
+        "old", "new"]
+    _summarize(session_store, key("old"), expected=_at(10), at=_at(61))
+    assert [s.key.session_id for s in session_store.due_for_summary(_at(62), 10)] == ["new"]
+    session_store.touch(key("old"), _at(62))        # activity after its summary
+    assert [s.key.session_id for s in session_store.due_for_summary(_at(63), 10)] == [
+        "new", "old"]
+    assert len(session_store.due_for_summary(_at(63), 1)) == 1
+
+
+def test_failed_and_incomplete_outcomes_stay_due_and_attempts_order_the_queue(session_store):
+    keys = {name: SessionKey("codex", name) for name in ("ok", "failed", "partial", "fresh")}
+    for index, key in enumerate(keys.values()):
+        session_store.register(_session(key, started_at=_at(10 + index),
+                                        last_active_at=_at(10 + index)))
+    _summarize(session_store, keys["ok"], expected=_at(10), at=_at(20))
+    _summarize(session_store, keys["failed"], expected=_at(11), at=_at(21), summary=None,
+               status="failed", summary_input=SummaryInput("", 0, False))
+    _summarize(session_store, keys["partial"], expected=_at(12), at=_at(22), summary="so far",
+               summary_input=SummaryInput("f", 3, False))
+    # never attempted first, then the least recently attempted; a complete ok is done
+    assert [s.key.session_id for s in session_store.due_for_summary(_at(60), 10)] == [
+        "fresh", "failed", "partial"]
+    session_store.mark_summary_attempt(keys["fresh"], _at(30))
+    assert [s.key.session_id for s in session_store.due_for_summary(_at(60), 10)] == [
+        "failed", "partial", "fresh"]
+    assert [s.key.session_id for s in session_store.due_for_summary(_at(60), 1)] == ["failed"]
+
+
+def test_search_also_matches_the_summary(session_store):
+    session_store.register(_session())
+    _summarize(session_store, expected=_at(0), at=_at(1), summary="Fixed PR 42 on main")
+    assert [s.key for s in session_store.search(PROJECT, "pr 42", 10)] == [KEY]

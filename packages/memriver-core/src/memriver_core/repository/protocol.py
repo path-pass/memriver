@@ -17,6 +17,9 @@ from memriver_core.models import (
     Session,
     SessionKey,
     SourceRef,
+    SummaryInput,
+    SummaryProgress,
+    SummaryStatus,
     UnbindPlan,
     UndoResult,
 )
@@ -167,7 +170,15 @@ class SessionStore(Protocol):
       unknown key.
     - `search`: `project_id=None` is every row (the human CLI); otherwise
       that project's registered rows. A case-insensitive substring of a
-      prompt text, `entry_cwd` or `branch`; newest `last_active_at` first.
+      prompt text, `entry_cwd`, `branch` or the summary; newest `last_active_at` first.
+    - `due_for_summary(before, limit)`: registered rows with a project, idle since
+      `before`, that are never summarized, active since, or hold a retryable outcome
+      (`failed`, or an incomplete snapshot); never-attempted first, then least recently
+      attempted.
+    - `write_summary` and `write_summary_progress`: compare-and-set on `last_active_at`,
+      both stamping `summary_attempted_at`; `write_summary` clears the checkpoint. False
+      and nothing written when the session moved on.
+    - `mark_summary_attempt`: stamps the attempt only.
     - `record_call`: maps a harness's tool-call id to `key`'s session
       (replacing an earlier mapping of the same id), then drops every
       mapping recorded more than `retention_s` seconds before `at`, in the
@@ -193,6 +204,13 @@ class SessionStore(Protocol):
     def confirm(self, key: SessionKey) -> Session | None: ...
     def assign_project(self, key: SessionKey, project_id: str) -> Session | None: ...
     def search(self, project_id: str | None, query: str, limit: int) -> list[Session]: ...
+    def due_for_summary(self, before: str, limit: int) -> list[Session]: ...
+    def write_summary(self, key: SessionKey, *, expected_last_active_at: str,
+                      summary: str | None, status: SummaryStatus,
+                      summary_input: SummaryInput, at: str) -> bool: ...
+    def write_summary_progress(self, key: SessionKey, *, expected_last_active_at: str,
+                               progress: SummaryProgress | None, at: str) -> bool: ...
+    def mark_summary_attempt(self, key: SessionKey, at: str) -> None: ...
     def record_call(self, key: SessionKey, call_id: str, at: str, *,
                     retention_s: int) -> None: ...
     def session_for_call(self, harness: str, call_id: str) -> SessionKey | None: ...

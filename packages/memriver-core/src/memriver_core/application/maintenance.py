@@ -29,12 +29,18 @@ from memriver_core.models import (
     Review,
     RunStatus,
     RunTrigger,
+    Session,
+    SessionKey,
     SoftDeleteOp,
     SourceRef,
+    SummaryInput,
+    SummaryProgress,
+    SummaryStatus,
     UndoResult,
     UpdateOp,
     new_id,
     single_line,
+    timestamp_shift,
 )
 from memriver_core.models import now as _now
 from memriver_core.models.errors import ContentRejected, IdCollision, StorageFailure
@@ -70,13 +76,15 @@ class MaintenanceService:
     def __init__(self, maintenance_store: MaintenanceStore, project_store: ProjectStore,
                  session_store: SessionStore,
                  content_policy_factory: Callable[[], ContentPolicy], *,
-                 max_body_chars: int, metadata_max_chars: int) -> None:
+                 max_body_chars: int, metadata_max_chars: int,
+                 summary_max_chars: int) -> None:
         self._maintenance_store = maintenance_store
         self._project_store = project_store
         self._session_store = session_store
         self._policy_cache = LazyPolicy(content_policy_factory)
         self._max_body_chars = max_body_chars
         self._metadata_max_chars = metadata_max_chars
+        self._summary_max_chars = summary_max_chars
 
     def _rule_of(self, text: str) -> str | None:
         """The content-policy rule `text` breaks, or None.
@@ -132,7 +140,46 @@ class MaintenanceService:
         """Whether one text (a transcript record, a cue) may leave the store."""
         return self._rule_of(text) is None
 
+    def sessions_due_for_summary(self, now: str, idle_minutes: int,
+                                 limit: int) -> list[Session]:
+        return self._session_store.due_for_summary(
+            timestamp_shift(now, minutes=-idle_minutes), limit)
+
     # --- writes (each one short transaction) ---
+
+    def write_summary(self, key: SessionKey, *, expected_last_active_at: str,
+                      summary: str | None, status: SummaryStatus,
+                      summary_input: SummaryInput) -> SummaryStatus | None:
+        """Store one summary outcome; the outcome actually stored, or None when the
+        session moved on meanwhile and nothing was written.
+
+        Only an "ok" outcome keeps text, and only text the content policy and
+        the summary limit accept; anything else is stored as "omitted".
+        """
+        if status == "ok":
+            try:
+                self._policy_cache.get().check(summary or "", self._summary_max_chars)
+            except ContentRejected:
+                status, summary = "omitted", None
+        else:
+            summary = None
+        written = self._session_store.write_summary(
+            key, expected_last_active_at=expected_last_active_at, summary=summary,
+            status=status, summary_input=summary_input, at=_now())
+        return status if written is True else None
+
+    def write_summary_progress(self, key: SessionKey, *, expected_last_active_at: str,
+                               progress: SummaryProgress | None) -> bool:
+        """Store or clear a long session's checkpoint. Every partial summary it holds
+        passes the content policy first (ContentRejected otherwise, nothing stored)."""
+        for partial in () if progress is None else progress.partials:
+            self._policy_cache.get().check(partial, len(partial))
+        return self._session_store.write_summary_progress(
+            key, expected_last_active_at=expected_last_active_at, progress=progress,
+            at=_now()) is True
+
+    def mark_summary_attempt(self, key: SessionKey) -> None:
+        self._session_store.mark_summary_attempt(key, _now())
 
     def apply_group(self, group: ChangeGroup) -> str:
         """Apply one change group atomically; its change id.

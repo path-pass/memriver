@@ -1066,7 +1066,7 @@ async def test_session_search_is_limited_to_the_callers_project(world):
     item = next(s for s in found if s["harness"] == "claude-code")
     assert set(item) == {"harness", "session_id", "project", "branch", "entry_cwd",
                          "first_recorded", "last_active_at", "last_end_event_at",
-                         "first_prompt", "recent_prompts", "resume_command"}
+                         "first_prompt", "recent_prompts", "resume_command", "summary"}
     assert item["project"] == world["project"]
     assert item["entry_cwd"] == str(world["dir"].resolve())
     assert item["last_end_event_at"] is None

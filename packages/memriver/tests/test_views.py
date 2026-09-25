@@ -15,8 +15,8 @@ from memriver.views import (
     run_sessions,
     run_show,
 )
-from memriver_core.bootstrap import build_service
-from memriver_core.models import SessionKey
+from memriver_core.bootstrap import build_maintenance_service, build_service
+from memriver_core.models import SessionKey, SummaryInput
 from memriver_core.settings import Settings
 
 
@@ -618,10 +618,24 @@ def test_sessions_json_matches_the_session_search_item_shape(world):
     item = items[0]
     assert set(item) == {"harness", "session_id", "project", "branch", "entry_cwd",
                          "first_recorded", "last_active_at", "last_end_event_at",
-                         "first_prompt", "recent_prompts", "resume_command"}
+                         "first_prompt", "recent_prompts", "resume_command", "summary"}
     assert item["resume_command"] == "codex resume sess-3"
     assert item["project"] == world["project"].id
     assert item["first_prompt"]["text"] == "task one"
+
+
+def test_sessions_shows_the_summary_and_the_json_item_carries_it(world):
+    key = SessionKey("codex", "sess-9")
+    _start(world, key, world["work"])
+    session = world["service"].list_sessions()[0]
+    maintenance = build_maintenance_service(Settings(root=world["store"]), root=world["store"])
+    maintenance.write_summary(key, expected_last_active_at=session.last_active_at,
+                              summary="Fixed the flaky test", status="ok",
+                              summary_input=SummaryInput("f", 2, True))
+    code, out = _sessions("", root=world["store"], home=world["home"])
+    assert code == 0 and "  summary: Fixed the flaky test" in out
+    code, out = _sessions("flaky", root=world["store"], home=world["home"], json_output=True)
+    assert json.loads(out)[0]["summary"] == "Fixed the flaky test"
 
 
 def test_sessions_filters_by_project_and_query_and_limit(world, tmp_path):

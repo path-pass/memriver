@@ -42,6 +42,9 @@ from .session import (
     SessionKey,
     SessionOrigin,
     SessionStatus,
+    SummaryInput,
+    SummaryProgress,
+    SummaryStatus,
     is_call_id,
 )
 from .store_diagnostics import (
@@ -98,6 +101,9 @@ __all__ = [
     "SourceRef",
     "StoreFinding",
     "StoreReport",
+    "SummaryInput",
+    "SummaryProgress",
+    "SummaryStatus",
     "Trust",
     "UnbindPlan",
     "UndoResult",

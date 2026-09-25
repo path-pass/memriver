@@ -158,7 +158,8 @@ def session_item(session: Session) -> dict:
             "first_prompt": _prompt_payload(session.first_prompt),
             "recent_prompts": [_prompt_payload(entry) for entry in session.recent_prompts],
             "resume_command": (f"{_RESUME_COMMANDS[key.harness]} "
-                               f"{shlex.quote(key.session_id)}")}
+                               f"{shlex.quote(key.session_id)}"),
+            "summary": session.summary}
 
 
 # thresholds for the text view's relative age (spec section 9): under a
@@ -221,6 +222,7 @@ def _session_block(session: Session, *, names: dict[str, str], reference: str) -
         f"  last end event: {visible(session.ended_at) if session.ended_at else '-'}",
         f"  first prompt: {visible(_prompt_cell(session.first_prompt))}",
         f"  latest prompt: {visible(_prompt_cell(latest))}",
+        f"  summary: {visible(single_line(session.summary)) if session.summary else '-'}",
         f"  resume: {visible(session_item(session)['resume_command'])}",
     ]
     return "\n".join(lines)

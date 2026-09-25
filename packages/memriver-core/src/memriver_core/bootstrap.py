@@ -34,6 +34,7 @@ from .repository.worktree import current_branch, main_tree_path
 from .settings import (
     BUSY_TIMEOUT_MS,
     DEFAULT_MAX_BODY_CHARS,
+    DREAM_SUMMARY_MAX_CHARS,
     GIT_QUERY_TIMEOUT_S,
     HEADER_FIELD_CHARS,
     INDEX_CUE_CHARS,
@@ -115,4 +116,5 @@ def build_maintenance_service(settings: Settings, *,
         _content_policy,
         max_body_chars=settings.max_body_chars,
         metadata_max_chars=DEFAULT_MAX_BODY_CHARS,
+        summary_max_chars=DREAM_SUMMARY_MAX_CHARS,
     )

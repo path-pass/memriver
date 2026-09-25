@@ -13,7 +13,10 @@ from memriver_core.models import (
     CreateOp,
     Memory,
     Review,
+    SessionKey,
     SoftDeleteOp,
+    SummaryInput,
+    SummaryProgress,
     UpdateOp,
     new_id,
     now,
@@ -692,3 +695,64 @@ def test_finish_run_rejects_a_non_dict_report_and_leaves_the_run_untouched(world
         world.maintenance.finish_run(run_id, "completed", ["not", "a", "dict"], now())
     running = world.maintenance.run(run_id)
     assert (running.status, running.finished_at, running.report) == ("running", None, {})
+
+
+# --- session summaries (spec section 4.1, 4.2, 6) ---
+
+def _started(world, name: str = "s1") -> SessionKey:
+    key = SessionKey("codex", name)
+    world.service.start_session(key, source="startup", entry_dir=world.project.root,
+                                transcript_path=None)
+    return key
+
+
+def _due(world):
+    return world.maintenance.sessions_due_for_summary(timestamp_shift(now(), minutes=61), 60, 10)
+
+
+def test_sessions_become_due_after_the_idle_threshold(world):
+    key = _started(world)
+    assert world.maintenance.sessions_due_for_summary(now(), 60, 10) == []
+    (due,) = _due(world)
+    assert due.key == key
+
+
+@pytest.mark.parametrize("text", ["Did x " + SECRET, "x" * 1201])
+def test_an_ok_summary_the_policy_refuses_is_stored_and_reported_as_omitted(world, text):
+    key = _started(world)
+    (session,) = _due(world)
+    assert world.maintenance.write_summary(key, expected_last_active_at=session.last_active_at,
+                                           summary=text, status="ok",
+                                           summary_input=SummaryInput("f", 3, True)) == "omitted"
+    stored = world.service.list_sessions()[0]
+    assert (stored.summary_status, stored.summary) == ("omitted", None)
+
+
+def test_an_ok_summary_is_stored_and_a_lost_cas_is_none(world):
+    key = _started(world)
+    (session,) = _due(world)
+    assert world.maintenance.write_summary(key, expected_last_active_at=session.last_active_at,
+                                           summary="Fixed the flaky test", status="ok",
+                                           summary_input=SummaryInput("f", 3, True)) == "ok"
+    assert world.service.list_sessions()[0].summary == "Fixed the flaky test"
+    world.service.start_session(key, source="resume", entry_dir=world.project.root,
+                                transcript_path=None)                 # active again
+    assert world.maintenance.write_summary(key, expected_last_active_at=session.last_active_at,
+                                           summary="stale", status="ok",
+                                           summary_input=SummaryInput("f", 3, True)) is None
+
+
+def test_a_checkpoint_holding_a_secret_is_refused(world):
+    key = _started(world)
+    (session,) = _due(world)
+    with pytest.raises(ContentRejected):
+        world.maintenance.write_summary_progress(
+            key, expected_last_active_at=session.last_active_at,
+            progress=SummaryProgress("f", "dream-1", 900, 1, ("deployed with " + SECRET,)))
+    assert world.service.list_sessions()[0].summary_progress is None
+
+
+def test_an_attempt_is_stamped(world):
+    key = _started(world)
+    world.maintenance.mark_summary_attempt(key)
+    assert world.service.list_sessions()[0].summary_attempted_at is not None

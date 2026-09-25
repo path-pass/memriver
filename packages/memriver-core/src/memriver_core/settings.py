@@ -22,6 +22,7 @@ __all__ = [
     "DEFAULT_MAX_BODY_CHARS",
     "DEFAULT_SEARCH_LIMIT",
     "DEFAULT_SEARCH_LIMIT_MAX",
+    "DREAM_SUMMARY_MAX_CHARS",
     "GIT_QUERY_TIMEOUT_S",
     "HEADER_FIELD_CHARS",
     "INDEX_CUE_CHARS",
@@ -72,6 +73,9 @@ GIT_QUERY_TIMEOUT_S = 2                 # one git call mapping a worktree
 SESSION_SEARCH_LIMIT_DEFAULT = 10
 SESSION_SEARCH_LIMIT_MAX = 50
 TOOL_CALL_RETENTION_S = 3600            # how long a Claude Code call -> session mapping is kept
+
+# dream (spec §10)
+DREAM_SUMMARY_MAX_CHARS = 1_200         # one stored session summary
 
 
 def storage_root(env: Mapping[str, str] | None = None,

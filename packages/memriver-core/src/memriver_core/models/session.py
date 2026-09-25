@@ -10,6 +10,7 @@ Harness = Literal["claude-code", "codex"]
 SessionStatus = Literal["registered", "pending"]
 SessionOrigin = Literal["start", "first-seen"]
 PromptOmission = Literal["secret", "too-large", "invalid", "scan-error"]
+SummaryStatus = Literal["ok", "empty", "omitted", "failed"]
 
 _SESSION_ID_MAX_CHARS = 128
 _CALL_ID_MAX_CHARS = 256
@@ -63,6 +64,29 @@ class PromptEntry:
 
 
 @dataclass(frozen=True)
+class SummaryInput:
+    """The transcript snapshot a stored summary outcome covered."""
+
+    fingerprint: str
+    records: int
+    complete: bool
+
+
+@dataclass(frozen=True)
+class SummaryProgress:
+    """An unfinished long session's checkpoint: valid only for the same filtered input
+    (`fingerprint`), prompt version and input room, and only while every partial still
+    passes the content policy; `next_chunk` is the first chunk not yet covered by
+    `partials`."""
+
+    fingerprint: str
+    prompt_version: str
+    room: int
+    next_chunk: int
+    partials: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class Session:
     """One stored `sessions` row (spec §3.1); the stored row is the answer, never a caller's guess."""
 
@@ -83,3 +107,11 @@ class Session:
     last_nudge_prompt_count: int
     first_prompt: PromptEntry | None
     recent_prompts: tuple[PromptEntry, ...]   # newest last
+    # the maintenance run's summary (spec §3.1): all None until it has run;
+    # text only with an "ok" outcome
+    summary: str | None = None
+    summary_at: str | None = None
+    summary_input: SummaryInput | None = None
+    summary_status: SummaryStatus | None = None
+    summary_attempted_at: str | None = None     # orders retries; never makes a session due
+    summary_progress: SummaryProgress | None = None

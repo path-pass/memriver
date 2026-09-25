@@ -16,6 +16,9 @@ from memriver_core.models import (
     SessionKey,
     SessionOrigin,
     SessionStatus,
+    SummaryInput,
+    SummaryProgress,
+    SummaryStatus,
     is_call_id,
     is_timestamp,
 )
@@ -28,7 +31,9 @@ from .database import loads_json as _loads
 SESSION_COLUMNS = ("harness, session_id, status, origin, project_id, candidate_id, "
                    "candidate_root, entry_cwd, branch, transcript_path, started_at, "
                    "last_active_at, ended_at, prompt_count, last_write_prompt_count, "
-                   "last_nudge_prompt_count, first_prompt, recent_prompts")
+                   "last_nudge_prompt_count, first_prompt, recent_prompts, summary, "
+                   "summary_at, summary_input, summary_status, summary_attempted_at, "
+                   "summary_progress")
 _PLACEHOLDERS = ", ".join("?" for _ in SESSION_COLUMNS.split(","))
 _BY_KEY = " WHERE harness = ? AND session_id = ?"
 _SELECT = f"SELECT {SESSION_COLUMNS} FROM sessions"
@@ -59,6 +64,70 @@ def _entry_from_object(value: object) -> PromptEntry:
     return PromptEntry(**value)
 
 
+def _summary_input_object(summary_input: SummaryInput | None) -> str | None:
+    if summary_input is None:
+        return None
+    return _dumps({"fingerprint": summary_input.fingerprint, "records": summary_input.records,
+                   "complete": summary_input.complete})
+
+
+def _summary_input(raw: object) -> SummaryInput | None:
+    if raw is None:
+        return None
+    value = _loads(raw)
+    if not isinstance(value, dict) or set(value) != {"fingerprint", "records", "complete"}:
+        raise ValueError("summary_input is not {fingerprint, records, complete}")
+    fingerprint, records, complete = value["fingerprint"], value["records"], value["complete"]
+    if not isinstance(fingerprint, str) or type(records) is not int or records < 0 \
+            or type(complete) is not bool:
+        raise ValueError("summary_input holds something else")
+    return SummaryInput(fingerprint, records, complete)
+
+
+def _progress_object(progress: SummaryProgress | None) -> str | None:
+    if progress is None:
+        return None
+    return _dumps({"fingerprint": progress.fingerprint,
+                   "prompt_version": progress.prompt_version, "room": progress.room,
+                   "next_chunk": progress.next_chunk, "partials": list(progress.partials)})
+
+
+def _progress(raw: object) -> SummaryProgress | None:
+    if raw is None:
+        return None
+    value = _loads(raw)
+    if not isinstance(value, dict) or set(value) != {"fingerprint", "prompt_version", "room",
+                                                     "next_chunk", "partials"}:
+        raise ValueError("summary_progress is not a checkpoint")
+    partials = value["partials"]
+    if not (isinstance(value["fingerprint"], str) and value["fingerprint"]
+            and isinstance(value["prompt_version"], str) and value["prompt_version"]
+            and type(value["room"]) is int and value["room"] >= 1
+            and type(value["next_chunk"]) is int and value["next_chunk"] >= 1
+            and isinstance(partials, list) and partials
+            and all(isinstance(part, str) and part for part in partials)):
+        raise ValueError("summary_progress holds something else")
+    return SummaryProgress(value["fingerprint"], value["prompt_version"], value["room"],
+                           value["next_chunk"], tuple(partials))
+
+
+def _check_summary(summary: object, summary_at: object, summary_input: SummaryInput | None,
+                   status: object) -> None:
+    if status is None:
+        if (summary, summary_at, summary_input) != (None, None, None):
+            raise ValueError("a summary field is set without its outcome")
+        return
+    if status not in get_args(SummaryStatus):
+        raise ValueError("unknown summary outcome")
+    if not is_timestamp(summary_at) or summary_input is None:
+        raise ValueError("an outcome without its time or input snapshot")
+    if status == "ok":
+        if not (isinstance(summary, str) and summary.strip()):
+            raise ValueError("an ok outcome without its text")
+    elif summary is not None:
+        raise ValueError("summary text is stored with an ok outcome only")
+
+
 def session_to_row(session: Session) -> tuple:
     first_prompt = None if session.first_prompt is None else _dumps(
         _entry_object(session.first_prompt))
@@ -67,7 +136,10 @@ def session_to_row(session: Session) -> tuple:
             session.entry_cwd, session.branch, session.transcript_path, session.started_at,
             session.last_active_at, session.ended_at, session.prompt_count,
             session.last_write_prompt_count, session.last_nudge_prompt_count, first_prompt,
-            _dumps([_entry_object(entry) for entry in session.recent_prompts]))
+            _dumps([_entry_object(entry) for entry in session.recent_prompts]),
+            session.summary, session.summary_at,
+            _summary_input_object(session.summary_input), session.summary_status,
+            session.summary_attempted_at, _progress_object(session.summary_progress))
 
 
 def session_from_row(row: Sequence[object]) -> Session:
@@ -75,7 +147,8 @@ def session_from_row(row: Sequence[object]) -> Session:
     (harness, session_id, status, origin, project_id, candidate_id, candidate_root,
      entry_cwd, branch, transcript_path, started_at, last_active_at, ended_at,
      prompt_count, last_write_prompt_count, last_nudge_prompt_count, first_prompt,
-     recent_prompts) = row
+     recent_prompts, summary, summary_at, summary_input, summary_status,
+     summary_attempted_at, summary_progress) = row
     key = SessionKey(harness, session_id)
     if status not in get_args(SessionStatus) or origin not in get_args(SessionOrigin):
         raise ValueError("unknown status or origin")
@@ -99,6 +172,10 @@ def session_from_row(row: Sequence[object]) -> Session:
     recent = _loads(recent_prompts)
     if not isinstance(recent, list):
         raise ValueError("recent_prompts is not a list")  # noqa: TRY004 - a bad row
+    stored_input = _summary_input(summary_input)
+    _check_summary(summary, summary_at, stored_input, summary_status)
+    if summary_attempted_at is not None and not is_timestamp(summary_attempted_at):
+        raise ValueError("summary_attempted_at is not a timestamp")
     return Session(
         key=key, status=status, origin=origin, project_id=project_id,
         candidate_id=candidate_id, candidate_root=candidate_root, entry_cwd=entry_cwd,
@@ -107,7 +184,10 @@ def session_from_row(row: Sequence[object]) -> Session:
         last_write_prompt_count=last_write_prompt_count,
         last_nudge_prompt_count=last_nudge_prompt_count,
         first_prompt=None if first_prompt is None else _entry_from_object(_loads(first_prompt)),
-        recent_prompts=tuple(_entry_from_object(entry) for entry in recent))
+        recent_prompts=tuple(_entry_from_object(entry) for entry in recent),
+        summary=summary, summary_at=summary_at, summary_input=stored_input,
+        summary_status=summary_status, summary_attempted_at=summary_attempted_at,
+        summary_progress=_progress(summary_progress))
 
 
 def _checked_row(session: Session) -> tuple:
@@ -144,8 +224,15 @@ def _require_timestamp(at: object) -> None:
 def _matches(session: Session, needle: str) -> bool:
     prompts = (session.first_prompt, *session.recent_prompts)
     texts = [entry.text for entry in prompts if entry is not None and entry.text is not None]
-    texts += [session.entry_cwd, session.branch or ""]
+    texts += [session.entry_cwd, session.branch or "", session.summary or ""]
     return any(needle in text.lower() for text in texts)
+
+
+def _due(session: Session) -> bool:
+    """Never summarized, active since, or a retryable outcome (spec §4.1)."""
+    if session.summary_status is None or session.last_active_at > session.summary_at:
+        return True
+    return session.summary_status == "failed" or not session.summary_input.complete
 
 
 class SqliteSessionStore:
@@ -316,6 +403,67 @@ class SqliteSessionStore:
                 if _matches(session, needle):
                     found.append(session)
         return found
+
+    def due_for_summary(self, before: str, limit: int) -> list[Session]:
+        found: list[Session] = []
+        with self._database.read() as conn:
+            if conn is None:
+                return []
+            # least recently attempted first, so sessions that keep failing never hold
+            # the first places; whether a stored outcome is retryable is decided on
+            # the decoded row
+            rows = conn.execute(
+                _SELECT + " WHERE status = 'registered' AND project_id IS NOT NULL "
+                "AND last_active_at <= ? ORDER BY summary_attempted_at IS NOT NULL, "
+                "summary_attempted_at, last_active_at, harness, session_id", (before,))
+            for row in rows:
+                if len(found) >= limit:
+                    break
+                try:
+                    session = session_from_row(row)
+                except ValueError:
+                    continue                # a doctor finding
+                if _due(session):
+                    found.append(session)
+        return found
+
+    def write_summary(self, key: SessionKey, *, expected_last_active_at: str,
+                      summary: str | None, status: SummaryStatus,
+                      summary_input: SummaryInput, at: str) -> bool:
+        _require_timestamp(at)
+
+        def write(conn: sqlite3.Connection) -> bool:
+            stored = _stored(conn, key)
+            # the session moved on while it was summarized: the next run covers it
+            if stored is None or stored.last_active_at != expected_last_active_at:
+                return False
+            _save(conn, dataclasses.replace(
+                stored, summary=summary, summary_at=at, summary_input=summary_input,
+                summary_status=status, summary_attempted_at=at, summary_progress=None))
+            return True
+        return bool(self._write(write))
+
+    def write_summary_progress(self, key: SessionKey, *, expected_last_active_at: str,
+                               progress: SummaryProgress | None, at: str) -> bool:
+        _require_timestamp(at)
+
+        def write(conn: sqlite3.Connection) -> bool:
+            stored = _stored(conn, key)
+            if stored is None or stored.last_active_at != expected_last_active_at:
+                return False
+            _save(conn, dataclasses.replace(stored, summary_progress=progress,
+                                            summary_attempted_at=at))
+            return True
+        return bool(self._write(write))
+
+    def mark_summary_attempt(self, key: SessionKey, at: str) -> None:
+        _require_timestamp(at)
+
+        def mark(conn: sqlite3.Connection) -> None:
+            stored = _stored(conn, key)
+            if stored is not None:
+                _save(conn, dataclasses.replace(stored, summary_attempted_at=at))
+        self._write(mark)
 
     def _write(self, operation: Callable[[sqlite3.Connection], _T]) -> _T | None:
         """`operation` in one write transaction; None when the store is absent.

@@ -203,7 +203,7 @@ def _add_view_commands(commands) -> None:
 
     sessions = add("sessions", "list every recorded session, or one project's")
     sessions.add_argument("query", nargs="?", default="",
-                          help="only sessions matching this word in a prompt, "
+                          help="only sessions matching this word in a prompt, summary, "
                                "branch or entry directory")
     sessions.add_argument("--project", default=None, help="only this project id")
     sessions.add_argument("--limit", type=_positive_int, default=None)
