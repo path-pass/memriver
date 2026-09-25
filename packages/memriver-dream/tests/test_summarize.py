@@ -10,6 +10,7 @@ from memriver_dream.report import PhaseReport
 from memriver_dream.run import run_dream
 from memriver_dream.summarize import (
     CUT_MARK,
+    NOTHING_KEPT,
     OMITTED,
     input_fingerprint,
     input_room,
@@ -355,3 +356,103 @@ def test_run_dream_runs_the_summarize_phase(world):
                        timestamp_shift(now(), minutes=61), phases=("summarize",))
     assert report.phases["summarize"].outcomes == {"ok": 1}
     assert _stored(world, key).summary == "Did the work"
+
+
+def _refuse_first_partial(world, monkeypatch):
+    """A first run leaves a checkpoint, then the policy refuses its first partial."""
+    key = _session(world)
+    world.transcripts.by_session["s1"] = _transcript(*LONG)
+    world.executor.default = _echo
+    _phase(world, budget_tokens=ROOM_100)
+    assert _stored(world, key).summary_progress.partials[0] == "PR #100"
+    monkeypatch.setattr(world.maintenance, "text_passes_policy",
+                        lambda text: text != "PR #100")
+    return key
+
+
+def test_a_checkpoint_with_a_refused_partial_is_discarded_even_when_the_run_fails(
+        world, monkeypatch):
+    key = _refuse_first_partial(world, monkeypatch)
+    world.executor.replies = [ExecutorResult(error="quota")]
+    assert _phase(world, budget_tokens=ROOM_100).outcomes == {"quota": 1}
+    assert _stored(world, key).summary_progress is None
+
+
+def test_a_checkpoint_for_other_input_is_discarded_even_when_the_run_fails(world):
+    key = _session(world)
+    world.transcripts.by_session["s1"] = _transcript(*LONG)
+    world.executor.default = _echo
+    _phase(world, budget_tokens=ROOM_100)
+    world.transcripts.by_session["s1"] = _transcript(*LONG[:-1], fingerprint="fp2")
+    world.executor.replies = [ExecutorResult(error="quota")]
+    assert _phase(world, budget_tokens=ROOM_100).outcomes == {"quota": 1}
+    assert _stored(world, key).summary_progress is None
+
+
+def test_discarding_a_checkpoint_of_a_session_that_moved_on_writes_nothing(world,
+                                                                          monkeypatch):
+    key = _refuse_first_partial(world, monkeypatch)
+    kept = _stored(world, key).summary_progress
+    calls = len(world.executor.calls)
+
+    class Touching:
+        def read(self, session):
+            world.service.start_session(key, source="resume", entry_dir=world.project.root,
+                                        transcript_path=None)
+            return _transcript(*LONG)
+
+    assert _phase(world, budget_tokens=ROOM_100,
+                  transcripts=Touching()).outcomes == {"moved": 1}
+    assert _stored(world, key).summary_progress == kept
+    assert len(world.executor.calls) == calls
+
+
+def _empty_where(marker: str):
+    """A model with nothing to keep from any part containing `marker`."""
+    def answer(prompt, schema):
+        if "status" not in schema["properties"] and marker in prompt \
+                and "<session-part>" in prompt:
+            return {"summary": ""}
+        return _echo(prompt, schema)
+    return answer
+
+
+def test_a_chunk_with_nothing_worth_keeping_is_covered_and_the_rest_is_kept(world):
+    key = _session(world)
+    world.transcripts.by_session["s1"] = _transcript(*LONG)
+    world.executor.default = _empty_where("step 0:")
+    assert _phase(world, budget_tokens=ROOM_100).outcomes == {"partial": 1}
+    assert _phase(world, budget_tokens=ROOM_100).outcomes == {"ok": 1}
+    summary = _stored(world, key).summary
+    assert "PR #100" not in summary and all(f"PR #{100 + i}" in summary
+                                            for i in range(1, 18))
+
+
+def test_a_session_with_nothing_worth_keeping_anywhere_ends_empty(world):
+    key = _session(world)
+    world.transcripts.by_session["s1"] = _transcript(*LONG)
+    world.executor.default = _empty_where("step ")
+    assert _phase(world, budget_tokens=ROOM_100).outcomes == {"partial": 1}
+    assert _phase(world, budget_tokens=ROOM_100).outcomes == {"empty": 1}
+    assert len(world.executor.calls) == 18               # every chunk once, no final call
+    stored = _stored(world, key)
+    assert (stored.summary_status, stored.summary_progress) == ("empty", None)
+    assert all(NOTHING_KEPT not in call["prompt"] for call in world.executor.calls)
+
+
+def test_a_secret_in_a_record_timestamp_never_reaches_the_executor_prompt(world):
+    _session(world)
+    world.transcripts.by_session["s1"] = Transcript((Record("user", SECRET, "work"),), "fp1",
+                                                    True)
+    world.executor.replies = [{"status": "ok", "summary": "Did the work"}]
+    assert _phase(world).outcomes == {"ok": 1}
+    assert "ghp_" not in world.executor.calls[0]["prompt"]
+
+
+def test_a_lone_surrogate_in_a_record_fails_no_other_session(world):
+    bad, good = _session(world, "bad"), _session(world, "good")
+    world.transcripts.by_session["bad"] = _transcript("work " + chr(0xD800))
+    world.transcripts.by_session["good"] = _transcript("work")
+    world.executor.default = {"status": "ok", "summary": "Did the work"}
+    assert _phase(world).outcomes == {"ok": 2}
+    assert _stored(world, bad).summary == _stored(world, good).summary == "Did the work"

@@ -51,6 +51,7 @@ __all__ = [
     "DREAM_LOG_FILENAME",
     "DREAM_MAX_CALLS_PER_SESSION",
     "DREAM_MAX_QUARANTINE_PER_RUN",
+    "DREAM_MAX_ROOM_HALVINGS",
     "DREAM_OUTPUT_RESERVE_TOKENS",
     "DREAM_REASON_CHARS",
     "DREAM_SUMMARY_MAX_CHARS",
@@ -129,6 +130,7 @@ DREAM_SUMMARY_MAX_CHARS = 1_200         # one stored session summary
 DREAM_CHUNK_SUMMARY_CHARS = 1_500       # one partial summary of a long session
 DREAM_TOOL_OUTPUT_CHARS = 2_000         # one tool output as a transcript record
 DREAM_MAX_CALLS_PER_SESSION = 12        # map and reduce calls for one session
+DREAM_MAX_ROOM_HALVINGS = 3             # a session's input room, after "too-large" answers
 DREAM_CALL_TIMEOUT_S = 300              # one executor call
 DREAM_MAX_QUARANTINE_PER_RUN = 1_000    # secret soft-deletes in one run
 DREAM_REASON_CHARS = 300                # one change or review reason, as stored

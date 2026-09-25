@@ -8,6 +8,7 @@ a summary is stored only when every chunk was covered.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 
 from memriver_core import ContentRejected
@@ -15,6 +16,7 @@ from memriver_core.models import Session, SummaryInput, SummaryProgress
 from memriver_core.settings import (
     DREAM_CHUNK_SUMMARY_CHARS,
     DREAM_MAX_CALLS_PER_SESSION,
+    DREAM_MAX_ROOM_HALVINGS,
     DREAM_SUMMARY_MAX_CHARS,
 )
 
@@ -25,7 +27,9 @@ from .report import PhaseReport
 
 OMITTED = "[omitted]"
 CUT_MARK = " [cut]"
-_MAX_SHRINKS = 3                            # halvings of the room after "too-large"
+# stands in a checkpoint for chunks with nothing worth keeping (a checkpoint holds at
+# least one partial); never sent to a model
+NOTHING_KEPT = "[nothing kept]"
 
 SYSTEM_PROMPT = (
     "You summarize one coding-agent session so that it can be found and resumed later. "
@@ -33,7 +37,8 @@ SYSTEM_PROMPT = (
     "branches, PR numbers, commands and error names exactly as written. Write in the "
     "session's own language. Keep what was only planned apart from what was done.")
 CHUNK_PROMPT = ("Summarize this consecutive part of the session in at most {limit} "
-                "characters.\n\n<session-part>\n{body}\n</session-part>")
+                "characters; answer an empty summary when nothing in it is worth finding "
+                "again.\n\n<session-part>\n{body}\n</session-part>")
 MERGE_PROMPT = ("Merge these consecutive partial summaries, in order, into one summary of at "
                 "most {limit} characters.\n\n<partial-summaries>\n{body}\n</partial-summaries>")
 FINAL_PROMPT = ("Write the summary of the whole session in at most {limit} characters. Answer "
@@ -81,9 +86,16 @@ def plan_chunks(lines: list[str], room: int) -> list[str]:
     return chunks
 
 
+def _sent(run: Run, text: str, fallback: str) -> str:
+    """`text` as it may be sent: a lone surrogate (no codec takes it) becomes "?", and
+    text the content policy refuses becomes `fallback`."""
+    text = text.encode("utf-8", "replace").decode("utf-8")
+    return text if run.maintenance.text_passes_policy(text) else fallback
+
+
 def _line(run: Run, record: Record) -> str:
-    text = record.text if run.maintenance.text_passes_policy(record.text) else OMITTED
-    return f"[{record.at or '-'}] {record.kind}: {text}"
+    return f"[{_sent(run, record.at or '-', '-')}] {record.kind}: " \
+           f"{_sent(run, record.text, OMITTED)}"
 
 
 def input_fingerprint(lines: list[str]) -> str:
@@ -110,10 +122,10 @@ class _Attempt:
         self.calls[0] += 1
 
     def _checkpoint(self) -> None:
-        if not self.partials:               # out of calls before covering anything here
+        if self.next_chunk == 0:            # out of calls before covering anything here
             raise _Stop("incomplete")
         progress = SummaryProgress(self.fingerprint, PROMPT_VERSION, self.room,
-                                   self.next_chunk, tuple(self.partials))
+                                   self.next_chunk, tuple(self.partials) or (NOTHING_KEPT,))
         try:
             written = self.run.maintenance.write_summary_progress(
                 self.session.key, expected_last_active_at=self.session.last_active_at,
@@ -123,7 +135,9 @@ class _Attempt:
         if not written:
             raise _Stop("moved")
 
-    def _partial(self, template: str, body: str) -> str:
+    def _partial(self, template: str, body: str, *, may_be_empty: bool = False) -> str:
+        """One partial summary; empty only where `may_be_empty` (a chunk with nothing
+        worth keeping)."""
         self._spend()
         result = call(self.run.executor, system_prompt=SYSTEM_PROMPT,
                       prompt=template.format(limit=DREAM_CHUNK_SUMMARY_CHARS, body=body),
@@ -131,6 +145,8 @@ class _Attempt:
         if isinstance(result, str):
             raise _Stop(result)
         text = result["summary"]
+        if not text.strip() and may_be_empty:
+            return ""
         if not text.strip() or len(text) > DREAM_CHUNK_SUMMARY_CHARS:
             raise _Stop("schema")
         # nothing a policy refuses is fed to another call or stored (spec §6)
@@ -146,20 +162,23 @@ class _Attempt:
         if len(chunks) == 1:
             return self._final(chunks[0], "session")
         progress = self.session.summary_progress
-        # resumed only for the same filtered input, prompt and room, and only while
-        # every stored partial still passes the policy: it is about to be sent again
-        if progress is not None and progress.next_chunk <= len(chunks) and (
-                progress.fingerprint, progress.prompt_version, progress.room) == (
-                self.fingerprint, PROMPT_VERSION, self.room) and all(
-                self.run.maintenance.text_passes_policy(p) for p in progress.partials):
-            self.next_chunk, self.partials = progress.next_chunk, list(progress.partials)
+        # a checkpoint that reached here is for this input and prompt (_resumable); it
+        # is resumed only at the room it was planned with
+        if progress is not None and progress.room == self.room \
+                and progress.next_chunk <= len(chunks):
+            self.next_chunk = progress.next_chunk
+            self.partials = [p for p in progress.partials if p != NOTHING_KEPT]
         while self.next_chunk < len(chunks):
-            self.partials.append(self._partial(CHUNK_PROMPT, chunks[self.next_chunk]))
+            if partial := self._partial(CHUNK_PROMPT, chunks[self.next_chunk],
+                                        may_be_empty=True):
+                self.partials.append(partial)
             self.next_chunk += 1
             # bounded: the partials are merged before they could outgrow half the room
             if len(self.partials) > 1 \
                     and estimate_tokens("\n".join(self.partials)) > self.room // 2:
                 self._merge()
+        if not self.partials:               # every chunk covered, none worth keeping
+            return {"status": "empty", "summary": ""}
         while len(rounds := plan_chunks(self.partials, self.room)) > 1:
             self.partials = [self._partial(MERGE_PROMPT, chunk) for chunk in rounds]
         return self._final(rounds[0], "partial-summaries")
@@ -178,11 +197,26 @@ class _Attempt:
         return result
 
 
+def _resumable(run: Run, progress: SummaryProgress, fingerprint: str) -> bool:
+    return (progress.fingerprint, progress.prompt_version) == (fingerprint, PROMPT_VERSION) \
+        and all(run.maintenance.text_passes_policy(p) for p in progress.partials)
+
+
 def _summarize(run: Run, session: Session, lines: list[str], fingerprint: str) -> dict | str:
     """The final {status, summary}, or the outcome of an attempt that stored nothing
     final ("partial" after keeping a checkpoint)."""
+    progress = session.summary_progress
+    # discarded, not only ignored, when it can never be resumed: other input or prompt,
+    # or a partial the current policy refuses (it would be sent again); a checkpoint
+    # planned at another room is kept, since a "too-large" answer may shrink this
+    # run's room to it
+    if progress is not None and not _resumable(run, progress, fingerprint):
+        if not run.maintenance.write_summary_progress(
+                session.key, expected_last_active_at=session.last_active_at, progress=None):
+            return "moved"
+        session = dataclasses.replace(session, summary_progress=None)
     room, calls = input_room(run.budget_tokens), [0]
-    for _ in range(_MAX_SHRINKS + 1):
+    for _ in range(DREAM_MAX_ROOM_HALVINGS + 1):
         try:
             return _Attempt(run, session, fingerprint, room, calls).summarize(lines)
         except _Stop as stop:
