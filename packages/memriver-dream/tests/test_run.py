@@ -80,3 +80,42 @@ def test_a_store_failure_marks_the_run_failed_and_propagates(world, monkeypatch)
                   phases=("summarize",))
     (recorded,) = world.maintenance.runs(1)
     assert recorded.status == "failed"
+
+
+def test_phase_0_runs_before_the_model_phases(world, monkeypatch):
+    secret_id = world.plant(world.project.id, SECRET)
+    seen: dict = {}
+
+    def check_quarantined(run, phase):
+        seen["deleted_at"] = world.service.show(secret_id, include_deleted=True).deleted_at
+        phase.record("ok")
+
+    monkeypatch.setitem(run_module._PHASES, "summarize", check_quarantined)
+    run_dream(world.maintenance, world.executor, world.transcripts, world.settings, now(),
+             phases=("summarize",))
+    assert seen["deleted_at"] is not None
+
+
+def test_a_secret_scan_interrupted_after_a_partial_commit_stores_an_unknown_report(
+    world, monkeypatch):
+    first = world.plant(world.project.id, SECRET)
+    second = world.plant(world.project.id, SECRET)
+    store = world.maintenance._maintenance_store
+    original_quarantine = store.quarantine
+    calls = {"n": 0}
+
+    def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise StorageFailure
+        return original_quarantine(*args, **kwargs)
+
+    monkeypatch.setattr(store, "quarantine", flaky)
+    with pytest.raises(StorageFailure):
+        run_dream(world.maintenance, None, None, _unconfigured(world), now())
+    (recorded,) = world.maintenance.runs(1)
+    assert recorded.status == "failed"
+    assert recorded.report == {}
+    changes = world.maintenance.changes_of_run(recorded.run_id)
+    assert len(changes) == 1
+    assert changes[0].rows[0].id in (first, second)

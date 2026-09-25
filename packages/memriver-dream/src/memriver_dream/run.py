@@ -68,9 +68,13 @@ def run_dream(maintenance: MaintenanceService, executor: Executor | None,
                 log(phase.summary_line(name))
         except BaseException:
             report.status = "failed"
-            # the store may be what failed: recording that must not hide the cause
+            # counts are unknown once a phase breaks mid-way -- a change it already
+            # committed may be missing from the local counters -- so an interrupted
+            # run stores {} rather than a confident, possibly-false zero (spec §3.6a);
+            # the change log itself still lists whatever was committed. The store may
+            # be what failed: recording that must not hide the cause.
             with contextlib.suppress(Exception):
-                maintenance.finish_run(report.run_id, "failed", report.as_json(), clock())
+                maintenance.finish_run(report.run_id, "failed", {}, clock())
             raise
         report.status = "completed"
         maintenance.finish_run(report.run_id, "completed", report.as_json(), clock())
