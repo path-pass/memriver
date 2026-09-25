@@ -2,21 +2,33 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+from pathlib import Path
 
 from memriver_core import bootstrap
 from memriver_core.application.service import MemoryService
 from memriver_core.repository.sqlite import (
     SqliteMemoryStore,
     SqliteProjectStore,
+    SqliteSessionStore,
     SqliteStoreInspector,
 )
 from memriver_core.settings import (
     DEFAULT_MAX_BODY_CHARS,
+    GIT_QUERY_TIMEOUT_S,
     HEADER_FIELD_CHARS,
     INDEX_CUE_CHARS,
     PROJECT_NAME_MAX_CHARS,
+    SESSION_PROMPT_CHARS,
+    SESSION_PROMPT_SCAN_MAX_BYTES,
+    SESSION_RECENT_PROMPTS,
+    SESSION_SEARCH_LIMIT_DEFAULT,
+    SESSION_SEARCH_LIMIT_MAX,
+    STOP_NUDGE_INTERVAL_PROMPTS,
+    STOP_NUDGE_MIN_PROMPTS,
+    TOOL_CALL_RETENTION_S,
     Settings,
 )
 
@@ -51,6 +63,36 @@ def test_injects_the_configured_limits_and_the_fixed_constants(tmp_path):
     assert (service._index_cue_chars, service._header_field_chars,
             service._project_name_max_chars) == (INDEX_CUE_CHARS, HEADER_FIELD_CHARS,
                                                  PROJECT_NAME_MAX_CHARS)
+
+
+def test_composes_the_session_store_and_the_directory_callables(tmp_path):
+    base = Path(os.path.realpath(tmp_path))
+    service = bootstrap.build_service(Settings(root=base / "store"), home=base / "home")
+    assert isinstance(service._session_store, SqliteSessionStore)
+    assert service._session_store.root == base / "store"
+    for query in (service._main_tree_path, service._current_branch):
+        assert query.keywords == {"timeout_s": GIT_QUERY_TIMEOUT_S}
+    plain = base / "plain"
+    plain.mkdir()
+    assert service._canonical_directory(str(plain)) == str(plain)
+    assert service._main_tree_path(str(plain)) == str(plain)
+    assert service._current_branch(str(plain)) is None
+    (base / "link").symlink_to(plain)
+    # "ok" and "missing" are intact; a re-pointed root is not
+    assert service._root_is_intact(str(plain)) is True
+    assert service._root_is_intact(str(base / "gone")) is True
+    assert service._root_is_intact(str(base / "link")) is False
+
+
+def test_injects_the_session_constants(tmp_path):
+    service = bootstrap.build_service(Settings(root=tmp_path))
+    assert (service._session_prompt_chars, service._session_recent_prompts,
+            service._session_prompt_scan_max_bytes, service._stop_nudge_min_prompts,
+            service._stop_nudge_interval_prompts, service._session_search_limit_default,
+            service._session_search_limit_max, service._tool_call_retention_s) == (
+        SESSION_PROMPT_CHARS, SESSION_RECENT_PROMPTS, SESSION_PROMPT_SCAN_MAX_BYTES,
+        STOP_NUDGE_MIN_PROMPTS, STOP_NUDGE_INTERVAL_PROMPTS, SESSION_SEARCH_LIMIT_DEFAULT,
+        SESSION_SEARCH_LIMIT_MAX, TOOL_CALL_RETENTION_S)
 
 
 def test_returns_the_facade(tmp_path):

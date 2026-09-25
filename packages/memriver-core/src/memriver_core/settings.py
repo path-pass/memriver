@@ -22,10 +22,19 @@ __all__ = [
     "DEFAULT_MAX_BODY_CHARS",
     "DEFAULT_SEARCH_LIMIT",
     "DEFAULT_SEARCH_LIMIT_MAX",
+    "GIT_QUERY_TIMEOUT_S",
     "HEADER_FIELD_CHARS",
     "INDEX_CUE_CHARS",
     "PROJECT_NAME_MAX_CHARS",
     "SEARCH_SNIPPET_CHARS",
+    "SESSION_PROMPT_CHARS",
+    "SESSION_PROMPT_SCAN_MAX_BYTES",
+    "SESSION_RECENT_PROMPTS",
+    "SESSION_SEARCH_LIMIT_DEFAULT",
+    "SESSION_SEARCH_LIMIT_MAX",
+    "STOP_NUDGE_INTERVAL_PROMPTS",
+    "STOP_NUDGE_MIN_PROMPTS",
+    "TOOL_CALL_RETENTION_S",
     "Settings",
     "load_settings",
     "storage_root",
@@ -53,6 +62,16 @@ SEARCH_SNIPPET_CHARS = 60      # one memory_search hit's body snippet
 HEADER_FIELD_CHARS = 120       # one field of the project header
 PROJECT_NAME_MAX_CHARS = 120   # a project name
 BUSY_TIMEOUT_MS = 5000         # SQLite's bounded wait for the write lock
+# harness sessions (spec §8)
+SESSION_PROMPT_CHARS = 512              # one recorded prompt's text
+SESSION_RECENT_PROMPTS = 5              # prompts kept per session, newest last
+SESSION_PROMPT_SCAN_MAX_BYTES = 65536   # a larger prompt is omitted unscanned
+STOP_NUDGE_MIN_PROMPTS = 5              # unsaved prompts before the first Stop nudge
+STOP_NUDGE_INTERVAL_PROMPTS = 5         # prompts between two Stop nudges
+GIT_QUERY_TIMEOUT_S = 2                 # one git call mapping a worktree
+SESSION_SEARCH_LIMIT_DEFAULT = 10
+SESSION_SEARCH_LIMIT_MAX = 50
+TOOL_CALL_RETENTION_S = 3600            # how long a Claude Code call -> session mapping is kept
 
 
 def storage_root(env: Mapping[str, str] | None = None,

@@ -137,13 +137,19 @@ class Match:
     diagnostic: str | None = None
 
 
-def nearest_bound(start: str, bound: Sequence[tuple[str, str]]) -> Match:
+def nearest_bound(start: str, bound: Sequence[tuple[str, str]], *,
+                  logical: str | None = None) -> Match:
     """The project `start` belongs to among `(project_id, root)` pairs.
 
     Integrity first: one re-pointed or uncheckable root degrades everything,
     never a silent fall-through to a parent project or to none. Then the
     nearest ancestor wins, with exact and same-directory matches pooled per
     level: text uniqueness of roots is not physical uniqueness.
+
+    `logical` (a linked worktree's path mapped onto its main tree): `start`
+    must still be a real directory, but the walk runs over `logical`, which
+    need not exist -- `same_directory` already answers False for an absent
+    level and None for one it cannot check.
     """
     canonical = canonical_directory(start)
     if canonical is None:
@@ -151,7 +157,7 @@ def nearest_bound(start: str, bound: Sequence[tuple[str, str]]) -> Match:
     diagnostic = integrity_diagnostic([root for _, root in bound])
     if diagnostic is not None:
         return Match("degraded", diagnostic=diagnostic)
-    cwd = Path(canonical)
+    cwd = Path(canonical if logical is None else logical)
     for ancestor in [cwd, *cwd.parents]:
         key = str(ancestor)
         ids: set[str] = set()

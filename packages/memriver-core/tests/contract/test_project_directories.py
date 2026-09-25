@@ -328,6 +328,15 @@ def test_resolve_finds_the_nearest_bound_directory_and_reports_its_project(env):
     assert env["project_store"].resolve(str(env["tmp"])).state == "none"
 
 
+def test_resolve_walks_the_logical_path_when_given(env):
+    project = _init(env["project_store"], env["work"])
+    elsewhere = env["tmp"] / "elsewhere"
+    elsewhere.mkdir()
+    logical = str(env["work"].resolve() / "only-on-a-branch")
+    resolution = env["project_store"].resolve(str(elsewhere), logical=logical)
+    assert (resolution.state, resolution.project.id) == ("registered", project.id)
+
+
 def test_resolve_of_a_missing_store_is_none_and_creates_nothing(env):
     assert env["project_store"].resolve(str(env["work"])).state == "none"
     assert not env["store"].exists()

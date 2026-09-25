@@ -1,7 +1,7 @@
 """The single source for every agent-facing protocol string.
 
 MCP tool instructions, the static Cursor/Kiro protocol block, and the
-session-start/stop hook payload fragments are all authored here once.
+session-start, user-prompt-submit and stop hook payload fragments are all authored here once.
 ``hooks.py`` composes full hook payloads from the pieces below rather than
 re-authoring copy locally, and the static installers (Cursor/Kiro) render
 ``PROTOCOL_BLOCK`` verbatim into project instruction files.
@@ -38,6 +38,21 @@ INSTRUCTIONS = (
     "and flags still exist before acting on them."
 )
 
+# Appended to the MCP server instructions in session-routed mode only (Claude
+# Code, Codex): INSTRUCTIONS stays mode-neutral for the Cursor/Kiro block.
+SESSION_INSTRUCTIONS = (
+    "In this harness memriver fixes the session's project when the session starts. "
+    "If memriver says this session is awaiting confirmation, ask the user whether to "
+    "register it to the named project, and call session_confirm only after they agree. "
+    "Call session_register when the user asks you to register this session or tells you "
+    "they ran memriver project init, or right after you ran memriver project init at the "
+    "user's request; it registers the project covering where this session started and "
+    "never changes a session that already has a project. session_confirm and session_register are the only registrations you may "
+    "perform; never run memriver project init/adopt unless the user asks you to. "
+    "session_search finds the session that worked on something and returns resume "
+    "commands; whether to run them is the user's decision."
+)
+
 # The static Cursor/Kiro surface renders this heading + INSTRUCTIONS into a
 # marker-managed project instruction file; the four memory types therefore
 # come from the one INSTRUCTIONS source rather than a duplicated paragraph.
@@ -71,9 +86,30 @@ COMPACT_RESCUE_SUFFIX = (
     "them with memory_write now."
 )
 
-# --- stop hook: at most one continuation ---
+# --- pending session: SessionStart, or the first prompt of a row it never saw ---
+
+# filled by hooks.py: `entry_cwd` is the stored entry directory after the
+# display neutralizer, `target` the PENDING_TARGET_PROJECT phrase
+PENDING_NOTICE = (
+    "[memriver] This session is not registered yet. It was first observed in "
+    "{entry_cwd}, which resolves to {target}. This may differ from where the session "
+    "originally started. Ask the user whether to register this session there; call "
+    "session_confirm only if they agree. Until then only global memories are readable."
+)
+PENDING_TARGET_PROJECT = "project {name} [{id}]"
+# no candidate: there is nothing to confirm, so the agent is not asked to offer
+# it; a project inited there later is registered with session_register
+PENDING_NOTICE_NO_PROJECT = (
+    "[memriver] This session is not registered yet. It was first observed in "
+    "{entry_cwd}, which is not in any registered project, so only global memories are "
+    "readable. To save memories, the user must run memriver project init there; then "
+    "call session_register."
+)
+
+# --- stop hook: at most one continuation per nudge interval ---
 
 STOP_NUDGE = (
-    "[memriver] Before finishing: if this session produced durable facts (user\n"
-    "preferences, project decisions, corrections), save them with memory_write."
+    "[memriver] Before finishing: if this session produced durable facts (user "
+    "preferences, project decisions, corrections) that are not saved yet, save them "
+    "with memory_write or memory_update; otherwise do nothing."
 )

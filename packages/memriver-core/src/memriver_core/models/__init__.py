@@ -2,6 +2,7 @@ from .helpers import (
     ID_ALPHABET,
     ID_LENGTH,
     ID_RE,
+    is_timestamp,
     new_id,
     now,
     now_strictly_after,
@@ -9,9 +10,19 @@ from .helpers import (
 )
 from .memory import Memory, MemoryType, Trust
 from .project import Project, RootPlan, UnbindPlan, project_name
+from .project_context import ProjectContext, ProjectContextState
 from .read_write_set import ReadWriteSet
 from .resolution import Resolution, ResolutionState
-from .session import Session, SessionState
+from .session import (
+    Harness,
+    PromptEntry,
+    PromptOmission,
+    Session,
+    SessionKey,
+    SessionOrigin,
+    SessionStatus,
+    is_call_id,
+)
 from .store_diagnostics import (
     DiagnosticFinding,
     DiagnosticsReport,
@@ -30,22 +41,31 @@ __all__ = [
     "DiagnosticFinding",
     "DiagnosticsReport",
     "DiagnosticsState",
+    "Harness",
     "InspectedMemory",
     "InspectedProject",
     "Memory",
     "MemoryType",
     "Project",
+    "ProjectContext",
+    "ProjectContextState",
+    "PromptEntry",
+    "PromptOmission",
     "ReadWriteSet",
     "Resolution",
     "ResolutionState",
     "RootPlan",
     "RootState",
     "Session",
-    "SessionState",
+    "SessionKey",
+    "SessionOrigin",
+    "SessionStatus",
     "StoreFinding",
     "StoreReport",
     "Trust",
     "UnbindPlan",
+    "is_call_id",
+    "is_timestamp",
     "new_id",
     "now",
     "now_strictly_after",

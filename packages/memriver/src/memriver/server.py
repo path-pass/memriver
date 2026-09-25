@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+import os
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal, NoReturn
+from typing import Any, Literal, NoReturn
 
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 from memriver_core import (
     ContentRejected,
@@ -14,19 +16,24 @@ from memriver_core import (
     VersionConflict,
 )
 from memriver_core.bootstrap import build_service
-from memriver_core.models import ID_RE, Memory
+from memriver_core.models import ID_RE, Memory, ProjectContext, SessionKey
 from memriver_core.settings import SEARCH_SNIPPET_CHARS, Settings
 
-from .protocol_text import INSTRUCTIONS
+from .protocol_text import INSTRUCTIONS, SESSION_INSTRUCTIONS, UNTRUSTED_DATA_NOTICE
+from .views import session_item
 
 logger = logging.getLogger("memriver")
 
 # read, update, delete and write map the same core errors to different
 # client-visible strings, so the exception type alone cannot decide the
 # response -- every call site passes the operation it is translating for.
-# "list" covers memory_index/memory_search: neither names a single entry, so
-# any failure there is reported the same way.
-Operation = Literal["read", "write", "update", "delete", "list"]
+# "list" covers memory_index/memory_search/session_search: none names a single
+# entry, so any failure there is reported the same way.
+Operation = Literal["read", "write", "update", "delete", "list", "confirm", "register"]
+
+# the harnesses whose every call names its own session (spec §7.1); any other
+# registration answers for the directory it started in (§7.2)
+_SESSION_HARNESSES = ("claude-code", "codex")
 
 _COULD_NOT_READ_STORE = "could not read the memory store"
 
@@ -37,7 +44,7 @@ _GLOBAL_READ_ONLY = ("global memories are read-only to agents; no change was mad
                      "the user; do not retry through another entry or edit the store directly.")
 
 # Why there is no writable project, and what the agent should ask for -- keyed
-# by the session state, never by a path.
+# by the project context state, never by a path.
 _NO_PROJECT = {
     "none": ("no writable project: this directory is not registered. No memory was saved. "
              "Ask the user to choose a project root and run memriver project init; do not "
@@ -52,9 +59,49 @@ _NO_PROJECT = {
                    "store. No memory was saved. Ask the user to run memriver project explain."),
 }
 
+# The same states for a context that came from a session row: its project was
+# fixed when the session registered and never re-resolves on its own, so the
+# way out is session_register from where it started (no project yet) or a new
+# session (its project is gone), never the directory the session happens to be in.
+_SESSION_NO_PROJECT = {
+    "none": ("no writable project: this session was registered with no project. No memory "
+             "was saved. Ask the user to run memriver project init where this session "
+             "started, then call session_register; do not run memriver project init "
+             "yourself unless they ask."),
+    "degraded": ("no writable project: this session's project no longer exists or became "
+                 "global. No memory was saved. Ask the user to start a new session."),
+}
+
+
+# Why a session may not use a project, keyed by ProjectUnavailable.reason or,
+# where the reason is empty, by the context state the call ran under.
+_SESSION_REFUSAL = {
+    "pending": ("this session is awaiting the user's confirmation; ask the user, then call "
+                "session_confirm"),
+    # nothing to confirm: confirming would register no project, which only
+    # session_register can change
+    "pending-no-candidate": ("this session is not registered, and the directory it was first "
+                             "observed in is not in any registered project; once the user has "
+                             "run memriver project init covering this session's start "
+                             "directory, call session_register"),
+    "unidentified": ("this session is not registered with memriver: its hooks may not be "
+                     "installed (memriver install) or trusted (Codex asks on start), or the "
+                     "harness sent no session id; ask the user to fix that, then start a new "
+                     "session"),
+    "candidate-changed": ("the proposed project changed since memriver proposed it; ask the "
+                          "user to start a new session"),
+}
+
+_SESSION_TOOLS_UNAVAILABLE = "session tools are not available for this harness registration"
+
+# session_register found no project to register: the header alone would only
+# repeat the state, not that the call looked and found nothing
+_NOTHING_TO_REGISTER = ("no registered project covers the directory this session started in; "
+                        "nothing was registered")
+
 
 def _map_error(operation: Operation, err: Exception, *, memory_id: str | None = None,
-               session_state: str | None = None) -> str:
+               context_state: str | None = None, session_keyed: bool = False) -> str:
     """Application error -> the tool's client-visible message. Tools never leak one raw.
 
     Every client-visible string for a storage-boundary error is written here,
@@ -66,9 +113,18 @@ def _map_error(operation: Operation, err: Exception, *, memory_id: str | None = 
         return _COULD_NOT_READ_STORE
     if isinstance(err, GlobalReadOnly):
         return _GLOBAL_READ_ONLY
+    if isinstance(err, ProjectUnavailable):
+        refusal = _SESSION_REFUSAL.get(err.reason) or _SESSION_REFUSAL.get(context_state or "")
+        if refusal is not None:
+            return refusal
+    if operation in ("confirm", "register"):
+        return f"could not {operation} this session; ask the user to run memriver doctor"
     if operation == "write":
         if isinstance(err, ProjectUnavailable):
-            return _NO_PROJECT.get(session_state or "none", _NO_PROJECT["none"])
+            state = context_state or "none"
+            if session_keyed and state in _SESSION_NO_PROJECT:
+                return _SESSION_NO_PROJECT[state]
+            return _NO_PROJECT.get(state, _NO_PROJECT["none"])
         # a codec failure (a lone surrogate) is a ValueError whose message is
         # the codec's, not policy copy
         if isinstance(err, ContentRejected | ValueError) and not isinstance(err, UnicodeError):
@@ -109,7 +165,7 @@ _NAMED_ERRORS: tuple[type[Exception], ...] = (
 
 
 def _fail(operation: Operation, err: Exception, *, memory_id: str | None = None,
-          session_state: str | None = None) -> NoReturn:
+          context_state: str | None = None, session_keyed: bool = False) -> NoReturn:
     """Map `err` to its client message and raise it as the tool's failure.
 
     An exception outside `_NAMED_ERRORS` also logs one WARNING line naming
@@ -121,12 +177,15 @@ def _fail(operation: Operation, err: Exception, *, memory_id: str | None = None,
     on `write` both fall through to a generic message, so they log like any
     other unnamed exception.
     """
-    message = _map_error(operation, err, memory_id=memory_id, session_state=session_state)
+    message = _map_error(operation, err, memory_id=memory_id, context_state=context_state,
+                         session_keyed=session_keyed)
     write_value_error = (operation == "write" and isinstance(err, ValueError)
                          and not isinstance(err, UnicodeError))
     expected = isinstance(err, _NAMED_ERRORS) or write_value_error
     if not expected:
-        logger.warning("memory_%s failed: %s", operation, type(err).__name__)
+        tool = f"session_{operation}" if operation in ("confirm", "register") \
+            else f"memory_{operation}"
+        logger.warning("%s failed: %s", tool, type(err).__name__)
     # An expected refusal (a named core error, or the write path's non-Unicode
     # ValueError) is routine agent behaviour, not an operational problem: it
     # would otherwise print an ERROR line to stderr for every MemoryNotFound,
@@ -154,9 +213,64 @@ def _hit(memory: Memory, collection: str) -> dict:
             "description": memory.description, "snippet": snippet}
 
 
-def build_server(root: Path, project_dir: Path,
-                 settings: Settings | None = None) -> FastMCP:
-    """Build the MCP server bound to `root`/`project_dir`.
+def _meta_as_dict(meta: Any) -> dict:
+    """Request meta as a plain mapping, whichever shape this fastmcp/mcp version
+    hands over: the locked fastmcp 3.4.7 hands a pydantic model; fastmcp>=4's mcp
+    dependency hands a plain dict already. A malformed or unreadable meta must
+    never fail the call -- it is read as if no meta was sent."""
+    if isinstance(meta, Mapping):
+        return meta
+    model_dump = getattr(meta, "model_dump", None)
+    if model_dump is None:
+        return {}
+    try:
+        dumped = model_dump()
+    except Exception:  # noqa: BLE001
+        return {}
+    return dumped if isinstance(dumped, Mapping) else {}
+
+
+def _session_key(harness: str, ctx: Context, service: Any) -> SessionKey | None:
+    """The calling session, read from this call alone; None when it names none validly."""
+    request_context = ctx.request_context
+    meta = request_context.meta if request_context is not None else None
+    data = _meta_as_dict(meta)
+    if harness == "claude-code":
+        # Claude Code keeps this server across /clear and an in-app /resume,
+        # so its environment keeps naming the startup session; the PreToolUse
+        # hook mapped this call's id to the session making it (spec U15)
+        mapped = service.session_key_for_call(harness, data.get("claudecode/toolUseId"))
+        if mapped is not None:
+            return mapped
+        session_id = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    else:
+        # Codex nests its turn metadata as an object, and anything else (a
+        # JSON string) is not taken apart
+        nested = data.get("x-codex-turn-metadata")
+        session_id = nested.get("session_id") if isinstance(nested, dict) else None
+    if session_id is None:
+        return None
+    try:
+        return SessionKey(harness, session_id)
+    except ValueError:
+        return None
+
+
+_SESSION_SEARCH_DESCRIPTION = (
+    "Find this project's recorded sessions (newest activity first) by a word in their "
+    "prompts, branch or entry directory; an empty query lists them. Each carries a "
+    "resume_command to show the user; whether to run it is the user's decision. Prompt "
+    "texts are quoted from the sessions. " + UNTRUSTED_DATA_NOTICE)
+
+
+def build_server(root: Path, project_dir: Path, settings: Settings | None = None, *,
+                 harness: str | None = None) -> FastMCP:
+    """Build the MCP server for one harness registration.
+
+    `harness` "claude-code" or "codex" routes every call through the calling
+    session's stored row; anything else (Cursor, Kiro, none) answers for
+    `project_dir`, resolved once at build time. The value is also each
+    write's `source.harness` ("unknown" when absent).
 
     `root` stays an explicit argument -- callers that already resolved it (the
     CLI, the tests) must not have it re-read from the environment here. Only
@@ -165,71 +279,90 @@ def build_server(root: Path, project_dir: Path,
     """
     settings = settings if settings is not None else Settings()
     service = build_service(settings, root=root)
-    # resolved once, at build time: every tool answers for the same project for
-    # the life of the server, and the header cannot drift between calls. The
-    # hook resolves on every call, so the two can still disagree (documented).
-    session = service.open_session(str(project_dir))
-    read_write_set = session.read_write_set
+    source_harness = harness or "unknown"
+    session_mode = harness in _SESSION_HARNESSES
 
-    mcp = FastMCP("memriver", instructions=INSTRUCTIONS)
+    if session_mode:
+        instructions = INSTRUCTIONS + "\n\n" + SESSION_INSTRUCTIONS
+
+        def context_of(ctx: Context) -> ProjectContext:
+            # per call, from the call itself: parallel calls never share a
+            # "current session", and nothing is cached between them
+            return service.session_context(_session_key(harness, ctx, service))
+    else:
+        instructions = INSTRUCTIONS
+        # resolved once, at build time: every tool answers for the same
+        # project for the life of the server, and the header cannot drift
+        directory_context = service.open_project_context(str(project_dir))
+
+        def context_of(ctx: Context) -> ProjectContext:
+            return directory_context
+
+    mcp = FastMCP("memriver", instructions=instructions)
 
     # Tools are plain `def`: FastMCP runs each in a worker thread, so a slow
     # SQLite wait for another process's write lock cannot stall the event
-    # loop. Shared state is safe under that: `service`/`session` are built
-    # once above and only read; each call opens its own SQLite connection;
-    # and the service's lazy content-policy build can race two callers, but
+    # loop. Shared state is safe under that: `service` and a directory-mode
+    # context are built once above and only read; a session-mode context is
+    # a local of each call; each call opens its own SQLite connection; and
+    # the service's lazy content-policy build can race two callers, but
     # Python serializes the scanner module's import and an attribute
     # assignment never exposes a half-built object, so no lock is needed.
 
     @mcp.tool
-    def memory_index() -> str:
-        """The session's project on the first line, then a compact index of the
-        current project's memories followed by global's."""
+    def memory_index(ctx: Context) -> str:
+        """The current project on the first line, then a compact index of its
+        memories followed by global's."""
         try:
-            return session.header + "\n" + service.index(read_write_set)
+            context = context_of(ctx)
+            return context.header + "\n" + service.index(context)
         except Exception as err:  # noqa: BLE001
             _fail("list", err)
 
     @mcp.tool
-    def memory_read(memory_id: str) -> dict:
+    def memory_read(memory_id: str, ctx: Context) -> dict:
         """Read one memory in full by id, including the version that
         memory_update and memory_delete must name."""
         try:
-            return _full(service.read(memory_id, read_write_set))
+            return _full(service.read(memory_id, context_of(ctx)))
         except Exception as err:  # noqa: BLE001
             _fail("read", err, memory_id=memory_id)
 
     @mcp.tool
-    def memory_search(query: str, limit: int | None = None) -> list[dict]:
+    def memory_search(query: str, ctx: Context, limit: int | None = None) -> list[dict]:
         """Search the current project's memories, then global's. `limit` caps the
         whole answer: project hits first, global fills what is left."""
         try:
-            return [_hit(m, "global" if m.project_id == read_write_set.global_project_id
-                         else "project")
-                    for m in service.search(query, read_write_set, limit)]
+            context = context_of(ctx)
+            global_project_id = context.read_write_set.global_project_id
+            return [_hit(m, "global" if m.project_id == global_project_id else "project")
+                    for m in service.search(query, context, limit)]
         except Exception as err:  # noqa: BLE001
             _fail("list", err)
 
     @mcp.tool
     def memory_write(content: str,
                      type: Literal["user", "feedback", "project", "reference"],
-                     sync: bool = True, harness: str = "unknown",
-                     description: str = "") -> dict:
+                     ctx: Context, sync: bool = True, description: str = "") -> dict:
         """Save one durable fact to the current project's memory; memriver assigns the id.
         Global memories are read-only to agents.
         type: user = who the user is; feedback = how they want you to work;
         project = ongoing work/constraints; reference = external resources.
         description: one-line summary shown in the index; when should a future
         session recall this?"""
+        context = None
         try:
-            memory = service.record(content=content, type=type, sync=sync, harness=harness,
-                                    description=description, read_write_set=read_write_set)
+            context = context_of(ctx)
+            memory = service.record(content=content, type=type, sync=sync,
+                                    harness=source_harness, description=description,
+                                    context=context)
         except Exception as err:  # noqa: BLE001
-            _fail("write", err, session_state=session.state)
+            _fail("write", err, context_state=None if context is None else context.state,
+                  session_keyed=context is not None and context.session_key is not None)
         return {"id": memory.id, "project_id": memory.project_id}
 
     @mcp.tool
-    def memory_update(memory_id: str, expected_version: int, content: str,
+    def memory_update(memory_id: str, expected_version: int, content: str, ctx: Context,
                       description: str | None = None) -> dict:
         """Rewrite a memory's content in place; id, project and type stay.
         expected_version: the version memory_read returned; if the memory changed
@@ -238,21 +371,64 @@ def build_server(root: Path, project_dir: Path,
         description: omit to keep the existing one; pass a string to replace
         it, or "" to clear it."""
         try:
-            memory = service.update(memory_id, content, read_write_set,
+            memory = service.update(memory_id, content, context_of(ctx),
                                     expected_version=expected_version, description=description)
         except Exception as err:  # noqa: BLE001
             _fail("update", err, memory_id=memory_id)
         return {"id": memory.id, "updated": memory.updated, "version": memory.version}
 
     @mcp.tool
-    def memory_delete(memory_id: str, expected_version: int) -> dict:
+    def memory_delete(memory_id: str, expected_version: int, ctx: Context) -> dict:
         """Delete a memory that is no longer true or no longer wanted.
         expected_version: the version memory_read returned.
         Global entries are read-only; the call is refused."""
         try:
-            service.delete(memory_id, read_write_set, expected_version=expected_version)
+            service.delete(memory_id, context_of(ctx), expected_version=expected_version)
         except Exception as err:  # noqa: BLE001
             _fail("delete", err, memory_id=memory_id)
         return {"deleted": memory_id}
+
+    @mcp.tool(description=_SESSION_SEARCH_DESCRIPTION)
+    def session_search(ctx: Context, query: str = "", limit: int | None = None) -> list[dict]:
+        if not session_mode:
+            raise ToolError(_SESSION_TOOLS_UNAVAILABLE, log_level=logging.DEBUG)
+        try:
+            return [session_item(session)
+                    for session in service.search_sessions(query, context_of(ctx), limit)]
+        except Exception as err:  # noqa: BLE001
+            _fail("list", err)
+
+    @mcp.tool
+    def session_confirm(ctx: Context) -> dict:
+        """Register this session to the project memriver proposed for it. Call only
+        after the user agreed; returns the session's new project header."""
+        if not session_mode:
+            raise ToolError(_SESSION_TOOLS_UNAVAILABLE, log_level=logging.DEBUG)
+        try:
+            key = _session_key(harness, ctx, service)
+            if key is None:
+                raise ProjectUnavailable(reason="unidentified")
+            return {"header": service.confirm_session(key).header}
+        except Exception as err:  # noqa: BLE001
+            _fail("confirm", err)
+
+    @mcp.tool
+    def session_register(ctx: Context) -> dict:
+        """Register this session, when it has no project, to the registered project
+        covering the directory it started in. Call when the user asks you to, or right
+        after you ran memriver project init at their request; a session that already
+        has a project never changes. Returns the session's project header."""
+        if not session_mode:
+            raise ToolError(_SESSION_TOOLS_UNAVAILABLE, log_level=logging.DEBUG)
+        try:
+            key = _session_key(harness, ctx, service)
+            if key is None:
+                raise ProjectUnavailable(reason="unidentified")
+            context = service.register_session(key)
+        except Exception as err:  # noqa: BLE001
+            _fail("register", err)
+        if context.state in ("none", "pending"):
+            return {"header": context.header, "note": _NOTHING_TO_REGISTER}
+        return {"header": context.header}
 
     return mcp

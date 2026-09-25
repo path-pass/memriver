@@ -436,3 +436,65 @@ def test_doctor_marks_an_unverifiable_directory(tmp_path, capsys, monkeypatch):
     out = capsys.readouterr().out
     assert code == 1                                   # unverifiable-root is a finding
     assert f"{project.id} (demo): {work.resolve()} [unverifiable]; 0 memories, 0 deleted" in out
+
+
+_SESSION_COLUMNS = ("harness, session_id, status, origin, project_id, candidate_id, "
+                    "candidate_root, entry_cwd, branch, transcript_path, started_at, "
+                    "last_active_at, ended_at, prompt_count, last_write_prompt_count, "
+                    "last_nudge_prompt_count, first_prompt, recent_prompts")
+
+
+def _plant_session(store: Path, **overrides: object) -> None:
+    """A raw `sessions` row, bypassing the app's own checks -- a bare
+    sqlite3 connection never turns PRAGMA foreign_keys on, and
+    ignore_check_constraints lets a row invalid for other reasons past the
+    table's CHECKs, the same way the other planted rows above do."""
+    row: dict[str, object] = {
+        "harness": "codex", "session_id": "s1", "status": "registered", "origin": "start",
+        "project_id": None, "candidate_id": None, "candidate_root": None,
+        "entry_cwd": "/tmp/x", "branch": None, "transcript_path": None,
+        "started_at": "2026-09-24T00:00:00.000000Z",
+        "last_active_at": "2026-09-24T00:00:00.000000Z", "ended_at": None,
+        "prompt_count": 0, "last_write_prompt_count": 0, "last_nudge_prompt_count": 0,
+        "first_prompt": None, "recent_prompts": "[]",
+    }
+    row.update(overrides)
+    placeholders = ", ".join("?" for _ in _SESSION_COLUMNS.split(","))
+    with closing(sqlite3.connect(store / "memriver.db")) as conn, conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute(f"INSERT INTO sessions ({_SESSION_COLUMNS}) VALUES ({placeholders})",
+                     tuple(row.values()))
+
+
+def test_doctor_reports_an_invalid_session_row_and_a_dangling_candidate_id(tmp_path, capsys):
+    store, _, _ = _real_store(tmp_path)
+    _plant_session(store, harness="codex", session_id="bad-row", status="odd")
+    _plant_session(store, harness="claude-code", session_id="pending-1", status="pending",
+                   origin="first-seen", candidate_id="zzzzzzzzzz", candidate_root="/z")
+
+    code = run_doctor(root=store, json_output=False, stale_days=90,
+                      stdout=sys.stdout, stderr=sys.stderr)
+    out = capsys.readouterr().out
+
+    assert code == 1
+    assert "invalid-row:" in out
+    assert "sessions/codex/bad-row" in out
+    assert "session-orphan:" in out
+    assert "sessions/claude-code/pending-1" in out
+    assert "session refers to a project that does not exist" in out
+
+
+def test_doctor_json_reports_session_findings(tmp_path):
+    store, _, _ = _real_store(tmp_path)
+    _plant_session(store, harness="codex", session_id="pending-2", status="pending",
+                   origin="first-seen", candidate_id="zzzzzzzzzz", candidate_root="/z")
+
+    out = io.StringIO()
+    code = run_doctor(root=store, json_output=True, stale_days=90, stdout=out, stderr=io.StringIO())
+    report = json.loads(out.getvalue())
+
+    assert code == 1
+    kinds = {f["kind"] for f in report["findings"]}
+    assert "session-orphan" in kinds
+    orphan = next(f for f in report["findings"] if f["kind"] == "session-orphan")
+    assert orphan["location_hints"] == ["sessions/codex/pending-2"]

@@ -12,18 +12,58 @@ import threading
 from contextlib import closing
 
 import pytest
-from memriver_core.models import Memory, new_id
+from memriver_core.models import Memory, new_id, now
 from memriver_core.models.errors import StorageFailure
+from memriver_core.repository.sqlite import database as database_module
 from memriver_core.repository.sqlite.database import (
+    MEMORY_COLUMNS,
     Database,
     memory_from_row,
     memory_to_row,
     project_from_row,
+    upgrade_if_needed,
+)
+
+# the v1 schema, frozen here as a fixture: production code only ever creates
+# v2 directly (_SCHEMA) or upgrades from it (_UPGRADE_STATEMENTS)
+_V1_SCHEMA = (
+    """CREATE TABLE projects (
+      id        TEXT PRIMARY KEY NOT NULL CHECK (length(id) = 10),
+      name      TEXT NOT NULL CHECK (length(name) >= 1),
+      root      TEXT UNIQUE,
+      is_global INTEGER NOT NULL DEFAULT 0 CHECK (is_global IN (0, 1)),
+      CHECK (is_global = 0 OR root IS NULL)
+    ) STRICT""",
+    "CREATE UNIQUE INDEX projects_one_global ON projects(is_global) WHERE is_global = 1",
+    """CREATE TABLE memories (
+      id             TEXT PRIMARY KEY NOT NULL CHECK (length(id) = 10),
+      project_id     TEXT NOT NULL REFERENCES projects(id),
+      type           TEXT NOT NULL CHECK (type IN ('user','feedback','project','reference')),
+      source_harness TEXT NOT NULL,
+      source_method  TEXT NOT NULL,
+      trust          TEXT NOT NULL CHECK (trust IN ('user','agent','untrusted-derived')),
+      sync           INTEGER NOT NULL CHECK (sync IN (0, 1)),
+      description    TEXT NOT NULL,
+      body           TEXT NOT NULL,
+      created        TEXT NOT NULL,
+      updated        TEXT NOT NULL,
+      version        INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+      deleted_at     TEXT
+    ) STRICT""",
+    ("CREATE INDEX memories_active_by_project "
+     "ON memories(project_id, updated DESC) WHERE deleted_at IS NULL"),
 )
 
 
 def _db(root) -> Database:
     return Database(root, busy_timeout_ms=2000)
+
+
+def _build_v1(path) -> None:
+    with closing(sqlite3.connect(path)) as conn, conn:
+        for statement in _V1_SCHEMA:
+            conn.execute(statement)
+        conn.execute("PRAGMA user_version = 1")
 
 
 def test_a_read_of_a_missing_store_creates_nothing(tmp_path):
@@ -41,9 +81,9 @@ def test_the_first_write_creates_a_private_directory_file_and_schema(tmp_path):
     assert stat.S_IMODE(os.stat(root).st_mode) == 0o700
     assert stat.S_IMODE(os.stat(root / "memriver.db").st_mode) == 0o600
     with closing(sqlite3.connect(root / "memriver.db")) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert tables == {"projects", "memories"}
+    assert tables == {"projects", "memories", "sessions", "tool_calls"}
 
 
 def test_a_failed_first_write_leaves_no_schema(tmp_path):
@@ -72,6 +112,125 @@ def test_foreign_tables_at_version_zero_are_refused(tmp_path):
         conn.execute("CREATE TABLE other (x)")
     with pytest.raises(StorageFailure), _db(root).read():
         pass
+
+
+def test_a_version_one_database_is_upgraded_in_place(tmp_path):
+    root = tmp_path / "store"
+    root.mkdir()
+    _build_v1(root / "memriver.db")
+    pid = new_id()
+    memory = Memory.new(body="b", type="project", project_id=pid,
+                        source={"harness": "h", "method": "agent"})
+    v1_columns = ("id, project_id, type, source_harness, source_method, trust, sync, "
+                  "description, body, created, updated, version, deleted_at")
+    with closing(sqlite3.connect(root / "memriver.db")) as conn, conn:
+        conn.execute("INSERT INTO projects (id, name, root, is_global) VALUES (?, 'p', NULL, 0)",
+                     (pid,))
+        placeholders = ", ".join("?" for _ in v1_columns.split(","))
+        conn.execute(f"INSERT INTO memories ({v1_columns}) VALUES ({placeholders})",
+                     memory_to_row(memory)[:-1])   # v1 has no last_read_at column yet
+    with _db(root).read() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert {"sessions", "tool_calls"} <= tables
+        indexes = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+        assert "tool_calls_by_recorded_at" in indexes
+        row = conn.execute(f"SELECT {MEMORY_COLUMNS} FROM memories WHERE id = ?",
+                           (memory.id,)).fetchone()
+    seen = memory_from_row(row)
+    assert seen == memory
+    assert seen.last_read_at is None
+
+
+def test_two_openers_upgrade_a_version_one_database_once(tmp_path):
+    root = tmp_path / "store"
+    root.mkdir()
+    _build_v1(root / "memriver.db")
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(2)
+
+    def opener() -> None:
+        try:
+            barrier.wait()
+            with _db(root).read():
+                pass
+        except BaseException as err:  # noqa: BLE001
+            errors.append(err)
+
+    threads = [threading.Thread(target=opener) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    with closing(sqlite3.connect(root / "memriver.db")) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(memories)")}
+    assert "last_read_at" in columns
+
+
+def test_a_read_of_a_v2_database_does_not_queue_behind_a_writers_lock(tmp_path):
+    """`upgrade_if_needed` must not take BEGIN IMMEDIATE once the schema is already
+    current: that would serialize every read behind any concurrent writer's own
+    write transaction, for an upgrade that never has anything to do."""
+    root = tmp_path / "store"
+    with _db(root).write():
+        pass                                # creates the v2 schema
+    holder = sqlite3.connect(root / "memriver.db", isolation_level=None)
+    holder.execute("BEGIN IMMEDIATE")
+    holder.execute("INSERT INTO projects (id, name, root, is_global) VALUES (?, 'g', NULL, 1)",
+                   (new_id(),))
+    try:
+        # a busy timeout far shorter than the holder keeps its lock: if the
+        # upgrade check took the write lock too, this read would block on it
+        # and raise StorageFailure once the timeout elapsed
+        with Database(root, busy_timeout_ms=50).read() as conn:
+            assert conn is not None
+    finally:
+        holder.execute("ROLLBACK")
+        holder.close()
+
+
+def test_an_upgrade_failing_part_way_leaves_version_one_intact(tmp_path, monkeypatch):
+    root = tmp_path / "store"
+    root.mkdir()
+    db_path = root / "memriver.db"
+    _build_v1(db_path)
+    broken = list(database_module._UPGRADE_STATEMENTS)
+    broken[-1] = "CREATE INDEX sessions_by_project ON no_such_table(project_id)"
+    monkeypatch.setattr(database_module, "_UPGRADE_STATEMENTS", broken)
+    with pytest.raises(StorageFailure):
+        upgrade_if_needed(db_path, busy_timeout_ms=2000)
+    with closing(sqlite3.connect(db_path)) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(memories)")}
+        assert "last_read_at" not in columns
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "sessions" not in tables
+        assert "tool_calls" not in tables
+
+
+def test_upgrade_if_needed_on_a_missing_file_is_a_no_op(tmp_path):
+    upgrade_if_needed(tmp_path / "store" / "memriver.db", busy_timeout_ms=2000)
+    assert not (tmp_path / "store").exists()
+
+
+def test_write_without_create_does_not_create_a_missing_store(tmp_path):
+    root = tmp_path / "store"
+    with pytest.raises(StorageFailure), _db(root).write(create=False) as conn:
+        conn.execute("INSERT INTO projects (id, name, root, is_global) "
+                     "VALUES (?, 'g', NULL, 1)", (new_id(),))
+    assert not root.exists()
+
+
+def test_write_without_create_does_not_recreate_a_store_removed_after_the_check(tmp_path,
+                                                                                monkeypatch):
+    root = tmp_path / "store"
+    database = _db(root)
+    monkeypatch.setattr(database, "exists", lambda: True)
+    with pytest.raises(StorageFailure), database.write(create=False):
+        pass
+    assert not root.exists()
 
 
 @pytest.mark.parametrize("kind", ["symlink", "directory"])
@@ -185,15 +344,34 @@ def test_a_memory_round_trips_through_its_row():
     assert memory_from_row(memory_to_row(memory)) == memory
 
 
+def test_a_valid_last_read_at_round_trips():
+    memory = Memory.new(body="b", type="project", project_id=new_id(),
+                        source={"harness": "h", "method": "agent"})
+    memory.last_read_at = now()
+    assert memory_from_row(memory_to_row(memory)) == memory
+
+
+# built with chr(...), never a raw non-ASCII digit in the file: fullwidth 0-9
+# are U+FF10..U+FF19, one codepoint above their ASCII counterpart's ordinal
+# shifted by the same offset as '0' -> U+FF10
+_FULLWIDTH_DIGITS = str.maketrans("0123456789", "".join(chr(0xFF10 + i) for i in range(10)))
+_FULLWIDTH_TIMESTAMP = "2026-09-24T00:00:01.000000Z".translate(_FULLWIDTH_DIGITS)
+
+
 @pytest.mark.parametrize("change", [
     {"id": "../../evil"}, {"project_id": "ABCDEFGHJK"}, {"type": "note"}, {"trust": "high"},
-    {"sync": 2}, {"version": 0}, {"body": b"bytes"}, {"deleted_at": 5},
+    {"sync": 2}, {"version": 0}, {"body": b"bytes"}, {"deleted_at": 5}, {"last_read_at": 5},
+    {"last_read_at": "not-a-timestamp"},
+    {"last_read_at": "9999-99-99T99:99:99.999999Z"},          # right shape, no such calendar date
+    {"last_read_at": "2026-02-30T00:00:00.000000Z"},          # right shape, February has no 30th
+    {"last_read_at": _FULLWIDTH_TIMESTAMP},                    # right shape, not ASCII digits
 ])
 def test_a_memory_row_memriver_could_not_have_written_is_invalid(change):
     memory = Memory.new(body="b", type="project", project_id=new_id(),
                         source={"harness": "h", "method": "agent"})
     columns = ["id", "project_id", "type", "source_harness", "source_method", "trust", "sync",
-               "description", "body", "created", "updated", "version", "deleted_at"]
+               "description", "body", "created", "updated", "version", "deleted_at",
+               "last_read_at"]
     row = dict(zip(columns, memory_to_row(memory), strict=True))
     row.update(change)
     with pytest.raises(ValueError):

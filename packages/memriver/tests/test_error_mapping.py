@@ -64,11 +64,21 @@ def test_write_mapping(err, expected):
     ("unavailable", "the memory store could not be read"),
     ("registered", "the registered project could not be found in the store"),
 ])
-def test_write_without_a_project_states_the_session_not_a_path(state, fragment):
-    result = _map_error("write", ProjectUnavailable("no writable project in this session"),
-                        session_state=state)
+def test_write_without_a_project_states_the_project_context_not_a_path(state, fragment):
+    result = _map_error("write", ProjectUnavailable(), context_state=state)
     assert fragment in result and "No memory was saved" in result
     assert "/" not in result.replace("memriver project", "")
+
+
+@pytest.mark.parametrize("state, fragment, way_out", [
+    ("none", "this session was registered with no project", "call session_register"),
+    ("degraded", "this session's project no longer exists or became global",
+     "start a new session"),
+])
+def test_a_session_without_a_project_never_points_at_its_directory(state, fragment, way_out):
+    result = _map_error("write", ProjectUnavailable(), context_state=state, session_keyed=True)
+    assert fragment in result and "No memory was saved" in result
+    assert way_out in result and "directory" not in result
 
 
 @pytest.mark.parametrize("operation", ["read", "update", "delete"])
@@ -126,7 +136,7 @@ def test_an_unnamed_error_logs_only_the_operation_and_its_type(caplog):
 
 
 @pytest.mark.parametrize("err", [MemoryNotFound(M), GlobalReadOnly(),
-                                 ProjectUnavailable("x"), VersionConflict(M),
+                                 ProjectUnavailable(), VersionConflict(M),
                                  ContentRejected("looks like a secret")])
 def test_a_named_error_never_logs(caplog, err):
     with caplog.at_level(logging.WARNING, logger="memriver"), pytest.raises(ToolError):
@@ -262,7 +272,16 @@ def other_backend_server(tmp_path, monkeypatch):
                                  index_budget_lines=settings.index_budget_lines,
                                  index_cue_chars=INDEX_CUE_CHARS,
                                  header_field_chars=HEADER_FIELD_CHARS,
-                                 project_name_max_chars=PROJECT_NAME_MAX_CHARS)
+                                 project_name_max_chars=PROJECT_NAME_MAX_CHARS,
+                                 session_store=None, canonical_directory=None,
+                                 main_tree_path=None,
+                                 current_branch=None, root_is_intact=None,
+                                 session_prompt_chars=512, session_recent_prompts=5,
+                                 session_prompt_scan_max_bytes=65536,
+                                 stop_nudge_min_prompts=5, stop_nudge_interval_prompts=5,
+                                 session_search_limit_default=10,
+                                 session_search_limit_max=50,
+                                 tool_call_retention_s=3600)
 
         monkeypatch.setattr(server_module, "build_service", build_service_over_other)
         return build_server(root=store, project_dir=directory)

@@ -91,7 +91,7 @@ def _nothing_created(env) -> bool:
 
 
 def _resolved_id(env, directory: Path) -> str | None:
-    return _service(env).open_session(str(directory)).read_write_set.project_id
+    return _service(env).open_project_context(str(directory)).read_write_set.project_id
 
 
 # --- init -----------------------------------------------------------------------

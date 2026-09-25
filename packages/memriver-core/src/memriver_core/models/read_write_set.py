@@ -7,8 +7,8 @@ from dataclasses import dataclass
 class ReadWriteSet:
     """Which projects one caller may read and write.
 
-    Built only by the application facade from a resolved session, never from
-    tool arguments: knowing an id grants nothing.
+    Built only by the application facade from a resolved project context, never
+    from tool arguments: knowing an id grants nothing.
     """
 
     project_id: str | None

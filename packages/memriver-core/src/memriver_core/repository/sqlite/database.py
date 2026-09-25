@@ -23,11 +23,56 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import get_args
 
-from memriver_core.models import ID_RE, Memory, MemoryType, Project, Trust, single_line
+from memriver_core.models import (
+    ID_RE,
+    Memory,
+    MemoryType,
+    Project,
+    Trust,
+    is_timestamp,
+    single_line,
+)
 from memriver_core.models.errors import StorageFailure
 
 DATABASE_FILENAME = "memriver.db"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+# shared between a fresh v2 create (_SCHEMA) and the v1 -> v2 upgrade
+# (_UPGRADE_STATEMENTS): copied verbatim from spec §3.1
+_SESSIONS_TABLE = """CREATE TABLE sessions (
+  harness            TEXT NOT NULL CHECK (harness IN ('claude-code','codex')),
+  session_id         TEXT NOT NULL CHECK (length(session_id) BETWEEN 1 AND 128),
+  status             TEXT NOT NULL CHECK (status IN ('registered','pending')),
+  origin             TEXT NOT NULL CHECK (origin IN ('start','first-seen')),
+  project_id         TEXT REFERENCES projects(id),     -- registered: the project or NULL (entry unbound)
+  candidate_id       TEXT REFERENCES projects(id),     -- pending: the project to confirm, or NULL
+  candidate_root     TEXT,                             -- pending: projects.root seen when the candidate was computed
+  entry_cwd          TEXT NOT NULL,
+  branch             TEXT,
+  transcript_path    TEXT,
+  started_at         TEXT NOT NULL,                    -- first time memriver saw the session
+  last_active_at     TEXT NOT NULL,
+  ended_at           TEXT,                             -- last SessionEnd received
+  prompt_count       INTEGER NOT NULL DEFAULT 0 CHECK (prompt_count >= 0),
+  last_write_prompt_count INTEGER NOT NULL DEFAULT 0 CHECK (last_write_prompt_count >= 0),
+  last_nudge_prompt_count INTEGER NOT NULL DEFAULT 0 CHECK (last_nudge_prompt_count >= 0),
+  first_prompt       TEXT,                             -- JSON PromptEntry or NULL
+  recent_prompts     TEXT NOT NULL DEFAULT '[]',       -- JSON array of PromptEntry, newest last, at most 5
+  PRIMARY KEY (harness, session_id),
+  CHECK (status = 'registered' OR (project_id IS NULL AND origin = 'first-seen'))
+) STRICT"""
+_SESSIONS_INDEX = "CREATE INDEX sessions_by_project ON sessions(project_id, last_active_at DESC)"
+# Claude Code's tool_use_id -> the session that made the call, recorded by its
+# PreToolUse hook: its MCP server outlives /clear and an in-app /resume, so the
+# call, not the server's environment, names the current session (spec U15)
+_TOOL_CALLS_TABLE = """CREATE TABLE tool_calls (
+  harness     TEXT NOT NULL CHECK (harness IN ('claude-code','codex')),
+  call_id     TEXT NOT NULL CHECK (length(call_id) BETWEEN 1 AND 256),
+  session_id  TEXT NOT NULL CHECK (length(session_id) BETWEEN 1 AND 128),
+  recorded_at TEXT NOT NULL,
+  PRIMARY KEY (harness, call_id)
+) STRICT"""
+_TOOL_CALLS_INDEX = "CREATE INDEX tool_calls_by_recorded_at ON tool_calls(recorded_at)"
 
 _SCHEMA = (
     """CREATE TABLE projects (
@@ -51,14 +96,29 @@ _SCHEMA = (
       created        TEXT NOT NULL,
       updated        TEXT NOT NULL,
       version        INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
-      deleted_at     TEXT
+      deleted_at     TEXT,
+      last_read_at   TEXT
     ) STRICT""",
     ("CREATE INDEX memories_active_by_project "
      "ON memories(project_id, updated DESC) WHERE deleted_at IS NULL"),
+    _SESSIONS_TABLE,
+    _SESSIONS_INDEX,
+    _TOOL_CALLS_TABLE,
+    _TOOL_CALLS_INDEX,
+)
+
+# the v1 -> v2 upgrade (spec §3.2): a module-level tuple so a test can
+# monkeypatch it to fail part-way and prove the whole transaction rolls back
+_UPGRADE_STATEMENTS = (
+    "ALTER TABLE memories ADD COLUMN last_read_at TEXT",   # NULL = never read since v2
+    _SESSIONS_TABLE,
+    _SESSIONS_INDEX,
+    _TOOL_CALLS_TABLE,
+    _TOOL_CALLS_INDEX,
 )
 
 MEMORY_COLUMNS = ("id, project_id, type, source_harness, source_method, trust, sync, "
-                  "description, body, created, updated, version, deleted_at")
+                  "description, body, created, updated, version, deleted_at, last_read_at")
 PROJECT_COLUMNS = "id, name, root, is_global"
 
 # anything a driver or the OS can raise while we talk to the file; a lone
@@ -88,7 +148,8 @@ def _lenient_text(data: bytes) -> str | bytes:
 def memory_to_row(memory: Memory) -> tuple:
     return (memory.id, memory.project_id, memory.type, memory.source["harness"],
             memory.source["method"], memory.trust, int(memory.sync), memory.description,
-            memory.body, memory.created, memory.updated, memory.version, memory.deleted_at)
+            memory.body, memory.created, memory.updated, memory.version, memory.deleted_at,
+            memory.last_read_at)
 
 
 def memory_from_row(row: Sequence[object]) -> Memory:
@@ -98,7 +159,7 @@ def memory_from_row(row: Sequence[object]) -> Memory:
     '../../evil', and a writer with foreign keys off is not stopped at all.
     """
     (memory_id, project_id, type_, harness, method, trust, sync, description, body,
-     created, updated, version, deleted_at) = row
+     created, updated, version, deleted_at, last_read_at) = row
     texts = (memory_id, project_id, type_, harness, method, trust, description, body,
              created, updated)
     if not all(isinstance(value, str) for value in texts):
@@ -113,11 +174,13 @@ def memory_from_row(row: Sequence[object]) -> Memory:
         raise ValueError("version is not a positive integer")
     if deleted_at is not None and not isinstance(deleted_at, str):
         raise ValueError("deleted_at is not text")
+    if last_read_at is not None and not is_timestamp(last_read_at):
+        raise ValueError("last_read_at is not a timestamp")
     return Memory(id=memory_id, project_id=project_id, type=type_,
                   source={"harness": harness, "method": method}, trust=trust,
                   sync=bool(sync), created=created, updated=updated,
                   description=description, body=body, version=version,
-                  deleted_at=deleted_at)
+                  deleted_at=deleted_at, last_read_at=last_read_at)
 
 
 def project_from_row(row: Sequence[object]) -> tuple[Project, bool]:
@@ -137,6 +200,53 @@ def project_from_row(row: Sequence[object]) -> tuple[Project, bool]:
     if type(is_global) is not int or is_global not in (0, 1):
         raise ValueError("is_global is not 0 or 1")
     return Project(id=project_id, name=name, root=root), bool(is_global)
+
+
+def upgrade_if_needed(path: Path, *, busy_timeout_ms: int) -> None:
+    """Upgrade an on-disk v1 database to v2 in place; a missing file is a no-op.
+
+    The only upgrade code (spec §3.2): every opener -- `Database.read()`,
+    `Database.write()` and the doctor's inspector, which opens its own
+    connection -- calls this before its own connection. It opens mode=rw
+    (never creates) and runs the whole upgrade in one `BEGIN IMMEDIATE`
+    transaction, re-checking `user_version` inside it: a peer that already
+    upgraded leaves the re-check at 2 and this does nothing. A failure
+    part-way rolls back to an intact v1, since SQLite's DDL is transactional.
+
+    `user_version` is read once outside any transaction first: almost every
+    open finds v2 already, and only a database actually at v1 may take the
+    write lock -- otherwise every read would queue behind a concurrent
+    writer's `BEGIN IMMEDIATE` for a schema that never changes.
+    """
+    try:
+        conn = sqlite3.connect(f"{Path(os.path.abspath(path)).as_uri()}?mode=rw", uri=True,
+                               isolation_level=None, timeout=busy_timeout_ms / 1000)
+    except sqlite3.OperationalError:
+        if not Path(path).exists():
+            return                          # nothing to upgrade
+        raise StorageFailure from None
+    except _BACKEND_ERRORS as err:
+        raise StorageFailure from err
+    conn.text_factory = _lenient_text
+    try:
+        try:
+            conn.execute("PRAGMA foreign_keys = ON")
+            if conn.execute("PRAGMA user_version").fetchone()[0] != 1:
+                return                       # no lock taken: nothing to upgrade
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute("PRAGMA user_version").fetchone()[0] == 1:
+                for statement in _UPGRADE_STATEMENTS:
+                    conn.execute(statement)
+                conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            conn.execute("COMMIT")
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+    except _BACKEND_ERRORS as err:
+        raise StorageFailure from err
+    finally:
+        conn.close()
 
 
 class Database:
@@ -171,6 +281,7 @@ class Database:
         if not self.exists():
             yield None
             return
+        upgrade_if_needed(self.path, busy_timeout_ms=self._busy_timeout_ms)
         try:
             conn = self._connect(read_only=True)
         except _BACKEND_ERRORS as err:
@@ -191,14 +302,24 @@ class Database:
             conn.close()
 
     @contextmanager
-    def write(self) -> Iterator[sqlite3.Connection]:
+    def write(self, *, create: bool = True) -> Iterator[sqlite3.Connection]:
         """One BEGIN IMMEDIATE transaction; the store and schema are created on demand.
 
         The body's own exceptions roll back and propagate; every driver error
         that escapes the body becomes StorageFailure. A store that wants to
         name a constraint it hit catches sqlite3.IntegrityError inside the body.
+
+        `create=False` never creates anything: a missing store -- including
+        one that disappears between the `exists()` check below and the
+        connect -- raises StorageFailure instead of the file, or its
+        directory, springing into being (nothing here creates a store).
         """
-        self._create_file()
+        if self.exists():
+            upgrade_if_needed(self.path, busy_timeout_ms=self._busy_timeout_ms)
+        elif create:
+            self._create_file()
+        else:
+            raise StorageFailure
         try:
             conn = self._connect(read_only=False)
         except _BACKEND_ERRORS as err:

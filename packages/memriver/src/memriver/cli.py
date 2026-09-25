@@ -50,20 +50,31 @@ def _build_parser() -> argparse.ArgumentParser:
                        project_dir_help="directory where project discovery starts "
                                         "(the bound directories decide the project; "
                                         "default: the current working directory)")
+    # claude-code/codex route every call through the calling session's
+    # registration; cursor/kiro/absent answer for --project-dir. An unknown
+    # value is a usage error, never a silent switch between the two modes.
+    serve.add_argument("--harness", choices=["claude-code", "codex", "cursor", "kiro"],
+                       default=None,
+                       help="the harness this server is registered with (default: none; "
+                            "the project is decided by --project-dir)")
     serve.set_defaults(handler=_serve)
 
     hook = commands.add_parser("hook", help="run a harness hook over stdin/stdout")
-    hook.add_argument("event", choices=["session-start", "stop"])
-    # spelled out here, like install's below: importing hooks.Harness at parse
-    # time would pull memriver_core.models into every invocation, including
-    # install/uninstall/--version. test_hook_harness_choices_match_the_literal
-    # pins these names to hooks.Harness so the two cannot drift.
+    hook.add_argument("event", choices=["session-start", "user-prompt-submit", "stop",
+                                        "session-end", "pre-tool-use"])
+    # spelled out here, like install's below: importing hooks.HookEvent and
+    # hooks.Harness at parse time would pull memriver_core.models into every
+    # invocation, including install/uninstall/--version.
+    # test_hook_harness_and_event_choices_match_the_literals pins both lists to
+    # those literals so they cannot drift.
     hook.add_argument("--harness", choices=["claude-code", "codex"], required=True)
     _add_store_options(hook, project_dir_default=None,
-                       project_dir_help="directory where project discovery starts "
-                                        "(the bound directories decide the project; default: "
-                                        "the directory the harness reports, else the "
-                                        "current working directory)")
+                       project_dir_help="entry directory registered for a session memriver "
+                                        "has not seen yet; an existing session keeps its "
+                                        "project (default: for claude-code "
+                                        "$CLAUDE_PROJECT_DIR when absolute, else the "
+                                        "directory the harness reports, else the current "
+                                        "working directory)")
     hook.set_defaults(handler=_hook)
 
     install = commands.add_parser(
@@ -190,6 +201,16 @@ def _add_view_commands(commands) -> None:
     export.add_argument("directory", type=Path, help="a directory that does not exist yet")
     export.set_defaults(handler=_view_export)
 
+    sessions = add("sessions", "list every recorded session, or one project's")
+    sessions.add_argument("query", nargs="?", default="",
+                          help="only sessions matching this word in a prompt, "
+                               "branch or entry directory")
+    sessions.add_argument("--project", default=None, help="only this project id")
+    sessions.add_argument("--limit", type=_positive_int, default=None)
+    sessions.add_argument("--json", action="store_true",
+                          help="emit the session_search item shape as JSON")
+    sessions.set_defaults(handler=_view_sessions)
+
     delete = add("delete", "delete one memory of the current directory's project")
     delete.add_argument("memory_id")
     delete.add_argument("--version", type=_positive_int, required=True,
@@ -234,7 +255,7 @@ def _serve(args: argparse.Namespace) -> int:
         # failing on -- but as a readable message, not a bare traceback
         raise SystemExit(f"memriver: invalid MEMRIVER_* environment setting\n{err}")
     build_server(root=settings.root, project_dir=args.project_dir,
-                 settings=settings).run()  # stdio
+                 settings=settings, harness=args.harness).run()  # stdio
     return 0
 
 
@@ -378,6 +399,13 @@ def _view_export(args: argparse.Namespace) -> int:
 
     return run_export(args.directory, root=args.root, stdout=sys.stdout, home=Path.home(),
                       cwd=Path.cwd())
+
+
+def _view_sessions(args: argparse.Namespace) -> int:
+    from .views import run_sessions
+
+    return run_sessions(args.query, root=args.root, project_id=args.project, limit=args.limit,
+                        json_output=args.json, stdout=sys.stdout, home=Path.home())
 
 
 def _view_delete(args: argparse.Namespace) -> int:

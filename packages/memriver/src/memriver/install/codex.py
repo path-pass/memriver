@@ -2,8 +2,9 @@
 
 Both managed files are user-level: ``~/.codex/config.toml`` carries the MCP
 server registration and the optional native-memory toggle, ``~/.codex/hooks.json``
-carries the SessionStart/Stop hooks. This module only builds ``Target`` and
-``EditOperation`` values -- it never opens a file, prompts, or writes.
+carries the SessionStart/Stop/UserPromptSubmit/SessionEnd hooks. This module
+only builds ``Target`` and ``EditOperation`` values -- it never opens a file,
+prompts, or writes.
 """
 
 from __future__ import annotations
@@ -25,9 +26,15 @@ from memriver.install.editors import (
 
 HARNESS = "codex"
 
-# named, because `notes()` has to ask whether these two ended up in effect
+# named, because `notes()` has to ask whether these ended up in effect
 SESSION_START_HOOK_ID = "codex:hooks-session-start"
 STOP_HOOK_ID = "codex:hooks-stop"
+USER_PROMPT_SUBMIT_HOOK_ID = "codex:hooks-user-prompt-submit"
+SESSION_END_HOOK_ID = "codex:hooks-session-end"
+ALL_HOOK_IDS = frozenset((
+    SESSION_START_HOOK_ID, STOP_HOOK_ID,
+    USER_PROMPT_SUBMIT_HOOK_ID, SESSION_END_HOOK_ID,
+))
 
 # Spec 5.3's other half: unset or already-off means "do nothing **and say
 # so**". Read-only completion text, never a confirmable operation -- there is
@@ -46,18 +53,19 @@ HOOKS_DISABLED_NOTE = (
 )
 
 # The same switch, with the hook set it points at incomplete: consent is per
-# change, so a user can accept the MCP registration and decline one or both
-# hooks, or decline replacing a stale hook definition -- and a dry run writes
-# nothing at all. Any of those leaves fewer than both SessionStart and Stop in
-# hooks.json, so this wording only ever claims "not the complete pair", never
-# "neither one", which is the one fact every one of those cases shares.
+# change, so a user can accept the MCP registration and decline any of the
+# four hooks, or decline replacing a stale hook definition -- and a dry run
+# writes nothing at all. Any of those leaves fewer than all four of
+# SessionStart/Stop/UserPromptSubmit/SessionEnd in hooks.json, so this wording
+# only ever claims "not the complete set", never "none at all", which is the
+# one fact every one of those cases shares.
 HOOKS_DISABLED_WITHOUT_DEFINITIONS_NOTE = (
     "codex: features.hooks = false in ~/.codex/config.toml, so no Codex hook "
     "runs, and ~/.codex/hooks.json does not hold the complete expected "
-    "memriver SessionStart/Stop hook set. Run memriver install codex again "
-    "and accept the hook changes, then set features.hooks = true (or remove "
-    "the line) and trust the definitions via /hooks to let memriver inject "
-    "your index at session start."
+    "memriver SessionStart/Stop/UserPromptSubmit/SessionEnd hook set. Run "
+    "memriver install codex again and accept the hook changes, then set "
+    "features.hooks = true (or remove the line) and trust the definitions "
+    "via /hooks to let memriver inject your index at session start."
 )
 
 NATIVE_MEMORY_OFF_NOTE = (
@@ -82,8 +90,10 @@ def targets(home: Path, project_root: Path | None,
     hooks = Target(
         path=home / ".codex" / "hooks.json",
         user_level=True,
-        rollback_instruction="remove the memriver SessionStart/Stop hooks from "
-                              "~/.codex/hooks.json",
+        rollback_instruction=(
+            "remove the memriver SessionStart/Stop/UserPromptSubmit/SessionEnd "
+            "hooks from ~/.codex/hooks.json"
+        ),
     )
     return config, hooks
 
@@ -91,7 +101,8 @@ def targets(home: Path, project_root: Path | None,
 def operations(
     snapshots: tuple[Snapshot, Snapshot], env: Mapping[str, str],
 ) -> tuple[EditOperation, ...]:
-    """MCP registration, both hooks, and -- when offered -- the native-memory toggle."""
+    """MCP registration, all four hooks, and -- when offered -- the
+    native-memory toggle."""
     del env  # Codex's native-memory conflict is read from its own config, not env.
     config, hooks = snapshots
     ops = [
@@ -100,7 +111,7 @@ def operations(
             target=config.target,
             label="register memriver MCP server",
             kind="toml-table",
-            expected=mcp_server_payload(),
+            expected=mcp_server_payload(HARNESS),
             key_path=("mcp_servers", "memriver"),
         ),
         EditOperation(
@@ -120,6 +131,24 @@ def operations(
             expected=hook_group("stop", HARNESS),
             key_path=("hooks", "Stop"),
             identity=hook_identity("stop"),
+        ),
+        EditOperation(
+            id=USER_PROMPT_SUBMIT_HOOK_ID,
+            target=hooks.target,
+            label="install the user-prompt-submit hook",
+            kind="hook-array",
+            expected=hook_group("user-prompt-submit", HARNESS),
+            key_path=("hooks", "UserPromptSubmit"),
+            identity=hook_identity("user-prompt-submit"),
+        ),
+        EditOperation(
+            id=SESSION_END_HOOK_ID,
+            target=hooks.target,
+            label="install the session-end hook",
+            kind="hook-array",
+            expected=hook_group("session-end", HARNESS),
+            key_path=("hooks", "SessionEnd"),
+            identity=hook_identity("session-end"),
         ),
     ]
     if _memories_enabled(config.text):
@@ -151,7 +180,7 @@ def notes(snapshots: tuple[Snapshot, Snapshot], env: Mapping[str, str],
     if features.get("hooks") is False:
         lines.append(
             HOOKS_DISABLED_NOTE
-            if {SESSION_START_HOOK_ID, STOP_HOOK_ID} <= in_effect
+            if ALL_HOOK_IDS <= in_effect
             else HOOKS_DISABLED_WITHOUT_DEFINITIONS_NOTE
         )
     if features.get("memories") is not True:
@@ -162,7 +191,7 @@ def notes(snapshots: tuple[Snapshot, Snapshot], env: Mapping[str, str],
 def uninstall_operations(
     snapshots: tuple[Snapshot, Snapshot], env: Mapping[str, str],
 ) -> tuple[RemovalOperation, ...]:
-    """The exact inverse of ``operations()``: the MCP table and both hooks.
+    """The exact inverse of ``operations()``: the MCP table and all four hooks.
 
     ``features.memories`` is never touched here; see ``uninstall_notes``. Spec
     left a mention of per-hook content-hash entries under ``[hooks.state]``,
@@ -196,6 +225,22 @@ def uninstall_operations(
             kind="hook-array",
             key_path=("hooks", "Stop"),
             identity=hook_identity("stop"),
+        ),
+        RemovalOperation(
+            id=USER_PROMPT_SUBMIT_HOOK_ID,
+            target=hooks.target,
+            label="remove the user-prompt-submit hook",
+            kind="hook-array",
+            key_path=("hooks", "UserPromptSubmit"),
+            identity=hook_identity("user-prompt-submit"),
+        ),
+        RemovalOperation(
+            id=SESSION_END_HOOK_ID,
+            target=hooks.target,
+            label="remove the session-end hook",
+            kind="hook-array",
+            key_path=("hooks", "SessionEnd"),
+            identity=hook_identity("session-end"),
         ),
     )
 

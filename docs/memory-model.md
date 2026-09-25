@@ -59,9 +59,10 @@ body:        All language runtimes on this machine are managed by mise, not nvm/
   incrementing on every update or soft delete (`--hard` removes the row
   instead, so there is no new version to see). `memory_read` returns it so
   `memory_update`/`memory_delete` can require it back (*Updates, deletion,
-  and history*). A row also carries `deleted_at`, set only by a soft delete;
-  it is never part of what an agent can read — the fields above are the whole
-  set an agent may know.
+  and history*). A row also carries `deleted_at` (set only by a soft delete)
+  and `last_read_at` (set by a successful `memory_read`); neither is ever
+  part of what an agent can read — the fields above are the whole set an
+  agent may know.
 - **sync** — per-entry privacy boundary: `false` means this entry never
   leaves the machine, regardless of mode.
 - **trust** — provenance of the *source material*: `user` (stated
@@ -78,7 +79,13 @@ memory, bodies included, behind SQLite's own consistency guarantees; there is
 no separate index or manifest to go stale. A project has at most one bound
 directory; global has none. Nothing about a memory says where its project's
 directory is — readers resolve a directory to a project, never a memory to a
-location.
+location. A directory-mode surface (Cursor, Kiro, a bare `memriver` process)
+resolves one directory -- `--project-dir`, defaulting to the server's own
+working directory -- once, when the server starts, and every call for the
+life of that process answers for it. A session-routed harness (Claude Code,
+Codex) also resolves a directory once, but per session rather than per
+process: at the session's own start, into its persistent row, kept for as
+long as that session lives, even after its working directory changes.
 
 ## Identity
 
@@ -157,18 +164,20 @@ soft-deleted row and its `deleted_at`, and none of them go through a
 `ReadWriteSet` the way a session does. `memriver delete` is the one
 per-memory write path outside MCP (project `init`/`adopt`/`unbind`, `install`
 and `uninstall --purge-data` write too, but to the project rows or the
-whole store, never to one memory's content); `delete` is scoped to the
-current directory's project exactly like an agent, so global stays
-undeletable there too.
+whole store, never to one memory's content); `delete` always resolves the
+current directory the command itself runs in, the way directory mode does
+(*Storage*) -- not a session-routed agent's stored project, which
+`memory_delete` acts on instead -- so global stays undeletable either way.
 
 ## Maintenance
 
 `updated` is the time of the last change, nothing more: rewriting an entry
 records that it was rewritten, not that anyone confirmed it is still true.
 memriver has no review queue today. Global is read-only everywhere today: MCP
-refuses every write to it, and the human CLI's `delete` is scoped to the
-current directory's project the same way, so it cannot reach global either.
-Cross-project knowledge will be distilled into global by a separate dream
+refuses every write to it -- for whichever project a session is registered
+to, in session mode -- and the human CLI's `delete` refuses it too, for the
+project its own command line's current directory resolves to; neither can
+reach global. Cross-project knowledge will be distilled into global by a separate dream
 service (not yet built); until then, the only way to change it is by hand
 against `memriver.db`. `memriver doctor --stale-days N` lists memories not
 updated in N days as a starting point for a manual review.
@@ -207,9 +216,13 @@ to. The protocol reaches their agents through three layers:
    injection points differ per harness; the text is one source, maintained in
    the server.
 
-Layers 1–2 alone make an unconfigured harness work correctly; layer 3
-upgrades "works" to "works well". The taxonomy's four words fitting in a
-tool description is itself part of why it was adopted.
+Layers 1–2 alone make an MCP-only harness work correctly in directory mode
+(Cursor, Kiro, or any client connected with no `--harness`); layer 3
+upgrades "works" to "works well". A Claude Code/Codex session additionally
+needs its hooks (four for Codex, five for Claude Code): without them a session's row is never registered, so
+MCP alone leaves it reading global memory only, with no project of its own
+to write to. The taxonomy's four words fitting in a tool description is
+itself part of why it was adopted.
 
 ## Modes and sync (forward-looking)
 

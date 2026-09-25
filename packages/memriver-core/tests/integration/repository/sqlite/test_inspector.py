@@ -11,17 +11,82 @@ from memriver_core.models import Memory, Project, new_id
 from memriver_core.repository.sqlite import SqliteProjectStore, SqliteStoreInspector
 
 MEMORY_COLUMNS = ("id, project_id, type, source_harness, source_method, trust, sync, "
-                  "description, body, created, updated, version, deleted_at")
+                  "description, body, created, updated, version, deleted_at, last_read_at")
+SESSION_COLUMNS = ("harness, session_id, status, origin, project_id, candidate_id, "
+                   "candidate_root, entry_cwd, branch, transcript_path, started_at, "
+                   "last_active_at, ended_at, prompt_count, last_write_prompt_count, "
+                   "last_nudge_prompt_count, first_prompt, recent_prompts")
+
+# the v1 schema, frozen here to build a database an upgrade must act on
+_V1_SCHEMA = (
+    """CREATE TABLE projects (
+      id        TEXT PRIMARY KEY NOT NULL CHECK (length(id) = 10),
+      name      TEXT NOT NULL CHECK (length(name) >= 1),
+      root      TEXT UNIQUE,
+      is_global INTEGER NOT NULL DEFAULT 0 CHECK (is_global IN (0, 1)),
+      CHECK (is_global = 0 OR root IS NULL)
+    ) STRICT""",
+    "CREATE UNIQUE INDEX projects_one_global ON projects(is_global) WHERE is_global = 1",
+    """CREATE TABLE memories (
+      id             TEXT PRIMARY KEY NOT NULL CHECK (length(id) = 10),
+      project_id     TEXT NOT NULL REFERENCES projects(id),
+      type           TEXT NOT NULL CHECK (type IN ('user','feedback','project','reference')),
+      source_harness TEXT NOT NULL,
+      source_method  TEXT NOT NULL,
+      trust          TEXT NOT NULL CHECK (trust IN ('user','agent','untrusted-derived')),
+      sync           INTEGER NOT NULL CHECK (sync IN (0, 1)),
+      description    TEXT NOT NULL,
+      body           TEXT NOT NULL,
+      created        TEXT NOT NULL,
+      updated        TEXT NOT NULL,
+      version        INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+      deleted_at     TEXT
+    ) STRICT""",
+    ("CREATE INDEX memories_active_by_project "
+     "ON memories(project_id, updated DESC) WHERE deleted_at IS NULL"),
+)
+
+
+def _build_v1(store: Path) -> None:
+    with closing(sqlite3.connect(store / "memriver.db")) as conn, conn:
+        for statement in _V1_SCHEMA:
+            conn.execute(statement)
+        conn.execute("PRAGMA user_version = 1")
 
 
 def _plant(store: Path, memory: Memory) -> Memory:
     with closing(sqlite3.connect(store / "memriver.db")) as conn, conn:
         conn.execute(
-            f"INSERT INTO memories ({MEMORY_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            f"INSERT INTO memories ({MEMORY_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (memory.id, memory.project_id, memory.type, memory.source["harness"],
              memory.source["method"], memory.trust, int(memory.sync), memory.description,
-             memory.body, memory.created, memory.updated, memory.version, memory.deleted_at))
+             memory.body, memory.created, memory.updated, memory.version, memory.deleted_at,
+             memory.last_read_at))
     return memory
+
+
+def _plant_session(store: Path, **overrides: object) -> dict[str, object]:
+    """A raw `sessions` row, bypassing every app-level check the store enforces --
+    a bare `sqlite3.connect` never turns `PRAGMA foreign_keys` on, so a
+    `candidate_id`/`project_id` naming no project plants cleanly, and
+    `PRAGMA ignore_check_constraints` lets an otherwise-invalid row past the
+    table's own CHECKs."""
+    row: dict[str, object] = {
+        "harness": "codex", "session_id": "s1", "status": "registered", "origin": "start",
+        "project_id": None, "candidate_id": None, "candidate_root": None,
+        "entry_cwd": "/tmp/x", "branch": None, "transcript_path": None,
+        "started_at": "2026-09-24T00:00:00.000000Z",
+        "last_active_at": "2026-09-24T00:00:00.000000Z", "ended_at": None,
+        "prompt_count": 0, "last_write_prompt_count": 0, "last_nudge_prompt_count": 0,
+        "first_prompt": None, "recent_prompts": "[]",
+    }
+    row.update(overrides)
+    placeholders = ", ".join("?" for _ in SESSION_COLUMNS.split(","))
+    with closing(sqlite3.connect(store / "memriver.db")) as conn, conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute(f"INSERT INTO sessions ({SESSION_COLUMNS}) VALUES ({placeholders})",
+                     tuple(row.values()))
+    return row
 
 
 def _sql(store: Path, statement: str, *params) -> list[tuple]:
@@ -118,6 +183,16 @@ def test_an_invalid_row_is_reported_and_kept_out_of_entries(world):
     assert report.entries == ()
 
 
+def test_a_malformed_last_read_at_is_reported_and_kept_out_of_entries(world):
+    bad = _plant(world["store"], _memory(world["project"]))
+    with closing(sqlite3.connect(world["store"] / "memriver.db")) as conn, conn:
+        conn.execute("UPDATE memories SET last_read_at = 'not-a-timestamp' WHERE id = ?",
+                     (bad.id,))
+    report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+    assert ("invalid-row", bad.id) in [(f.kind, f.memory_id) for f in report.findings]
+    assert report.entries == ()
+
+
 def test_a_damaged_deleted_row_is_still_reported(world):
     gone = _memory(world["project"], "gone")
     gone.deleted_at, gone.version = "2026-09-24T00:00:00.000000Z", 2
@@ -137,6 +212,47 @@ def test_an_undecodable_memory_column_is_invalid_row_not_a_crash(world):
     report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
     assert ("invalid-row", bad.id) in [(f.kind, f.memory_id) for f in report.findings]
     assert report.entries == ()
+
+
+def test_an_invalid_session_row_is_reported_as_invalid_row(world):
+    _plant_session(world["store"], harness="codex", session_id="bad-1", status="odd")
+    report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+    assert ("invalid-row", "sessions/codex/bad-1") in \
+        [(f.kind, f.location_hint) for f in report.findings]
+
+
+def test_a_session_with_a_dangling_candidate_id_is_a_session_orphan_finding(world):
+    _plant_session(world["store"], harness="codex", session_id="pending-1", status="pending",
+                   origin="first-seen", candidate_id="zzzzzzzzzz", candidate_root="/z")
+    report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+    assert ("session-orphan", "sessions/codex/pending-1") in \
+        [(f.kind, f.location_hint) for f in report.findings]
+    assert "invalid-row" not in [f.kind for f in report.findings
+                                 if f.location_hint == "sessions/codex/pending-1"]
+
+
+def test_a_session_with_a_dangling_project_id_is_a_session_orphan_finding(world):
+    _plant_session(world["store"], harness="claude-code", session_id="reg-1",
+                   status="registered", origin="start", project_id="zzzzzzzzzz")
+    report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+    assert ("session-orphan", "sessions/claude-code/reg-1") in \
+        [(f.kind, f.location_hint) for f in report.findings]
+
+
+def test_a_session_with_a_watermark_above_the_prompt_count_is_reported_as_invalid_row(world):
+    _plant_session(world["store"], harness="codex", session_id="bad-2", status="registered",
+                   origin="start", project_id=world["project"], prompt_count=1,
+                   last_write_prompt_count=2)
+    report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+    assert ("invalid-row", "sessions/codex/bad-2") in \
+        [(f.kind, f.location_hint) for f in report.findings]
+
+
+def test_a_healthy_session_row_is_not_a_finding(world):
+    _plant_session(world["store"], harness="codex", session_id="ok-1", status="registered",
+                   origin="start", project_id=world["project"])
+    report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+    assert report.findings == ()
 
 
 def test_an_undecodable_project_column_is_invalid_row_not_a_crash(world):
@@ -227,6 +343,31 @@ def test_an_unknown_schema_is_one_finding(world):
     assert [f.kind for f in report.findings] == ["unknown-schema"]
 
 
+def test_doctor_as_the_first_opener_upgrades_and_reports_no_unknown_schema(tmp_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    _build_v1(store)
+    report = SqliteStoreInspector(store, busy_timeout_ms=2000).inspect()
+    assert "unknown-schema" not in [f.kind for f in report.findings]
+    with closing(sqlite3.connect(store / "memriver.db")) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+
+
+def test_a_failed_upgrade_is_reported_as_unknown_schema_not_a_crash(tmp_path, monkeypatch):
+    from memriver_core.repository.sqlite import database as database_module
+
+    store = tmp_path / "store"
+    store.mkdir()
+    _build_v1(store)
+    broken = list(database_module._UPGRADE_STATEMENTS)
+    broken[-1] = "CREATE INDEX sessions_by_project ON no_such_table(project_id)"
+    monkeypatch.setattr(database_module, "_UPGRADE_STATEMENTS", broken)
+    report = SqliteStoreInspector(store, busy_timeout_ms=2000).inspect()
+    assert [f.kind for f in report.findings] == ["unknown-schema"]
+    with closing(sqlite3.connect(store / "memriver.db")) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+
+
 def test_a_symlinked_database_is_unsafe_and_not_followed(tmp_path):
     store = tmp_path / "store"
     store.mkdir()
@@ -274,10 +415,10 @@ def test_one_inspection_reads_one_snapshot(world, monkeypatch):
             with closing(sqlite3.connect(world["store"] / "memriver.db", timeout=0.1)) as other, \
                     other:
                 other.execute(f"INSERT INTO memories ({MEMORY_COLUMNS}) "
-                              "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                              "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                               (memory.id, memory.project_id, memory.type, "t", "agent",
                                memory.trust, 1, "", memory.body, memory.created,
-                               memory.updated, 1, None))
+                               memory.updated, 1, None, None))
             peer.append("committed")
         except sqlite3.OperationalError:
             peer.append("blocked")
@@ -317,7 +458,9 @@ def test_a_failing_pragma_still_closes_the_connection(world, monkeypatch):
                         lambda *a, **k: Failing(real_connect(*a, **k)))
     with pytest.raises(StorageFailure):
         SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
-    assert closed == [True]
+    # the module-wide patch also wraps upgrade_if_needed's own connection, which
+    # closes cleanly (it never touches query_only) before the inspector's own fails
+    assert closed == [True, True]
 
 
 def test_inspection_never_writes(world):
@@ -339,10 +482,10 @@ def test_directory_checks_run_after_the_read_transaction(world, monkeypatch):
             with closing(sqlite3.connect(world["store"] / "memriver.db", timeout=0.1)) as other, \
                     other:
                 other.execute(f"INSERT INTO memories ({MEMORY_COLUMNS}) "
-                              "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                              "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                               (memory.id, memory.project_id, memory.type, "t", "agent",
                                memory.trust, 1, "", memory.body, memory.created,
-                               memory.updated, 1, None))
+                               memory.updated, 1, None, None))
             peer.append("committed")
         except sqlite3.OperationalError:
             peer.append("blocked")

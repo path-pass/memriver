@@ -14,7 +14,14 @@ from pathlib import Path
 
 import pytest
 from memriver_core.application.service import MemoryService
-from memriver_core.models import Memory, Project, ReadWriteSet, new_id, now
+from memriver_core.models import (
+    Memory,
+    Project,
+    ProjectContext,
+    ReadWriteSet,
+    new_id,
+    now,
+)
 from memriver_core.models.errors import (
     GlobalReadOnly,
     IdCollision,
@@ -29,7 +36,7 @@ from memriver_core.repository.sqlite import SqliteMemoryStore, SqliteProjectStor
 
 SOURCE = {"harness": "test", "method": "agent"}
 MEMORY_COLUMNS = ("id, project_id, type, source_harness, source_method, trust, sync, "
-                  "description, body, created, updated, version, deleted_at")
+                  "description, body, created, updated, version, deleted_at, last_read_at")
 
 
 @dataclass(frozen=True)
@@ -58,10 +65,11 @@ def _make_sqlite(root: Path, home: Path) -> tuple[MemoryStore, ProjectStore]:
 def _plant_row(root: Path, memory: Memory) -> None:
     with closing(sqlite3.connect(root / "memriver.db")) as conn, conn:
         conn.execute(
-            f"INSERT INTO memories ({MEMORY_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            f"INSERT INTO memories ({MEMORY_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (memory.id, memory.project_id, memory.type, memory.source["harness"],
              memory.source["method"], memory.trust, int(memory.sync), memory.description,
-             memory.body, memory.created, memory.updated, memory.version, memory.deleted_at))
+             memory.body, memory.created, memory.updated, memory.version, memory.deleted_at,
+             memory.last_read_at))
 
 
 def _remove_project_row(root: Path, project_id: str) -> None:
@@ -273,6 +281,44 @@ def test_an_orphan_memory_is_never_readable(backend, root, world):
     backend.plant(root, orphan)
     with pytest.raises(MemoryNotFound):
         world["memory_store"].read(orphan.id, world["read_write_set"])
+
+
+def test_touch_read_sets_last_read_at_and_nothing_else(root, world):
+    memory_store, read_write_set = world["memory_store"], world["read_write_set"]
+    memory = _record(world)
+    memory_store.touch_read(memory.id, "2026-09-24T00:00:01.000000Z")
+    seen = memory_store.read(memory.id, read_write_set)
+    assert seen.last_read_at == "2026-09-24T00:00:01.000000Z"
+    assert (seen.version, seen.updated, seen.body) == (memory.version, memory.updated, memory.body)
+    # an earlier timestamp never moves it back
+    memory_store.touch_read(memory.id, "2020-01-01T00:00:00.000000Z")
+    assert memory_store.read(memory.id, read_write_set).last_read_at == \
+        "2026-09-24T00:00:01.000000Z"
+    memory_store.touch_read(new_id(), "2026-09-24T00:00:01.000000Z")   # unknown id: a no-op
+    shutil.rmtree(root)
+    memory_store.touch_read(memory.id, "2026-09-24T00:00:01.000000Z")  # absent store: a no-op
+
+
+# built with chr(...), never a raw non-ASCII digit in the file
+_FULLWIDTH_DIGITS = str.maketrans("0123456789", "".join(chr(0xFF10 + i) for i in range(10)))
+_FULLWIDTH_AT = "2026-09-24T00:00:01.000000Z".translate(_FULLWIDTH_DIGITS)
+
+
+@pytest.mark.parametrize("bad_at", [
+    "not-a-timestamp",
+    "9999-99-99T99:99:99.999999Z",     # right shape, no such calendar date
+    "2026-02-30T00:00:00.000000Z",     # right shape, February has no 30th
+    _FULLWIDTH_AT,                      # right shape, not ASCII digits
+])
+def test_touch_read_with_a_malformed_at_is_a_no_op(world, bad_at):
+    memory_store, read_write_set = world["memory_store"], world["read_write_set"]
+    memory = _record(world)
+    memory_store.touch_read(memory.id, bad_at)
+    assert memory_store.read(memory.id, read_write_set).last_read_at is None
+    memory_store.touch_read(memory.id, "2026-09-24T00:00:01.000000Z")
+    memory_store.touch_read(memory.id, bad_at)   # a bad value never overwrites a good one
+    assert memory_store.read(memory.id, read_write_set).last_read_at == \
+        "2026-09-24T00:00:01.000000Z"
 
 
 @pytest.mark.parametrize("action", ["read", "update", "delete"])
@@ -531,8 +577,13 @@ def test_an_undecodable_row_in_the_same_project_is_skipped_by_search_and_index_n
         world["memory_store"], world["project_store"], content_policy_factory=lambda: None,
         diagnostics=None, max_body_chars=10_000, metadata_max_chars=1_000,
         search_limit_default=20, search_limit_max=100, index_budget_lines=50,
-        index_cue_chars=80, header_field_chars=80, project_name_max_chars=120)
-    assert good.id in service.index(world["read_write_set"])
+        index_cue_chars=80, header_field_chars=80, project_name_max_chars=120,
+        session_store=None, canonical_directory=None, main_tree_path=None, current_branch=None, root_is_intact=None,
+        session_prompt_chars=512, session_recent_prompts=5, session_prompt_scan_max_bytes=65536,
+        stop_nudge_min_prompts=5, stop_nudge_interval_prompts=5,
+        session_search_limit_default=10, session_search_limit_max=50,
+        tool_call_retention_s=3600)
+    assert good.id in service.index(ProjectContext("registered", "", world["read_write_set"]))
     assert world["memory_store"].read(good.id, world["read_write_set"]) == good
     with pytest.raises(StorageFailure):
         world["memory_store"].read(bad.id, world["read_write_set"])

@@ -1,0 +1,101 @@
+{
+  "root": {
+    "callId": "call_40f2bd4a425e47f282ba76b21899f414",
+    "x-codex-turn-metadata": {
+      "session_id": "01a0d275-adcb-7991-92dd-b12a94bd3b82",
+      "thread_id": "01a0d275-adcb-7991-92dd-b12a94bd3b82",
+      "reasoning_effort": "medium",
+      "turn_id": "01a0d275-add4-7973-8c79-35c08e3e35c9",
+      "model": "gpt-5.4",
+      "thread_source": "user",
+      "turn_trigger": "exec",
+      "sandbox": "seatbelt",
+      "sandbox_mode": "read-only",
+      "auto_review_enabled": false,
+      "node_repl_auto_review_required": false,
+      "node_repl_disabled": false,
+      "turn_started_at_unix_ms": 1790237322709,
+      "codex_version": "0.156.1"
+    },
+    "threadId": "01a0d275-adcb-7991-92dd-b12a94bd3b82",
+    "sessionId": "01a0d275-adcb-7991-92dd-b12a94bd3b82",
+    "windowId": "01a0d275-adcb-7991-92dd-b12a94bd3b82:0",
+    "itemId": "fc_01a0d275-adfa-7081-a134-186db21985e3",
+    "progressToken": 1
+  },
+  "sub_agent": {
+    "callId": "call_ed71165a0fd74e30b3d9e2834491519a",
+    "x-codex-turn-metadata": {
+      "session_id": "01a0d275-adcb-7991-92dd-b12a94bd3b82",
+      "thread_id": "01a0d275-ae02-7553-923b-c09dd97cf9f5",
+      "reasoning_effort": "medium",
+      "turn_id": "01a0d275-ae21-7652-bdb1-a90b649a20c3",
+      "parent_thread_id": "01a0d275-adcb-7991-92dd-b12a94bd3b82",
+      "model": "gpt-5.4",
+      "turn_started_at_unix_ms": 1790237322785,
+      "subagent_kind": "thread_spawn",
+      "thread_source": "subagent",
+      "turn_trigger": "exec",
+      "sandbox": "seatbelt",
+      "sandbox_mode": "read-only",
+      "auto_review_enabled": false,
+      "node_repl_auto_review_required": false,
+      "node_repl_disabled": false,
+      "codex_version": "0.156.1"
+    },
+    "threadId": "01a0d275-ae02-7553-923b-c09dd97cf9f5",
+    "sessionId": "01a0d275-adcb-7991-92dd-b12a94bd3b82",
+    "windowId": "01a0d275-ae02-7553-923b-c09dd97cf9f5:0",
+    "itemId": "fc_01a0d275-ae31-7b50-ba33-3e9192e2d26e",
+    "progressToken": 1
+  },
+  "resume": {
+    "callId": "call_21c12480ada84455916cc11f412151f2",
+    "x-codex-turn-metadata": {
+      "session_id": "01a0d275-adcb-7991-92dd-b12a94bd3b82",
+      "thread_id": "01a0d275-adcb-7991-92dd-b12a94bd3b82",
+      "reasoning_effort": "medium",
+      "turn_id": "01a0d275-ae89-7713-986c-63022c165376",
+      "model": "gpt-5.4",
+      "thread_source": "user",
+      "turn_trigger": "exec",
+      "sandbox": "seatbelt",
+      "sandbox_mode": "read-only",
+      "auto_review_enabled": false,
+      "node_repl_auto_review_required": false,
+      "node_repl_disabled": false,
+      "turn_started_at_unix_ms": 1790237322891,
+      "codex_version": "0.156.1"
+    },
+    "threadId": "01a0d275-adcb-7991-92dd-b12a94bd3b82",
+    "sessionId": "01a0d275-adcb-7991-92dd-b12a94bd3b82",
+    "windowId": "01a0d275-adcb-7991-92dd-b12a94bd3b82:0",
+    "itemId": "fc_01a0d275-aeaa-7ac3-9406-0713f4075638",
+    "progressToken": 1
+  },
+  "fork": {
+    "callId": "call_eee96fb2f71e436bac27a4a379684106",
+    "x-codex-turn-metadata": {
+      "session_id": "01a0d275-aeca-78b1-877f-97de20b16ef3",
+      "thread_id": "01a0d275-aeca-78b1-877f-97de20b16ef3",
+      "reasoning_effort": "medium",
+      "turn_id": "01a0d275-aeef-7bd1-a860-4c09f775b8b2",
+      "forked_from_thread_id": "01a0d275-adcb-7991-92dd-b12a94bd3b82",
+      "model": "gpt-5.4",
+      "thread_source": "user",
+      "turn_trigger": "exec",
+      "sandbox": "seatbelt",
+      "sandbox_mode": "read-only",
+      "auto_review_enabled": false,
+      "node_repl_auto_review_required": false,
+      "node_repl_disabled": false,
+      "turn_started_at_unix_ms": 1790237322993,
+      "codex_version": "0.156.1"
+    },
+    "threadId": "01a0d275-aeca-78b1-877f-97de20b16ef3",
+    "sessionId": "01a0d275-aeca-78b1-877f-97de20b16ef3",
+    "windowId": "01a0d275-aeca-78b1-877f-97de20b16ef3:0",
+    "itemId": "fc_01a0d275-af12-7563-82ec-409809caf17e",
+    "progressToken": 1
+  }
+}

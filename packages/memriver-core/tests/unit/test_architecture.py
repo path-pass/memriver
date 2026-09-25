@@ -213,6 +213,7 @@ def test_strict_layer_allowlist(layer):
 CONCRETE_ADAPTER_MODULES = {
     "SqliteMemoryStore": "memriver_core.repository.sqlite",
     "SqliteProjectStore": "memriver_core.repository.sqlite",
+    "SqliteSessionStore": "memriver_core.repository.sqlite",
     "SqliteStoreInspector": "memriver_core.repository.sqlite",
     "SecretScanner": "memriver_core.content_policy.secret_scanner",
 }
