@@ -38,6 +38,7 @@ __all__ = [
     "DREAM_CONTEXT_BUDGET_TOKENS",
     "DREAM_DIRECTORY",
     "DREAM_INPUT_MARGIN_TOKENS",
+    "DREAM_KILL_GRACE_S",
     "DREAM_LAUNCH_AGENT_LABEL",
     "DREAM_LOCK_FILENAME",
     "DREAM_LOG_FILENAME",
@@ -76,6 +77,7 @@ DREAM_TOOL_OUTPUT_CHARS = 2_000         # one tool output as a transcript record
 DREAM_MAX_CALLS_PER_SESSION = 12        # map and reduce calls for one session
 DREAM_MAX_ROOM_HALVINGS = 3             # a session's input room, after "too-large" answers
 DREAM_CALL_TIMEOUT_S = 300              # one executor call
+DREAM_KILL_GRACE_S = 2                  # draining a timed-out call's pipes after the kill
 DREAM_MAX_QUARANTINE_PER_RUN = 1_000    # secret soft-deletes in one run
 DREAM_REASON_CHARS = 300                # one change or review reason, as stored
 DREAM_DIRECTORY = "dream"               # <root>/dream: the run lock and the run log

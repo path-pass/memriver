@@ -21,7 +21,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from memriver_core.settings import DreamSettings
+from memriver_core.settings import DREAM_KILL_GRACE_S, DreamSettings
 from memriver_dream.protocols import ExecutorResult
 
 # ponytail: failure kinds are read from the wording of the harness's own error
@@ -68,7 +68,14 @@ def run_process(argv: list[str], *, cwd: Path, env: Mapping[str, str], timeout_s
             os.killpg(process.pid, signal.SIGKILL)   # the harness and anything it started
         except ProcessLookupError:
             pass
-        process.communicate()
+        try:
+            process.communicate(timeout=DREAM_KILL_GRACE_S)
+        except subprocess.TimeoutExpired:
+            # a process that left the group (its own setsid) still holds the pipes:
+            # stop reading rather than wait for it
+            process.stdout.close()
+            process.stderr.close()
+            process.wait()
         return Completed(None, "", "")
     return Completed(process.returncode, stdout, stderr)
 
@@ -136,6 +143,11 @@ def _codex_errors(completed: Completed) -> list[str]:
     return errors
 
 
+def _scratch_directory() -> tempfile.TemporaryDirectory:
+    # a directory left behind is harmless; a cleanup error must not lose the result
+    return tempfile.TemporaryDirectory(prefix="memriver-dream-", ignore_cleanup_errors=True)
+
+
 def _answer(value: object) -> ExecutorResult:
     return ExecutorResult(value=value) if isinstance(value, dict) \
         else ExecutorResult(error="unparsable")
@@ -160,10 +172,14 @@ class ClaudeExecutor:
 
     def run(self, *, system_prompt: str, prompt: str, schema: dict,
             timeout_s: int) -> ExecutorResult:
-        with tempfile.TemporaryDirectory(prefix="memriver-dream-") as workdir:
-            completed = self._runner(self.argv(system_prompt=system_prompt, schema=schema),
-                                     cwd=Path(workdir), env=isolated_env(self._env, Path(workdir)),
-                                     timeout_s=timeout_s, stdin_text=prompt)
+        try:
+            with _scratch_directory() as workdir:
+                completed = self._runner(self.argv(system_prompt=system_prompt, schema=schema),
+                                         cwd=Path(workdir),
+                                         env=isolated_env(self._env, Path(workdir)),
+                                         timeout_s=timeout_s, stdin_text=prompt)
+        except OSError:
+            return ExecutorResult(error="start")    # no directory to run in
         unfinished = _unfinished(completed)
         if unfinished is not None:
             return unfinished
@@ -210,23 +226,25 @@ class CodexExecutor:
             timeout_s: int) -> ExecutorResult:
         if missing_env(self._overrides, self._env):
             return ExecutorResult(error="login")    # never the default provider instead
-        with tempfile.TemporaryDirectory(prefix="memriver-dream-") as workdir, \
-                tempfile.TemporaryDirectory(prefix="memriver-dream-files-") as files_dir:
-            files = Path(files_dir)
-            (files / "schema.json").write_text(json.dumps(schema), encoding="utf-8")
-            (files / "instructions.md").write_text(system_prompt, encoding="utf-8")
-            completed = self._runner(self.argv(files=files), cwd=Path(workdir),
-                                     env=isolated_env(self._env, Path(workdir)),
-                                     timeout_s=timeout_s, stdin_text=prompt)
-            unfinished = _unfinished(completed)
-            if unfinished is not None:
-                return unfinished
-            if completed.returncode != 0:
-                return _failure(_codex_errors(completed))
-            try:
-                value = json.loads((files / "last-message.json").read_text(encoding="utf-8"))
-            except (OSError, ValueError, RecursionError):
-                return ExecutorResult(error="unparsable")
+        try:
+            with _scratch_directory() as workdir, _scratch_directory() as files_dir:
+                files = Path(files_dir)
+                (files / "schema.json").write_text(json.dumps(schema), encoding="utf-8")
+                (files / "instructions.md").write_text(system_prompt, encoding="utf-8")
+                completed = self._runner(self.argv(files=files), cwd=Path(workdir),
+                                         env=isolated_env(self._env, Path(workdir)),
+                                         timeout_s=timeout_s, stdin_text=prompt)
+                unfinished = _unfinished(completed)
+                if unfinished is not None:
+                    return unfinished
+                if completed.returncode != 0:
+                    return _failure(_codex_errors(completed))
+                try:
+                    value = json.loads((files / "last-message.json").read_text(encoding="utf-8"))
+                except (OSError, ValueError, RecursionError):
+                    return ExecutorResult(error="unparsable")
+        except OSError:
+            return ExecutorResult(error="start")    # its directories or files could not be made
         return _answer(value)
 
 

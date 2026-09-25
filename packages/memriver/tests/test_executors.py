@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import sys
+import tempfile
 import textwrap
 import time
 from pathlib import Path
@@ -18,7 +20,7 @@ from memriver.executors import (
     make_executor,
     run_process,
 )
-from memriver_core.settings import DreamSettings
+from memriver_core.settings import DREAM_KILL_GRACE_S, DreamSettings
 from memriver_dream.protocols import ExecutorResult
 
 SCHEMA = {"type": "object", "additionalProperties": False, "required": ["summary"],
@@ -333,3 +335,39 @@ def test_output_nested_too_deep_to_parse_is_unparsable_never_an_exception():
     codex, _ = _codex(answer)
     assert codex.run(system_prompt="s", prompt="p", schema=SCHEMA,
                      timeout_s=5) == ExecutorResult(error="unparsable")
+
+
+def test_a_timeout_returns_even_when_a_process_that_left_the_group_holds_the_pipes(tmp_path):
+    pid_file = tmp_path / "escaped.pid"
+    script = tmp_path / "escape.py"
+    script.write_text(textwrap.dedent(f"""
+        import subprocess, sys, time
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                                 start_new_session=True)
+        open({str(pid_file)!r}, "w").write(str(child.pid))
+        time.sleep(60)
+    """), encoding="utf-8")
+    started = time.monotonic()
+    try:
+        completed = run_process([sys.executable, str(script)], cwd=tmp_path,
+                                env=dict(os.environ), timeout_s=1, stdin_text="")
+        elapsed = time.monotonic() - started
+    finally:
+        if pid_file.exists():
+            try:
+                os.kill(int(pid_file.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    assert completed == Completed(None, "", "")
+    assert elapsed < 1 + DREAM_KILL_GRACE_S + 3
+
+
+def test_a_run_whose_temporary_directory_cannot_be_made_is_a_start_failure(tmp_path,
+                                                                           monkeypatch):
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "missing"))
+    claude, claude_runner = _claude(_ok({"summary": "s"}))
+    codex, codex_runner = _codex(lambda argv: Completed(0, "", ""))
+    for executor in (claude, codex):
+        assert executor.run(system_prompt="s", prompt="p", schema=SCHEMA,
+                            timeout_s=5) == ExecutorResult(error="start")
+    assert claude_runner.seen == {} and codex_runner.seen == {}
