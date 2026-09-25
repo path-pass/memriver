@@ -100,7 +100,8 @@ def test_returns_the_facade(tmp_path):
 
 
 def test_bootstrap_exports_the_facade_builder_the_empty_index_and_the_purge():
-    assert set(bootstrap.__all__) == {"EMPTY_INDEX", "PurgePlan", "PurgeRefusal", "PurgeResult",
+    assert set(bootstrap.__all__) == {"EMPTY_INDEX", "MaintenanceService", "PurgePlan",
+                                      "PurgeRefusal", "PurgeResult", "build_maintenance_service",
                                       "build_service", "plan_purge", "purge"}
     for gone in ("build_diagnostics_service", "store_lock", "replace_file"):
         assert not hasattr(bootstrap, gone)
@@ -119,3 +120,15 @@ def test_building_the_service_never_loads_the_secret_scanner(tmp_path):
 def test_injects_the_memory_reads_retention(tmp_path):
     service = bootstrap.build_service(Settings(root=tmp_path, memory_reads_retention_days=7))
     assert service._memory_reads_retention_days == 7
+
+
+def test_build_maintenance_service_composes_the_sqlite_adapters(tmp_path):
+    from memriver_core.repository.sqlite import SqliteMaintenanceStore
+
+    maintenance = bootstrap.build_maintenance_service(Settings(root=tmp_path / "s"))
+    assert isinstance(maintenance, bootstrap.MaintenanceService)
+    assert isinstance(maintenance._maintenance_store, SqliteMaintenanceStore)
+    assert maintenance._maintenance_store.root == tmp_path / "s"
+    explicit = bootstrap.build_maintenance_service(Settings(root=tmp_path / "s"),
+                                                   root=tmp_path / "x")
+    assert explicit._maintenance_store.root == tmp_path / "x"

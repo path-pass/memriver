@@ -38,6 +38,8 @@ from memriver_core.models.errors import (
     StorageFailure,
 )
 
+from . import LazyPolicy
+
 if TYPE_CHECKING:
     from memriver_core.content_policy.protocol import ContentPolicy
     from memriver_core.repository.protocol import (
@@ -132,8 +134,7 @@ class MemoryService:
         self._root_is_intact = root_is_intact
         # built on first use: a read-only caller (the Stop hook, doctor, the
         # human views) never pays for loading and compiling the scanner rules
-        self._content_policy_factory = content_policy_factory
-        self._content_policy: ContentPolicy | None = None
+        self._policy_cache = LazyPolicy(content_policy_factory)
         self._diagnostics = diagnostics
         self._max_body_chars = max_body_chars
         # metadata keeps its own budget so that lowering the configured body
@@ -156,9 +157,7 @@ class MemoryService:
         self._memory_reads_retention_days = memory_reads_retention_days
 
     def _policy(self) -> ContentPolicy:
-        if self._content_policy is None:
-            self._content_policy = self._content_policy_factory()
-        return self._content_policy
+        return self._policy_cache.get()
 
     def _field(self, value: str) -> str:
         """One stored value as it may appear in the agent-facing header."""

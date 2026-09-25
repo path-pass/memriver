@@ -591,3 +591,12 @@ def test_entropy_all_low_candidates_still_pass(monkeypatch):
     # count alone
     _with_rules(monkeypatch, ("multi-candidate", r"ZQ-(\w+)", 1.0, 0))
     _SCANNER.check("marker ZQ-aaaaaaaa mid ZQ-bbbbbbbb end", BODY_LIMIT)
+
+
+def test_a_secret_rejection_names_its_rule_and_a_size_rejection_names_none():
+    with pytest.raises(ContentRejected) as caught:
+        SecretScanner().check("token ghp_" + "a" * 36, 1000)
+    assert caught.value.rule_id == "github-pat"
+    with pytest.raises(ContentRejected) as caught:
+        SecretScanner().check("x" * 10, 5)
+    assert caught.value.rule_id is None

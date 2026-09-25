@@ -56,7 +56,17 @@ class IdCollision(MemoryError):
         self.identifier = identifier
 
 
-class ContentRejected(MemoryError): ...      # from ContentPolicy; the message is the rule
+class ContentRejected(MemoryError):
+    """From ContentPolicy; the message is the rule.
+
+    `rule_id` names the secret rule that matched, when one did -- an id from
+    the vendored ruleset, never the matched text; None for an empty or
+    oversized value.
+    """
+
+    def __init__(self, message: str, *, rule_id: str | None = None) -> None:
+        super().__init__(message)
+        self.rule_id = rule_id
 
 
 class ProjectUnavailable(MemoryError):

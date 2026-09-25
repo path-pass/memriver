@@ -10,6 +10,7 @@ from .helpers import (
     timestamp_shift,
 )
 from .maintenance import (
+    Candidate,
     Change,
     ChangeKind,
     ChangeRow,
@@ -19,6 +20,7 @@ from .maintenance import (
     RunStatus,
     RunTrigger,
     SourceRef,
+    effective_ttl_days,
 )
 from .memory import Memory, MemoryType, Trust
 from .project import Project, RootPlan, UnbindPlan, project_name
@@ -50,6 +52,7 @@ __all__ = [
     "ID_ALPHABET",
     "ID_LENGTH",
     "ID_RE",
+    "Candidate",
     "Change",
     "ChangeKind",
     "ChangeRow",
@@ -85,6 +88,7 @@ __all__ = [
     "StoreReport",
     "Trust",
     "UnbindPlan",
+    "effective_ttl_days",
     "is_call_id",
     "is_timestamp",
     "new_id",

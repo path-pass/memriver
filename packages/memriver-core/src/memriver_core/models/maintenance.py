@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from .memory import Memory
+
 ChangeKind = Literal["merge", "rewrite", "extract", "retire", "secret", "unsafe"]
 Decision = Literal["keep", "delete", "uncertain"]
 RunTrigger = Literal["schedule", "manual"]
@@ -75,3 +77,18 @@ class DreamRun:
     executor: str | None      # None: no executor configured (the safety re-scan only)
     status: RunStatus
     report: dict
+
+
+@dataclass(frozen=True)
+class Candidate:
+    """A memory past its effective TTL and not covered by a review, with its latest
+    review (None: never reviewed) and its recorded read count."""
+
+    memory: Memory
+    review: Review | None
+    reads: int
+
+
+def effective_ttl_days(ttl_days: int, reads: int, multiplier_max: int) -> int:
+    """Every recorded read lengthens a memory's TTL by one base TTL, up to the cap."""
+    return ttl_days * min(1 + reads, multiplier_max)

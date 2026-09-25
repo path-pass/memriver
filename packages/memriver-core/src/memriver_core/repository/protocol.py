@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Protocol
 
 from memriver_core.models import (
+    Candidate,
+    Change,
     Memory,
     Project,
     PromptEntry,
@@ -11,6 +13,7 @@ from memriver_core.models import (
     RootPlan,
     Session,
     SessionKey,
+    SourceRef,
     UnbindPlan,
 )
 
@@ -189,3 +192,34 @@ class SessionStore(Protocol):
     def record_call(self, key: SessionKey, call_id: str, at: str, *,
                     retention_s: int) -> None: ...
     def session_for_call(self, harness: str, call_id: str) -> SessionKey | None: ...
+
+
+class MaintenanceStore(Protocol):
+    """What the maintenance run reads and writes (spec §4); reached only through
+    MaintenanceService, which MCP never composes, so global is an ordinary target.
+
+    - No read touches `last_read_at`. A row that fails validation is skipped
+      (a doctor finding), never raised, so one damaged row cannot stop a run.
+    - `memories(project_id)` / `active_memories()`: active rows of one project /
+      of every project, oldest `created` first.
+    - `sources_of(memory_id)`: the entry's effective source set -- the set recorded at
+      the greatest version not above its current one (an empty set is no sources; a
+      version written without a set carries the earlier one); `derived_from(memory_id)`:
+      active entries whose effective set cites it.
+    - `ttl_candidates(now=, ttl_days=, multiplier_max=, limit=)`: active rows whose
+      last use -- the latest of created, updated and last_read_at -- lies at or
+      before `now` minus their effective TTL (`effective_ttl_days` over their
+      `memory_reads` count), with no review whose `next_review_at` is after `now`;
+      oldest last use first.
+    - `fingerprint_of(scope)`: the stored fingerprint or None; `changes(limit)`:
+      the change log, newest first.
+    """
+
+    def memories(self, project_id: str) -> list[Memory]: ...
+    def active_memories(self) -> list[Memory]: ...
+    def sources_of(self, memory_id: str) -> list[SourceRef]: ...
+    def derived_from(self, memory_id: str) -> list[str]: ...
+    def ttl_candidates(self, *, now: str, ttl_days: int, multiplier_max: int,
+                       limit: int) -> list[Candidate]: ...
+    def fingerprint_of(self, scope: str) -> str | None: ...
+    def changes(self, limit: int) -> list[Change]: ...
