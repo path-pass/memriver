@@ -14,6 +14,7 @@ from memriver_core.models import RunTrigger
 from memriver_core.models import now as _now
 from memriver_core.settings import DREAM_MAX_QUARANTINE_PER_RUN, Settings
 
+from . import summarize
 from .lock import run_lock
 from .protocols import Executor, Run, TranscriptSource
 from .report import PhaseReport, RunReport
@@ -23,7 +24,7 @@ if TYPE_CHECKING:
 
 MODEL_PHASES = ("summarize", "consolidate", "retire")
 # phase name -> runner; each model phase module registers itself here
-_PHASES: dict[str, Callable[[Run, PhaseReport], None]] = {}
+_PHASES: dict[str, Callable[[Run, PhaseReport], None]] = {"summarize": summarize.run}
 
 
 def _discard(line: str) -> None:
