@@ -112,6 +112,8 @@ def session_from_row(row: Sequence[object]) -> Session:
     counters = (prompt_count, last_write_prompt_count, last_nudge_prompt_count)
     if not all(type(counter) is int and counter >= 0 for counter in counters):
         raise ValueError("a counter is not a non-negative integer")
+    if last_write_prompt_count > prompt_count or last_nudge_prompt_count > prompt_count:
+        raise ValueError("a watermark is above the prompt count")
     recent = _loads(recent_prompts)
     if not isinstance(recent, list):
         raise ValueError("recent_prompts is not a list")  # noqa: TRY004 - a bad row

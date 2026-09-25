@@ -239,6 +239,15 @@ def test_a_session_with_a_dangling_project_id_is_a_session_orphan_finding(world)
         [(f.kind, f.location_hint) for f in report.findings]
 
 
+def test_a_session_with_a_watermark_above_the_prompt_count_is_reported_as_invalid_row(world):
+    _plant_session(world["store"], harness="codex", session_id="bad-2", status="registered",
+                   origin="start", project_id=world["project"], prompt_count=1,
+                   last_write_prompt_count=2)
+    report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+    assert ("invalid-row", "sessions/codex/bad-2") in \
+        [(f.kind, f.location_hint) for f in report.findings]
+
+
 def test_a_healthy_session_row_is_not_a_finding(world):
     _plant_session(world["store"], harness="codex", session_id="ok-1", status="registered",
                    origin="start", project_id=world["project"])

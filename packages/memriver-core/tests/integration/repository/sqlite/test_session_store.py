@@ -145,6 +145,20 @@ def test_registering_a_row_that_would_not_read_back_is_a_value_error_and_writes_
     assert _raw(initialized, "SELECT count(*) FROM sessions") == [(0,)]
 
 
+@pytest.mark.parametrize("field", ["last_write_prompt_count", "last_nudge_prompt_count"])
+def test_registering_a_watermark_above_the_prompt_count_is_a_value_error(
+        session_store, initialized, field):
+    with pytest.raises(ValueError):
+        session_store.register(_session(prompt_count=0, **{field: 1}))
+    assert _raw(initialized, "SELECT count(*) FROM sessions") == [(0,)]
+
+
+def test_registering_watermarks_equal_to_the_prompt_count_is_accepted(session_store):
+    session = _session(prompt_count=5, last_write_prompt_count=5, last_nudge_prompt_count=5)
+    assert session_store.register(session) == session
+    assert session_store.get(KEY) == session
+
+
 # --- touch ---
 
 def test_touch_moves_last_active_at_forward_only(session_store):
@@ -435,6 +449,8 @@ def test_search_on_an_absent_store_is_empty_and_creates_nothing(root):
     ("first_prompt", '{"at":"2026-09-24T10:00:01.000000Z"}'),     # neither text nor omitted
     ("started_at", "yesterday"),
     ("recent_prompts", "[" * 100000 + "]" * 100000),              # nested past the recursion limit
+    ("last_write_prompt_count", 1),                                # above prompt_count (0)
+    ("last_nudge_prompt_count", 1),                                # above prompt_count (0)
 ])
 def test_a_bad_row_is_skipped_by_search_and_fails_a_direct_get(session_store, initialized,
                                                                column, value):
