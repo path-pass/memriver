@@ -324,6 +324,21 @@ def test_a_dream_table_is_read_with_its_defaults(tmp_path):
             dream.max_candidates_per_run) == (5, 2, 60, "04:00", 20, 20, 30)
 
 
+@pytest.mark.parametrize("dream_table", [None, DREAM_TABLE], ids=["no_dream", "with_dream"])
+def test_env_and_file_fields_combine_before_cross_field_validation(monkeypatch, tmp_path,
+                                                                    dream_table):
+    # regression: load_settings used to build a Settings from the root/dream/env layer
+    # alone before merging the file values in. A field valid only once env and file
+    # combine (env raises the max, the file lowers the default under it) raised
+    # ValidationError from that premature construction instead of ever reaching the
+    # merged one.
+    text = "search_limit_default = 2\n" + (dream_table or "")
+    root = _root(tmp_path, text)
+    monkeypatch.setenv("MEMRIVER_SEARCH_LIMIT_MAX", "3")
+    settings = load_settings(root_override=root)
+    assert (settings.search_limit_default, settings.search_limit_max) == (2, 3)
+
+
 @pytest.mark.parametrize("table", [
     '[dream]\nexecutor = "gpt"\nexecutor_path = "/opt/bin/codex"\n',
     '[dream]\nexecutor = "codex"\nexecutor_path = "relative/codex"\n',

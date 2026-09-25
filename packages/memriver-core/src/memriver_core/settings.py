@@ -383,19 +383,21 @@ def load_settings(root_override: Path | None = None) -> Settings:
     env_keys = {k.upper() for k in os.environ}
     file_values = {k: v for k, v in file_values.items()
                    if f"{ENV_PREFIX}{k.upper()}" not in env_keys}
-    settings = Settings(root=root, dream=dream)
-    if file_values:
-        try:
-            settings = Settings(root=root, dream=dream, **file_values)
-        except ValidationError:
-            # a typo'd *value* is as likely as a typo'd key, and neither may stop an
-            # agent's memory server from starting. The whole file is dropped rather
-            # than the offending key: a partially applied settings file is harder
-            # to reason about than none at all. The warning names the file to fix,
-            # but not `settings_path` (absolute) or the exception text --
-            # ValidationError echoes back the offending value, which could itself
-            # be a path.
-            log.warning("ignoring %s, falling back to environment and defaults",
-                        SETTINGS_FILENAME)
+    # built from the merged env + file configuration first: a field valid only once
+    # both sources combine (env raises a max, the file lowers a default under it)
+    # must reach that combined validation, never a premature env-only construction
+    try:
+        settings = Settings(root=root, dream=dream, **file_values)
+    except ValidationError:
+        # a typo'd *value* is as likely as a typo'd key, and neither may stop an
+        # agent's memory server from starting. The whole file is dropped rather
+        # than the offending key: a partially applied settings file is harder
+        # to reason about than none at all. The warning names the file to fix,
+        # but not `settings_path` (absolute) or the exception text --
+        # ValidationError echoes back the offending value, which could itself
+        # be a path.
+        log.warning("ignoring %s, falling back to environment and defaults",
+                    SETTINGS_FILENAME)
+        settings = Settings(root=root, dream=dream)
     settings._dream_invalid = dream_invalid
     return settings
