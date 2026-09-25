@@ -17,6 +17,8 @@ from pathlib import Path
 
 from memriver_core.settings import DREAM_LAUNCH_AGENT_LABEL
 
+from .install import replace_atomically
+
 Launchctl = Callable[[list[str]], int]
 _ABSENT = 113                               # `launchctl print`: could not find service
 
@@ -66,10 +68,7 @@ def _unload(label: str, path: Path, uid: int, launchctl: Launchctl) -> None:
 
 def _write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_bytes(data)
-    os.chmod(temporary, 0o644)
-    os.replace(temporary, path)
+    replace_atomically(path, data, 0o644, os.replace)
 
 
 def _restore(path: Path, previous: bytes | None, was_loaded: bool, uid: int,
@@ -81,9 +80,9 @@ def _restore(path: Path, previous: bytes | None, was_loaded: bool, uid: int,
             path.unlink(missing_ok=True)
         else:
             _write(path, previous)
+        return not was_loaded or launchctl(["bootstrap", f"gui/{uid}", str(path)]) == 0
     except OSError:
         return False
-    return not was_loaded or launchctl(["bootstrap", f"gui/{uid}", str(path)]) == 0
 
 
 def install(*, home: Path, plist: bytes, uid: int, launchctl: Launchctl,

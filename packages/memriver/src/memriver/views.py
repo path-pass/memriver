@@ -69,13 +69,13 @@ def cue_source(memory: Memory) -> str:
     return memory.description or (memory.body.splitlines() or [""])[0]
 
 
-def _cue(memory: Memory) -> str:
+def cue(memory: Memory) -> str:
     return visible(single_line(cue_source(memory)))[:INDEX_CUE_CHARS]
 
 
 def _line(memory: Memory) -> str:
     # updated is stored text like any other field: neutralised before it is shown
-    return f"  {memory.id}  [{memory.type}]  {visible(memory.updated)[:10]}  {_cue(memory)}\n"
+    return f"  {memory.id}  [{memory.type}]  {visible(memory.updated)[:10]}  {cue(memory)}\n"
 
 
 def _where(project: Project, global_id: str | None) -> str:
@@ -367,7 +367,7 @@ def _referenced(service, err: MemoryReferenced) -> str:
             continue
         project = "global" if derived.project_id == global_id else derived.project_id
         deleted = "  (deleted)" if derived.deleted_at is not None else ""
-        lines.append(f"  {derived_id}  {project}  {_cue(derived)}{deleted}")
+        lines.append(f"  {derived_id}  {project}  {cue(derived)}{deleted}")
     # a soft delete of a derived entry keeps its reference: only a hard delete releases it
     lines.append("hard-delete each with: memriver delete ID --version N --hard")
     return "\n".join(lines) + "\n"
@@ -399,7 +399,7 @@ def run_delete(memory_id: str, *, version: int, hard: bool, yes: bool, root: Pat
         return 2
     where = "global" if is_global else f"project {memory.project_id}"
     plan = (f"memriver delete: {memory.id} [{memory.type}] in {where}: "
-            f"{_cue(memory)}  ({'hard' if hard else 'soft'})")
+            f"{cue(memory)}  ({'hard' if hard else 'soft'})")
     if hard and memory.deleted_at is not None:
         plan += " (already deleted)"
     stdout.write(plan + "\n")

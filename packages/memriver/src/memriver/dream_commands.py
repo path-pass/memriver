@@ -41,11 +41,14 @@ from pydantic import ValidationError
 
 from . import launch_agent, views
 from .executors import make_executor, missing_env
+from .install import replace_atomically
 from .project_commands import _confirm
 from .project_context import visible
 from .transcripts import HarnessTranscripts
 
 STORE_FAILURE = "memriver dream: the memory store could not be read or written\n"
+# pydantic's error echoes the value, which is never shown
+INVALID_ENVIRONMENT = "a MEMRIVER_* environment variable holds an invalid value; fix or unset it\n"
 _PHASE_TITLES = {"secrets": "secrets (safety re-scan)", "summarize": "session summaries",
                  "consolidate": "consolidation", "retire": "TTL retirement"}
 _PHASE_OF_KIND = {"secret": "secrets", "merge": "consolidate", "rewrite": "consolidate",
@@ -53,6 +56,14 @@ _PHASE_OF_KIND = {"secret": "secrets", "merge": "consolidate", "rewrite": "conso
 UV_CACHE_REFUSAL = ("refused: the memriver running this command lives in uv's cache (uvx), "
                     "which uv may delete at any time; install it persistently "
                     "(uv tool install memriver) and run memriver dream init from there\n")
+
+
+def _load_settings(root: Path | None) -> Settings | None:
+    """The settings; None when a MEMRIVER_* environment variable is invalid."""
+    try:
+        return load_settings(root_override=root)
+    except ValidationError:
+        return None
 
 
 def _services(settings: Settings):
@@ -74,16 +85,20 @@ def _in_uv_cache(path: str, env: Mapping[str, str], home: Path) -> bool:
     return real.is_relative_to(os.path.realpath(cache)) or "archive-v0" in real.parts
 
 
-def _memriver_path(env: Mapping[str, str], home: Path) -> str | None:
+def _memriver_path(env: Mapping[str, str], home: Path, executable: str,
+                   which: Callable[[str], str | None]) -> str | None:
     """A persistent memriver entry point: the console script beside the running
-    interpreter, else the one on PATH -- never one inside uv's cache."""
-    beside = Path(sys.executable).parent / "memriver"
-    found = shutil.which("memriver")
-    for candidate in (str(beside) if beside.is_file() else None,
-                      os.path.abspath(found) if found else None):
-        if candidate and not _in_uv_cache(candidate, env, home):
-            return candidate
-    return None
+    interpreter, else the one on PATH. None when this memriver runs from uv's cache:
+    a memriver found elsewhere may be another version, so it is never scheduled
+    instead."""
+    # the environment's bin directory: the interpreter itself links out of the cache
+    if _in_uv_cache(os.path.dirname(executable), env, home):
+        return None
+    beside = Path(executable).parent / "memriver"
+    if beside.is_file():
+        return str(beside)
+    found = which("memriver")
+    return os.path.abspath(found) if found else None
 
 
 def _existing_table(path: Path) -> dict:
@@ -106,11 +121,7 @@ def _write_dream_table(path: Path, values: dict) -> None:
         document["dream"] = table
     for key, value in values.items():
         table[key] = value
-    temporary = path.with_name(f".{path.name}.tmp")
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(tomlkit.dumps(document))
-    os.replace(temporary, path)
+    replace_atomically(path, tomlkit.dumps(document).encode("utf-8"), 0o600, os.replace)
 
 
 def _invalid_key(error: Mapping) -> str:
@@ -137,9 +148,12 @@ def run_init(*, executor: str | None, ttl_days: int | None, at: str | None, yes:
              which: Callable[[str], str | None] = shutil.which,
              launchctl: launch_agent.Launchctl = launch_agent.run_launchctl,
              platform: str = sys.platform, uid: int | None = None,
-             memriver_path: str | None = None,
+             memriver_path: str | None = None, executable: str = sys.executable,
              label: str = DREAM_LAUNCH_AGENT_LABEL) -> int:
-    settings = load_settings(root_override=root)
+    settings = _load_settings(root)
+    if settings is None:
+        stdout.write(f"refused: {INVALID_ENVIRONMENT}")
+        return 2
     if not _store_ready(settings):
         stdout.write("refused: the memory store is not initialized; run memriver install first\n")
         return 2
@@ -155,7 +169,7 @@ def run_init(*, executor: str | None, ttl_days: int | None, at: str | None, yes:
     if found is None:
         stdout.write(f"refused: {name} is not on PATH\n")
         return 2
-    memriver = memriver_path or _memriver_path(env, home)
+    memriver = memriver_path or _memriver_path(env, home, executable, which)
     if memriver is None or _in_uv_cache(memriver, env, home):
         stdout.write(UV_CACHE_REFUSAL)
         return 2
@@ -201,8 +215,18 @@ def run_init(*, executor: str | None, ttl_days: int | None, at: str | None, yes:
     code = _confirm(plan, yes=yes, stdin_is_tty=stdin_is_tty, input_fn=input_fn, stdout=stdout)
     if code is not None:
         return code
-    _write_dream_table(settings_file, values)
-    (store / DREAM_DIRECTORY).mkdir(mode=0o700, exist_ok=True)
+    try:
+        _write_dream_table(settings_file, values)
+    except OSError:
+        stdout.write(f"refused: {SETTINGS_FILENAME} could not be written; nothing was "
+                     "changed\n")
+        return 1
+    try:
+        (store / DREAM_DIRECTORY).mkdir(mode=0o700, exist_ok=True)
+    except OSError:
+        stdout.write(f"refused: {visible(str(store / DREAM_DIRECTORY))} could not be "
+                     "created; the settings were written, the schedule was not installed\n")
+        return 1
     if platform != "darwin":
         # `env` makes the assignment a word of its own, so a quoted root with a space works
         line = shlex.join(["env", f"MEMRIVER_ROOT={store}", *command])
@@ -235,7 +259,10 @@ def run_init(*, executor: str | None, ttl_days: int | None, at: str | None, yes:
 
 def run_run(*, phase: str | None, trigger: str, root: Path | None, stdout: IO[str],
             stderr: IO[str], executor_factory=None, transcripts=None) -> int:
-    settings = load_settings(root_override=root)
+    settings = _load_settings(root)
+    if settings is None:
+        stderr.write(f"memriver dream: {INVALID_ENVIRONMENT}")
+        return 1
     if settings.dream_invalid:
         stderr.write("memriver dream: the [dream] table in settings.toml is invalid; run "
                      "memriver dream init\n")
@@ -284,7 +311,7 @@ def _cue(service, maintenance, memory_id: str) -> str:
     # a quarantined memory's cue can be the secret itself
     if not maintenance.text_passes_policy(views.cue_source(memory)):
         return "(cue withheld)"
-    return views._cue(memory)
+    return views.cue(memory)
 
 
 def _change_lines(change: Change, service, maintenance, global_id: str | None) -> list[str]:
@@ -292,8 +319,7 @@ def _change_lines(change: Change, service, maintenance, global_id: str | None) -
     undone = "  (undone)" if change.undone_at else ""
     lines = [f"  {change.kind}  {where}  change {change.change_id}{undone}"]
     lines += [f"    {row.id}  {_cue(service, maintenance, row.id)}" for row in change.rows]
-    lines.append(f"    {'rule' if change.kind == 'secret' else 'reason'}: "
-                 f"{visible(change.reason)}")
+    lines.append(f"    {'rule' if change.kind == 'secret' else 'reason'}: {change.reason}")
     lines.append(f"    undo: memriver dream undo {change.change_id}")
     return lines
 
@@ -328,13 +354,17 @@ def render_run(run: DreamRun, *, service, maintenance) -> str:
             if "decision" in item:          # session outcomes are shown as counts
                 lines.append(f"  {item['decision']}  {item['memory_id']}  "
                              f"{_cue(service, maintenance, item['memory_id'])}")
-    return "\n".join(lines) + "\n"
+    # every stored field is neutralized, whatever wrote it
+    return "".join(f"{visible(line)}\n" for line in lines)
 
 
 def run_report(run_id: str | None, *, list_count: int | None, root: Path | None,
                stdout: IO[str]) -> int:
+    settings = _load_settings(root)
+    if settings is None:
+        stdout.write(f"refused: {INVALID_ENVIRONMENT}")
+        return 2
     try:
-        settings = load_settings(root_override=root)
         service, maintenance = _services(settings)
         if list_count is not None:
             runs = maintenance.runs(list_count)
@@ -343,8 +373,8 @@ def run_report(run_id: str | None, *, list_count: int | None, root: Path | None,
                                    f"{phase.get('skipped', 0)}"
                                    for name, phase in run.report.items()
                                    if isinstance(phase, dict))
-                stdout.write(f"{run.run_id}  {run.started_at}  {run.trigger}  {run.status}  "
-                             f"{counts}\n")
+                stdout.write(visible(f"{run.run_id}  {run.started_at}  {run.trigger}  "
+                                     f"{run.status}  {counts}") + "\n")
             if not runs:
                 stdout.write("(no dream runs yet)\n")
             return 0
@@ -362,8 +392,11 @@ def run_report(run_id: str | None, *, list_count: int | None, root: Path | None,
 
 def run_undo(change_id: str, *, yes: bool, root: Path | None, stdin_is_tty: bool,
              input_fn: Callable[[str], str], stdout: IO[str]) -> int:
+    settings = _load_settings(root)
+    if settings is None:
+        stdout.write(f"refused: {INVALID_ENVIRONMENT}")
+        return 2
     try:
-        settings = load_settings(root_override=root)
         service, maintenance = _services(settings)
         change = maintenance.change(change_id)
         if change is None:
@@ -407,6 +440,12 @@ def run_uninstall(*, home: Path, stdout: IO[str],
     except launch_agent.LaunchctlFailed:
         stdout.write("refused: launchd did not confirm the schedule is unloaded; the plist "
                      "was kept\n")
+        return 1
+    except OSError:
+        stdout.write("refused: the schedule could not be removed: launchctl could not be "
+                     "run, or the plist could not be deleted; check "
+                     f"{visible(str(launch_agent.plist_path(home, label)))} and "
+                     f"launchctl print gui/<uid>/{label}\n")
         return 1
     stdout.write("removed the schedule; settings and data are kept\n" if removed
                  else "no schedule installed\n")

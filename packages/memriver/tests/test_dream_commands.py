@@ -4,9 +4,11 @@ scripted executor -- never the real harnesses, LaunchAgents or store."""
 from __future__ import annotations
 
 import io
+import json
 import os
 import plistlib
 import shlex
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -267,6 +269,10 @@ def test_init_with_codex_refuses_a_provider_variable_missing_here_then_keeps_the
     assert code == 0 and "provider variables: DREAM_TEST_PROVIDER_KEY" in out
     assert "synthetic" not in out
     assert _settings(world)["dream"]["codex_overrides"]["model_provider"] == "foundry"
+    # the provider variable stays out of the schedule: exactly these three
+    assert plistlib.loads(plist_path(world["home"]).read_bytes())["EnvironmentVariables"] == {
+        "HOME": str(world["home"]), "PATH": f"{world['bin']}:/usr/bin:/bin",
+        "MEMRIVER_ROOT": str(world["store"])}
     # settings -> executor factory -> argv, the real path a run takes
     dream = load_settings(root_override=world["store"]).dream
     argv = make_executor(dream, env={}).argv(files=Path("/files"))
@@ -440,3 +446,128 @@ def test_undo_restores_a_change_and_refuses_a_conflict_or_an_unknown_id(world):
     code, out = _undo(world, quarantine.change_id)
     assert code == 0 and f"undone {quarantine.change_id}" in out
     assert world["service"].show(secret).deleted_at is None
+
+
+def test_a_fifo_planted_at_a_temporary_name_never_blocks_init(world):
+    os.mkfifo(world["store"] / ".settings.toml.tmp")
+
+    def stuck(signum, frame):
+        raise TimeoutError
+
+    previous = signal.signal(signal.SIGALRM, stuck)
+    signal.alarm(5)
+    try:
+        code, _ = _init(world)
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+    assert code == 0 and _settings(world)["dream"]["executor"] == "claude"
+
+
+def _python_in(directory: Path) -> str:
+    """A fake interpreter with a memriver console script beside it."""
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in ("python", "memriver"):
+        (directory / name).write_text("#!/bin/sh\n")
+        (directory / name).chmod(0o755)
+    return str(directory / "python")
+
+
+def test_init_schedules_the_memriver_beside_a_persistent_interpreter(world):
+    tools = world["tmp"] / "tools" / "memriver" / "bin"
+    code, _ = _init(world, memriver_path=None, executable=_python_in(tools))
+    assert code == 0
+    assert plistlib.loads(plist_path(world["home"]).read_bytes())["ProgramArguments"][0] == \
+        str(tools / "memriver")
+
+
+def test_init_from_uvs_cache_refuses_even_with_a_persistent_memriver_on_path(world):
+    cached = _python_in(world["tmp"] / "cache" / "archive-v0" / "abc" / "bin")
+    persistent = str(world["bin"] / "memriver")
+
+    def which(name):
+        return persistent if name == "memriver" else world["which"](name)
+
+    code, out = _init(world, memriver_path=None, executable=cached, which=which)
+    assert code == 2 and "uv tool install memriver" in out
+    assert "dream" not in _settings(world) and not plist_path(world["home"]).exists()
+    assert world["launchctl"].calls == []
+
+
+def test_init_that_cannot_write_its_settings_says_nothing_was_written(world, monkeypatch):
+    def full_disk(path, values):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(dream_commands, "_write_dream_table", full_disk)
+    code, out = _init(world)
+    assert code == 1 and "could not be written" in out and "no space" not in out
+    assert "settings were written" not in out and world["launchctl"].calls == []
+
+
+def test_init_that_cannot_make_the_dream_directory_says_the_settings_were_written(world):
+    (world["store"] / "dream").write_text("not a directory", encoding="utf-8")
+    code, out = _init(world)
+    assert code == 1 and "the settings were written" in out
+    assert _settings(world)["dream"]["executor"] == "claude"
+    assert world["launchctl"].calls == []
+
+
+def test_uninstall_that_cannot_run_launchctl_fails_and_keeps_the_plist(world):
+    _init(world)
+
+    def missing(args):
+        raise FileNotFoundError("/bin/launchctl")
+
+    code, out = _out(dream_commands.run_uninstall, home=world["home"], launchctl=missing,
+                     uid=501, platform="darwin")
+    assert code == 1 and "could not be removed" in out
+    assert plist_path(world["home"]).exists()
+
+
+def test_uninstall_that_cannot_delete_the_plist_fails(world):
+    _init(world)
+    world["launchctl"].loaded.clear()                  # not loaded: only the file is left
+    agents = plist_path(world["home"]).parent
+    agents.chmod(0o500)
+    try:
+        code, out = _out(dream_commands.run_uninstall, home=world["home"],
+                         launchctl=world["launchctl"], uid=501, platform="darwin")
+    finally:
+        agents.chmod(0o700)
+    assert code == 1 and "could not be removed" in out
+    assert plist_path(world["home"]).exists()
+
+
+def test_report_neutralizes_the_stored_run_fields(world):
+    _run(world)
+    # core validates the id, times, trigger and status it reads; these are free text
+    report = {f"secrets{chr(27)}[2J": {"done": 1, "failed": 0, "skipped": 0},
+              "retire": {"done": 1, "outcomes": {f"kept{chr(27)}[2J": 1},
+                         "items": [{"decision": f"keep{chr(27)}[2J",
+                                    "memory_id": f"m{chr(10)}forged line"}]}}
+    with closing(sqlite3.connect(world["store"] / "memriver.db")) as conn, conn:
+        conn.execute("UPDATE dream_runs SET executor = ?, report = ?",
+                     (f"x{chr(10)}forged line",
+                      json.dumps(report, ensure_ascii=False, separators=(",", ":"))))
+    for list_count in (None, 10):
+        code, out = _report(world, list_count=list_count)
+        assert code == 0 and out.startswith("run " if list_count is None else "")
+        assert chr(27) not in out and "\nforged line" not in out
+
+
+@pytest.mark.parametrize(("command", "expected"), [
+    ("init", 2), ("run", 1), ("report", 2), ("undo", 2)])
+def test_an_invalid_environment_setting_is_one_line_never_its_value(world, monkeypatch,
+                                                                     command, expected):
+    monkeypatch.setenv("MEMRIVER_MAX_BODY_CHARS", "SENTINEL-VALUE")
+    if command == "init":
+        code, out = _init(world)
+    elif command == "run":
+        code, out, err = _run(world)
+        out += err
+    elif command == "report":
+        code, out = _report(world)
+    else:
+        code, out = _undo(world, "aaaaaaaaaa")
+    assert code == expected and "SENTINEL" not in out
+    assert len(out.strip().splitlines()) == 1

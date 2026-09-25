@@ -177,3 +177,34 @@ def test_a_separate_label_is_a_separate_agent(tmp_path):
             label="test.memriver.dream")
     assert plist_path(tmp_path, "test.memriver.dream").exists()
     assert not plist_path(tmp_path).exists()
+
+
+def test_a_link_planted_at_a_temporary_name_is_never_written_through(tmp_path):
+    other = tmp_path / "other-config"
+    other.write_bytes(b"KEEP")
+    other.chmod(0o600)
+    path = plist_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    (path.parent / f".{path.name}.tmp").symlink_to(other)
+    install(home=tmp_path, plist=_plist(tmp_path), uid=501, launchctl=Launchctl())
+    assert other.read_bytes() == b"KEEP" and stat.S_IMODE(other.stat().st_mode) == 0o600
+    assert not path.is_symlink() and plistlib.loads(path.read_bytes())["Label"]
+
+
+def test_a_restore_whose_bootstrap_cannot_run_says_so(tmp_path):
+    class Vanishing(Launchctl):
+        """The old job's bootstrap cannot even be started (launchctl gone meanwhile)."""
+
+        def __call__(self, args):
+            if args[0] == "bootstrap" and self.bootstrap_fails == 0 and self.calls[-1][0] \
+                    == "bootstrap":
+                raise OSError("launchctl vanished")
+            return super().__call__(args)
+
+    launchctl = Vanishing()
+    install(home=tmp_path, plist=_plist(tmp_path), uid=501, launchctl=launchctl)
+    old = plist_path(tmp_path).read_bytes()
+    launchctl.bootstrap_fails = 1                         # the new job; the old one raises
+    with pytest.raises(RestoreFailed):
+        install(home=tmp_path, plist=_plist(tmp_path, "05:00"), uid=501, launchctl=launchctl)
+    assert plist_path(tmp_path).read_bytes() == old
