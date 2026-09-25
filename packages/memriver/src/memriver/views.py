@@ -64,9 +64,13 @@ def _service(root: Path | None, home: Path):
         raise StorageFailure from err
 
 
+def cue_source(memory: Memory) -> str:
+    """The text a memory's cue is cut from: its description, else its first body line."""
+    return memory.description or (memory.body.splitlines() or [""])[0]
+
+
 def _cue(memory: Memory) -> str:
-    raw = memory.description or (memory.body.splitlines() or [""])[0]
-    return visible(single_line(raw))[:INDEX_CUE_CHARS]
+    return visible(single_line(cue_source(memory)))[:INDEX_CUE_CHARS]
 
 
 def _line(memory: Memory) -> str:
