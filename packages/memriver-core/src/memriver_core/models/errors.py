@@ -109,6 +109,19 @@ BINDING_REASONS = frozenset({
 })
 
 
+class MemoryReferenced(MemoryError):
+    """A hard delete named a memory that derived entries cite as a source; nothing was deleted.
+
+    Fields only: `derived_ids` are the citing entries, active or deleted. The
+    CLI owns the sentence that tells the user to delete them first.
+    """
+
+    def __init__(self, memory_id: str, derived_ids: tuple[str, ...]) -> None:
+        super().__init__(f"memory referenced: {memory_id}")
+        self.memory_id = memory_id
+        self.derived_ids = derived_ids
+
+
 class BindingRefused(MemoryError):
     """A directory could not be planned, bound or unbound; nothing was written.
 

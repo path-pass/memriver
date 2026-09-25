@@ -8,6 +8,12 @@ from contextlib import closing
 
 import pytest
 from memriver_core.models import Memory, Project, ReadWriteSet, now
+from memriver_core.models.errors import (
+    MemoryNotFound,
+    MemoryReferenced,
+    ProjectUnavailable,
+    VersionConflict,
+)
 from memriver_core.repository.sqlite import SqliteMemoryStore, SqliteProjectStore
 
 SOURCE = {"harness": "test", "method": "agent"}
@@ -82,3 +88,67 @@ def test_a_read_record_that_cannot_be_written_never_raises(world):
                                      harness="codex")                     # best effort
     seen = world["memory_store"].read(memory.id, world["read_write_set"])
     assert seen.id == memory.id
+
+
+def _plant_global(world, body: str = "shared") -> Memory:
+    memory = Memory.new(body=body, type="project", project_id=world["global"], source=SOURCE,
+                        description="global cue")
+    _sql(world, "INSERT INTO memories (id, project_id, type, source_harness, source_method, "
+                "trust, sync, description, body, created, updated, version) "
+                "VALUES (?, ?, 'project', 'test', 'agent', 'agent', 1, ?, ?, ?, ?, 1)",
+         memory.id, memory.project_id, memory.description, memory.body, memory.created,
+         memory.updated)
+    return memory
+
+
+def _cite(world, derived: Memory, source: Memory) -> None:
+    """A source set for the derived entry's version 1, citing `source` at version 1."""
+    _sql(world, "INSERT INTO memory_source_sets VALUES (?, 1)", derived.id)
+    _sql(world, "INSERT INTO memory_sources VALUES (?, 1, ?, 1, ?, ?)", derived.id, source.id,
+         source.project_id, '{"type":"project","description":"cue","body":"fact"}')
+
+
+def test_hard_delete_of_a_referenced_source_is_refused_and_deletes_nothing(world):
+    source, derived = _record(world, "fact"), _plant_global(world)
+    _cite(world, derived, source)
+    with pytest.raises(MemoryReferenced) as caught:
+        world["memory_store"].delete(source.id, world["read_write_set"], expected_version=1,
+                                     hard=True)
+    assert (caught.value.memory_id, caught.value.derived_ids) == (source.id, (derived.id,))
+    assert world["memory_store"].read(source.id, world["read_write_set"]).version == 1
+
+
+def test_a_soft_delete_of_a_source_keeps_its_provenance_readable(world):
+    source, derived = _record(world, "fact"), _plant_global(world)
+    _cite(world, derived, source)
+    world["memory_store"].delete(source.id, world["read_write_set"], expected_version=1,
+                                 hard=False)
+    assert _sql(world, "SELECT source_id, snapshot FROM memory_sources") == [
+        (source.id, '{"type":"project","description":"cue","body":"fact"}')]
+    # a soft-deleted source is still referenced: its row cannot be purged either
+    with pytest.raises(MemoryReferenced):
+        world["memory_store"].delete(source.id, world["read_write_set"], expected_version=2,
+                                     hard=True)
+
+
+def test_delete_global_is_the_management_delete_of_a_global_entry(world):
+    source, derived = _record(world, "fact"), _plant_global(world)
+    _cite(world, derived, source)
+    memory_store = world["memory_store"]
+    assert memory_store.delete_global(derived.id, expected_version=1, hard=False) == 2
+    with pytest.raises(VersionConflict):
+        memory_store.delete_global(derived.id, expected_version=1, hard=True)
+    assert memory_store.delete_global(derived.id, expected_version=2, hard=True) == 0
+    # purging the derived entry dropped its source rows, so the source can go now
+    assert _sql(world, "SELECT count(*) FROM memory_sources") == [(0,)]
+    assert memory_store.delete(source.id, world["read_write_set"], expected_version=1,
+                               hard=True) == 0
+
+
+def test_delete_global_refuses_a_project_entry_and_an_unknown_id(world):
+    memory = _record(world)
+    with pytest.raises(ProjectUnavailable) as caught:
+        world["memory_store"].delete_global(memory.id, expected_version=1, hard=False)
+    assert caught.value.reason == "not-global"
+    with pytest.raises(MemoryNotFound):
+        world["memory_store"].delete_global("zzzzzzzzzz", expected_version=1, hard=False)

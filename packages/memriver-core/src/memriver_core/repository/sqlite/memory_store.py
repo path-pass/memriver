@@ -17,6 +17,7 @@ from memriver_core.models.errors import (
     GlobalReadOnly,
     IdCollision,
     MemoryNotFound,
+    MemoryReferenced,
     ProjectUnavailable,
     StorageFailure,
     VersionConflict,
@@ -62,6 +63,13 @@ def _joined(conn: sqlite3.Connection | None, memory_id: str, *, include_deleted:
         return memory_from_row(row)
     except ValueError as err:
         raise StorageFailure from err       # damage is reported as damage, not absence
+
+
+def _derived_ids(conn: sqlite3.Connection, memory_id: str) -> tuple[str, ...]:
+    """Every entry citing `memory_id` as a source, in any of its versions."""
+    return tuple(row[0] for row in conn.execute(
+        "SELECT DISTINCT derived_id FROM memory_sources WHERE source_id = ? "
+        "ORDER BY derived_id", (memory_id,)))
 
 
 class SqliteMemoryStore:
@@ -140,16 +148,39 @@ class SqliteMemoryStore:
             raise MemoryNotFound(memory_id)
         with self._database.write() as conn:
             memory = self._writable(conn, memory_id, read_write_set, allow_deleted=hard)
-            if memory.version != expected_version:
-                raise VersionConflict(memory_id)
-            if hard:
-                conn.execute("DELETE FROM memories WHERE id = ? AND version = ?",
-                             (memory_id, expected_version))
-                return 0
-            conn.execute("UPDATE memories SET deleted_at = ?, version = version + 1 "
-                         "WHERE id = ? AND version = ? AND deleted_at IS NULL",
-                         (now(), memory_id, expected_version))
-            return expected_version + 1
+            return self._delete_row(conn, memory, expected_version=expected_version, hard=hard)
+
+    def delete_global(self, memory_id: str, *, expected_version: int, hard: bool) -> int:
+        if not _addressable(memory_id) or not self._database.exists():
+            raise MemoryNotFound(memory_id)
+        with self._database.write() as conn:
+            memory = _joined(conn, memory_id, include_deleted=hard, readable=None)
+            if memory is None:
+                raise MemoryNotFound(memory_id)
+            # decided on the row's own project, read in this transaction
+            if not conn.execute("SELECT is_global FROM projects WHERE id = ?",
+                                (memory.project_id,)).fetchone()[0]:
+                raise ProjectUnavailable(reason="not-global")
+            return self._delete_row(conn, memory, expected_version=expected_version, hard=hard)
+
+    @staticmethod
+    def _delete_row(conn: sqlite3.Connection, memory: Memory, *, expected_version: int,
+                    hard: bool) -> int:
+        if memory.version != expected_version:
+            raise VersionConflict(memory.id)
+        if hard:
+            # a still-cited source would leave provenance pointing at nothing;
+            # the RESTRICT key refuses it too, this names the citing entries
+            derived = _derived_ids(conn, memory.id)
+            if derived:
+                raise MemoryReferenced(memory.id, derived)
+            conn.execute("DELETE FROM memories WHERE id = ? AND version = ?",
+                         (memory.id, expected_version))
+            return 0
+        conn.execute("UPDATE memories SET deleted_at = ?, version = version + 1 "
+                     "WHERE id = ? AND version = ? AND deleted_at IS NULL",
+                     (now(), memory.id, expected_version))
+        return expected_version + 1
 
     def touch_read(self, memory_id: str, at: str, *, memory_version: int,
                    harness: str = "unknown", session_id: str | None = None,

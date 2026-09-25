@@ -1,4 +1,5 @@
-"""Read-only views of the store for people, and one confirmed delete.
+"""Read-only views of the store for people, and one confirmed delete (a global
+entry by id, any other from its project's directory).
 
 Every read is the core's management view (all projects); every rule is the
 core's. This module renders, prompts and words refusals -- nothing else.
@@ -18,7 +19,9 @@ from typing import IO
 from memriver_core import (
     GlobalReadOnly,
     MemoryNotFound,
+    MemoryReferenced,
     ProjectNotFound,
+    ProjectUnavailable,
     StorageFailure,
     VersionConflict,
 )
@@ -338,6 +341,29 @@ def run_export(directory: Path, *, root: Path | None, stdout: IO[str], home: Pat
     return 0
 
 
+def _referenced(service, err: MemoryReferenced) -> str:
+    """The refusal of a hard delete that would orphan derived entries' provenance."""
+    count = len(err.derived_ids)
+    lines = [(f"refused: {err.memory_id} is a source of {count} derived "
+              f"{'entry' if count == 1 else 'entries'}; delete them first:")]
+    try:
+        global_id = service.global_project_id()
+    except StorageFailure:
+        global_id = None
+    for derived_id in err.derived_ids:
+        try:
+            derived = service.show(derived_id, include_deleted=True)
+        except (MemoryNotFound, StorageFailure):
+            lines.append(f"  {derived_id}")
+            continue
+        project = "global" if derived.project_id == global_id else derived.project_id
+        deleted = "  (deleted)" if derived.deleted_at is not None else ""
+        lines.append(f"  {derived_id}  {project}  {_cue(derived)}{deleted}")
+    # a soft delete of a derived entry keeps its reference: only a hard delete releases it
+    lines.append("hard-delete each with: memriver delete ID --version N --hard")
+    return "\n".join(lines) + "\n"
+
+
 def run_delete(memory_id: str, *, version: int, hard: bool, yes: bool, root: Path | None,
                stdin_is_tty: bool, input_fn: Callable[[str], str], stdout: IO[str], cwd: Path,
                home: Path) -> int:
@@ -345,6 +371,7 @@ def run_delete(memory_id: str, *, version: int, hard: bool, yes: bool, root: Pat
         service = _service(root, home)
         project_context = service.open_project_context(str(cwd))
         read_write_set = project_context.read_write_set
+        global_id = service.global_project_id()
         memory = service.show(memory_id, include_deleted=hard)
     except MemoryNotFound:
         stdout.write(f"no such memory: {visible(memory_id[:255])}\n")
@@ -352,18 +379,17 @@ def run_delete(memory_id: str, *, version: int, hard: bool, yes: bool, root: Pat
     except StorageFailure:
         stdout.write(STORE_UNREADABLE + "\n")
         return 2
-    # decided from the facts already in hand, before any plan line or prompt: the
-    # in-transaction checks below still decide at write time, for a change between
-    # this read and the delete itself
-    if memory.project_id == read_write_set.global_project_id:
-        stdout.write("refused: global memories cannot be deleted here\n")
-        return 2
-    if memory.project_id not in read_write_set.writable():
+    # a global entry is deleted by id as a management delete, wherever this
+    # runs; any other entry only from its own project's directory. The
+    # in-transaction checks below still decide at write time.
+    is_global = global_id is not None and memory.project_id == global_id
+    if not is_global and memory.project_id not in read_write_set.writable():
         # `memriver show` displays it, so "no such memory" would mislead a human
         stdout.write(f"refused: {memory.id} belongs to project {memory.project_id}, not this "
                      "directory's project; run memriver delete from that project's directory\n")
         return 2
-    plan = (f"memriver delete: {memory.id} [{memory.type}] in project {memory.project_id}: "
+    where = "global" if is_global else f"project {memory.project_id}"
+    plan = (f"memriver delete: {memory.id} [{memory.type}] in {where}: "
             f"{_cue(memory)}  ({'hard' if hard else 'soft'})")
     if hard and memory.deleted_at is not None:
         plan += " (already deleted)"
@@ -381,12 +407,20 @@ def run_delete(memory_id: str, *, version: int, hard: bool, yes: bool, root: Pat
             stdout.write("aborted; nothing was changed\n")
             return 1
     try:
-        service.delete(memory_id, project_context, expected_version=version, hard=hard)
+        if is_global:
+            service.delete_global(memory_id, expected_version=version, hard=hard)
+        else:
+            service.delete(memory_id, project_context, expected_version=version, hard=hard)
+    except MemoryReferenced as err:
+        stdout.write(_referenced(service, err))
+        return 2
     except MemoryNotFound:
         stdout.write(f"no such memory: {visible(memory_id[:255])}\n")
         return 2
-    except GlobalReadOnly:
-        stdout.write("refused: global memories cannot be deleted here\n")
+    except (GlobalReadOnly, ProjectUnavailable):
+        # the entry changed role between the plan and the write
+        stdout.write("refused: the memory's project changed while waiting; run the command "
+                     "again\n")
         return 2
     except VersionConflict:
         stdout.write(f"refused: {memory_id} changed since version {version}; run memriver "

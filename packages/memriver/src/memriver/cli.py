@@ -211,7 +211,8 @@ def _add_view_commands(commands) -> None:
                           help="emit the session_search item shape as JSON")
     sessions.set_defaults(handler=_view_sessions)
 
-    delete = add("delete", "delete one memory of the current directory's project")
+    delete = add("delete", "delete one memory: a global one by id, any other from its project's "
+                           "directory")
     delete.add_argument("memory_id")
     delete.add_argument("--version", type=_positive_int, required=True,
                         help="the version memriver show printed")

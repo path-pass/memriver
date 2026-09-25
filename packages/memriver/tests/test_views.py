@@ -327,14 +327,56 @@ def _plant_global_memory(world) -> str:
     return memory.id
 
 
-def test_delete_refuses_a_global_memory_without_a_plan_line_or_prompt(world):
+def test_delete_acts_on_a_global_memory_by_id_as_a_management_delete(world, tmp_path):
     memory_id = _plant_global_memory(world)
     out = io.StringIO()
-    code = run_delete(memory_id, version=1, hard=False, yes=False, root=world["store"],
-                      stdin_is_tty=True, input_fn=_never_called, stdout=out,
+    code = run_delete(memory_id, version=1, hard=False, yes=True, root=world["store"],
+                      stdin_is_tty=False, input_fn=_never_called, stdout=out,
+                      cwd=tmp_path, home=world["home"])
+    assert code == 0
+    assert out.getvalue() == (f"memriver delete: {memory_id} [project] in global: a global "
+                              f"note  (soft)\ndeleted {memory_id}\n")
+    assert world["service"].show(memory_id, include_deleted=True).deleted_at is not None
+
+
+def _cite(world, derived_id: str, source_id: str) -> None:
+    import sqlite3
+    from contextlib import closing
+
+    with closing(sqlite3.connect(world["store"] / "memriver.db")) as conn, conn:
+        conn.execute("INSERT INTO memory_source_sets VALUES (?, 1)", (derived_id,))
+        conn.execute("INSERT INTO memory_sources VALUES (?, 1, ?, 1, ?, ?)",
+                     (derived_id, source_id, world["project"].id,
+                      '{"type":"project","description":"the cue","body":"line one"}'))
+
+
+def test_a_hard_delete_of_a_referenced_source_lists_the_derived_entries(world):
+    derived_id = _plant_global_memory(world)
+    _cite(world, derived_id, world["memory"].id)
+    out = io.StringIO()
+    code = run_delete(world["memory"].id, version=1, hard=True, yes=True, root=world["store"],
+                      stdin_is_tty=False, input_fn=_never_called, stdout=out,
                       cwd=world["work"], home=world["home"])
     assert code == 2
-    assert out.getvalue() == "refused: global memories cannot be deleted here\n"
+    assert out.getvalue().splitlines()[1:] == [
+        f"refused: {world['memory'].id} is a source of 1 derived entry; delete them first:",
+        f"  {derived_id}  global  a global note",
+        "hard-delete each with: memriver delete ID --version N --hard",
+    ]
+    assert world["service"].show(world["memory"].id).version == 1
+
+
+def test_following_the_refusal_hint_deletes_the_derived_entry_then_the_source(world, tmp_path):
+    derived_id = _plant_global_memory(world)
+    _cite(world, derived_id, world["memory"].id)
+    code, _ = _out(run_delete, derived_id, version=1, hard=True, yes=True, root=world["store"],
+                   stdin_is_tty=False, input_fn=_never_called, cwd=tmp_path,
+                   home=world["home"])
+    assert code == 0
+    code, out = _out(run_delete, world["memory"].id, version=1, hard=True, yes=True,
+                     root=world["store"], stdin_is_tty=False, input_fn=_never_called,
+                     cwd=world["work"], home=world["home"])
+    assert code == 0 and out.endswith(f"purged {world['memory'].id}\n")
 
 
 def test_delete_without_yes_over_a_non_tty_is_refused(world):

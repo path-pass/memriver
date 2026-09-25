@@ -38,6 +38,13 @@ class MemoryStore(Protocol):
     - `delete(hard=True)`: the same checks, but a soft-deleted row of a
       writable project is accepted at its current version; the row is removed
       and 0 is returned.
+    - `delete(hard=True)` and `delete_global(hard=True)` on a row any
+      `memory_sources` row cites as a source raise
+      `MemoryReferenced(memory_id, derived_ids)`; nothing is deleted.
+    - `delete_global`: the management delete of a global entry (human CLI
+      only, never MCP): any project's global row by id, the same version
+      rules as `delete`; a row that is not global raises
+      `ProjectUnavailable(reason="not-global")`.
     - `read_any`: the management read (human CLI only): any project, no
       read/write set; deleted rows only with `include_deleted`.
     - `touch_read`: best effort, after a successful `memory_read` (spec §3.3):
@@ -59,6 +66,7 @@ class MemoryStore(Protocol):
                body: str, description: str | None) -> Memory: ...
     def delete(self, memory_id: str, read_write_set: ReadWriteSet, *, expected_version: int,
                hard: bool) -> int: ...
+    def delete_global(self, memory_id: str, *, expected_version: int, hard: bool) -> int: ...
     def read_any(self, memory_id: str, *, include_deleted: bool) -> Memory: ...
     def touch_read(self, memory_id: str, at: str, *, memory_version: int,
                    harness: str = "unknown", session_id: str | None = None,

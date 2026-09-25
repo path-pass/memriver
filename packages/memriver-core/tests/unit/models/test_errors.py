@@ -78,3 +78,11 @@ def test_binding_reasons_are_the_eleven_the_spec_lists():
 def test_an_unknown_binding_reason_is_a_programming_error():
     with pytest.raises(ValueError):
         BindingRefused("because")
+
+
+def test_memory_referenced_carries_fields_only():
+    from memriver_core import MemoryReferenced
+
+    err = MemoryReferenced("aaaaaaaaaa", ("bbbbbbbbbb", "cccccccccc"))
+    assert (err.memory_id, err.derived_ids) == ("aaaaaaaaaa", ("bbbbbbbbbb", "cccccccccc"))
+    assert str(err) == "memory referenced: aaaaaaaaaa"

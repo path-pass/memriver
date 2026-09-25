@@ -592,6 +592,12 @@ class MemoryService:
         return self._memory_store.delete(memory_id, context.read_write_set,
                                          expected_version=expected_version, hard=hard)
 
+    def delete_global(self, memory_id: str, *, expected_version: int,
+                      hard: bool = False) -> int:
+        """The management delete of a global entry: the human CLI only, never MCP."""
+        return self._memory_store.delete_global(memory_id, expected_version=expected_version,
+                                                hard=hard)
+
     # --- collections ---
 
     def normalize_search_limit(self, limit: int | None) -> int:

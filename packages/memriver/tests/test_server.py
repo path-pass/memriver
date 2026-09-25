@@ -530,7 +530,7 @@ async def test_no_tool_reaches_the_management_reads_or_hard_delete(world, monkey
 
     def spying_build(settings, *, root):
         service = real_build(settings, root=root)
-        for name in ("show", "list_memories", "search_all"):
+        for name in ("show", "list_memories", "search_all", "delete_global"):
             monkeypatch.setattr(service, name, lambda *a, _n=name, **k: seen.append(_n))
         real_delete = service.delete
 
