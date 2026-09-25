@@ -149,7 +149,8 @@ practice:
   so recovery means clearing `deleted_at` on that row directly in
   `memriver.db` (`memriver show ID --deleted` finds it first); `memory_write`
   cannot do this, since it always assigns a new id rather than reviving an
-  old one. There is no MCP path to a hard delete.
+  old one. There is no MCP path to a hard delete, and a hard delete of a memory that a
+  derived entry cites as a source is refused (*Maintenance*).
 - The local store keeps **no history of old bodies**: `version` guards
   against a lost concurrent update, it is not a log. History and
   conflict-free replication remain the sync layer's job, where object-store
@@ -167,20 +168,32 @@ and `uninstall --purge-data` write too, but to the project rows or the
 whole store, never to one memory's content); `delete` always resolves the
 current directory the command itself runs in, the way directory mode does
 (*Storage*) -- not a session-routed agent's stored project, which
-`memory_delete` acts on instead -- so global stays undeletable either way.
+`memory_delete` acts on instead -- while a global entry is deleted by id from anywhere,
+the one global write the human CLI has.
 
 ## Maintenance
 
 `updated` is the time of the last change, nothing more: rewriting an entry
 records that it was rewritten, not that anyone confirmed it is still true.
-memriver has no review queue today. Global is read-only everywhere today: MCP
-refuses every write to it -- for whichever project a session is registered
-to, in session mode -- and the human CLI's `delete` refuses it too, for the
-project its own command line's current directory resolves to; neither can
-reach global. Cross-project knowledge will be distilled into global by a separate dream
-service (not yet built); until then, the only way to change it is by hand
-against `memriver.db`. `memriver doctor --stale-days N` lists memories not
-updated in N days as a starting point for a manual review.
+Agents never write global: MCP refuses every write to it, whichever project
+a session is registered to. Two paths outside MCP do. `memriver delete`
+deletes a global entry by id (a management delete of the human CLI), and
+`memriver dream` -- an offline run started by a schedule or by hand -- keeps
+the store in shape without a review step: it soft-deletes memories that now
+match a secret rule, merges duplicates and rewrites contradicted entries
+within a project, extracts facts that hold beyond one project into global,
+soft-deletes entries that are instructions addressed to an agent, and retires
+memories unused past a TTL that every recorded read lengthens, after asking a
+model for a reason to. It writes through the same versioned rows, with
+`source.method = dream`, a trust no higher than its least trusted source and
+`sync` on only when every source had it on. Every change it makes is one
+change group that `memriver dream undo` reverses while its rows are
+unchanged; `memriver dream report` lists them. A derived entry records the
+memories and versions it came from (`memory_sources`, with a snapshot of each
+source), so a source cannot be hard-deleted while an entry cites it.
+Maintenance never counts as use: no dream read moves `last_read_at`.
+`memriver doctor --stale-days N` still lists memories not updated in N days
+as a starting point for a manual review.
 
 ## The write gate
 
