@@ -11,6 +11,7 @@ from memriver_core.models import (
     PromptEntry,
     ReadWriteSet,
     Resolution,
+    Review,
     RootPlan,
     Session,
     SessionKey,
@@ -229,6 +230,14 @@ class MaintenanceStore(Protocol):
       each row is still at the version the group left; otherwise
       `UndoConflict` and nothing written. An unknown change is `not-found`, an
       undone one `already-undone`; neither writes.
+    - `retire`: the TTL soft delete; in one transaction it re-checks the row is
+      active, at `judged_version`, still past its effective TTL on the stored
+      times and current read count, and not covered by a review with
+      `next_review_at > now`; then writes the delete review and a `retire`
+      change. False, nothing written, when any check fails.
+    - `record_review`: upserts the latest review, touching no memory, only
+      while the memory is active and at `review.memory_version`; False,
+      nothing written, otherwise.
     """
 
     def memories(self, project_id: str) -> list[Memory]: ...
@@ -244,3 +253,6 @@ class MaintenanceStore(Protocol):
                     created_ids: tuple[str, ...], now: str) -> None: ...
     def set_fingerprint(self, scope: str, fingerprint: str, now: str) -> None: ...
     def undo(self, change_id: str, *, now: str) -> UndoResult: ...
+    def retire(self, memory_id: str, *, judged_version: int, ttl_days: int,
+              multiplier_max: int, now: str, review: Review, change_id: str) -> bool: ...
+    def record_review(self, review: Review) -> bool: ...

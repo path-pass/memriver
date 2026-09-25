@@ -12,6 +12,7 @@ from memriver_core.models import (
     ChangeGroup,
     CreateOp,
     Memory,
+    Review,
     SoftDeleteOp,
     UpdateOp,
     new_id,
@@ -480,3 +481,105 @@ def test_undo_of_an_unsafe_group_revives_the_row_at_a_new_version(world):
     world.maintenance.undo(change_id)
     revived = world.service.show(a.id)
     assert (revived.deleted_at, revived.version, revived.body) == (None, 3, "a")
+
+
+def _review(memory_id: str, version: int, decision: str = "delete", *, streak: int = 0,
+            next_review_at: str | None = None, reason: str = "nothing supports it") -> Review:
+    return Review(memory_id=memory_id, memory_version=version, decided_at=now(),
+                  decision=decision, reason=reason, uncertain_streak=streak,
+                  next_review_at=next_review_at or timestamp_shift(now(), days=90),
+                  run_id="run1", executor="codex", prompt_version="dream-1")
+
+
+def _stale(world, *, project_id: str | None = None, days: int = 200) -> str:
+    stamp = _days_ago(days)
+    return _plant(world, project_id or world.project.id, "stale fact", created=stamp,
+                  last_read_at=stamp)
+
+
+def _retire(world, memory_id: str, version: int = 1) -> bool:
+    return world.maintenance.retire(memory_id, judged_version=version, ttl_days=90,
+                                    multiplier_max=5, now=now(),
+                                    review=_review(memory_id, version))
+
+
+def test_retire_soft_deletes_writes_the_delete_review_and_a_retire_change(world):
+    memory_id = _stale(world)
+    assert _retire(world, memory_id)
+    assert world.service.show(memory_id, include_deleted=True).deleted_at is not None
+    (change,) = world.maintenance.changes(10)
+    assert (change.kind, change.rows[0].id, change.reason) == (
+        "retire", memory_id, "nothing supports it")
+    assert _sql(world, "SELECT decision FROM dream_reviews WHERE memory_id = ?",
+                memory_id) == [("delete",)]
+    world.maintenance.undo(change.change_id)
+    assert world.service.show(memory_id).deleted_at is None
+
+
+def test_a_read_landing_while_the_model_judges_makes_retire_return_false(world):
+    memory_id = _stale(world)
+    (candidate,) = world.maintenance.ttl_candidates(now(), 90, 5, 10)
+    world.service.read(memory_id, world.context, harness="codex")     # the read lands now
+    assert not world.maintenance.retire(memory_id,
+                                        judged_version=candidate.memory.version,
+                                        ttl_days=90, multiplier_max=5, now=now(),
+                                        review=_review(memory_id, 1))
+    assert world.service.show(memory_id).deleted_at is None
+    assert (_count(world, "dream_changes"), _count(world, "dream_reviews")) == (0, 0)
+
+
+def test_retire_recomputes_the_effective_ttl_from_the_current_reads(world):
+    memory_id = _stale(world, days=200)         # past 90 days, not past 3 x 90
+    for _ in range(2):   # reads recorded long ago: last_read_at itself does not move
+        _sql(world, "INSERT INTO memory_reads VALUES (?, 1, ?, 'codex', NULL)", memory_id,
+             _days_ago(200))
+    assert not _retire(world, memory_id)
+
+
+def test_retire_refuses_a_moved_version_and_a_row_covered_by_a_newer_keep(world):
+    moved = _stale(world)
+    _sql(world, "UPDATE memories SET version = 2 WHERE id = ?", moved)
+    assert not _retire(world, moved)            # judged at version 1
+    kept = _stale(world)
+    world.maintenance.record_review(_review(kept, 1, "keep"))
+    assert not _retire(world, kept)
+
+
+def test_keep_touches_nothing_and_suppresses_re_review_until_next_review_at(world):
+    memory_id = _stale(world)
+    before = world.service.show(memory_id)
+    world.maintenance.record_review(_review(memory_id, 1, "keep"))
+    after = world.service.show(memory_id)
+    assert (after.body, after.updated, after.last_read_at, after.version) == (
+        before.body, before.updated, before.last_read_at, before.version)
+    assert world.maintenance.ttl_candidates(now(), 90, 5, 10) == []
+    later = timestamp_shift(now(), days=91)
+    (candidate,) = world.maintenance.ttl_candidates(later, 90, 5, 10)
+    assert (candidate.memory.id, candidate.review.decision) == (memory_id, "keep")
+
+
+def test_a_review_of_a_vanished_memory_is_refused(world):
+    assert world.maintenance.record_review(_review("zzzzzzzzzz", 1, "keep")) is False
+    assert _count(world, "dream_reviews") == 0
+
+
+@pytest.mark.parametrize("since", ["edited", "soft-deleted"])
+def test_a_judgment_of_a_version_that_moved_records_nothing(world, since):
+    memory_id = _stale(world)
+    if since == "edited":
+        _sql(world, "UPDATE memories SET version = 2, body = 'edited' WHERE id = ?", memory_id)
+    else:
+        _sql(world, "UPDATE memories SET version = 2, deleted_at = ? WHERE id = ?", now(),
+             memory_id)
+    assert world.maintenance.record_review(_review(memory_id, 1, "keep")) is False
+    assert _count(world, "dream_reviews") == 0
+    if since == "edited":
+        assert world.maintenance.record_review(_review(memory_id, 2, "keep")) is True
+
+
+def test_a_review_reason_that_breaks_the_policy_is_refused(world):
+    memory_id = _stale(world)
+    with pytest.raises(ContentRejected):
+        world.maintenance.record_review(_review(memory_id, 1, "keep", reason=SECRET))
+    with pytest.raises(ValueError):
+        world.maintenance.record_review(_review(memory_id, 1, "delete"))

@@ -15,6 +15,7 @@ from memriver_core.models import (
     ChangeRow,
     CreateOp,
     Memory,
+    Review,
     SourceRef,
     UndoResult,
     UpdateOp,
@@ -44,6 +45,7 @@ from .database import (
     memory_object,
     memory_to_row,
     review_from_row,
+    review_to_row,
     source_from_row,
     state_row_check,
 )
@@ -244,6 +246,19 @@ def _log(conn: sqlite3.Connection, change: Change) -> None:
     conn.execute(f"INSERT INTO dream_changes ({CHANGE_COLUMNS}) VALUES (?,?,?,?,?,?,?,?)", row)
 
 
+_UPSERT_REVIEW = (
+    f"INSERT INTO dream_reviews ({REVIEW_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+    "ON CONFLICT(memory_id) DO UPDATE SET "
+    + ", ".join(f"{column.strip()} = excluded.{column.strip()}"
+                for column in REVIEW_COLUMNS.split(",")[1:]))
+
+
+def _save_review(conn: sqlite3.Connection, review: Review) -> None:
+    row = review_to_row(review)
+    review_from_row(row)                    # only a review the read path accepts is kept
+    conn.execute(_UPSERT_REVIEW, row)
+
+
 def _restore(conn: sqlite3.Connection, memory: Memory, change_row: ChangeRow, now: str) -> None:
     """One row back to its before-image and before source set, its version moving on."""
     version = memory.version + 1
@@ -398,3 +413,38 @@ class SqliteMaintenanceStore:
             conn.execute("UPDATE dream_changes SET undone_at = ? WHERE change_id = ?",
                          (now, change_id))
         return UndoResult(change_id, "undone", tuple(r.id for r in change.rows))
+
+    def retire(self, memory_id: str, *, judged_version: int, ttl_days: int,
+              multiplier_max: int, now: str, review: Review, change_id: str) -> bool:
+        with self._database.write(create=False) as conn:
+            memory = _row(conn, memory_id, include_deleted=False)
+            # memory_read never moves the version, so the version alone cannot
+            # tell a read that landed while the model judged: last use, the
+            # current read count and a newer review are re-checked too
+            if memory is None or memory.version != judged_version:
+                return False
+            reads = conn.execute("SELECT count(*) FROM memory_reads WHERE memory_id = ?",
+                                 (memory_id,)).fetchone()[0]
+            cutoff = timestamp_shift(now, days=-effective_ttl_days(ttl_days, reads,
+                                                                   multiplier_max))
+            if _last_use(memory) > cutoff or conn.execute(
+                    "SELECT 1 FROM dream_reviews WHERE memory_id = ? AND next_review_at > ?",
+                    (memory_id, now)).fetchone():
+                return False
+            change_row = _soft_delete_row(conn, memory, now)
+            _save_review(conn, review)
+            _log(conn, Change(change_id=change_id, run_id=review.run_id, kind="retire",
+                              project_id=memory.project_id, applied_at=now,
+                              rows=(change_row,), reason=review.reason, undone_at=None))
+            return True
+
+    def record_review(self, review: Review) -> bool:
+        with self._database.write(create=False) as conn:
+            # a judgment holds only for the content it read: an edit, a delete or a
+            # purge since then makes it stale, and nothing is recorded
+            if conn.execute("SELECT 1 FROM memories WHERE id = ? AND version = ? "
+                            "AND deleted_at IS NULL",
+                            (review.memory_id, review.memory_version)).fetchone() is None:
+                return False
+            _save_review(conn, review)
+            return True

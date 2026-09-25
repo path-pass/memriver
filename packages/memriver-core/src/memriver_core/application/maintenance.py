@@ -25,6 +25,7 @@ from memriver_core.models import (
     CreateOp,
     Memory,
     Project,
+    Review,
     SoftDeleteOp,
     SourceRef,
     UndoResult,
@@ -171,3 +172,27 @@ class MaintenanceService:
 
     def undo(self, change_id: str) -> UndoResult:
         return self._maintenance_store.undo(change_id, now=_now())
+
+    def retire(self, memory_id: str, *, judged_version: int, ttl_days: int,
+              multiplier_max: int, now: str, review: Review) -> str | None:
+        """The TTL soft delete after a model review: its change id, or None when the
+        row moved meanwhile and nothing was written."""
+        if review.decision != "delete":
+            raise ValueError("a retirement records a delete decision")
+        self._policy_cache.get().check(review.reason, self._metadata_max_chars)
+        change_id = new_id()
+        retired = self._maintenance_store.retire(
+            memory_id, judged_version=judged_version, ttl_days=ttl_days,
+            multiplier_max=multiplier_max, now=now,
+            review=dataclasses.replace(review, reason=single_line(review.reason)),
+            change_id=change_id)
+        return change_id if retired else None
+
+    def record_review(self, review: Review) -> bool:
+        """A keep or uncertain decision; it changes no memory (maintenance is not use).
+        False when the judged version is no longer the active one: nothing recorded."""
+        if review.decision not in ("keep", "uncertain"):
+            raise ValueError("record_review records keep or uncertain")
+        self._policy_cache.get().check(review.reason, self._metadata_max_chars)
+        return self._maintenance_store.record_review(
+            dataclasses.replace(review, reason=single_line(review.reason)))
