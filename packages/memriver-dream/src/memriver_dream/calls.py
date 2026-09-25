@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from memriver_core.models import is_timestamp
 from memriver_core.settings import DREAM_CALL_TIMEOUT_S
 
 from .protocols import Executor, FailureKind, Run
@@ -29,3 +30,19 @@ def effective_sources(run: Run, memory_id: str) -> list[dict]:
     never a source's text."""
     return [{"id": s.source_id, "version": s.source_version, "project": s.source_project}
             for s in run.maintenance.sources_of(memory_id)]
+
+
+def sendable_time(value: str) -> str:
+    """A stored time as it may be sent: the policy checks no time field, so anything but
+    a well-formed timestamp (old or hand-edited data) goes as an unknown "" (D20)."""
+    return value if is_timestamp(value) else ""
+
+
+def storable(text: str) -> bool:
+    """Whether model text can be stored: JSON may decode to a lone surrogate, which no
+    UTF-8 column takes."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True

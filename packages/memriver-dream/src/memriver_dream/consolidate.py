@@ -19,12 +19,18 @@ from memriver_core.models import (
     Memory,
     SoftDeleteOp,
     UpdateOp,
-    is_timestamp,
 )
 from memriver_core.settings import DREAM_REASON_CHARS
 
 from .budget import estimate_tokens
-from .calls import DATA_RULE, PROMPT_VERSION, call, effective_sources
+from .calls import (
+    DATA_RULE,
+    PROMPT_VERSION,
+    call,
+    effective_sources,
+    sendable_time,
+    storable,
+)
 from .protocols import Run
 from .report import PhaseReport
 
@@ -105,17 +111,11 @@ def _inputs(run: Run, project_id: str, global_id: str) -> tuple[list[Memory], li
     return usable(project_id), [] if project_id == global_id else usable(global_id)
 
 
-def _time(value: str) -> str:
-    """A stored time as it may be sent: the policy checks no time field, so anything but
-    a well-formed timestamp (old or hand-edited data) goes as an unknown "" (D20)."""
-    return value if is_timestamp(value) else ""
-
-
 def _entry(run: Run, memory: Memory) -> str:
     return json.dumps({
         "id": memory.id, "version": memory.version, "type": memory.type,
         "description": memory.description, "body": memory.body,
-        "created": _time(memory.created), "updated": _time(memory.updated),
+        "created": sendable_time(memory.created), "updated": sendable_time(memory.updated),
         "last_read_at": memory.last_read_at,
         "sources": effective_sources(run, memory.id)}, ensure_ascii=False)
 
@@ -136,16 +136,6 @@ def _valid(kind: str, op: dict, sources: list[str], scope: _Scope) -> bool:
     if op["op"] == "update":                # only new project evidence; core carries the rest
         return target in scope.shared and bool(sources) and all(s in own for s in sources)
     return False
-
-
-def _storable(text: str) -> bool:
-    """Whether model text can be stored: JSON may decode to a lone surrogate, which no
-    UTF-8 column takes."""
-    try:
-        text.encode("utf-8")
-    except UnicodeEncodeError:
-        return False
-    return True
 
 
 def _as_sent(op: dict, pairs: tuple[tuple[str, int], ...], scope: _Scope) -> bool:
@@ -169,7 +159,7 @@ def _group(run: Run, raw: dict, scope: _Scope) -> ChangeGroup | None:
     if len(set(source_ids)) != len(source_ids) or not _valid(kind, op, source_ids, scope):
         return None
     if not _as_sent(op, pairs, scope) or not all(
-            _storable(text) for text in (reason, op["description"], op["body"])):
+            storable(text) for text in (reason, op["description"], op["body"])):
         return None
     target = scope.global_id if kind == "extract" else scope.project_id
     if op["op"] == "create":
