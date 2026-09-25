@@ -8,3 +8,4 @@ dist/
 .pytest_cache/
 .idea/
 e2e/wheels/
+.env

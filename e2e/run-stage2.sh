@@ -1,25 +1,17 @@
 #!/usr/bin/env bash
-# Host driver for stage 2. Run deliberately --
-# it needs a real CLAUDE_CODE_OAUTH_TOKEN and makes real `claude -p`
-# calls (uses quota/spend).
+# Host driver for stage 2. Run deliberately: it makes real `claude -p` calls
+# against an Azure AI Foundry deployment, billed per token.
 #
-# Credential flow (the token is never written to disk, this script, the
-# image, or a shell history entry with its value):
-#   claude setup-token                        # on the host, once
-#   read -s CLAUDE_CODE_OAUTH_TOKEN           # paste it; not echoed to the terminal
-#   export CLAUDE_CODE_OAUTH_TOKEN
+# Credentials come from the repository's git-ignored .env (see foundry-env.sh)
+# or the host environment, and are passed to docker by name only:
 #   bash e2e/run-stage2.sh
-#   unset CLAUDE_CODE_OAUTH_TOKEN             # when done
 set -euo pipefail
-
-if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-    echo "refusing to start: CLAUDE_CODE_OAUTH_TOKEN is not set in the host environment." >&2
-    echo "run: claude setup-token   # then: read -s CLAUDE_CODE_OAUTH_TOKEN && export CLAUDE_CODE_OAUTH_TOKEN" >&2
-    exit 1
-fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+# shellcheck source=foundry-env.sh
+. "$REPO_ROOT/e2e/foundry-env.sh"
+load_foundry_env AZURE_FOUNDRY_BASEURL AZURE_FOUNDRY_API_KEY AZURE_FOUNDRY_CLAUDE_DEPLOYMENT
 
 echo "==> building wheels (memriver, memriver-core) into e2e/wheels"
 rm -rf e2e/wheels
@@ -28,12 +20,13 @@ uv build --all-packages --out-dir e2e/wheels
 echo "==> building memriver-e2e image"
 docker build -t memriver-e2e e2e/
 
-echo "==> running stage2.sh inside the container"
-echo "    (CLAUDE_CODE_OAUTH_TOKEN passed to docker by name only -- never in argv or logs)"
+echo "==> running stage2.sh inside the container (Claude Code on Azure AI Foundry; credentials passed by name only)"
 docker run --rm \
     -v "$REPO_ROOT/e2e/wheels":/wheels:ro \
     -v "$REPO_ROOT/e2e":/e2e:ro \
-    -e CLAUDE_CODE_OAUTH_TOKEN \
+    -e AZURE_FOUNDRY_BASEURL \
+    -e AZURE_FOUNDRY_API_KEY \
+    -e AZURE_FOUNDRY_CLAUDE_DEPLOYMENT \
     memriver-e2e bash /e2e/stage2.sh
 
 echo "==> stage 2 finished"

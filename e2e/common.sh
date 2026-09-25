@@ -248,6 +248,60 @@ run_shared_setup() {
     step_seed_memory
 }
 
+# --- Azure AI Foundry as the model provider (stages 2, 3, 5) ------------------
+# The runners pass AZURE_FOUNDRY_* into the container by name; these map them
+# onto what each harness reads. Billing is per token on the Foundry resource,
+# not a Claude or ChatGPT subscription.
+
+# Claude Code: its documented Microsoft Foundry variables, with every model
+# alias pinned to the one deployment (unpinned aliases resolve to built-in
+# defaults the resource may not have deployed).
+use_foundry_for_claude() {
+    export CLAUDE_CODE_USE_FOUNDRY=1
+    export ANTHROPIC_FOUNDRY_BASE_URL="${AZURE_FOUNDRY_BASEURL%/}/anthropic"
+    export ANTHROPIC_FOUNDRY_API_KEY="$AZURE_FOUNDRY_API_KEY"
+    export ANTHROPIC_DEFAULT_OPUS_MODEL="$AZURE_FOUNDRY_CLAUDE_DEPLOYMENT"
+    export ANTHROPIC_DEFAULT_SONNET_MODEL="$AZURE_FOUNDRY_CLAUDE_DEPLOYMENT"
+    export ANTHROPIC_DEFAULT_HAIKU_MODEL="$AZURE_FOUNDRY_CLAUDE_DEPLOYMENT"
+    pass "Claude Code uses Microsoft Foundry (deployment $AZURE_FOUNDRY_CLAUDE_DEPLOYMENT)"
+}
+
+# Codex: a model provider in ~/.codex/config.toml, written after memriver
+# install. Top-level keys must precede every table, so they are prepended; the
+# provider table is appended. The key stays in the environment (env_key).
+use_foundry_for_codex() {
+    local config="$HOME/.codex/config.toml" tmp
+    tmp="$(mktemp)"
+    {
+        printf 'model_provider = "azure-foundry"\n'
+        printf 'model = "%s"\n\n' "$AZURE_FOUNDRY_GPT_DEPLOYMENT"
+        cat "$config"
+        printf '\n[model_providers.azure-foundry]\n'
+        printf 'name = "Azure AI Foundry"\n'
+        printf 'base_url = "%s/openai/v1"\n' "${AZURE_FOUNDRY_BASEURL%/}"
+        printf 'env_key = "AZURE_FOUNDRY_API_KEY"\n'
+        printf 'wire_api = "responses"\n'
+    } > "$tmp"
+    mv "$tmp" "$config"
+    python3 -c 'import sys, tomllib; tomllib.load(open(sys.argv[1], "rb"))' "$config"
+    pass "Codex uses Azure AI Foundry (deployment $AZURE_FOUNDRY_GPT_DEPLOYMENT) through ~/.codex/config.toml"
+}
+
+# One row of the sessions table, as eval-able shell assignments:
+# SESSION_STATUS, SESSION_PROJECT, SESSION_PROMPTS, SESSION_NUDGED_AT.
+read_session_row() {
+    python3 - "$E2E_STORE/memriver.db" "$1" "$2" <<'PY'
+import shlex, sqlite3, sys
+db, harness, session_id = sys.argv[1:]
+row = sqlite3.connect(f"file:{db}?mode=ro", uri=True).execute(
+    "SELECT status, project_id, prompt_count, last_nudge_prompt_count FROM sessions"
+    " WHERE harness = ? AND session_id = ?", (harness, session_id)).fetchone()
+assert row is not None, f"no sessions row for ({harness}, {session_id})"
+for name, value in zip(("SESSION_STATUS", "SESSION_PROJECT", "SESSION_PROMPTS", "SESSION_NUDGED_AT"), row):
+    print(f"{name}={shlex.quote(str(value))}")
+PY
+}
+
 # --- Codex-specific counterparts (stage5.sh) ---------------------------------
 # Codex's install targets differ from Claude Code's (~/.codex/config.toml +
 # ~/.codex/hooks.json instead of ~/.claude.json + ~/.claude/settings.json), so
@@ -268,16 +322,17 @@ home = Path.home()
 
 config = tomllib.loads((home / ".codex" / "config.toml").read_text())
 mcp = config.get("mcp_servers", {}).get("memriver")
-assert mcp == {"command": "uvx", "args": ["memriver"]}, f"unexpected mcp_servers.memriver: {mcp!r}"
+assert mcp == {"command": "uvx", "args": ["memriver", "serve", "--harness", "codex"]}, f"unexpected mcp_servers.memriver: {mcp!r}"
 
-hooks = json.loads((home / ".codex" / "hooks.json").read_text())
-start_cmd = hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
-stop_cmd = hooks["hooks"]["Stop"][0]["hooks"][0]["command"]
-assert start_cmd == "uvx memriver hook session-start --harness codex", start_cmd
-assert stop_cmd == "uvx memriver hook stop --harness codex", stop_cmd
+hooks = json.loads((home / ".codex" / "hooks.json").read_text())["hooks"]
+for event, name in [("SessionStart", "session-start"), ("UserPromptSubmit", "user-prompt-submit"),
+                    ("Stop", "stop"), ("SessionEnd", "session-end")]:
+    command = hooks[event][0]["hooks"][0]["command"]
+    assert command == f"uvx memriver hook {name} --harness codex", (event, command)
+assert "PreToolUse" not in hooks, hooks.keys()
 print("config assertions ok")
 PY
-    pass "~/.codex/config.toml (mcp_servers.memriver) and ~/.codex/hooks.json (SessionStart + Stop) hold the expected entries"
+    pass "~/.codex/config.toml (mcp_servers.memriver: serve --harness codex) and ~/.codex/hooks.json (SessionStart, UserPromptSubmit, Stop, SessionEnd) hold the expected entries"
 }
 
 extract_codex_session_start_command() {
