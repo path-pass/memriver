@@ -37,3 +37,10 @@ jobs:
       - run: git --version
       - run: uv sync --locked
       - run: uv run pytest -q
+
+  e2e-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: bash e2e/run-stage1.sh
