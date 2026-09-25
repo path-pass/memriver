@@ -539,6 +539,8 @@ def source_from_row(row: Sequence[object]) -> tuple[str, int, SourceRef]:
     if not (isinstance(value, dict) and set(value) == {"type", "description", "body"}
             and all(isinstance(text, str) for text in value.values())):
         raise ValueError("a snapshot is not {type, description, body}")
+    if value["type"] not in get_args(MemoryType):
+        raise ValueError("a snapshot names an impossible memory type")
     return derived_id, derived_version, SourceRef(source_id, source_version, source_project,
                                                   value)
 
@@ -603,7 +605,10 @@ def change_to_row(change: Change) -> tuple:
             dumps_json(rows), change.reason, change.undone_at)
 
 
-def _change_row(value: object) -> ChangeRow:
+def _change_row(value: object, project_id: str) -> ChangeRow:
+    """One row of `change_from_row`'s `rows` list, checked against `project_id` and
+    (for an existing target) its own before-image -- from the record alone, never
+    against the memory as it stands now: it may since have moved or been hard-deleted."""
     if not isinstance(value, dict) or set(value) != {"id", "before", "before_sources",
                                                      "after_version"}:
         raise ValueError("a change row is not {id, before, before_sources, after_version}")
@@ -613,8 +618,17 @@ def _change_row(value: object) -> ChangeRow:
         raise ValueError("a change row names no addressable id or version")
     if (before is None) != (sources is None):
         raise ValueError("before and before_sources are set together or not at all")
-    if before is not None:
-        memory_from_object(before)
+    if before is None:
+        if after_version != 1:
+            raise ValueError("a created row's after_version is not 1")
+    else:
+        image = memory_from_object(before)
+        if image.id != value["id"]:
+            raise ValueError("a change row's before-image is another memory's")
+        if image.project_id != project_id:
+            raise ValueError("a change row's before-image is another project's")
+        if after_version != image.version + 1:
+            raise ValueError("after_version does not follow the before-image's own version")
         if not isinstance(sources, list):
             raise ValueError("before_sources is not a list")
     return ChangeRow(id=value["id"], before=before,
@@ -636,9 +650,11 @@ def change_from_row(row: Sequence[object]) -> Change:
     value = loads_json(rows)
     if not isinstance(value, list) or not value:
         raise ValueError("a change touches no row")
+    decoded = tuple(_change_row(item, project_id) for item in value)
+    if len({change_row.id for change_row in decoded}) != len(decoded):
+        raise ValueError("a change names the same target more than once")
     return Change(change_id=change_id, run_id=run_id, kind=kind, project_id=project_id,
-                  applied_at=applied_at, rows=tuple(_change_row(item) for item in value),
-                  reason=reason, undone_at=undone_at)
+                  applied_at=applied_at, rows=decoded, reason=reason, undone_at=undone_at)
 
 
 READ_COLUMNS = "memory_id, memory_version, read_at, harness, session_id"

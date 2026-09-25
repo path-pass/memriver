@@ -7,8 +7,13 @@ from contextlib import closing
 from pathlib import Path
 
 import pytest
-from memriver_core.models import Memory, Project, new_id
+from memriver_core.models import Change, ChangeRow, Memory, Project, new_id, now
 from memriver_core.repository.sqlite import SqliteProjectStore, SqliteStoreInspector
+from memriver_core.repository.sqlite.database import (
+    CHANGE_COLUMNS,
+    change_to_row,
+    memory_object,
+)
 
 MEMORY_COLUMNS = ("id, project_id, type, source_harness, source_method, trust, sync, "
                   "description, body, created, updated, version, deleted_at, last_read_at")
@@ -536,3 +541,50 @@ def test_valid_dream_rows_are_not_findings(world):
                          "'2026-09-25T00:00:00.000000Z')")
     report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
     assert report.findings == ()
+
+
+def test_a_change_row_naming_another_memorys_before_image_is_reported_as_invalid_row(world):
+    memory = _plant(world["store"], _memory(world["project"]))
+    change = Change(change_id=new_id(), run_id="r", kind="merge", project_id=world["project"],
+                    applied_at=now(),
+                    rows=(ChangeRow(new_id(), memory_object(memory), (), memory.version + 1),),
+                    reason="x", undone_at=None)
+    _sql(world["store"], f"INSERT INTO dream_changes ({CHANGE_COLUMNS}) VALUES (?,?,?,?,?,?,?,?)",
+         *change_to_row(change))
+    report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+    assert ("invalid-row", f"dream_changes/{change.change_id}") in \
+        [(f.kind, f.location_hint) for f in report.findings]
+
+
+@pytest.mark.parametrize("table", [
+    "memory_source_sets", "memory_sources", "memory_reads", "dream_reviews",
+])
+def test_a_dangling_maintenance_table_reference_is_reported_as_invalid_row(world, table):
+    dangling = new_id()
+    rows_by_table = {
+        "memory_source_sets": (dangling, 1),
+        # dangling as derived_id: the compound FK to memory_source_sets has nothing to
+        # find, so its violation names this row's own first column, same as the others
+        "memory_sources": (dangling, 1, new_id(), 1, world["project"],
+                          '{"type":"user","description":"d","body":"b"}'),
+        "memory_reads": (dangling, 1, "2026-09-25T00:00:00.000000Z", "codex", None),
+        "dream_reviews": (dangling, 1, "2026-09-25T00:00:00.000000Z", "keep", "r", 0,
+                          "2026-09-25T00:00:00.000000Z", "r", "claude", "dream-1"),
+    }
+    row = rows_by_table[table]
+    placeholders = ", ".join("?" for _ in row)
+    # a raw connection has foreign keys off, so a well-shaped but dangling reference plants
+    # cleanly: PRAGMA foreign_key_check must catch what the shape checks cannot
+    _sql(world["store"], f"INSERT INTO {table} VALUES ({placeholders})", *row)
+    report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+    assert ("invalid-row", f"{table}/{dangling}") in \
+        [(f.kind, f.location_hint) for f in report.findings]
+
+
+def test_a_source_row_with_an_impossible_memory_type_is_reported_as_invalid_row(world):
+    _sql(world["store"], "INSERT INTO memory_sources VALUES "
+                         "(?, 1, ?, 1, ?, ?)", new_id(), new_id(), world["project"],
+         '{"type":"invalid","description":"","body":"x"}')
+    report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+    assert "invalid-row" in [f.kind for f in report.findings
+                             if f.location_hint.startswith("memory_sources/")]

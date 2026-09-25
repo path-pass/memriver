@@ -518,14 +518,16 @@ def _review(**fields) -> Review:
 def _change(**fields) -> Change:
     memory = Memory.new(body="b", type="project", project_id=new_id(),
                         source={"harness": "h", "method": "agent"})
+    another = Memory.new(body="c", type="project", project_id=memory.project_id,
+                         source={"harness": "h", "method": "agent"})
     values = {"change_id": new_id(), "run_id": "run1", "kind": "merge",
               "project_id": memory.project_id, "applied_at": now(),
               "rows": (ChangeRow(new_id(), None, None, 1),
                        ChangeRow(memory.id, memory_object(memory),
                                  (SourceRef(new_id(), 3, memory.project_id,
                                             {"type": "user", "description": "", "body": "b"}),),
-                                 2),
-                       ChangeRow(new_id(), memory_object(memory), (), 5)),
+                                 memory.version + 1),
+                       ChangeRow(another.id, memory_object(another), (), another.version + 1)),
               "reason": "same fact twice", "undone_at": None}
     return Change(**(values | fields))
 
@@ -590,11 +592,69 @@ def test_a_change_row_memriver_could_not_have_written_is_invalid(row_index, valu
         change_from_row(tuple(row))
 
 
+def _one_row_change(project_id: str, rows: tuple[ChangeRow, ...], **fields) -> Change:
+    values = {"change_id": new_id(), "run_id": "run1", "kind": "rewrite",
+              "project_id": project_id, "applied_at": now(), "rows": rows,
+              "reason": "x", "undone_at": None}
+    return Change(**(values | fields))
+
+
+def test_a_change_row_naming_another_memorys_before_image_is_invalid():
+    memory = Memory.new(body="b", type="project", project_id=new_id(),
+                        source={"harness": "h", "method": "agent"})
+    # the outer id (new_id()) does not match before's own id, though the project agrees
+    change = _one_row_change(memory.project_id,
+                             (ChangeRow(new_id(), memory_object(memory), (),
+                                       memory.version + 1),))
+    with pytest.raises(ValueError):
+        change_from_row(change_to_row(change))
+
+
+def test_a_change_row_naming_another_projects_before_image_is_invalid():
+    memory = Memory.new(body="b", type="project", project_id=new_id(),
+                        source={"harness": "h", "method": "agent"})
+    # the target id agrees with before, but the change's project does not
+    change = _one_row_change(new_id(),
+                             (ChangeRow(memory.id, memory_object(memory), (),
+                                       memory.version + 1),))
+    with pytest.raises(ValueError):
+        change_from_row(change_to_row(change))
+
+
+@pytest.mark.parametrize("after_version", [1, 3])
+def test_an_updated_rows_after_version_must_follow_its_before_images_version(after_version):
+    memory = Memory.new(body="b", type="project", project_id=new_id(),
+                        source={"harness": "h", "method": "agent"})
+    change = _one_row_change(memory.project_id,
+                             (ChangeRow(memory.id, memory_object(memory), (), after_version),))
+    with pytest.raises(ValueError):
+        change_from_row(change_to_row(change))
+
+
+@pytest.mark.parametrize("after_version", [0, 2])
+def test_a_created_rows_after_version_must_be_one(after_version):
+    change = _one_row_change(new_id(), (ChangeRow(new_id(), None, None, after_version),))
+    with pytest.raises(ValueError):
+        change_from_row(change_to_row(change))
+
+
+def test_a_change_naming_the_same_target_twice_is_invalid():
+    memory = Memory.new(body="b", type="project", project_id=new_id(),
+                        source={"harness": "h", "method": "agent"})
+    change = _one_row_change(memory.project_id,
+                             (ChangeRow(memory.id, memory_object(memory), (),
+                                       memory.version + 1),
+                              ChangeRow(memory.id, None, None, 1)))
+    with pytest.raises(ValueError):
+        change_from_row(change_to_row(change))
+
+
 @pytest.mark.parametrize("row", [
     ("bad", 1, new_id(), 1, new_id(), '{"type":"user","description":"d","body":"b"}'),
     (new_id(), 0, new_id(), 1, new_id(), '{"type":"user","description":"d","body":"b"}'),
     (new_id(), 1, new_id(), 1, new_id(), '{"type":"user","body":"b"}'),
     (new_id(), 1, new_id(), 1, new_id(), "not json"),
+    (new_id(), 1, new_id(), 1, new_id(), '{"type":"invalid","description":"","body":"x"}'),
 ])
 def test_a_source_row_memriver_could_not_have_written_is_invalid(row):
     with pytest.raises(ValueError):

@@ -110,6 +110,13 @@ _DREAM_TABLES = (
     ("dream_state", STATE_COLUMNS, state_row_check, False),
     ("dream_runs", RUN_COLUMNS, run_from_row, True),
 )
+# the maintenance tables with a REFERENCES column, and each one's first column
+# (the id worth naming in a finding's location hint); `PRAGMA integrity_check`
+# never checks foreign keys, and a raw writer with `PRAGMA foreign_keys` off can
+# plant a well-shaped id that names no such row, past every shape check above
+_FK_CHECKED_TABLES = {table: columns.split(",")[0].strip() for table, columns, _, _ in
+                      _DREAM_TABLES if table in
+                      ("memory_source_sets", "memory_sources", "memory_reads", "dream_reviews")}
 
 
 class SqliteStoreInspector:
@@ -227,6 +234,7 @@ class SqliteStoreInspector:
                                                location_hint=f"memories/{memory.id}"))
         self._sessions(conn, findings)
         self._dream_rows(conn, findings)
+        self._dream_foreign_keys(conn, findings)
         return initialized, entries, rows
 
     def _dream_rows(self, conn: sqlite3.Connection, findings: list[StoreFinding]) -> None:
@@ -239,6 +247,23 @@ class SqliteStoreInspector:
                     shaped = _shaped_id(row[0]) if named else None
                     findings.append(_finding("invalid-row",
                                              f"{table}/{shaped}" if shaped else table))
+
+    def _dream_foreign_keys(self, conn: sqlite3.Connection,
+                            findings: list[StoreFinding]) -> None:
+        """A dangling reference in a maintenance table: well-shaped, but naming no row --
+        the one thing the shape checks above cannot see on their own."""
+        seen: set[tuple[str, object]] = set()
+        for table, column in _FK_CHECKED_TABLES.items():
+            for violation in conn.execute(f"PRAGMA foreign_key_check({table})"):
+                rowid = violation[1]
+                if (table, rowid) in seen:
+                    continue
+                seen.add((table, rowid))
+                found = conn.execute(f"SELECT {column} FROM {table} WHERE rowid = ?",
+                                     (rowid,)).fetchone()
+                shaped = _shaped_id(found[0]) if found else None
+                findings.append(_finding("invalid-row",
+                                         f"{table}/{shaped}" if shaped else table))
 
     def _sessions(self, conn: sqlite3.Connection, findings: list[StoreFinding]) -> None:
         """Session-row findings only: `memriver sessions` reads sessions itself
