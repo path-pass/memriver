@@ -5,6 +5,7 @@ from typing import Protocol
 from memriver_core.models import (
     Candidate,
     Change,
+    ChangeGroup,
     Memory,
     Project,
     PromptEntry,
@@ -15,6 +16,7 @@ from memriver_core.models import (
     SessionKey,
     SourceRef,
     UnbindPlan,
+    UndoResult,
 )
 
 
@@ -212,7 +214,21 @@ class MaintenanceStore(Protocol):
       `memory_reads` count), with no review whose `next_review_at` is after `now`;
       oldest last use first.
     - `fingerprint_of(scope)`: the stored fingerprint or None; `changes(limit)`:
-      the change log, newest first.
+      the change log, newest first; `change(change_id)`: one change or None.
+    - `apply_group`: the whole group in one transaction under the rules of spec
+      §4.2 (every precondition re-checked -- versions, activity, scope, the
+      re-run guard, no reference cycle through source rows of any version; a
+      failure raises `GroupConflict` and writes nothing; a taken id raises
+      `IdCollision`); every version it writes gets a source set (an update's is
+      the effective set carried forward plus the newly consumed sources); the
+      change row, set rows and source rows are written in the same transaction.
+    - `set_fingerprint(scope, fingerprint, now)`: stores or replaces the scope's
+      fingerprint.
+    - `undo`: every row back to its before-image, source marks and before
+      source set (an empty set included), versions moving forward, only while
+      each row is still at the version the group left; otherwise
+      `UndoConflict` and nothing written. An unknown change is `not-found`, an
+      undone one `already-undone`; neither writes.
     """
 
     def memories(self, project_id: str) -> list[Memory]: ...
@@ -223,3 +239,8 @@ class MaintenanceStore(Protocol):
                        limit: int) -> list[Candidate]: ...
     def fingerprint_of(self, scope: str) -> str | None: ...
     def changes(self, limit: int) -> list[Change]: ...
+    def change(self, change_id: str) -> Change | None: ...
+    def apply_group(self, group: ChangeGroup, *, change_id: str,
+                    created_ids: tuple[str, ...], now: str) -> None: ...
+    def set_fingerprint(self, scope: str, fingerprint: str, now: str) -> None: ...
+    def undo(self, change_id: str, *, now: str) -> UndoResult: ...

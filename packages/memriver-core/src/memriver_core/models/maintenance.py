@@ -92,3 +92,54 @@ class Candidate:
 def effective_ttl_days(ttl_days: int, reads: int, multiplier_max: int) -> int:
     """Every recorded read lengthens a memory's TTL by one base TTL, up to the cap."""
     return ttl_days * min(1 + reads, multiplier_max)
+
+
+@dataclass(frozen=True)
+class CreateOp:
+    """Create one derived memory in `project_id` from `(source_id, source_version)` pairs."""
+
+    project_id: str
+    type: str
+    description: str
+    body: str
+    sources: tuple[tuple[str, int], ...]
+
+
+@dataclass(frozen=True)
+class UpdateOp:
+    """Rewrite one memory at `expected_version`. `sources` are the sources this update
+    newly consumes; the ones the memory already had are carried forward by core."""
+
+    id: str
+    expected_version: int
+    description: str
+    body: str
+    sources: tuple[tuple[str, int], ...]
+
+
+@dataclass(frozen=True)
+class SoftDeleteOp:
+    id: str
+    expected_version: int
+
+
+Operation = CreateOp | UpdateOp | SoftDeleteOp
+
+
+@dataclass(frozen=True)
+class ChangeGroup:
+    """One operation applied, and undone, as a unit: the unit of the change log."""
+
+    run_id: str
+    kind: ChangeKind          # merge | rewrite | extract | unsafe (retire, secret: own writes)
+    project_id: str           # the project it was planned for; global for extract
+    reason: str               # the model's one-line reason
+    harness: str              # source_harness of every row it writes
+    ops: tuple[Operation, ...]
+
+
+@dataclass(frozen=True)
+class UndoResult:
+    change_id: str
+    status: Literal["undone", "not-found", "already-undone"]
+    ids: tuple[str, ...]      # the rows restored (empty unless undone)

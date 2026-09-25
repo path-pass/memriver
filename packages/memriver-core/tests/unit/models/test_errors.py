@@ -86,3 +86,12 @@ def test_memory_referenced_carries_fields_only():
     err = MemoryReferenced("aaaaaaaaaa", ("bbbbbbbbbb", "cccccccccc"))
     assert (err.memory_id, err.derived_ids) == ("aaaaaaaaaa", ("bbbbbbbbbb", "cccccccccc"))
     assert str(err) == "memory referenced: aaaaaaaaaa"
+
+
+def test_group_and_undo_conflicts_carry_fields_only():
+    from memriver_core import GroupConflict, UndoConflict
+
+    group = GroupConflict(None, ("aaaaaaaaaa",))
+    undo = UndoConflict("bbbbbbbbbb", ("aaaaaaaaaa",))
+    assert (group.change_id, group.ids) == (None, ("aaaaaaaaaa",))
+    assert (undo.change_id, undo.ids) == ("bbbbbbbbbb", ("aaaaaaaaaa",))

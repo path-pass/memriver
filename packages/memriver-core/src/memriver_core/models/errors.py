@@ -145,3 +145,28 @@ class BindingRefused(MemoryError):
         super().__init__(f"binding refused: {reason}")
         self.reason = reason
         self.project_id = project_id
+
+
+class GroupConflict(MemoryError):
+    """A change group's precondition failed inside its transaction; nothing was written.
+
+    Fields only: `ids` are the rows (or projects) that failed a check;
+    `change_id` is None because nothing was applied.
+    """
+
+    def __init__(self, change_id: str | None, ids: tuple[str, ...]) -> None:
+        super().__init__(f"group conflict: {', '.join(ids)}")
+        self.change_id = change_id
+        self.ids = ids
+
+
+class UndoConflict(MemoryError):
+    """A row of the change group moved since it was applied; nothing was restored.
+
+    Fields only: `ids` are the rows no longer at the version the group left.
+    """
+
+    def __init__(self, change_id: str, ids: tuple[str, ...]) -> None:
+        super().__init__(f"undo conflict: {change_id}")
+        self.change_id = change_id
+        self.ids = ids

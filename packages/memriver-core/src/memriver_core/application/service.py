@@ -9,12 +9,12 @@ or settings: every limit is injected.
 
 from __future__ import annotations
 
-import re
 import sys
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol
 
 from memriver_core.models import (
+    HARNESS_RE,
     DiagnosticsReport,
     Memory,
     Project,
@@ -58,12 +58,6 @@ class Diagnostics(Protocol):
 
     def run(self, *, now: str | None, stale_days: int,
             jaccard_threshold: float) -> DiagnosticsReport: ...
-
-# 'harness' is persisted verbatim into the stored memory, so without this it
-# is a policy-free channel for secrets or megabytes of text. The shape check
-# caps size and charset; the content policy then rejects the values that still
-# look like credentials. Neither error echoes the rejected value.
-_HARNESS_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 
 # What MemoryService.index returns when nothing is visible -- the single
 # source transports compare against.
@@ -536,7 +530,7 @@ class MemoryService:
             # no reason: the transport resolved the project, so it says why
             # there is none
             raise ProjectUnavailable()
-        if not _HARNESS_RE.fullmatch(harness):
+        if not HARNESS_RE.fullmatch(harness):
             raise ContentRejected("invalid harness identifier "
                                   "(allowed: letters, digits, ., _, -, max 64 chars)")
         policy = self._policy()
@@ -564,7 +558,7 @@ class MemoryService:
         try:
             self._memory_store.touch_read(
                 memory.id, at, memory_version=memory.version,
-                harness=harness if _HARNESS_RE.fullmatch(harness) else "unknown",
+                harness=harness if HARNESS_RE.fullmatch(harness) else "unknown",
                 session_id=None if context.session_key is None
                 else context.session_key.session_id,
                 prune_before=None if retention is None else timestamp_shift(at, days=-retention))

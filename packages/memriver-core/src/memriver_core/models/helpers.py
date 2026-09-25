@@ -15,6 +15,13 @@ ID_LENGTH = 10
 ID_RE = re.compile(r"[0-9a-hjkmnp-tv-z]{10}")
 
 
+# a harness name is persisted verbatim into stored rows, so without a shape
+# check it is a policy-free channel for secrets or megabytes of text. The shape
+# caps size and charset; the content policy then rejects the values that still
+# look like credentials. Neither check echoes the rejected value.
+HARNESS_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
+
+
 def new_id() -> str:
     return "".join(secrets.choice(ID_ALPHABET) for _ in range(ID_LENGTH))
 

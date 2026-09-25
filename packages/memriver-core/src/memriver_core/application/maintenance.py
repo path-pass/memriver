@@ -13,18 +13,27 @@ table or settings: every limit is injected.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from memriver_core.models import (
+    HARNESS_RE,
     Candidate,
     Change,
+    ChangeGroup,
+    CreateOp,
     Memory,
     Project,
+    SoftDeleteOp,
     SourceRef,
+    UndoResult,
+    UpdateOp,
+    new_id,
     single_line,
 )
-from memriver_core.models.errors import ContentRejected
+from memriver_core.models import now as _now
+from memriver_core.models.errors import ContentRejected, IdCollision, StorageFailure
 
 from . import LazyPolicy
 
@@ -35,6 +44,22 @@ if TYPE_CHECKING:
         ProjectStore,
         SessionStore,
     )
+
+
+# kind -> (the operation it allows, the fewest sources it needs) -- spec §4.2
+_SHAPES: dict[str, tuple[tuple[type, ...], int]] = {
+    "merge": ((CreateOp,), 2), "rewrite": ((UpdateOp,), 1),
+    "extract": ((CreateOp, UpdateOp), 1), "unsafe": ((SoftDeleteOp,), 0)}
+
+
+def _check_shape(group: ChangeGroup) -> None:
+    """The kind rules, enforced by core rather than trusted to its caller."""
+    if group.kind not in _SHAPES or len(group.ops) != 1:
+        raise ValueError("a change group is one merge, rewrite, extract or unsafe operation")
+    allowed, fewest = _SHAPES[group.kind]
+    op = group.ops[0]
+    if not isinstance(op, allowed) or len(getattr(op, "sources", ())) < fewest:
+        raise ValueError(f"a {group.kind} group has the wrong operation or too few sources")
 
 
 class MaintenanceService:
@@ -102,3 +127,47 @@ class MaintenanceService:
     def text_passes_policy(self, text: str) -> bool:
         """Whether one text (a transcript record, a cue) may leave the store."""
         return self._rule_of(text) is None
+
+    # --- writes (each one short transaction) ---
+
+    def apply_group(self, group: ChangeGroup) -> str:
+        """Apply one change group atomically; its change id.
+
+        ValueError when the group breaks the kind rules; ContentRejected when
+        the harness, a body, a non-empty description or the reason fails the
+        content policy or the size limits; GroupConflict when a precondition
+        no longer holds. Either way nothing is written.
+        """
+        _check_shape(group)
+        if not HARNESS_RE.fullmatch(group.harness):
+            raise ContentRejected("invalid harness identifier "
+                                  "(allowed: letters, digits, ., _, -, max 64 chars)")
+        policy = self._policy_cache.get()
+        policy.check(group.harness, self._metadata_max_chars)
+        policy.check(group.reason, self._metadata_max_chars)
+        for op in group.ops:
+            if isinstance(op, SoftDeleteOp):
+                continue
+            policy.check(op.body, self._max_body_chars)
+            # optional, so only a description with content is checked -- empty
+            # decided the way _rule_of decides it
+            if single_line(op.description):
+                policy.check(op.description, self._metadata_max_chars)
+        change_id = new_id()
+        created_ids = tuple(new_id() for op in group.ops if isinstance(op, CreateOp))
+        try:
+            self._maintenance_store.apply_group(
+                dataclasses.replace(group, reason=single_line(group.reason)),
+                change_id=change_id, created_ids=created_ids, now=_now())
+        except IdCollision as err:
+            raise StorageFailure from err
+        return change_id
+
+    def set_fingerprint(self, scope: str, fingerprint: str, now: str) -> None:
+        self._maintenance_store.set_fingerprint(scope, fingerprint, now)
+
+    def change(self, change_id: str) -> Change | None:
+        return self._maintenance_store.change(change_id)
+
+    def undo(self, change_id: str) -> UndoResult:
+        return self._maintenance_store.undo(change_id, now=_now())
