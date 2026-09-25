@@ -2,7 +2,8 @@
 
 Both managed files are user-level: ``~/.claude.json`` carries the MCP server
 registration, ``~/.claude/settings.json`` carries the SessionStart/Stop/
-UserPromptSubmit/SessionEnd hooks and the optional native-memory toggle. This
+UserPromptSubmit/SessionEnd hooks, the PreToolUse hook for memriver's own
+tools, and the optional native-memory toggle. This
 module only builds ``Target`` and ``EditOperation`` values -- it never opens a
 file, prompts, or writes.
 """
@@ -25,6 +26,10 @@ from memriver.install.editors import (
 )
 
 HARNESS = "claude-code"
+# PreToolUse runs for memriver's own MCP tools only: it maps each call to the
+# session making it, because Claude Code keeps the MCP server across /clear
+# and an in-app /resume
+PRE_TOOL_USE_MATCHER = "mcp__memriver__.*"
 
 
 def targets(home: Path, project_root: Path | None,
@@ -41,8 +46,8 @@ def targets(home: Path, project_root: Path | None,
         path=home / ".claude" / "settings.json",
         user_level=True,
         rollback_instruction=(
-            "remove the memriver SessionStart/Stop/UserPromptSubmit/SessionEnd "
-            "hooks (and, if present, env.CLAUDE_CODE_DISABLE_AUTO_MEMORY) from "
+            "remove the memriver SessionStart/Stop/UserPromptSubmit/SessionEnd/"
+            "PreToolUse hooks (and, if present, env.CLAUDE_CODE_DISABLE_AUTO_MEMORY) from "
             "~/.claude/settings.json"
         ),
     )
@@ -52,7 +57,7 @@ def targets(home: Path, project_root: Path | None,
 def operations(
     snapshots: tuple[Snapshot, Snapshot], env: Mapping[str, str],
 ) -> tuple[EditOperation, ...]:
-    """MCP registration, all four hooks, and -- when offered -- the
+    """MCP registration, all five hooks, and -- when offered -- the
     native-memory toggle."""
     config, settings = snapshots
     ops = [
@@ -100,6 +105,15 @@ def operations(
             key_path=("hooks", "SessionEnd"),
             identity=hook_identity("session-end"),
         ),
+        EditOperation(
+            id="claude-code:hooks-pre-tool-use",
+            target=settings.target,
+            label="install the pre-tool-use hook",
+            kind="hook-array",
+            expected=hook_group("pre-tool-use", HARNESS, matcher=PRE_TOOL_USE_MATCHER),
+            key_path=("hooks", "PreToolUse"),
+            identity=hook_identity("pre-tool-use"),
+        ),
     ]
     if _offer_disabling_auto_memory(settings.text, env):
         ops.append(EditOperation(
@@ -117,7 +131,7 @@ def operations(
 def uninstall_operations(
     snapshots: tuple[Snapshot, Snapshot], env: Mapping[str, str],
 ) -> tuple[RemovalOperation, ...]:
-    """The exact inverse of ``operations()``: the MCP entry and all four hooks.
+    """The exact inverse of ``operations()``: the MCP entry and all five hooks.
 
     The native-memory toggle ``operations()`` may add is never undone here --
     spec 5.3's setting stays exactly where install put it; see ``uninstall_notes``.
@@ -163,6 +177,14 @@ def uninstall_operations(
             kind="hook-array",
             key_path=("hooks", "SessionEnd"),
             identity=hook_identity("session-end"),
+        ),
+        RemovalOperation(
+            id="claude-code:hooks-pre-tool-use",
+            target=settings.target,
+            label="remove the pre-tool-use hook",
+            kind="hook-array",
+            key_path=("hooks", "PreToolUse"),
+            identity=hook_identity("pre-tool-use"),
         ),
     )
 

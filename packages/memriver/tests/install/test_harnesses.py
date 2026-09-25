@@ -38,6 +38,9 @@ CLAUDE_SESSION = hook_payload("session-start", "claude-code")
 CLAUDE_STOP = hook_payload("stop", "claude-code")
 CLAUDE_PROMPT = hook_payload("user-prompt-submit", "claude-code")
 CLAUDE_END = hook_payload("session-end", "claude-code")
+# Claude Code's PreToolUse runs for memriver's own MCP tools only
+CLAUDE_PRE_TOOL_USE = {"matcher": "mcp__memriver__.*"} | hook_payload("pre-tool-use",
+                                                                      "claude-code")
 CODEX_SESSION = hook_payload("session-start", "codex")
 CODEX_STOP = hook_payload("stop", "codex")
 CODEX_PROMPT = hook_payload("user-prompt-submit", "codex")
@@ -148,6 +151,18 @@ def test_claude_code_operation_payloads():
     assert end_op.key_path == ("hooks", "SessionEnd")
     assert end_op.identity == ("uvx", "memriver", "hook", "session-end")
     assert end_op.expected == CLAUDE_END
+
+    pre_tool_use_op = by_id["claude-code:hooks-pre-tool-use"]
+    assert pre_tool_use_op.kind == "hook-array"
+    assert pre_tool_use_op.key_path == ("hooks", "PreToolUse")
+    assert pre_tool_use_op.identity == ("uvx", "memriver", "hook", "pre-tool-use")
+    assert pre_tool_use_op.expected == CLAUDE_PRE_TOOL_USE
+
+
+def test_codex_installs_no_pre_tool_use_hook():
+    """Codex names the session in every MCP call; there is nothing to map."""
+    assert not any("pre-tool-use" in op.id or op.key_path == ("hooks", "PreToolUse")
+                   for op in codex.operations(codex_snapshots(), {}))
 
 
 def test_codex_operation_payloads():

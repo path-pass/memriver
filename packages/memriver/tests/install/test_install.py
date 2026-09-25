@@ -484,21 +484,22 @@ def test_an_unknown_harness_name_fails_before_any_target_is_read(tmp_path, home,
 
 def test_every_planned_change_is_printed_before_the_first_prompt(home, project):
     result = install(["claude-code"], home=home, cwd=project, yes=False,
-                     replies=["y"] * 6)
+                     replies=["y"] * 7)
 
     shown = result.answers.output_at_first_prompt
     assert shown is not None
     for label in ("register memriver MCP server", "install the session-start hook",
                   "install the stop hook", "install the user-prompt-submit hook",
-                  "install the session-end hook", "disable built-in auto memory"):
+                  "install the session-end hook", "install the pre-tool-use hook",
+                  "disable built-in auto memory"):
         assert label in shown
 
 
 def test_each_change_gets_its_own_labelled_confirmation(home, project):
     result = install(["claude-code"], home=home, cwd=project, yes=False,
-                     replies=["y"] * 6)
+                     replies=["y"] * 7)
 
-    assert len(result.answers.prompts) == 6
+    assert len(result.answers.prompts) == 7
     joined = " ".join(result.answers.prompts)
     assert "claude-code: register memriver MCP server -> ~/.claude.json" in joined
     assert "disable built-in auto memory" in joined
@@ -508,7 +509,7 @@ def test_every_confirmation_names_its_harness_and_its_target(home, project):
     """`--all` asks four times to "register memriver MCP server"; without the
     harness and the file each prompt writes, the four are indistinguishable."""
     result = install(ALL_HARNESSES, home=home, cwd=project, yes=False,
-                     replies=["n"] * 15)
+                     replies=["n"] * 16)
 
     prompts = result.answers.prompts
     mcp = [p for p in prompts if "register memriver MCP server" in p]
@@ -531,7 +532,7 @@ def test_a_takeover_is_labelled_and_confirmed_without_showing_the_old_value(home
     }))
 
     result = install(["claude-code"], home=home, cwd=project, yes=False,
-                     replies=["y"] * 6)
+                     replies=["y"] * 7)
 
     assert result.exit_code == 0
     assert TAKEOVER_NOTICE in result.stdout
@@ -576,7 +577,7 @@ def test_the_native_memory_takeover_does_not_call_it_a_memriver_entry(home, proj
           json.dumps({"env": {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "0"}}))
 
     result = install(["claude-code"], home=home, cwd=project, yes=False,
-                     replies=["y"] * 6)
+                     replies=["y"] * 7)
 
     assert result.exit_code == 0
     assert HARNESS_SETTING_TAKEOVER_NOTICE in result.stdout
@@ -591,7 +592,7 @@ def mutate_at_last_prompt(path: Path, mutate) -> tuple[callable, list]:
 
     def answer(prompt: str) -> str:
         prompts.append(prompt)
-        if len(prompts) == 6:  # the last claude-code confirmation
+        if len(prompts) == 7:  # the last claude-code confirmation
             mutate(path)
         return "y"
 
@@ -614,7 +615,7 @@ def test_a_target_rewritten_between_planning_and_apply_aborts_the_run(home,
     result = install(["claude-code"], home=home, cwd=project, yes=False,
                      input_fn=answer)
 
-    assert len(prompts) == 6
+    assert len(prompts) == 7
     assert result.exit_code == 1
     assert "file changed since planning" in result.stderr
     abort = next(line for line in result.stderr.splitlines()
@@ -642,7 +643,7 @@ def test_a_target_created_between_planning_and_apply_aborts_the_run(home, projec
     result = install(["claude-code"], home=home, cwd=project, yes=False,
                      input_fn=answer)
 
-    assert len(prompts) == 6
+    assert len(prompts) == 7
     assert result.exit_code == 1
     assert "file changed since planning" in result.stderr
     assert settings.read_text() == concurrent
@@ -664,7 +665,7 @@ def test_a_permission_change_between_planning_and_apply_aborts_the_run(home,
     result = install(["claude-code"], home=home, cwd=project, yes=False,
                      input_fn=answer)
 
-    assert len(prompts) == 6
+    assert len(prompts) == 7
     assert result.exit_code == 1
     assert "file changed since planning" in result.stderr
     assert mode_of(settings) == 0o644
@@ -672,7 +673,7 @@ def test_a_permission_change_between_planning_and_apply_aborts_the_run(home,
 
 def test_declining_the_native_memory_change_keeps_the_accepted_ones(home, project):
     result = install(["claude-code"], home=home, cwd=project, yes=False,
-                     replies=["y", "y", "y", "y", "y", "n"])
+                     replies=["y", "y", "y", "y", "y", "y", "n"])
 
     settings = json.loads((home / ".claude" / "settings.json").read_text())
     assert result.exit_code == 0
@@ -685,7 +686,7 @@ def test_declining_everything_writes_nothing(tmp_path, home, project):
     before_tree = snapshot_tree(tmp_path)
 
     result = install(["claude-code"], home=home, cwd=project, yes=False,
-                     replies=["n"] * 6)
+                     replies=["n"] * 7)
 
     assert result.exit_code == 0
     assert snapshot_tree(tmp_path) == before_tree
@@ -810,6 +811,21 @@ def test_install_says_nothing_about_restarting_sessions_for_directory_mode_harne
 
     assert result.exit_code == 0
     assert RESTART_SESSIONS_NOTE not in result.stdout
+
+
+def test_claude_code_gets_a_pre_tool_use_hook_for_memriver_tools_only(home, project):
+    foreign = {"matcher": "Bash", "hooks": [{"type": "command", "command": "audit.sh"}]}
+    write(home / ".claude" / "settings.json",
+          json.dumps({"hooks": {"PreToolUse": [foreign]}}))
+
+    for _ in range(2):                                  # a reinstall adds no second group
+        assert install(["claude-code"], home=home, cwd=project, yes=True).exit_code == 0
+
+    settings = json.loads((home / ".claude" / "settings.json").read_text())
+    assert settings["hooks"]["PreToolUse"] == [foreign, {
+        "matcher": "mcp__memriver__.*",
+        "hooks": [{"type": "command",
+                   "command": "uvx memriver hook pre-tool-use --harness claude-code"}]}]
 
 
 def test_a_reinstall_that_changes_nothing_reports_it_and_prompts_for_nothing(home,

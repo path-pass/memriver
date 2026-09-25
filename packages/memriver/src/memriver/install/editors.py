@@ -89,9 +89,11 @@ def hook_identity(verb: str) -> tuple[str, ...]:
     return ("uvx", "memriver", "hook", verb)
 
 
-def hook_group(verb: str, harness: str) -> dict:
-    """A single-handler hook group invoking ``memriver hook <verb> --harness <harness>``."""
-    return {
+def hook_group(verb: str, harness: str, *, matcher: str | None = None) -> dict:
+    """A single-handler hook group invoking ``memriver hook <verb> --harness <harness>``,
+    limited to the tools ``matcher`` names when one is given."""
+    group = {} if matcher is None else {"matcher": matcher}
+    return group | {
         "hooks": [{
             "type": "command",
             "command": f"{' '.join(hook_identity(verb))} --harness {harness}",
