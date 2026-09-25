@@ -2,7 +2,9 @@
 
 Shared memory layer for coding agents across harnesses (Claude Code / Codex /
 Cursor / Kiro), exposed via MCP. One SQLite database is the single source of
-truth. Local-only mode uses no LLM and no network.
+truth. Local-only mode uses no LLM and no network, until you set up the
+optional `memriver dream` maintenance run, which sends policy-passing memory
+and session text to a model (*Dream*).
 
 Monorepo (uv workspace):
 
@@ -264,9 +266,13 @@ These are read-only views for a person, not the MCP surface agents use:
 `list`/`search`/`export` see every project, including global, but never a
 soft-deleted memory; `show --deleted` is the one view that can, and it prints
 the memory's `deleted_at`. `show` and `export` also expose `last_read_at`,
-set by a successful `memory_read`: `show` prints it as `never` until the
-first one, `export` writes the same field as JSON, `null` until then --
-neither is part of what an agent can read.
+set by a successful `memory_read`: `show` prints it as `never` and `export`
+writes `null` for a memory that was never read since it was created -- except
+one that already existed when its store upgraded to schema v3, which had
+`last_read_at` backfilled once to the upgrade time instead (not a recorded
+read, and no `memory_reads` row for it), so it doesn't look overdue for
+`memriver dream`'s TTL review the moment the upgrade lands; neither field is
+part of what an agent can read.
 `delete` needs the `version` that `memriver show` printed. A global memory is
 deleted by id, from anywhere -- a management delete of the human CLI; MCP
 still never writes global. Any other memory is deleted only from its own
@@ -292,9 +298,9 @@ activity first: harness, project, branch, when it was first recorded and last
 active, its last `SessionEnd`, its first and latest prompt, and a resume
 command (`claude --resume <id>` / `codex resume <id>`), and the session's
 summary once `memriver dream` has written one. `QUERY` matches a word
-in a session's saved prompt text, its summary (the same first-plus-five, 512-characters-each
-scope `session_search` has -- see its Known limits above), branch or entry
-directory, the same way `session_search` does for the calling session's own
+in a session's saved prompt text (the same first-plus-five, 512-characters-each
+scope `session_search` has -- see its Known limits above), its summary, branch
+or entry directory, the same way `session_search` does for the calling session's own
 project; unlike `session_search`, this sees every project. `--json` emits
 the same item shape `session_search`
 returns.
@@ -302,11 +308,12 @@ returns.
 ## Dream: offline maintenance
 
 ```bash
-uvx memriver dream init [--executor claude|codex] [--ttl-days N] [--at HH:MM] [--yes]
-uvx memriver dream run [--phase summarize|consolidate|retire]
-uvx memriver dream report [RUN_ID] [--list [N]]
-uvx memriver dream undo CHANGE_ID [--yes]
-uvx memriver dream uninstall
+uv tool install memriver   # dream's schedule needs a persistent memriver, not uvx's cache
+memriver dream init [--executor claude|codex] [--ttl-days N] [--at HH:MM] [--yes]
+memriver dream run [--phase summarize|consolidate|retire]
+memriver dream report [RUN_ID] [--list [N]]
+memriver dream undo CHANGE_ID [--yes]
+memriver dream uninstall
 ```
 
 `memriver dream` is an offline batch run, started every day by a schedule or
@@ -347,8 +354,10 @@ still going records itself as skipped and exits. Each run, in order:
    one plus its recorded reads, capped at `ttl_read_multiplier_max` times.
    A read that lands while the model decides keeps the memory.
 
-Every change takes effect at once, without a review step, and every change
-is recorded as a change group. `memriver dream report` shows what the latest
+Every change to a memory (a secret quarantine, a merge/rewrite/extract, or a
+retirement -- phases 1, 3 and 4) takes effect at once, without a review step,
+and each one is recorded as one change group; a session summary (phase 2) is
+not. `memriver dream report` shows what the latest
 run (or `RUN_ID`) found and changed, phase by phase -- secrets by id, project,
 cue and rule; each change group with its memories, the model's reason and
 its `memriver dream undo <change_id>` command; the TTL decisions; the
@@ -358,8 +367,9 @@ command. It never
 prints a memory body, a summary or a secret; a cue whose own text looks like
 a secret is shown as `(cue withheld)`. `memriver dream undo` restores every
 memory of a group while none of them changed since; otherwise it names the
-ones that did and changes nothing. There is no dry run: `undo` reverses a run
-instead.
+ones that did and changes nothing. There is no dry run: `undo` reverses one
+change group at a time, not a whole run, and it never touches a session
+summary.
 
 **Executors.** `init` picks Claude Code or Codex (`--executor`; default the
 configured one, else whichever of `claude` and `codex` is on `PATH`) and
@@ -412,7 +422,8 @@ replacement puts the previous schedule back, and says so if it cannot;
 so, keeping the plist, when launchd would not let go of it or could not say.
 
 ```toml
-# ~/agent-memory/settings.toml -- written by memriver dream init
+# ~/agent-memory/settings.toml -- [dream], every key shown with its default;
+# init itself writes only executor, executor_path, ttl_days and schedule_at
 [dream]
 executor = "claude"                   # or "codex"
 executor_path = "/absolute/path/to/claude"

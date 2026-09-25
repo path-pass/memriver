@@ -61,11 +61,16 @@ body:        All language runtimes on this machine are managed by mise, not nvm/
   instead, so there is no new version to see). `memory_read` returns it so
   `memory_update`/`memory_delete` can require it back (*Updates, deletion,
   and history*). A row also carries `deleted_at` (set only by a soft delete)
-  and `last_read_at` (set by a successful `memory_read`); neither is ever
-  part of what an agent can read — the fields above are the whole set an
-  agent may know.
-- **sync** — per-entry privacy boundary: `false` means this entry never
-  leaves the machine, regardless of mode.
+  and `last_read_at` (set by a successful `memory_read`, and backfilled once,
+  to the schema-v3 upgrade time rather than left `NULL`, for every row that
+  predates it -- not a recorded read, so it adds no `memory_reads` row);
+  neither is ever part of what an agent can read — the fields above are the
+  whole set an agent may know.
+- **sync** — per-entry boundary for future replication: `false` keeps this
+  entry out of hybrid/team sync, regardless of mode. It says nothing about
+  `memriver dream`, once set up: dream sends any memory whose body and
+  description pass the content policy -- `sync: false` included -- to the
+  configured executor's provider (*Dream*, in the README).
 - **trust** — provenance of the *source material*: `user` (stated
   explicitly), `agent` (judged worth keeping while working), or
   `untrusted-derived` (distilled from external content — web pages,
@@ -145,17 +150,26 @@ practice:
   `memory_index` treats that id exactly as if it had never existed.
   `memory_delete` also requires `expected_version`.
 - `memriver delete --hard` (the human CLI, *Management views*) removes the
-  row itself, including one already soft-deleted. A soft-deleted memory is
-  otherwise recoverable only by an operator — there is no undelete command,
-  so recovery means clearing `deleted_at` on that row directly in
-  `memriver.db` (`memriver show ID --deleted` finds it first); `memory_write`
-  cannot do this, since it always assigns a new id rather than reviving an
-  old one. There is no MCP path to a hard delete, and a hard delete of a memory that a
-  derived entry cites as a source is refused (*Maintenance*).
-- The local store keeps **no history of old bodies**: `version` guards
-  against a lost concurrent update, it is not a log. History and
-  conflict-free replication remain the sync layer's job, where object-store
-  native versioning provides them without any local machinery.
+  row itself, including one already soft-deleted. A memory soft-deleted by
+  `memory_delete` or `memriver delete` is recoverable only by an operator —
+  there is no undelete command, so recovery means clearing `deleted_at` on
+  that row directly in `memriver.db` (`memriver show ID --deleted` finds it
+  first); `memory_write` cannot do this, since it always assigns a new id
+  rather than reviving an old one. A memory `memriver dream` soft-deleted (a
+  `secret`, `unsafe` or `retire` change) is the one exception:
+  `memriver dream undo CHANGE_ID` restores it, while none of that change
+  group's rows have changed since (*Maintenance*). There is no MCP path to a
+  hard delete, and a hard delete of a memory that a derived entry cites as a
+  source is refused (*Maintenance*).
+- The local store keeps **no history of old bodies** for an ordinary edit:
+  `version` guards against a lost concurrent update, it is not a log.
+  `memriver dream`'s own changes are the exception: each keeps a before-image
+  of the row it changed, and a merge/rewrite/extract also keeps a snapshot of
+  every source it drew from (`memory_sources`) -- what lets
+  `memriver dream undo CHANGE_ID` put a change group back (*Maintenance*).
+  Full history and conflict-free replication for everything else remain the
+  sync layer's job, where object-store native versioning provides them
+  without any local machinery.
 
 ## Management views
 
@@ -240,7 +254,12 @@ itself part of why it was adopted.
 
 ## Modes and sync (forward-looking)
 
-- **Local-only** — everything above; one local SQLite file, no LLM, no network.
+- **Local-only** — everything above; one local SQLite file, no LLM, no network
+  for the store, its tools and its CLI. `memriver dream`'s secret re-scan
+  needs neither, either; its summarize/consolidate/retire phases are the
+  exception, and send policy-passing memory and session text to whichever
+  harness `memriver dream init` configures as executor (README, *Dream*) --
+  nothing is sent until that setup is done.
 - **Hybrid** — entries with `sync: true` replicate to user-owned object
   storage; versioning and multi-device semantics live there.
 - **Team** — shared knowledge is produced by a distillation pipeline with
