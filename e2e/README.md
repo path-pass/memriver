@@ -14,9 +14,11 @@ Status:
 - Stage 1 needs no credential and runs on every pull request (the `e2e-smoke`
   job of the `pr-checks` workflow); it covers the session registry.
 - Stages 2, 3 and 5 drive real Claude Code / Codex processes on Azure AI
-  Foundry (per-token billing, key from the git-ignored `.env`), so they are
-  run by hand only, never in CI. All three passed on 2026-09-25 against the
-  session registry (Claude Code 2.1.282, codex-cli 0.157.0).
+  Foundry (per-token billing), so they never run on a pull request. Run them
+  locally (key from the git-ignored `.env`) or through the manually started
+  `e2e-foundry` workflow (key from the repository's Actions secrets of the
+  same names). All three passed locally on 2026-09-25 against the session
+  registry (Claude Code 2.1.282, codex-cli 0.157.0).
 
 ## The store under test
 
@@ -170,7 +172,8 @@ AZURE_FOUNDRY_GPT_DEPLOYMENT=<GPT deployment name>         # stage 5
   `model_providers` entry to `~/.codex/config.toml` (`base_url` =
   `<resource URL>/openai/v1`, `wire_api = "responses"`, the key read from the
   environment through `env_key`). One resource key serves both APIs.
-- These stages never run in CI: they need the key and spend tokens.
+- In CI they run only through the `e2e-foundry` workflow, started by hand
+  (`workflow_dispatch`); its secrets are never exposed to pull requests.
 
 ## Stage 2 -- one real Claude Code session, five prompts
 

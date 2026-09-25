@@ -1,0 +1,31 @@
+name: e2e-foundry
+
+# The e2e stages that drive real Claude Code and Codex processes, on Azure AI
+# Foundry. They spend tokens, so they run only when someone with write access
+# starts them (Actions tab or `gh workflow run e2e-foundry.yml --ref <branch>`),
+# never on a pull request. The key reaches the container by name only and the
+# scripts never print it; Actions also masks every secret value in the log.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stage:
+    name: stage ${{ matrix.stage }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        stage: ["2", "3", "5"]
+    env:
+      AZURE_FOUNDRY_BASEURL: ${{ secrets.AZURE_FOUNDRY_BASEURL }}
+      AZURE_FOUNDRY_API_KEY: ${{ secrets.AZURE_FOUNDRY_API_KEY }}
+      AZURE_FOUNDRY_CLAUDE_DEPLOYMENT: ${{ secrets.AZURE_FOUNDRY_CLAUDE_DEPLOYMENT }}
+      AZURE_FOUNDRY_GPT_DEPLOYMENT: ${{ secrets.AZURE_FOUNDRY_GPT_DEPLOYMENT }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: bash e2e/run-stage${{ matrix.stage }}.sh
