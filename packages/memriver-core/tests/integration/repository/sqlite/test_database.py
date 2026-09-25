@@ -83,7 +83,7 @@ def test_the_first_write_creates_a_private_directory_file_and_schema(tmp_path):
     with closing(sqlite3.connect(root / "memriver.db")) as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert tables == {"projects", "memories", "sessions"}
+    assert tables == {"projects", "memories", "sessions", "tool_calls"}
 
 
 def test_a_failed_first_write_leaves_no_schema(tmp_path):
@@ -132,7 +132,9 @@ def test_a_version_one_database_is_upgraded_in_place(tmp_path):
     with _db(root).read() as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        assert "sessions" in tables
+        assert {"sessions", "tool_calls"} <= tables
+        indexes = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+        assert "tool_calls_by_recorded_at" in indexes
         row = conn.execute(f"SELECT {MEMORY_COLUMNS} FROM memories WHERE id = ?",
                            (memory.id,)).fetchone()
     seen = memory_from_row(row)
@@ -205,6 +207,7 @@ def test_an_upgrade_failing_part_way_leaves_version_one_intact(tmp_path, monkeyp
         assert "last_read_at" not in columns
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert "sessions" not in tables
+        assert "tool_calls" not in tables
 
 
 def test_upgrade_if_needed_on_a_missing_file_is_a_no_op(tmp_path):

@@ -143,6 +143,15 @@ class SessionStore(Protocol):
     - `search`: `project_id=None` is every row (the human CLI); otherwise
       that project's registered rows. A case-insensitive substring of a
       prompt text, `entry_cwd` or `branch`; newest `last_active_at` first.
+    - `record_call`: maps a harness's tool-call id to `key`'s session
+      (replacing an earlier mapping of the same id), then drops every
+      mapping recorded more than `retention_s` seconds before `at`, in the
+      same transaction. A call id that is not a harness id (see
+      `is_call_id`), a malformed `at` or a non-positive `retention_s` is a
+      `ValueError`, and nothing is written.
+    - `session_for_call`: the session a call id was mapped to, or None --
+      also for an impossible call id and for a stored row whose session id
+      is invalid. Read-only.
     """
 
     def store_exists(self) -> bool: ...
@@ -159,3 +168,6 @@ class SessionStore(Protocol):
     def confirm(self, key: SessionKey) -> Session | None: ...
     def assign_project(self, key: SessionKey, project_id: str) -> Session | None: ...
     def search(self, project_id: str | None, query: str, limit: int) -> list[Session]: ...
+    def record_call(self, key: SessionKey, call_id: str, at: str, *,
+                    retention_s: int) -> None: ...
+    def session_for_call(self, harness: str, call_id: str) -> SessionKey | None: ...

@@ -21,6 +21,7 @@ from .session import (
     SessionKey,
     SessionOrigin,
     SessionStatus,
+    is_call_id,
 )
 from .store_diagnostics import (
     DiagnosticFinding,
@@ -63,6 +64,7 @@ __all__ = [
     "StoreReport",
     "Trust",
     "UnbindPlan",
+    "is_call_id",
     "is_timestamp",
     "new_id",
     "now",

@@ -28,6 +28,7 @@ from memriver_core.settings import (
     SESSION_SEARCH_LIMIT_MAX,
     STOP_NUDGE_INTERVAL_PROMPTS,
     STOP_NUDGE_MIN_PROMPTS,
+    TOOL_CALL_RETENTION_S,
     Settings,
 )
 
@@ -88,10 +89,10 @@ def test_injects_the_session_constants(tmp_path):
     assert (service._session_prompt_chars, service._session_recent_prompts,
             service._session_prompt_scan_max_bytes, service._stop_nudge_min_prompts,
             service._stop_nudge_interval_prompts, service._session_search_limit_default,
-            service._session_search_limit_max) == (
+            service._session_search_limit_max, service._tool_call_retention_s) == (
         SESSION_PROMPT_CHARS, SESSION_RECENT_PROMPTS, SESSION_PROMPT_SCAN_MAX_BYTES,
         STOP_NUDGE_MIN_PROMPTS, STOP_NUDGE_INTERVAL_PROMPTS, SESSION_SEARCH_LIMIT_DEFAULT,
-        SESSION_SEARCH_LIMIT_MAX)
+        SESSION_SEARCH_LIMIT_MAX, TOOL_CALL_RETENTION_S)
 
 
 def test_returns_the_facade(tmp_path):

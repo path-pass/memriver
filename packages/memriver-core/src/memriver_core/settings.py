@@ -34,6 +34,7 @@ __all__ = [
     "SESSION_SEARCH_LIMIT_MAX",
     "STOP_NUDGE_INTERVAL_PROMPTS",
     "STOP_NUDGE_MIN_PROMPTS",
+    "TOOL_CALL_RETENTION_S",
     "Settings",
     "load_settings",
     "storage_root",
@@ -70,6 +71,7 @@ STOP_NUDGE_INTERVAL_PROMPTS = 5         # prompts between two Stop nudges
 GIT_QUERY_TIMEOUT_S = 2                 # one git call mapping a worktree
 SESSION_SEARCH_LIMIT_DEFAULT = 10
 SESSION_SEARCH_LIMIT_MAX = 50
+TOOL_CALL_RETENTION_S = 3600            # how long a Claude Code call -> session mapping is kept
 
 
 def storage_root(env: Mapping[str, str] | None = None,

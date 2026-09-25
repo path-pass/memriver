@@ -62,6 +62,17 @@ _SESSIONS_TABLE = """CREATE TABLE sessions (
   CHECK (status = 'registered' OR (project_id IS NULL AND origin = 'first-seen'))
 ) STRICT"""
 _SESSIONS_INDEX = "CREATE INDEX sessions_by_project ON sessions(project_id, last_active_at DESC)"
+# Claude Code's tool_use_id -> the session that made the call, recorded by its
+# PreToolUse hook: its MCP server outlives /clear and an in-app /resume, so the
+# call, not the server's environment, names the current session (spec U15)
+_TOOL_CALLS_TABLE = """CREATE TABLE tool_calls (
+  harness     TEXT NOT NULL CHECK (harness IN ('claude-code','codex')),
+  call_id     TEXT NOT NULL CHECK (length(call_id) BETWEEN 1 AND 256),
+  session_id  TEXT NOT NULL CHECK (length(session_id) BETWEEN 1 AND 128),
+  recorded_at TEXT NOT NULL,
+  PRIMARY KEY (harness, call_id)
+) STRICT"""
+_TOOL_CALLS_INDEX = "CREATE INDEX tool_calls_by_recorded_at ON tool_calls(recorded_at)"
 
 _SCHEMA = (
     """CREATE TABLE projects (
@@ -92,6 +103,8 @@ _SCHEMA = (
      "ON memories(project_id, updated DESC) WHERE deleted_at IS NULL"),
     _SESSIONS_TABLE,
     _SESSIONS_INDEX,
+    _TOOL_CALLS_TABLE,
+    _TOOL_CALLS_INDEX,
 )
 
 # the v1 -> v2 upgrade (spec §3.2): a module-level tuple so a test can
@@ -100,6 +113,8 @@ _UPGRADE_STATEMENTS = (
     "ALTER TABLE memories ADD COLUMN last_read_at TEXT",   # NULL = never read since v2
     _SESSIONS_TABLE,
     _SESSIONS_INDEX,
+    _TOOL_CALLS_TABLE,
+    _TOOL_CALLS_INDEX,
 )
 
 MEMORY_COLUMNS = ("id, project_id, type, source_harness, source_method, trust, sync, "

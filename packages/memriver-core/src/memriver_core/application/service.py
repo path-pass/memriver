@@ -73,8 +73,9 @@ STORE_UNREADABLE_HEADER = ("project: unavailable — the memory store could not 
                            "ask the user to run memriver doctor")
 PENDING_HEADER = ("project: awaiting confirmation — this session is not registered; "
                   "ask the user, then call session_confirm")
-# pending with no candidate: confirming would register no project for good, so
-# the header does not offer session_confirm
+# pending with no candidate: confirming would register the session with no
+# project (session_register can assign one later), so the header offers
+# session_register rather than session_confirm
 PENDING_NO_CANDIDATE_HEADER = (
     "project: none — this session is not registered, and the directory it was first "
     "observed in is not in any registered project, so global is read-only; to save, ask "
@@ -116,7 +117,8 @@ class MemoryService:
                  project_name_max_chars: int, session_prompt_chars: int,
                  session_recent_prompts: int, session_prompt_scan_max_bytes: int,
                  stop_nudge_min_prompts: int, stop_nudge_interval_prompts: int,
-                 session_search_limit_default: int, session_search_limit_max: int) -> None:
+                 session_search_limit_default: int, session_search_limit_max: int,
+                 tool_call_retention_s: int) -> None:
         self._memory_store = memory_store
         self._project_store = project_store
         self._session_store = session_store
@@ -148,6 +150,7 @@ class MemoryService:
         self._stop_nudge_interval_prompts = stop_nudge_interval_prompts
         self._session_search_limit_default = session_search_limit_default
         self._session_search_limit_max = session_search_limit_max
+        self._tool_call_retention_s = tool_call_retention_s
 
     def _policy(self) -> ContentPolicy:
         if self._content_policy is None:
@@ -263,6 +266,24 @@ class MemoryService:
                 interval=self._stop_nudge_interval_prompts)
         except StorageFailure:
             return False
+
+    def record_tool_call(self, key: SessionKey, call_id: str) -> None:
+        """Claude Code's PreToolUse: remember which session made this call (spec U15).
+
+        Best effort: a failure only leaves the MCP server on its fallback.
+        """
+        try:
+            self._session_store.record_call(key, call_id, now(),
+                                            retention_s=self._tool_call_retention_s)
+        except StorageFailure:
+            pass
+
+    def session_key_for_call(self, harness: str, call_id: str) -> SessionKey | None:
+        """The session a recorded tool call belongs to; None when none is known."""
+        try:
+            return self._session_store.session_for_call(harness, call_id)
+        except StorageFailure:
+            return None
 
     def session_context(self, key: SessionKey | None) -> ProjectContext:
         """The context a session's stored row grants. Never resolves a directory."""

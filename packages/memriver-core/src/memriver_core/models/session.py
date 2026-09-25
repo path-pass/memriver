@@ -12,6 +12,20 @@ SessionOrigin = Literal["start", "first-seen"]
 PromptOmission = Literal["secret", "too-large", "invalid", "scan-error"]
 
 _SESSION_ID_MAX_CHARS = 128
+_CALL_ID_MAX_CHARS = 256
+
+
+def _is_harness_string(value: object, max_chars: int) -> bool:
+    """A harness-owned id: text of 1..max_chars characters, each printable and not
+    whitespace. A format character (a bidi override, a zero-width space) or a lone
+    surrogate is invisible where the id is shown."""
+    return (isinstance(value, str) and 1 <= len(value) <= max_chars
+            and all(ch.isprintable() and not ch.isspace() for ch in value))
+
+
+def is_call_id(value: object) -> bool:
+    """Whether `value` can be a harness's tool-call id (Claude Code's `tool_use_id`)."""
+    return _is_harness_string(value, _CALL_ID_MAX_CHARS)
 
 
 @dataclass(frozen=True)
@@ -24,11 +38,7 @@ class SessionKey:
     def __post_init__(self) -> None:
         if self.harness not in get_args(Harness):
             raise ValueError("unknown harness")
-        # printable and not whitespace: a format character (a bidi override, a
-        # zero-width space) or a lone surrogate is invisible where the id is shown
-        if not (isinstance(self.session_id, str)
-                and 1 <= len(self.session_id) <= _SESSION_ID_MAX_CHARS
-                and all(ch.isprintable() and not ch.isspace() for ch in self.session_id)):
+        if not _is_harness_string(self.session_id, _SESSION_ID_MAX_CHARS):
             raise ValueError("invalid session id")
 
 

@@ -43,6 +43,7 @@ from memriver_core.settings import BUSY_TIMEOUT_MS, Settings
 
 KEY = SessionKey("claude-code", "session-1")
 OTHER_KEY = SessionKey("codex", "session-2")
+OTHER_KEY_CLAUDE = SessionKey("claude-code", "session-3")
 PENDING_HEADER = ("project: awaiting confirmation — this session is not registered; "
                   "ask the user, then call session_confirm")
 UNIDENTIFIED_HEADER = ("project: none — this session is not registered with memriver: its "
@@ -117,7 +118,7 @@ class World:
             session_prompt_chars=512, session_recent_prompts=5,
             session_prompt_scan_max_bytes=65536, stop_nudge_min_prompts=5,
             stop_nudge_interval_prompts=5, session_search_limit_default=10,
-            session_search_limit_max=50)
+            session_search_limit_max=50, tool_call_retention_s=3600)
 
     def initialize(self) -> None:
         self.global_id = self.service.ensure_global()
@@ -858,6 +859,21 @@ def test_delete_never_moves_the_watermark(world):
     world.prompt()
     world.service.delete(memory.id, context, expected_version=memory.version)
     assert world.row().last_write_prompt_count == 0
+
+
+def test_a_recorded_tool_call_names_its_session(world):
+    world.start()
+    world.service.record_tool_call(OTHER_KEY_CLAUDE, "call-1")
+    assert world.service.session_key_for_call("claude-code", "call-1") == OTHER_KEY_CLAUDE
+    assert world.service.session_key_for_call("claude-code", "call-2") is None
+
+
+def test_the_tool_call_mapping_never_fails_its_caller(world):
+    world.start()
+    world.session_store = Broken(world.session_store, "record_call", "session_for_call")
+    service = world.build()
+    assert service.record_tool_call(KEY, "call-1") is None
+    assert service.session_key_for_call("claude-code", "call-1") is None
 
 
 def test_only_read_records_last_read_at(world):

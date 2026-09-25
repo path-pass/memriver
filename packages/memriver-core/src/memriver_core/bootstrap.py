@@ -43,6 +43,7 @@ from .settings import (
     SESSION_SEARCH_LIMIT_MAX,
     STOP_NUDGE_INTERVAL_PROMPTS,
     STOP_NUDGE_MIN_PROMPTS,
+    TOOL_CALL_RETENTION_S,
     Settings,
 )
 
@@ -95,4 +96,5 @@ def build_service(settings: Settings, *, root: Path | None = None,
         stop_nudge_interval_prompts=STOP_NUDGE_INTERVAL_PROMPTS,
         session_search_limit_default=SESSION_SEARCH_LIMIT_DEFAULT,
         session_search_limit_max=SESSION_SEARCH_LIMIT_MAX,
+        tool_call_retention_s=TOOL_CALL_RETENTION_S,
     )

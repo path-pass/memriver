@@ -581,7 +581,8 @@ def test_an_undecodable_row_in_the_same_project_is_skipped_by_search_and_index_n
         session_store=None, canonical_directory=None, main_tree_path=None, current_branch=None, root_is_intact=None,
         session_prompt_chars=512, session_recent_prompts=5, session_prompt_scan_max_bytes=65536,
         stop_nudge_min_prompts=5, stop_nudge_interval_prompts=5,
-        session_search_limit_default=10, session_search_limit_max=50)
+        session_search_limit_default=10, session_search_limit_max=50,
+        tool_call_retention_s=3600)
     assert good.id in service.index(ProjectContext("registered", "", world["read_write_set"]))
     assert world["memory_store"].read(good.id, world["read_write_set"]) == good
     with pytest.raises(StorageFailure):

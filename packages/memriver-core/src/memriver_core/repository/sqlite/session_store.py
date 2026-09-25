@@ -6,6 +6,7 @@ import dataclasses
 import json
 import sqlite3
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TypeVar, get_args
 
@@ -16,6 +17,7 @@ from memriver_core.models import (
     SessionKey,
     SessionOrigin,
     SessionStatus,
+    is_call_id,
     is_timestamp,
 )
 from memriver_core.models.errors import ProjectUnavailable, StorageFailure
@@ -35,6 +37,11 @@ _INSERT = (f"INSERT INTO sessions ({SESSION_COLUMNS}) VALUES ({_PLACEHOLDERS}) "
 _UPDATE = ("UPDATE sessions SET "
            + ", ".join(f"{column.strip()} = ?" for column in SESSION_COLUMNS.split(",")[2:])
            + _BY_KEY)
+
+_UPSERT_CALL = ("INSERT INTO tool_calls (harness, call_id, session_id, recorded_at) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT(harness, call_id) DO UPDATE SET "
+                "session_id = excluded.session_id, recorded_at = excluded.recorded_at")
+_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 
 _T = TypeVar("_T")
 
@@ -273,6 +280,37 @@ class SqliteSessionStore:
             return _save(conn, dataclasses.replace(stored, status="registered",
                                                    project_id=project_id))
         return self._write(assign)
+
+    def record_call(self, key: SessionKey, call_id: str, at: str, *,
+                    retention_s: int) -> None:
+        if not is_call_id(call_id):
+            raise ValueError("invalid call id")
+        _require_timestamp(at)
+        if type(retention_s) is not int or retention_s < 1:
+            raise ValueError("retention_s is not a positive integer")
+        # the same fixed-width form, so the prune compares text chronologically
+        expired = (datetime.strptime(at, _TIMESTAMP_FORMAT).replace(tzinfo=UTC)
+                   - timedelta(seconds=retention_s)).strftime(_TIMESTAMP_FORMAT)
+
+        def record(conn: sqlite3.Connection) -> None:
+            conn.execute(_UPSERT_CALL, (key.harness, call_id, key.session_id, at))
+            conn.execute("DELETE FROM tool_calls WHERE recorded_at < ?", (expired,))
+        self._write(record)
+
+    def session_for_call(self, harness: str, call_id: str) -> SessionKey | None:
+        if not is_call_id(call_id):
+            return None                     # an id no call can have names no session
+        with self._database.read() as conn:
+            if conn is None:
+                return None
+            row = conn.execute("SELECT session_id FROM tool_calls "
+                               "WHERE harness = ? AND call_id = ?", (harness, call_id)).fetchone()
+        if row is None:
+            return None
+        try:
+            return SessionKey(harness, row[0])
+        except ValueError:
+            return None                     # a bad row routes nothing
 
     def search(self, project_id: str | None, query: str, limit: int) -> list[Session]:
         sql, params = _SELECT, ()

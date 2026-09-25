@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from memriver_core.models import PromptEntry, SessionKey, now
+from memriver_core.models import PromptEntry, SessionKey, is_call_id, now
 
 
 @pytest.mark.parametrize("harness", ["claude-code", "codex"])
@@ -28,6 +28,18 @@ def test_a_session_key_accepts_printable_ids_up_to_128_characters(session_id):
 def test_a_session_key_rejects_empty_long_whitespace_and_invisible_ids(session_id):
     with pytest.raises(ValueError):
         SessionKey("claude-code", session_id)
+
+
+@pytest.mark.parametrize("call_id", ["a", "x" * 256, "toolu_01ABCdef", "调用"])
+def test_a_call_id_is_printable_up_to_256_characters(call_id):
+    assert is_call_id(call_id)
+
+
+@pytest.mark.parametrize("call_id", [
+    "", "x" * 257, "a b", "a\n", "a" + chr(0x202E), "a" + chr(0xD800), None, 7,
+])
+def test_a_call_id_is_never_empty_long_whitespace_or_invisible(call_id):
+    assert not is_call_id(call_id)
 
 
 def test_a_prompt_entry_holds_text_or_an_omission():

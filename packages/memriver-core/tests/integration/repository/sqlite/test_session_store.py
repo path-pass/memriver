@@ -496,3 +496,71 @@ def test_a_malformed_argument_is_a_value_error_and_writes_nothing(session_store,
     with pytest.raises(ValueError):
         call(session_store)
     assert session_store.get(KEY) == before
+
+
+# --- tool calls (the Claude Code call mapping) ---
+
+HOUR = 3600
+OTHER_KEY = SessionKey("claude-code", "session-2")
+
+
+def _hour(hour: int, minute: int = 0) -> str:
+    return f"2026-09-24T{hour:02d}:{minute:02d}:00.000000Z"
+
+
+def test_a_recorded_call_names_its_session(session_store):
+    session_store.record_call(KEY, "call-1", _hour(10), retention_s=HOUR)
+    session_store.record_call(OTHER_KEY, "call-2", _hour(10), retention_s=HOUR)
+    assert session_store.session_for_call("claude-code", "call-1") == KEY
+    assert session_store.session_for_call("claude-code", "call-2") == OTHER_KEY
+    assert session_store.session_for_call("claude-code", "call-3") is None
+    assert session_store.session_for_call("codex", "call-1") is None
+
+
+def test_recording_a_call_again_moves_it_to_the_latest_session(session_store, initialized):
+    session_store.record_call(KEY, "call-1", _hour(10), retention_s=HOUR)
+    session_store.record_call(OTHER_KEY, "call-1", _hour(10, 5), retention_s=HOUR)
+    assert session_store.session_for_call("claude-code", "call-1") == OTHER_KEY
+    assert _raw(initialized, "SELECT count(*) FROM tool_calls") == [(1,)]
+
+
+def test_recording_a_call_prunes_calls_older_than_the_retention(session_store, initialized):
+    session_store.record_call(KEY, "old", _hour(9), retention_s=HOUR)
+    session_store.record_call(KEY, "edge", _hour(10), retention_s=HOUR)
+    session_store.record_call(KEY, "new", _hour(11), retention_s=HOUR)
+    assert session_store.session_for_call("claude-code", "old") is None
+    assert session_store.session_for_call("claude-code", "edge") == KEY
+    assert session_store.session_for_call("claude-code", "new") == KEY
+
+
+def test_recording_a_call_on_an_absent_store_is_a_no_op_that_creates_nothing(root):
+    session_store = _store(root)
+    assert session_store.record_call(KEY, "call-1", _hour(10), retention_s=HOUR) is None
+    assert session_store.session_for_call("claude-code", "call-1") is None
+    assert not root.exists()
+
+
+@pytest.mark.parametrize("call", [
+    lambda store: store.record_call(KEY, "a b", _hour(10), retention_s=HOUR),
+    lambda store: store.record_call(KEY, "", _hour(10), retention_s=HOUR),
+    lambda store: store.record_call(KEY, "x" * 257, _hour(10), retention_s=HOUR),
+    lambda store: store.record_call(KEY, None, _hour(10), retention_s=HOUR),
+    lambda store: store.record_call(KEY, "call-1", "yesterday", retention_s=HOUR),
+    lambda store: store.record_call(KEY, "call-1", _hour(10), retention_s=0),
+])
+def test_a_malformed_call_is_a_value_error_and_records_nothing(session_store, initialized,
+                                                               call):
+    with pytest.raises(ValueError):
+        call(session_store)
+    assert _raw(initialized, "SELECT count(*) FROM tool_calls") == [(0,)]
+
+
+@pytest.mark.parametrize("call_id", ["a b", "", "x" * 257, None, 17])
+def test_looking_up_an_impossible_call_id_finds_nothing(session_store, call_id):
+    assert session_store.session_for_call("claude-code", call_id) is None
+
+
+def test_a_call_row_naming_an_invalid_session_is_ignored(session_store, initialized):
+    session_store.record_call(KEY, "call-1", _hour(10), retention_s=HOUR)
+    _raw(initialized, "UPDATE tool_calls SET session_id = 'a b'")
+    assert session_store.session_for_call("claude-code", "call-1") is None
