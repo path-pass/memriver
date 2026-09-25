@@ -53,8 +53,9 @@ body:        All language runtimes on this machine are managed by mise, not nvm/
 - **project_id** — the one project this memory belongs to; global memories
   belong to the one project row flagged global (it never has a directory --
   an unbound project has none either; the flag, not the missing directory,
-  is what makes it global), read-only to agents and, today, to the CLI too
-  (*Maintenance*). The id itself carries no project.
+  is what makes it global), read-only to agents; the human CLI can delete a
+  global entry by id but never create or update one, and `memriver dream`
+  writes it (*Maintenance*). The id itself carries no project.
 - **version** — an optimistic-concurrency counter, starting at 1 and
   incrementing on every update or soft delete (`--hard` removes the row
   instead, so there is no new version to see). `memory_read` returns it so

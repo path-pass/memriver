@@ -172,8 +172,10 @@ later -- shares that project's memories; the nearest registered ancestor
 wins, so registering a sub-directory carves it out as its own project. An
 unregistered directory has no project: agents can read global memory
 but have nowhere to save, and the session-start injection says so. Global
-memory is read-only to agents; it is written by hand (see *Storage
-layout*). A binding change reaches Cursor/Kiro at their MCP server's next
+memory is read-only to agents; `memriver dream` writes it (merges, rewrites,
+extracts -- see *Dream*), a human deletes an entry from it by id with
+`memriver delete`, and hand-editing `memriver.db` remains the fallback (see
+*Storage layout*). A binding change reaches Cursor/Kiro at their MCP server's next
 start. It reaches Claude Code/Codex in a new session, or in a session that
 has no project yet once its agent calls `session_register` (on your request,
 or right after running `memriver project init` for you): a session's stored
