@@ -17,11 +17,13 @@ from memriver_core.models import (
     DreamRun,
     Memory,
     Review,
+    RunStatus,
     SourceRef,
     UndoResult,
     UpdateOp,
     effective_ttl_days,
     now_strictly_after,
+    single_line,
     timestamp_shift,
 )
 from memriver_core.models.errors import (
@@ -125,6 +127,14 @@ def _least_trusted(memories: list[Memory]) -> str:
     return max((memory.trust for memory in memories), key=_TRUST_RANK.__getitem__)
 
 
+def _stored_description(description: str) -> str:
+    """`description`, stripped -- or "" when it holds nothing but control characters,
+    the same emptiness `single_line` decides everywhere else. `.strip()` alone
+    leaves such a description raw in the row: control characters are not
+    whitespace, so they survive it untouched."""
+    return description.strip() if single_line(description) else ""
+
+
 def _ref(memory: Memory) -> SourceRef:
     """A source as it stands now, sealed: its version and a snapshot of its content."""
     return SourceRef(memory.id, memory.version, memory.project_id,
@@ -195,7 +205,7 @@ def _create(conn: sqlite3.Connection, group: ChangeGroup, op: CreateOp, memory_i
     memory = Memory(id=memory_id, project_id=op.project_id, type=op.type,
                     source={"harness": group.harness, "method": "dream"},
                     trust=_least_trusted(sources), sync=all(s.sync for s in sources),
-                    created=now, updated=now, description=op.description.strip(),
+                    created=now, updated=now, description=_stored_description(op.description),
                     body=op.body.strip())
     row = memory_to_row(memory)
     memory_from_row(row)                    # a row the read path would reject is never written
@@ -220,7 +230,7 @@ def _update(conn: sqlite3.Connection, group: ChangeGroup, op: UpdateOp,
     refs = [ref for ref in carried if ref.source_id not in new_ids] + [_ref(s) for s in sources]
     # never above its own row: dream does not raise trust or turn a sync on
     updated = dataclasses.replace(
-        memory, description=op.description.strip(), body=op.body.strip(),
+        memory, description=_stored_description(op.description), body=op.body.strip(),
         source={"harness": group.harness, "method": "dream"},
         updated=now_strictly_after(memory.updated), version=memory.version + 1,
         trust=_least_trusted([memory, *sources]),
@@ -488,7 +498,8 @@ class SqliteMaintenanceStore:
         run_from_row(row)                   # the run table only holds rows it can read back
         conn.execute(f"INSERT INTO dream_runs ({RUN_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)", row)
 
-    def finish_run(self, run_id: str, *, status: str, report: dict, finished_at: str) -> None:
+    def finish_run(self, run_id: str, *, status: RunStatus, report: dict,
+                   finished_at: str) -> None:
         with self._database.write(create=False) as conn:
             found = conn.execute(f"SELECT {RUN_COLUMNS} FROM dream_runs WHERE run_id = ?",
                                  (run_id,)).fetchone()

@@ -104,14 +104,15 @@ def build_service(settings: Settings, *, root: Path | None = None,
     )
 
 
-def build_maintenance_service(settings: Settings, *,
-                              root: Path | None = None) -> MaintenanceService:
+def build_maintenance_service(settings: Settings, *, root: Path | None = None,
+                              home: Path | None = None) -> MaintenanceService:
     """The maintenance run's facade over the same store (spec §4). Never composed by MCP."""
     store_root = settings.root if root is None else root
+    # home only matters to binding plans, which the maintenance run never makes
+    home = Path.home() if home is None else home
     return MaintenanceService(
         SqliteMaintenanceStore(store_root, busy_timeout_ms=BUSY_TIMEOUT_MS),
-        # home only matters to binding plans, which the maintenance run never makes
-        SqliteProjectStore(store_root, home=Path.home(), busy_timeout_ms=BUSY_TIMEOUT_MS),
+        SqliteProjectStore(store_root, home=home, busy_timeout_ms=BUSY_TIMEOUT_MS),
         SqliteSessionStore(store_root, busy_timeout_ms=BUSY_TIMEOUT_MS),
         _content_policy,
         max_body_chars=settings.max_body_chars,

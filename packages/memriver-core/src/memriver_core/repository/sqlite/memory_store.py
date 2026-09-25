@@ -204,12 +204,16 @@ class SqliteMemoryStore:
                     "WHERE id = ? AND deleted_at IS NULL", (at, memory_id))
                 # the version the caller was handed, not the row's current one:
                 # another writer may have moved the row since the read
-                conn.execute(
+                cursor = conn.execute(
                     "INSERT INTO memory_reads (memory_id, memory_version, read_at, harness, "
                     "session_id) SELECT id, ?, ?, ?, ? FROM memories "
                     "WHERE id = ? AND deleted_at IS NULL",
                     (memory_version, at, harness, session_id, memory_id))
-                if prune_before is not None:
+                # an unknown or deleted id inserted no row: the whole call is a
+                # no-op then, so the prune must not run either -- otherwise a
+                # touch_read that recorded nothing would still trim every
+                # other memory's history
+                if prune_before is not None and cursor.rowcount > 0:
                     conn.execute("DELETE FROM memory_reads WHERE read_at < ?", (prune_before,))
         except StorageFailure:
             pass   # best effort (spec §3.3): a missing store, or any failure, never fails the read

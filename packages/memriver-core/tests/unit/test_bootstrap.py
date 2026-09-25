@@ -132,3 +132,9 @@ def test_build_maintenance_service_composes_the_sqlite_adapters(tmp_path):
     explicit = bootstrap.build_maintenance_service(Settings(root=tmp_path / "s"),
                                                    root=tmp_path / "x")
     assert explicit._maintenance_store.root == tmp_path / "x"
+
+
+def test_build_maintenance_service_accepts_an_explicit_home_like_build_service(tmp_path):
+    maintenance = bootstrap.build_maintenance_service(Settings(root=tmp_path / "s"),
+                                                       home=tmp_path / "home")
+    assert maintenance._project_store._home == tmp_path / "home"

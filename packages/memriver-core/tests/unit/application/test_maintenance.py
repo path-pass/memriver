@@ -248,6 +248,19 @@ def test_derived_trust_is_the_least_trusted_source_and_sync_needs_every_source(w
     assert (merged.trust, merged.sync) == ("untrusted-derived", False)
 
 
+def test_a_weaker_target_keeps_its_own_trust_and_sync_despite_stronger_evidence(world):
+    """C1: `_least_trusted` must weigh the target row itself, not just its sources --
+    a rewrite is never a way to launder a weak target's trust up through strong
+    evidence."""
+    target = _plant(world, world.project.id, "the API runs on port 8000",
+                    trust="untrusted-derived", sync=0)
+    evidence = _plant(world, world.project.id, "the API moved to 9000", trust="user", sync=1)
+    world.maintenance.apply_group(_group(world, "rewrite", [
+        UpdateOp(target, 1, "api port", "The API runs on port 9000.", ((evidence, 1),))]))
+    rewritten = world.service.show(target)
+    assert (rewritten.trust, rewritten.sync) == ("untrusted-derived", False)
+
+
 def test_an_evidence_rewrite_takes_its_trust_and_sync_from_the_evidence(world):
     target = _plant(world, world.project.id, "the API runs on port 8000", trust="user")
     evidence = _plant(world, world.project.id, "the API moved to 9000",
@@ -281,6 +294,57 @@ def test_core_refuses_a_group_that_breaks_the_kind_rules(world, ops):
     assert _counts(world) == counts
 
 
+@pytest.mark.parametrize("break_id", [
+    "group-project", "op-target", "create-project", "source"])
+def test_a_malformed_id_is_rejected_before_reaching_the_store(world, break_id):
+    a, b = _write(world, "a"), _write(world, "b")
+    bad = "not-an-id!"
+    if break_id == "group-project":
+        group = ChangeGroup(run_id="run1", kind="rewrite", project_id=bad, reason="r",
+                            harness="codex", ops=(UpdateOp(a.id, 1, "cue", "x",
+                                                           ((b.id, 1),)),))
+    elif break_id == "op-target":
+        group = _group(world, "rewrite", [UpdateOp(bad, 1, "cue", "x", ((b.id, 1),))])
+    elif break_id == "create-project":
+        group = _group(world, "merge", [CreateOp(bad, "project", "cue", "x",
+                                                  ((a.id, 1), (b.id, 1)))])
+    else:
+        group = _group(world, "rewrite", [UpdateOp(a.id, 1, "cue", "x", ((bad, 1),))])
+    counts = _counts(world)
+    with pytest.raises(ValueError):
+        world.maintenance.apply_group(group)
+    assert _counts(world) == counts
+
+
+def test_a_repeated_source_within_one_op_is_rejected(world):
+    a = _write(world, "a")
+    counts = _counts(world)
+    with pytest.raises(ValueError):
+        world.maintenance.apply_group(_group(world, "merge", [
+            CreateOp(world.project.id, "project", "cue", "x", ((a.id, 1), (a.id, 1)))]))
+    assert _counts(world) == counts
+
+
+def test_a_control_character_only_description_on_a_create_is_stored_empty_not_raw(world):
+    a, b = _write(world, "a"), _write(world, "b")
+    control_only = chr(1) + chr(2)
+    change_id = world.maintenance.apply_group(_group(world, "merge", [
+        CreateOp(world.project.id, "project", control_only, "a and b",
+                 ((a.id, 1), (b.id, 1)))]))
+    merged = world.service.show(world.maintenance.change(change_id).rows[0].id)
+    assert merged.description == ""
+
+
+def test_a_control_character_only_description_on_a_rewrite_is_stored_empty_too(world):
+    target = _plant(world, world.project.id, "the API runs on port 8000")
+    evidence = _write(world, "the API moved to 9000")
+    control_only = chr(3) + chr(4)
+    world.maintenance.apply_group(_group(world, "rewrite", [
+        UpdateOp(target, 1, control_only, "The API runs on port 9000.",
+                 ((evidence.id, 1),))]))
+    assert world.service.show(target).description == ""
+
+
 def test_a_stale_precondition_writes_nothing(world):
     a, b = _write(world, "a"), _write(world, "b")
     stale = _merge(world, a, b)
@@ -300,13 +364,13 @@ def test_a_source_from_another_project_is_refused_outside_extract(world):
 
 
 def test_extract_writes_global_and_nothing_else_creates_there(world):
-    a = _write(world, "use uv for python")
+    a, b = _write(world, "use uv for python"), _write(world, "and ruff")
     change_id = world.maintenance.apply_group(_extract(world, a))
     created = world.service.show(world.maintenance.change(change_id).rows[0].id)
     assert created.project_id == world.global_id
     with pytest.raises(GroupConflict):      # a merge planned for the project cannot land in global
         world.maintenance.apply_group(_group(world, "merge", [
-            CreateOp(world.global_id, "project", "cue", "x", ((a.id, 1), (a.id, 1)))]))
+            CreateOp(world.global_id, "project", "cue", "x", ((a.id, 1), (b.id, 1)))]))
     with pytest.raises(GroupConflict):      # an extract is planned for global only
         world.maintenance.apply_group(_group(world, "extract", [
             CreateOp(world.project.id, "project", "cue", "x", ((a.id, 1),))]))
@@ -376,6 +440,21 @@ def test_a_reference_cycle_is_refused_and_nothing_is_written(world):
                                                world.service.show(merged)))
     assert caught.value.ids == (merged,)
     assert _counts(world) == counts and world.service.show(a.id).version == 1
+
+
+def test_a_cycle_only_through_a_historical_version_is_still_refused(world):
+    """I03: B's v2 cited A; undoing that leaves B's current, effective set empty, but
+    the citation still stands in `memory_sources` history, and a rewrite of A citing
+    B must still see it as a cycle."""
+    a, b = _write(world, "a"), _write(world, "b")
+    rewrite_of_b = world.maintenance.apply_group(_rewrite(world, b, 1, "b, per a", a))
+    world.maintenance.undo(rewrite_of_b)
+    assert world.maintenance.sources_of(b.id) == []           # the current set is empty
+    b_now = world.service.show(b.id)
+    with pytest.raises(GroupConflict) as caught:
+        world.maintenance.apply_group(_rewrite(world, a, 1, "a, per b", b_now))
+    assert caught.value.ids == (b.id,)
+    assert world.service.show(a.id).version == 1
 
 
 def test_an_unsafe_group_soft_deletes_its_memory_and_keeps_the_before_image(world):

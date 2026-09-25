@@ -582,9 +582,17 @@ def test_a_dangling_maintenance_table_reference_is_reported_as_invalid_row(world
 
 
 def test_a_source_row_with_an_impossible_memory_type_is_reported_as_invalid_row(world):
+    # foreign keys clean (a real derived memory, a real source memory, and the
+    # derived row's source-set): only the snapshot's impossible type is wrong,
+    # so `PRAGMA foreign_key_check` cannot be what catches this on its own
+    derived = _plant(world["store"], _memory(world["project"]))
+    source = _plant(world["store"], _memory(world["project"]))
+    _sql(world["store"], "INSERT INTO memory_source_sets VALUES (?, 1)", derived.id)
     _sql(world["store"], "INSERT INTO memory_sources VALUES "
-                         "(?, 1, ?, 1, ?, ?)", new_id(), new_id(), world["project"],
+                         "(?, 1, ?, 1, ?, ?)", derived.id, source.id, world["project"],
          '{"type":"invalid","description":"","body":"x"}')
     report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+    assert not any(f.location_hint.startswith("memory_source_sets/")
+                  or f.location_hint == "memory_source_sets" for f in report.findings)
     assert "invalid-row" in [f.kind for f in report.findings
                              if f.location_hint.startswith("memory_sources/")]

@@ -73,6 +73,20 @@ def test_touch_read_records_the_version_it_is_given_not_the_rows_current_one(wor
     assert _sql(world, "SELECT memory_version FROM memory_reads") == [(1,)]
 
 
+def test_touch_read_of_a_deleted_memory_does_not_run_the_prune(world):
+    """The retention prune must ride on an actual insert: a no-op touch_read (an
+    unknown or deleted id) must not trim another, still-active memory's history."""
+    memory = _record(world)
+    other = _record(world, "kept")
+    world["memory_store"].touch_read(other.id, "2020-01-01T00:00:00.000000Z", memory_version=1,
+                                     harness="codex")
+    world["memory_store"].delete(memory.id, world["read_write_set"], expected_version=1,
+                                 hard=False)
+    world["memory_store"].touch_read(memory.id, now(), memory_version=1, harness="codex",
+                                     prune_before="2026-01-01T00:00:00.000000Z")
+    assert _sql(world, "SELECT count(*) FROM memory_reads") == [(1,)]
+
+
 def test_prune_before_drops_older_reads_in_the_same_write(world):
     memory = _record(world)
     world["memory_store"].touch_read(memory.id, "2026-01-01T00:00:00.000000Z", memory_version=1,

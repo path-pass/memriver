@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from memriver_core.models import (
     HARNESS_RE,
+    ID_RE,
     Candidate,
     Change,
     ChangeGroup,
@@ -63,13 +64,30 @@ _SHAPES: dict[str, tuple[tuple[type, ...], int]] = {
 
 
 def _check_shape(group: ChangeGroup) -> None:
-    """The kind rules, enforced by core rather than trusted to its caller."""
+    """The kind rules, enforced by core rather than trusted to its caller.
+
+    Every id the group carries -- its project, the operation's own target or
+    project, and each source -- is checked against the public id shape here,
+    before any of it reaches the store: a malformed id must never surface as
+    a `GroupConflict.ids` entry, as if it named a real, merely-stale row. A
+    source repeated within the one operation is rejected the same way,
+    rather than left for the store's own duplicate check to report as a
+    conflict.
+    """
     if group.kind not in _SHAPES or len(group.ops) != 1:
         raise ValueError("a change group is one merge, rewrite, extract or unsafe operation")
     allowed, fewest = _SHAPES[group.kind]
     op = group.ops[0]
     if not isinstance(op, allowed) or len(getattr(op, "sources", ())) < fewest:
         raise ValueError(f"a {group.kind} group has the wrong operation or too few sources")
+    sources = getattr(op, "sources", ())
+    source_ids = tuple(source_id for source_id, _ in sources)
+    target_id = op.project_id if isinstance(op, CreateOp) else op.id
+    if not all(ID_RE.fullmatch(identifier)
+              for identifier in (group.project_id, target_id, *source_ids)):
+        raise ValueError("a change group names a malformed project, target or source id")
+    if len(set(source_ids)) != len(source_ids):
+        raise ValueError("a change group repeats a source within one operation")
 
 
 class MaintenanceService:

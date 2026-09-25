@@ -306,8 +306,8 @@ def upgrade_if_needed(path: Path, *, busy_timeout_ms: int) -> None:
     SQLite's DDL is transactional.
 
     `user_version` is read once outside any transaction first: almost every
-    open finds v2 already, and only a database actually at v1 may take the
-    write lock -- otherwise every read would queue behind a concurrent
+    open finds v3 already, and only a database actually at v1 or v2 may take
+    the write lock -- otherwise every read would queue behind a concurrent
     writer's `BEGIN IMMEDIATE` for a schema that never changes.
     """
     try:

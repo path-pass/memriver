@@ -195,13 +195,13 @@ def test_two_openers_upgrade_a_version_one_database_once(tmp_path):
     assert "last_read_at" in columns
 
 
-def test_a_read_of_a_v2_database_does_not_queue_behind_a_writers_lock(tmp_path):
+def test_a_read_of_a_current_database_does_not_queue_behind_a_writers_lock(tmp_path):
     """`upgrade_if_needed` must not take BEGIN IMMEDIATE once the schema is already
     current: that would serialize every read behind any concurrent writer's own
     write transaction, for an upgrade that never has anything to do."""
     root = tmp_path / "store"
     with _db(root).write():
-        pass                                # creates the v2 schema
+        pass                                # creates the current (v3) schema
     holder = sqlite3.connect(root / "memriver.db", isolation_level=None)
     holder.execute("BEGIN IMMEDIATE")
     holder.execute("INSERT INTO projects (id, name, root, is_global) VALUES (?, 'g', NULL, 1)",
