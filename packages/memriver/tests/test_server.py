@@ -1195,7 +1195,11 @@ class _MetaThatRaisesOnDump:
     (None, {}),
     ("not-a-mapping", {}),
     (_MetaThatRaisesOnDump(), {}),
-], ids=["mapping", "pydantic-like", "none", "non-mapping", "model-dump-raises"])
+    (_PydanticLikeMeta([1, 2, 3]), {}),
+    (_PydanticLikeMeta("not-a-mapping-either"), {}),
+    (_PydanticLikeMeta(None), {}),
+], ids=["mapping", "pydantic-like", "none", "non-mapping", "model-dump-raises",
+        "model-dump-returns-list", "model-dump-returns-string", "model-dump-returns-none"])
 def test_meta_as_dict_reads_any_shape_without_raising(meta, expected):
     from memriver.server import _meta_as_dict
     assert _meta_as_dict(meta) == expected
@@ -1237,3 +1241,24 @@ async def test_a_claude_code_call_id_still_routes_when_meta_arrives_as_a_plain_d
     server = build_server(root=world["store"], project_dir=world["dir"], harness="claude-code")
     index = await _call(server, "memory_index", meta=_claude_meta("call-1"))
     assert index.splitlines()[0] == _registered_header(world, other)
+
+
+async def test_a_meta_value_of_the_wrong_shape_is_read_as_absent(world, monkeypatch):
+    """A Mapping meta whose nested value has an unexpected shape must not raise
+    a AttributeError into the tool call; it reads as if that value were absent
+    (Task 14 fix round 1): Codex's nested turn metadata as a list falls back to
+    unidentified, and Claude Code's call id as a number falls back to the
+    server's environment session, exactly as an unmapped call id already does."""
+    _start(world, SessionKey("codex", CODEX_ID), world["dir"])
+    codex_server = build_server(root=world["store"], project_dir=world["dir"], harness="codex")
+    nested_not_a_mapping = {"x-codex-turn-metadata": [1, 2, 3]}
+    assert (await _call(codex_server, "memory_index", meta=nested_not_a_mapping)) \
+        .splitlines()[0] == UNIDENTIFIED_HEADER
+
+    _start(world, SessionKey("claude-code", "s-demo"), world["dir"])
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "s-demo")
+    claude_server = build_server(root=world["store"], project_dir=world["dir"],
+                                 harness="claude-code")
+    call_id_not_a_string = {"claudecode/toolUseId": 17}
+    assert (await _call(claude_server, "memory_index", meta=call_id_not_a_string)) \
+        .splitlines()[0] == _registered_header(world, world["dir"])

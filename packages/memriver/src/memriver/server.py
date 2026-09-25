@@ -224,9 +224,10 @@ def _meta_as_dict(meta: Any) -> dict:
     if model_dump is None:
         return {}
     try:
-        return model_dump()
+        dumped = model_dump()
     except Exception:  # noqa: BLE001
         return {}
+    return dumped if isinstance(dumped, Mapping) else {}
 
 
 def _session_key(harness: str, ctx: Context, service: Any) -> SessionKey | None:
