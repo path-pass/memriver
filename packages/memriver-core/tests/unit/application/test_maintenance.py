@@ -606,3 +606,60 @@ def test_retire_refuses_a_review_whose_version_does_not_match_judged_version(wor
                                  now=now(), review=_review(memory_id, 999))
     assert world.service.show(memory_id).deleted_at is None
     assert (_count(world, "dream_reviews"), _count(world, "dream_changes")) == (0, 0)
+
+
+def test_quarantine_soft_deletes_a_planted_secret_naming_only_the_rule(world):
+    clean = _plant(world, world.project.id, "fact")
+    in_body = _plant(world, world.project.id, SECRET)
+    in_cue = _plant(world, world.global_id, "fact", description=SECRET)
+    changes = world.maintenance.quarantine_secrets("run1", now(), 1000)
+    assert sorted(c.rows[0].id for c in changes) == sorted([in_body, in_cue])
+    assert {(c.kind, c.reason) for c in changes} == {("secret", "github-pat")}
+    assert world.service.show(clean).deleted_at is None
+    for memory_id in (in_body, in_cue):
+        assert world.service.show(memory_id, include_deleted=True).deleted_at is not None
+    # the matched text is nowhere in the change log
+    assert all("ghp_" not in c.reason for c in world.maintenance.changes(10))
+
+
+def test_quarantine_stops_at_its_limit_and_skips_a_row_that_moved(world):
+    first = _plant(world, world.project.id, SECRET)
+    _plant(world, world.project.id, SECRET)
+    (change,) = world.maintenance.quarantine_secrets("run1", now(), 1)
+    assert change.rows[0].id == first
+    assert world.maintenance._maintenance_store.quarantine(
+        first, expected_version=1, run_id="run1", rule_id="github-pat",
+        change_id=new_id(), now=now()) is None          # already moved to version 2
+
+
+def test_a_run_is_recorded_and_a_killed_run_is_marked_failed_by_the_next(world):
+    killed = world.maintenance.start_run("schedule", "codex", now())
+    current = world.maintenance.start_run("manual", None, now())
+    assert world.maintenance.run(killed).status == "failed"
+    assert world.maintenance.run(current).status == "running"
+    world.maintenance.finish_run(current, "completed", {"secrets": {"done": 1}}, now())
+    finished = world.maintenance.run(current)
+    assert (finished.status, finished.report, finished.executor) == (
+        "completed", {"secrets": {"done": 1}}, None)
+    assert finished.finished_at is not None
+    assert next(r.run_id for r in world.maintenance.runs(10)) == current
+
+
+def test_a_skipped_run_never_marks_the_live_run_failed(world):
+    live = world.maintenance.start_run("schedule", "codex", now())
+    skipped = world.maintenance.record_skipped_run("manual", "codex", now())
+    assert world.maintenance.run(live).status == "running"
+    assert world.maintenance.run(skipped).status == "skipped"
+    assert world.maintenance.run("zzzzzzzzzz") is None
+
+
+def test_the_groups_a_run_committed_are_found_by_its_id_even_if_it_never_finished(world):
+    run_id = world.maintenance.start_run("schedule", "codex", now())
+    first = world.maintenance.quarantine_secrets(run_id, now(), 10)
+    _plant(world, world.project.id, SECRET)
+    second = world.maintenance.quarantine_secrets(run_id, now(), 10)
+    other = world.maintenance.start_run("manual", None, now())      # the killed run is failed
+    assert world.maintenance.run(run_id).status == "failed"
+    assert [c.change_id for c in world.maintenance.changes_of_run(run_id)] == [
+        c.change_id for c in (*first, *second)]
+    assert world.maintenance.changes_of_run(other) == []

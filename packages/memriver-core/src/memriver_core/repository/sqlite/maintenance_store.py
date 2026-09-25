@@ -14,6 +14,7 @@ from memriver_core.models import (
     ChangeGroup,
     ChangeRow,
     CreateOp,
+    DreamRun,
     Memory,
     Review,
     SourceRef,
@@ -34,6 +35,7 @@ from .database import (
     CHANGE_COLUMNS,
     MEMORY_COLUMNS,
     REVIEW_COLUMNS,
+    RUN_COLUMNS,
     SOURCE_COLUMNS,
     STATE_COLUMNS,
     Database,
@@ -46,6 +48,8 @@ from .database import (
     memory_to_row,
     review_from_row,
     review_to_row,
+    run_from_row,
+    run_to_row,
     source_from_row,
     state_row_check,
 )
@@ -453,3 +457,53 @@ class SqliteMaintenanceStore:
                 return False
             _save_review(conn, review)
             return True
+
+    def quarantine(self, memory_id: str, *, expected_version: int, run_id: str, rule_id: str,
+                   change_id: str, now: str) -> Change | None:
+        with self._database.write(create=False) as conn:
+            memory = _row(conn, memory_id, include_deleted=False)
+            if memory is None or memory.version != expected_version:
+                return None                  # moved since it was scanned: the next run looks again
+            change = Change(change_id=change_id, run_id=run_id, kind="secret",
+                            project_id=memory.project_id, applied_at=now,
+                            rows=(_soft_delete_row(conn, memory, now),), reason=rule_id,
+                            undone_at=None)
+            _log(conn, change)
+            return change
+
+    def start_run(self, run: DreamRun) -> None:
+        with self._database.write(create=False) as conn:
+            # called under the run lock: any other running row is a run that died
+            conn.execute("UPDATE dream_runs SET status = 'failed', finished_at = ? "
+                         "WHERE status = 'running'", (run.started_at,))
+            self._insert_run(conn, run)
+
+    def insert_run(self, run: DreamRun) -> None:
+        with self._database.write(create=False) as conn:
+            self._insert_run(conn, run)
+
+    @staticmethod
+    def _insert_run(conn: sqlite3.Connection, run: DreamRun) -> None:
+        row = run_to_row(run)
+        run_from_row(row)
+        conn.execute(f"INSERT INTO dream_runs ({RUN_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)", row)
+
+    def finish_run(self, run_id: str, *, status: str, report: dict, finished_at: str) -> None:
+        with self._database.write(create=False) as conn:
+            conn.execute("UPDATE dream_runs SET status = ?, report = ?, finished_at = ? "
+                         "WHERE run_id = ?", (status, dumps_json(report), finished_at, run_id))
+
+    def runs(self, limit: int) -> list[DreamRun]:
+        return _decoded(self._rows(f"SELECT {RUN_COLUMNS} FROM dream_runs "
+                                   "ORDER BY started_at DESC, rowid DESC LIMIT ?", (limit,)),
+                        run_from_row)
+
+    def run(self, run_id: str) -> DreamRun | None:
+        found = _decoded(self._rows(f"SELECT {RUN_COLUMNS} FROM dream_runs WHERE run_id = ?",
+                                    (run_id,)), run_from_row)
+        return found[0] if found else None
+
+    def changes_of_run(self, run_id: str) -> list[Change]:
+        return _decoded(self._rows(f"SELECT {CHANGE_COLUMNS} FROM dream_changes "
+                                   "WHERE run_id = ? ORDER BY applied_at, change_id",
+                                   (run_id,)), change_from_row)

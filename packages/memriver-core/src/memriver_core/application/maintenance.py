@@ -23,9 +23,12 @@ from memriver_core.models import (
     Change,
     ChangeGroup,
     CreateOp,
+    DreamRun,
     Memory,
     Project,
     Review,
+    RunStatus,
+    RunTrigger,
     SoftDeleteOp,
     SourceRef,
     UndoResult,
@@ -199,3 +202,55 @@ class MaintenanceService:
         self._policy_cache.get().check(review.reason, self._metadata_max_chars)
         return self._maintenance_store.record_review(
             dataclasses.replace(review, reason=single_line(review.reason)))
+
+    def quarantine_secrets(self, run_id: str, now: str, limit: int) -> list[Change]:
+        """The safety re-scan: soft-delete every active memory the current policy refuses.
+
+        Global included, no model involved. Each hit is its own transaction,
+        re-checked at the version scanned; its change reason is the rule id,
+        never the matched text (the before-image keeps the row for undo).
+        """
+        changes: list[Change] = []
+        for memory in self._maintenance_store.active_memories():
+            if len(changes) >= limit:
+                break
+            rule = self._rule_of(memory.description) or self._rule_of(memory.body)
+            if rule is None:
+                continue
+            change = self._maintenance_store.quarantine(
+                memory.id, expected_version=memory.version, run_id=run_id, rule_id=rule,
+                change_id=new_id(), now=now)
+            if change is not None:
+                changes.append(change)
+        return changes
+
+    def start_run(self, trigger: RunTrigger, executor: str | None, now: str) -> str:
+        """Record a run as running; any run still marked running died, and is failed."""
+        run_id = new_id()
+        self._maintenance_store.start_run(DreamRun(
+            run_id=run_id, started_at=now, finished_at=None, trigger=trigger,
+            executor=executor, status="running", report={}))
+        return run_id
+
+    def record_skipped_run(self, trigger: RunTrigger, executor: str | None, now: str) -> str:
+        """A run that found the lock held: recorded, and the live run left alone."""
+        run_id = new_id()
+        self._maintenance_store.insert_run(DreamRun(
+            run_id=run_id, started_at=now, finished_at=now, trigger=trigger,
+            executor=executor, status="skipped", report={}))
+        return run_id
+
+    def finish_run(self, run_id: str, status: RunStatus, report: dict, now: str) -> None:
+        self._maintenance_store.finish_run(run_id, status=status, report=report,
+                                           finished_at=now)
+
+    def runs(self, limit: int) -> list[DreamRun]:
+        return self._maintenance_store.runs(limit)
+
+    def run(self, run_id: str) -> DreamRun | None:
+        return self._maintenance_store.run(run_id)
+
+    def changes_of_run(self, run_id: str) -> list[Change]:
+        """The groups a run committed, from the change log itself: a run killed after
+        committing some still shows them, with their undo commands."""
+        return self._maintenance_store.changes_of_run(run_id)

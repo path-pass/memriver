@@ -6,6 +6,7 @@ from memriver_core.models import (
     Candidate,
     Change,
     ChangeGroup,
+    DreamRun,
     Memory,
     Project,
     PromptEntry,
@@ -241,6 +242,12 @@ class MaintenanceStore(Protocol):
     - `record_review`: upserts the latest review, touching no memory, only
       while the memory is active and at `review.memory_version`; False,
       nothing written, otherwise.
+    - `quarantine`: soft-deletes one row still at `expected_version` as a
+      `secret` change whose reason is the rule id; None when it moved.
+    - `start_run`: marks every other `running` row `failed`, then inserts
+      this one (the caller holds the run lock); `insert_run`: inserts
+      without that clean-up (a skipped run). `runs(limit)` newest first;
+      `run(run_id)`.
     """
 
     def memories(self, project_id: str) -> list[Memory]: ...
@@ -259,3 +266,12 @@ class MaintenanceStore(Protocol):
     def retire(self, memory_id: str, *, judged_version: int, ttl_days: int,
               multiplier_max: int, now: str, review: Review, change_id: str) -> bool: ...
     def record_review(self, review: Review) -> bool: ...
+    def quarantine(self, memory_id: str, *, expected_version: int, run_id: str, rule_id: str,
+                   change_id: str, now: str) -> Change | None: ...
+    def start_run(self, run: DreamRun) -> None: ...
+    def insert_run(self, run: DreamRun) -> None: ...
+    def finish_run(self, run_id: str, *, status: str, report: dict,
+                   finished_at: str) -> None: ...
+    def runs(self, limit: int) -> list[DreamRun]: ...
+    def run(self, run_id: str) -> DreamRun | None: ...
+    def changes_of_run(self, run_id: str) -> list[Change]: ...
