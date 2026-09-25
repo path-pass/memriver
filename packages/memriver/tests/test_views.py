@@ -15,8 +15,8 @@ from memriver.views import (
     run_sessions,
     run_show,
 )
-from memriver_core.bootstrap import build_service
-from memriver_core.models import SessionKey
+from memriver_core.bootstrap import build_maintenance_service, build_service
+from memriver_core.models import SessionKey, SummaryInput
 from memriver_core.settings import Settings
 
 
@@ -327,14 +327,124 @@ def _plant_global_memory(world) -> str:
     return memory.id
 
 
-def test_delete_refuses_a_global_memory_without_a_plan_line_or_prompt(world):
+def test_delete_acts_on_a_global_memory_by_id_as_a_management_delete(world, tmp_path):
     memory_id = _plant_global_memory(world)
     out = io.StringIO()
-    code = run_delete(memory_id, version=1, hard=False, yes=False, root=world["store"],
-                      stdin_is_tty=True, input_fn=_never_called, stdout=out,
+    code = run_delete(memory_id, version=1, hard=False, yes=True, root=world["store"],
+                      stdin_is_tty=False, input_fn=_never_called, stdout=out,
+                      cwd=tmp_path, home=world["home"])
+    assert code == 0
+    assert out.getvalue() == (f"memriver delete: {memory_id} [project] in global: a global "
+                              f"note  (soft)\ndeleted {memory_id}\n")
+    assert world["service"].show(memory_id, include_deleted=True).deleted_at is not None
+
+
+def _cite(world, derived_id: str, source_id: str) -> None:
+    import sqlite3
+    from contextlib import closing
+
+    with closing(sqlite3.connect(world["store"] / "memriver.db")) as conn, conn:
+        conn.execute("INSERT INTO memory_source_sets VALUES (?, 1)", (derived_id,))
+        conn.execute("INSERT INTO memory_sources VALUES (?, 1, ?, 1, ?, ?)",
+                     (derived_id, source_id, world["project"].id,
+                      '{"type":"project","description":"the cue","body":"line one"}'))
+
+
+def test_a_hard_delete_of_a_referenced_source_lists_the_derived_entries(world):
+    derived_id = _plant_global_memory(world)
+    _cite(world, derived_id, world["memory"].id)
+    out = io.StringIO()
+    code = run_delete(world["memory"].id, version=1, hard=True, yes=True, root=world["store"],
+                      stdin_is_tty=False, input_fn=_never_called, stdout=out,
                       cwd=world["work"], home=world["home"])
     assert code == 2
-    assert out.getvalue() == "refused: global memories cannot be deleted here\n"
+    assert out.getvalue().splitlines()[1:] == [
+        f"refused: {world['memory'].id} is a source of 1 derived entry; delete them first:",
+        f"  {derived_id}  global  a global note",
+        "hard-delete each with: memriver delete ID --version N --hard",
+    ]
+    assert world["service"].show(world["memory"].id).version == 1
+
+
+def test_a_hard_delete_refused_by_a_corrupted_derived_id_never_echoes_it(world):
+    """A derived_id can only be malformed through damage or a write outside the store
+    (foreign keys off); the refusal must be the fixed storage-failure sentence, never the
+    raw value -- see the corresponding store-level test for the invariant this relies on."""
+    bad_id = "not-an-id\nFORGED LINE " + chr(27) + "[2J"
+    _cite(world, bad_id, world["memory"].id)
+    out = io.StringIO()
+    code = run_delete(world["memory"].id, version=1, hard=True, yes=True, root=world["store"],
+                      stdin_is_tty=False, input_fn=_never_called, stdout=out,
+                      cwd=world["work"], home=world["home"])
+    assert code == 2
+    assert out.getvalue().splitlines()[1:] == ["refused: the memory store could not be written"]
+    assert "FORGED" not in out.getvalue() and "\x1b" not in out.getvalue()
+    assert world["service"].show(world["memory"].id).version == 1
+
+
+def test_following_the_refusal_hint_deletes_the_derived_entry_then_the_source(world, tmp_path):
+    derived_id = _plant_global_memory(world)
+    _cite(world, derived_id, world["memory"].id)
+    code, _ = _out(run_delete, derived_id, version=1, hard=True, yes=True, root=world["store"],
+                   stdin_is_tty=False, input_fn=_never_called, cwd=tmp_path,
+                   home=world["home"])
+    assert code == 0
+    code, out = _out(run_delete, world["memory"].id, version=1, hard=True, yes=True,
+                     root=world["store"], stdin_is_tty=False, input_fn=_never_called,
+                     cwd=world["work"], home=world["home"])
+    assert code == 0 and out.endswith(f"purged {world['memory'].id}\n")
+
+
+def test_confirmed_delete_is_refused_when_the_project_becomes_global_meanwhile(world):
+    """The plan decides `is_global` once, before the prompt; the store re-checks the row's
+    own project at write time. A project promoted to global during the wait must not let a
+    plain `service.delete` through."""
+    import sqlite3
+    from contextlib import closing
+
+    global_id = world["service"].global_project_id()
+    db_path = world["store"] / "memriver.db"
+
+    def _promote_then_confirm(_):
+        with closing(sqlite3.connect(db_path)) as conn, conn:
+            conn.execute("UPDATE projects SET is_global = 0 WHERE id = ?", (global_id,))
+            conn.execute("UPDATE projects SET root = NULL, is_global = 1 WHERE id = ?",
+                         (world["project"].id,))
+        return "y"
+
+    out = io.StringIO()
+    code = run_delete(world["memory"].id, version=1, hard=False, yes=False, root=world["store"],
+                      stdin_is_tty=True, input_fn=_promote_then_confirm, stdout=out,
+                      cwd=world["work"], home=world["home"])
+    assert code == 2
+    assert out.getvalue().splitlines()[-1] == (
+        "refused: the memory's project changed while waiting; run the command again")
+    assert world["service"].show(world["memory"].id).version == 1
+
+
+def test_confirmed_delete_is_refused_when_a_global_entry_stops_being_global_meanwhile(world):
+    """The mirror direction: a global entry planned as a management delete, whose project
+    stops being global before the write reaches `delete_global`."""
+    import sqlite3
+    from contextlib import closing
+
+    memory_id = _plant_global_memory(world)
+    global_id = world["service"].global_project_id()
+    db_path = world["store"] / "memriver.db"
+
+    def _demote_then_confirm(_):
+        with closing(sqlite3.connect(db_path)) as conn, conn:
+            conn.execute("UPDATE projects SET is_global = 0 WHERE id = ?", (global_id,))
+        return "y"
+
+    out = io.StringIO()
+    code = run_delete(memory_id, version=1, hard=False, yes=False, root=world["store"],
+                      stdin_is_tty=True, input_fn=_demote_then_confirm, stdout=out,
+                      cwd=world["work"], home=world["home"])
+    assert code == 2
+    assert out.getvalue().splitlines()[-1] == (
+        "refused: the memory's project changed while waiting; run the command again")
+    assert world["service"].show(memory_id, include_deleted=True).version == 1
 
 
 def test_delete_without_yes_over_a_non_tty_is_refused(world):
@@ -508,10 +618,24 @@ def test_sessions_json_matches_the_session_search_item_shape(world):
     item = items[0]
     assert set(item) == {"harness", "session_id", "project", "branch", "entry_cwd",
                          "first_recorded", "last_active_at", "last_end_event_at",
-                         "first_prompt", "recent_prompts", "resume_command"}
+                         "first_prompt", "recent_prompts", "resume_command", "summary"}
     assert item["resume_command"] == "codex resume sess-3"
     assert item["project"] == world["project"].id
     assert item["first_prompt"]["text"] == "task one"
+
+
+def test_sessions_shows_the_summary_and_the_json_item_carries_it(world):
+    key = SessionKey("codex", "sess-9")
+    _start(world, key, world["work"])
+    session = world["service"].list_sessions()[0]
+    maintenance = build_maintenance_service(Settings(root=world["store"]), root=world["store"])
+    maintenance.write_summary(key, expected_last_active_at=session.last_active_at,
+                              summary="Fixed the flaky test", status="ok",
+                              summary_input=SummaryInput("f", 2, True))
+    code, out = _sessions("", root=world["store"], home=world["home"])
+    assert code == 0 and "  summary: Fixed the flaky test" in out
+    code, out = _sessions("flaky", root=world["store"], home=world["home"], json_output=True)
+    assert json.loads(out)[0]["summary"] == "Fixed the flaky test"
 
 
 def test_sessions_filters_by_project_and_query_and_limit(world, tmp_path):

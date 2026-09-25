@@ -135,6 +135,12 @@ FORBIDDEN = [
      "memriver_core.repository.sqlite.memory_store"),
     ("memriver_core.repository.sqlite.database", "memriver_core.repository.sqlite.memory_store"),
     ("memriver_core.repository.sqlite.database", "memriver_core.repository.sqlite.project_store"),
+    ("memriver_core.repository.sqlite.maintenance_store",
+     "memriver_core.repository.sqlite.memory_store"),
+    ("memriver_core.repository.sqlite.maintenance_store",
+     "memriver_core.repository.sqlite.project_store"),
+    ("memriver_core.repository.sqlite.maintenance_store",
+     "memriver_core.repository.sqlite.session_store"),
 ]
 
 
@@ -215,6 +221,7 @@ CONCRETE_ADAPTER_MODULES = {
     "SqliteProjectStore": "memriver_core.repository.sqlite",
     "SqliteSessionStore": "memriver_core.repository.sqlite",
     "SqliteStoreInspector": "memriver_core.repository.sqlite",
+    "SqliteMaintenanceStore": "memriver_core.repository.sqlite",
     "SecretScanner": "memriver_core.content_policy.secret_scanner",
 }
 
@@ -224,6 +231,7 @@ CONCRETE_ADAPTER_MODULES = {
 # because the exemption and the failure message differ in kind, not in force.
 COMPOSED_SERVICE_MODULES = {
     "DiagnosticsService": "memriver_core.application.diagnostics",
+    "MaintenanceService": "memriver_core.application.maintenance",
 }
 
 

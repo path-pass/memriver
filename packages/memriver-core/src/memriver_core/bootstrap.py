@@ -6,6 +6,7 @@ from functools import partial
 from pathlib import Path
 
 from .application.diagnostics import DiagnosticsService
+from .application.maintenance import MaintenanceService
 
 # EMPTY_INDEX is re-exported (not composed) here: bootstrap is the one
 # memriver_core surface, alongside settings/models, that a transport may import.
@@ -23,6 +24,7 @@ from .repository.directories import (
     root_state,
 )
 from .repository.sqlite import (
+    SqliteMaintenanceStore,
     SqliteMemoryStore,
     SqliteProjectStore,
     SqliteSessionStore,
@@ -32,6 +34,7 @@ from .repository.worktree import current_branch, main_tree_path
 from .settings import (
     BUSY_TIMEOUT_MS,
     DEFAULT_MAX_BODY_CHARS,
+    DREAM_SUMMARY_MAX_CHARS,
     GIT_QUERY_TIMEOUT_S,
     HEADER_FIELD_CHARS,
     INDEX_CUE_CHARS,
@@ -48,8 +51,8 @@ from .settings import (
 )
 
 __all__ = [
-    "EMPTY_INDEX", "PurgePlan", "PurgeRefusal", "PurgeResult", "build_service", "plan_purge",
-    "purge",
+    "EMPTY_INDEX", "MaintenanceService", "PurgePlan", "PurgeRefusal", "PurgeResult",
+    "build_maintenance_service", "build_service", "plan_purge", "purge",
 ]
 
 
@@ -97,4 +100,22 @@ def build_service(settings: Settings, *, root: Path | None = None,
         session_search_limit_default=SESSION_SEARCH_LIMIT_DEFAULT,
         session_search_limit_max=SESSION_SEARCH_LIMIT_MAX,
         tool_call_retention_s=TOOL_CALL_RETENTION_S,
+        memory_reads_retention_days=settings.memory_reads_retention_days,
+    )
+
+
+def build_maintenance_service(settings: Settings, *, root: Path | None = None,
+                              home: Path | None = None) -> MaintenanceService:
+    """The maintenance run's facade over the same store (spec §4). Never composed by MCP."""
+    store_root = settings.root if root is None else root
+    # home only matters to binding plans, which the maintenance run never makes
+    home = Path.home() if home is None else home
+    return MaintenanceService(
+        SqliteMaintenanceStore(store_root, busy_timeout_ms=BUSY_TIMEOUT_MS),
+        SqliteProjectStore(store_root, home=home, busy_timeout_ms=BUSY_TIMEOUT_MS),
+        SqliteSessionStore(store_root, busy_timeout_ms=BUSY_TIMEOUT_MS),
+        _content_policy,
+        max_body_chars=settings.max_body_chars,
+        metadata_max_chars=DEFAULT_MAX_BODY_CHARS,
+        summary_max_chars=DREAM_SUMMARY_MAX_CHARS,
     )

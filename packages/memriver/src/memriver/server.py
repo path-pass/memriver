@@ -258,9 +258,9 @@ def _session_key(harness: str, ctx: Context, service: Any) -> SessionKey | None:
 
 _SESSION_SEARCH_DESCRIPTION = (
     "Find this project's recorded sessions (newest activity first) by a word in their "
-    "prompts, branch or entry directory; an empty query lists them. Each carries a "
+    "prompts, summary, branch or entry directory; an empty query lists them. Each carries a "
     "resume_command to show the user; whether to run it is the user's decision. Prompt "
-    "texts are quoted from the sessions. " + UNTRUSTED_DATA_NOTICE)
+    "texts and summaries are quoted from the sessions. " + UNTRUSTED_DATA_NOTICE)
 
 
 def build_server(root: Path, project_dir: Path, settings: Settings | None = None, *,
@@ -324,7 +324,7 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
         """Read one memory in full by id, including the version that
         memory_update and memory_delete must name."""
         try:
-            return _full(service.read(memory_id, context_of(ctx)))
+            return _full(service.read(memory_id, context_of(ctx), harness=source_harness))
         except Exception as err:  # noqa: BLE001
             _fail("read", err, memory_id=memory_id)
 

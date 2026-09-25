@@ -31,7 +31,7 @@ step_verify_uvx_resolution() {
 # initializes it before any harness file is written, printing
 # "memory store: ready (global project <id>)" (cli._store_step). Failures go to
 # stderr, which must stay empty. The store is one SQLite file,
-# <root>/memriver.db (mode 0600, PRAGMA user_version = 2): the printed id must
+# <root>/memriver.db (mode 0600, PRAGMA user_version = 3): the printed id must
 # be the one row of `projects` with is_global = 1 (name "global", no root), and
 # none of the old file-store names (store.toml, projects/, memories/,
 # registry/) may exist.
@@ -58,13 +58,13 @@ assert stat.S_IMODE(db.stat().st_mode) == 0o600, oct(db.stat().st_mode)
 legacy = [n for n in ("store.toml", "projects", "memories", "registry") if (store / n).exists()]
 assert not legacy, f"old file-store names present: {legacy}"
 conn = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)
-assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
 rows = conn.execute("SELECT id, name, root FROM projects WHERE is_global = 1").fetchall()
 assert rows == [(gid, "global", None)], rows
 print(f"global project {gid}")
 PY
     rm -f "$out" "$err"
-    pass "uvx memriver install --harness $harness --yes: exit 0, empty stderr, store step shown and applied; memriver.db (0600, user_version 2) holds the printed id as its one is_global row; no old store files"
+    pass "uvx memriver install --harness $harness --yes: exit 0, empty stderr, store step shown and applied; memriver.db (0600, user_version 3) holds the printed id as its one is_global row; no old store files"
 }
 
 step_install() { step_install_harness claude-code; }

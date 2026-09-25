@@ -15,6 +15,7 @@ nothing, and query_only keeps the connection itself read-only.
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import stat
@@ -25,17 +26,27 @@ from typing import get_args
 
 from memriver_core.models import (
     ID_RE,
+    Change,
+    ChangeKind,
+    ChangeRow,
+    Decision,
+    DreamRun,
     Memory,
     MemoryType,
     Project,
+    Review,
+    RunStatus,
+    RunTrigger,
+    SourceRef,
     Trust,
     is_timestamp,
+    now,
     single_line,
 )
 from memriver_core.models.errors import StorageFailure
 
 DATABASE_FILENAME = "memriver.db"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # shared between a fresh v2 create (_SCHEMA) and the v1 -> v2 upgrade
 # (_UPGRADE_STATEMENTS): copied verbatim from spec §3.1
@@ -116,6 +127,86 @@ _UPGRADE_STATEMENTS = (
     _TOOL_CALLS_TABLE,
     _TOOL_CALLS_INDEX,
 )
+
+# schema v3 (dream): summary columns on sessions, then the maintenance tables.
+# Run after _SCHEMA on a fresh database and after the v1 -> v2 step on an
+# upgrade, so a fresh v3 file and an upgraded one hold the same columns by
+# construction; a module-level tuple so a test can make it fail part-way
+_V3_STATEMENTS = (
+    "ALTER TABLE sessions ADD COLUMN summary TEXT",
+    "ALTER TABLE sessions ADD COLUMN summary_at TEXT",
+    "ALTER TABLE sessions ADD COLUMN summary_input TEXT",
+    ("ALTER TABLE sessions ADD COLUMN summary_status TEXT "
+     "CHECK (summary_status IN ('ok','empty','omitted','failed'))"),
+    "ALTER TABLE sessions ADD COLUMN summary_attempted_at TEXT",
+    "ALTER TABLE sessions ADD COLUMN summary_progress TEXT",
+    # one row per derived version dream wrote a source set for -- an empty set
+    # is a row here with no memory_sources rows, so "no sources" and "carried
+    # forward from an earlier version" are told apart
+    """CREATE TABLE memory_source_sets (
+      derived_id       TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+      derived_version  INTEGER NOT NULL CHECK (derived_version >= 1),
+      PRIMARY KEY (derived_id, derived_version)
+    ) STRICT""",
+    """CREATE TABLE memory_sources (
+      derived_id       TEXT NOT NULL,
+      derived_version  INTEGER NOT NULL CHECK (derived_version >= 1),
+      source_id        TEXT NOT NULL REFERENCES memories(id) ON DELETE RESTRICT,
+      source_version   INTEGER NOT NULL CHECK (source_version >= 1),
+      source_project   TEXT NOT NULL,
+      snapshot         TEXT NOT NULL,
+      PRIMARY KEY (derived_id, derived_version, source_id),
+      FOREIGN KEY (derived_id, derived_version)
+        REFERENCES memory_source_sets(derived_id, derived_version) ON DELETE CASCADE
+    ) STRICT""",
+    """CREATE TABLE memory_reads (
+      memory_id      TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+      memory_version INTEGER NOT NULL CHECK (memory_version >= 1),
+      read_at        TEXT NOT NULL,
+      harness        TEXT NOT NULL CHECK (length(harness) BETWEEN 1 AND 64),
+      session_id     TEXT CHECK (session_id IS NULL OR length(session_id) BETWEEN 1 AND 128)
+    ) STRICT""",
+    "CREATE INDEX memory_reads_by_memory ON memory_reads(memory_id, read_at)",
+    """CREATE TABLE dream_changes (
+      change_id   TEXT PRIMARY KEY NOT NULL CHECK (length(change_id) = 10),
+      run_id      TEXT NOT NULL,
+      kind        TEXT NOT NULL
+                  CHECK (kind IN ('merge','rewrite','extract','retire','secret','unsafe')),
+      project_id  TEXT NOT NULL,
+      applied_at  TEXT NOT NULL,
+      rows        TEXT NOT NULL,
+      reason      TEXT NOT NULL,
+      undone_at   TEXT
+    ) STRICT""",
+    """CREATE TABLE dream_reviews (
+      memory_id       TEXT PRIMARY KEY NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+      memory_version  INTEGER NOT NULL,
+      decided_at      TEXT NOT NULL,
+      decision        TEXT NOT NULL CHECK (decision IN ('keep','delete','uncertain')),
+      reason          TEXT NOT NULL,
+      uncertain_streak INTEGER NOT NULL DEFAULT 0 CHECK (uncertain_streak >= 0),
+      next_review_at  TEXT NOT NULL,
+      run_id          TEXT NOT NULL,
+      executor        TEXT NOT NULL,
+      prompt_version  TEXT NOT NULL
+    ) STRICT""",
+    """CREATE TABLE dream_state (
+      scope        TEXT PRIMARY KEY NOT NULL,
+      fingerprint  TEXT NOT NULL,
+      processed_at TEXT NOT NULL
+    ) STRICT""",
+    """CREATE TABLE dream_runs (
+      run_id       TEXT PRIMARY KEY NOT NULL CHECK (length(run_id) = 10),
+      started_at   TEXT NOT NULL,
+      finished_at  TEXT,
+      trigger      TEXT NOT NULL CHECK (trigger IN ('schedule','manual')),
+      executor     TEXT,
+      status       TEXT NOT NULL CHECK (status IN ('running','completed','failed','skipped')),
+      report       TEXT NOT NULL DEFAULT '{}'
+    ) STRICT""",
+)
+# the versions upgrade_if_needed brings to SCHEMA_VERSION in one transaction
+_UPGRADABLE = (1, 2)
 
 MEMORY_COLUMNS = ("id, project_id, type, source_harness, source_method, trust, sync, "
                   "description, body, created, updated, version, deleted_at, last_read_at")
@@ -203,19 +294,20 @@ def project_from_row(row: Sequence[object]) -> tuple[Project, bool]:
 
 
 def upgrade_if_needed(path: Path, *, busy_timeout_ms: int) -> None:
-    """Upgrade an on-disk v1 database to v2 in place; a missing file is a no-op.
+    """Upgrade an on-disk v1 or v2 database to v3 in place; a missing file is a no-op.
 
     The only upgrade code (spec §3.2): every opener -- `Database.read()`,
     `Database.write()` and the doctor's inspector, which opens its own
     connection -- calls this before its own connection. It opens mode=rw
     (never creates) and runs the whole upgrade in one `BEGIN IMMEDIATE`
     transaction, re-checking `user_version` inside it: a peer that already
-    upgraded leaves the re-check at 2 and this does nothing. A failure
-    part-way rolls back to an intact v1, since SQLite's DDL is transactional.
+    upgraded leaves the re-check at 3 and this does nothing. A failure
+    part-way rolls back to the intact version it started from, since
+    SQLite's DDL is transactional.
 
     `user_version` is read once outside any transaction first: almost every
-    open finds v2 already, and only a database actually at v1 may take the
-    write lock -- otherwise every read would queue behind a concurrent
+    open finds v3 already, and only a database actually at v1 or v2 may take
+    the write lock -- otherwise every read would queue behind a concurrent
     writer's `BEGIN IMMEDIATE` for a schema that never changes.
     """
     try:
@@ -231,12 +323,20 @@ def upgrade_if_needed(path: Path, *, busy_timeout_ms: int) -> None:
     try:
         try:
             conn.execute("PRAGMA foreign_keys = ON")
-            if conn.execute("PRAGMA user_version").fetchone()[0] != 1:
+            if conn.execute("PRAGMA user_version").fetchone()[0] not in _UPGRADABLE:
                 return                       # no lock taken: nothing to upgrade
             conn.execute("BEGIN IMMEDIATE")
-            if conn.execute("PRAGMA user_version").fetchone()[0] == 1:
-                for statement in _UPGRADE_STATEMENTS:
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            if version in _UPGRADABLE:
+                if version == 1:
+                    for statement in _UPGRADE_STATEMENTS:
+                        conn.execute(statement)
+                for statement in _V3_STATEMENTS:
                     conn.execute(statement)
+                # every memory never read since v2 starts its TTL clock now, once;
+                # deleted rows too, so an undelete never revives a row already past it
+                conn.execute("UPDATE memories SET last_read_at = ? WHERE last_read_at IS NULL",
+                             (now(),))
                 conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             conn.execute("COMMIT")
         except BaseException:
@@ -333,7 +433,7 @@ class Database:
                 if state == "unknown":
                     raise StorageFailure
                 if state == "fresh":
-                    for statement in _SCHEMA:
+                    for statement in (*_SCHEMA, *_V3_STATEMENTS):
                         conn.execute(statement)
                     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                 yield conn
@@ -383,3 +483,236 @@ class Database:
         if version == 0 and conn.execute("SELECT count(*) FROM sqlite_master").fetchone()[0] == 0:
             return "fresh"
         return "unknown"
+
+
+def dumps_json(value: object) -> str:
+    """The one written form of every JSON column."""
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def loads_json(raw: object) -> object:
+    """A JSON column's value; ValueError for anything but text memriver could have written."""
+    if not isinstance(raw, str):
+        raise ValueError("a JSON column holds something else")  # noqa: TRY004 - a bad row
+    try:
+        value = json.loads(raw)
+    except RecursionError as err:           # nested past the interpreter's limit
+        raise ValueError("a JSON column is nested too deeply") from err
+    # only the one form dumps_json writes reads back: anything else is a
+    # hand-edit, and a hand-edit is damage
+    if dumps_json(value) != raw:
+        raise ValueError("a JSON column is not in its written form")
+    return value
+
+
+_MEMORY_OBJECT_KEYS = ("id", "project_id", "type", "source_harness", "source_method", "trust",
+                       "sync", "description", "body", "created", "updated", "version",
+                       "deleted_at")
+
+
+def _shaped(value: object) -> bool:
+    return isinstance(value, str) and bool(ID_RE.fullmatch(value))
+
+
+def memory_object(memory: Memory) -> dict:
+    """Every stored column but last_read_at: a change group's before-image."""
+    return dict(zip(_MEMORY_OBJECT_KEYS, memory_to_row(memory)[:-1], strict=True))
+
+
+def memory_from_object(value: object) -> Memory:
+    if not isinstance(value, dict) or set(value) != set(_MEMORY_OBJECT_KEYS):
+        raise ValueError("a before-image is not a memory row")
+    return memory_from_row((*(value[key] for key in _MEMORY_OBJECT_KEYS), None))
+
+
+SOURCE_COLUMNS = ("derived_id, derived_version, source_id, source_version, source_project, "
+                  "snapshot")
+
+
+def source_from_row(row: Sequence[object]) -> tuple[str, int, SourceRef]:
+    derived_id, derived_version, source_id, source_version, source_project, snapshot = row
+    if not all(_shaped(value) for value in (derived_id, source_id, source_project)):
+        raise ValueError("an id is not addressable")
+    if not all(type(value) is int and value >= 1 for value in (derived_version, source_version)):
+        raise ValueError("a version is not a positive integer")
+    value = loads_json(snapshot)
+    if not (isinstance(value, dict) and set(value) == {"type", "description", "body"}
+            and all(isinstance(text, str) for text in value.values())):
+        raise ValueError("a snapshot is not {type, description, body}")
+    if value["type"] not in get_args(MemoryType):
+        raise ValueError("a snapshot names an impossible memory type")
+    return derived_id, derived_version, SourceRef(source_id, source_version, source_project,
+                                                  value)
+
+
+REVIEW_COLUMNS = ("memory_id, memory_version, decided_at, decision, reason, uncertain_streak, "
+                  "next_review_at, run_id, executor, prompt_version")
+
+
+def review_to_row(review: Review) -> tuple:
+    return (review.memory_id, review.memory_version, review.decided_at, review.decision,
+            review.reason, review.uncertain_streak, review.next_review_at, review.run_id,
+            review.executor, review.prompt_version)
+
+
+def review_from_row(row: Sequence[object]) -> Review:
+    (memory_id, memory_version, decided_at, decision, reason, streak, next_review_at, run_id,
+     executor, prompt_version) = row
+    if not _shaped(memory_id):
+        raise ValueError("memory id is not addressable")
+    if type(memory_version) is not int or memory_version < 1:
+        raise ValueError("version is not a positive integer")
+    if decision not in get_args(Decision):
+        raise ValueError("unknown decision")
+    if type(streak) is not int or streak < 0:
+        raise ValueError("uncertain streak is not a non-negative integer")
+    if not (is_timestamp(decided_at) and is_timestamp(next_review_at)):
+        raise ValueError("a time column is not a timestamp")
+    if not all(isinstance(text, str) and text for text in (reason, run_id, executor,
+                                                           prompt_version)):
+        raise ValueError("a text column is empty or holds something else")
+    return Review(memory_id=memory_id, memory_version=memory_version, decided_at=decided_at,
+                  decision=decision, reason=reason, uncertain_streak=streak,
+                  next_review_at=next_review_at, run_id=run_id, executor=executor,
+                  prompt_version=prompt_version)
+
+
+CHANGE_COLUMNS = "change_id, run_id, kind, project_id, applied_at, rows, reason, undone_at"
+
+
+def source_object(ref: SourceRef) -> dict:
+    return {"source_id": ref.source_id, "source_version": ref.source_version,
+            "source_project": ref.source_project, "snapshot": ref.snapshot}
+
+
+def source_from_object(value: object) -> SourceRef:
+    if not isinstance(value, dict) or set(value) != {"source_id", "source_version",
+                                                     "source_project", "snapshot"}:
+        raise ValueError("a source is not {source_id, source_version, source_project, snapshot}")
+    # the one validation path: rebuilt as the row it came from
+    _, _, ref = source_from_row(("aaaaaaaaaa", 1, value["source_id"], value["source_version"],
+                                 value["source_project"], dumps_json(value["snapshot"])))
+    return ref
+
+
+def change_to_row(change: Change) -> tuple:
+    rows = [{"id": row.id, "before": row.before,
+             "before_sources": None if row.before_sources is None
+             else [source_object(ref) for ref in row.before_sources],
+             "after_version": row.after_version}
+            for row in change.rows]
+    return (change.change_id, change.run_id, change.kind, change.project_id, change.applied_at,
+            dumps_json(rows), change.reason, change.undone_at)
+
+
+def _change_row(value: object, project_id: str) -> ChangeRow:
+    """One row of `change_from_row`'s `rows` list, checked against `project_id` and
+    (for an existing target) its own before-image -- from the record alone, never
+    against the memory as it stands now: it may since have moved or been hard-deleted."""
+    if not isinstance(value, dict) or set(value) != {"id", "before", "before_sources",
+                                                     "after_version"}:
+        raise ValueError("a change row is not {id, before, before_sources, after_version}")
+    after_version, before, sources = value["after_version"], value["before"], \
+        value["before_sources"]
+    if not _shaped(value["id"]) or type(after_version) is not int or after_version < 1:
+        raise ValueError("a change row names no addressable id or version")
+    if (before is None) != (sources is None):
+        raise ValueError("before and before_sources are set together or not at all")
+    if before is None:
+        if after_version != 1:
+            raise ValueError("a created row's after_version is not 1")
+    else:
+        image = memory_from_object(before)
+        if image.id != value["id"]:
+            raise ValueError("a change row's before-image is another memory's")
+        if image.project_id != project_id:
+            raise ValueError("a change row's before-image is another project's")
+        if after_version != image.version + 1:
+            raise ValueError("after_version does not follow the before-image's own version")
+        if not isinstance(sources, list):
+            raise ValueError("before_sources is not a list")
+    return ChangeRow(id=value["id"], before=before,
+                     before_sources=None if sources is None
+                     else tuple(source_from_object(item) for item in sources),
+                     after_version=after_version)
+
+
+def change_from_row(row: Sequence[object]) -> Change:
+    change_id, run_id, kind, project_id, applied_at, rows, reason, undone_at = row
+    if not (_shaped(change_id) and _shaped(project_id)):
+        raise ValueError("an id is not addressable")
+    if kind not in get_args(ChangeKind):
+        raise ValueError("unknown change kind")
+    if not is_timestamp(applied_at) or not (undone_at is None or is_timestamp(undone_at)):
+        raise ValueError("a time column is not a timestamp")
+    if not (isinstance(run_id, str) and run_id and isinstance(reason, str)):
+        raise ValueError("a text column holds something else")
+    value = loads_json(rows)
+    if not isinstance(value, list) or not value:
+        raise ValueError("a change touches no row")
+    decoded = tuple(_change_row(item, project_id) for item in value)
+    if len({change_row.id for change_row in decoded}) != len(decoded):
+        raise ValueError("a change names the same target more than once")
+    return Change(change_id=change_id, run_id=run_id, kind=kind, project_id=project_id,
+                  applied_at=applied_at, rows=decoded, reason=reason, undone_at=undone_at)
+
+
+READ_COLUMNS = "memory_id, memory_version, read_at, harness, session_id"
+
+
+def read_row_check(row: Sequence[object]) -> None:
+    memory_id, memory_version, read_at, harness, session_id = row
+    if not _shaped(memory_id) or type(memory_version) is not int or memory_version < 1:
+        raise ValueError("a read names no addressable memory version")
+    if not is_timestamp(read_at):
+        raise ValueError("read_at is not a timestamp")
+    if not (isinstance(harness, str) and 1 <= len(harness) <= 64):
+        raise ValueError("harness is not 1..64 characters")
+    if session_id is not None and not (isinstance(session_id, str)
+                                       and 1 <= len(session_id) <= 128):
+        raise ValueError("session id is not 1..128 characters")
+
+
+STATE_COLUMNS = "scope, fingerprint, processed_at"
+
+
+def state_row_check(row: Sequence[object]) -> None:
+    scope, fingerprint, processed_at = row
+    if not (isinstance(scope, str) and scope and isinstance(fingerprint, str) and fingerprint):
+        raise ValueError("scope or fingerprint is empty or holds something else")
+    if not is_timestamp(processed_at):
+        raise ValueError("processed_at is not a timestamp")
+
+
+SET_COLUMNS = "derived_id, derived_version"
+
+
+def set_row_check(row: Sequence[object]) -> None:
+    derived_id, derived_version = row
+    if not _shaped(derived_id) or type(derived_version) is not int or derived_version < 1:
+        raise ValueError("a source set names no addressable derived version")
+
+
+RUN_COLUMNS = "run_id, started_at, finished_at, trigger, executor, status, report"
+
+
+def run_to_row(run: DreamRun) -> tuple:
+    return (run.run_id, run.started_at, run.finished_at, run.trigger, run.executor,
+            run.status, dumps_json(run.report))
+
+
+def run_from_row(row: Sequence[object]) -> DreamRun:
+    run_id, started_at, finished_at, trigger, executor, status, report = row
+    if not _shaped(run_id):
+        raise ValueError("run id is not addressable")
+    if not is_timestamp(started_at) or not (finished_at is None or is_timestamp(finished_at)):
+        raise ValueError("a time column is not a timestamp")
+    if trigger not in get_args(RunTrigger) or status not in get_args(RunStatus):
+        raise ValueError("unknown trigger or status")
+    if executor is not None and not (isinstance(executor, str) and executor):
+        raise ValueError("executor is empty or holds something else")
+    value = loads_json(report)
+    if not isinstance(value, dict):
+        raise ValueError("a run report is not an object")  # noqa: TRY004 - a bad row
+    return DreamRun(run_id=run_id, started_at=started_at, finished_at=finished_at,
+                    trigger=trigger, executor=executor, status=status, report=value)

@@ -7,8 +7,13 @@ from contextlib import closing
 from pathlib import Path
 
 import pytest
-from memriver_core.models import Memory, Project, new_id
+from memriver_core.models import Change, ChangeRow, Memory, Project, new_id, now
 from memriver_core.repository.sqlite import SqliteProjectStore, SqliteStoreInspector
+from memriver_core.repository.sqlite.database import (
+    CHANGE_COLUMNS,
+    change_to_row,
+    memory_object,
+)
 
 MEMORY_COLUMNS = ("id, project_id, type, source_harness, source_method, trust, sync, "
                   "description, body, created, updated, version, deleted_at, last_read_at")
@@ -350,7 +355,7 @@ def test_doctor_as_the_first_opener_upgrades_and_reports_no_unknown_schema(tmp_p
     report = SqliteStoreInspector(store, busy_timeout_ms=2000).inspect()
     assert "unknown-schema" not in [f.kind for f in report.findings]
     with closing(sqlite3.connect(store / "memriver.db")) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
 
 
 def test_a_failed_upgrade_is_reported_as_unknown_schema_not_a_crash(tmp_path, monkeypatch):
@@ -497,3 +502,97 @@ def test_directory_checks_run_after_the_read_transaction(world, monkeypatch):
     # the report is still the snapshot read before the peer's commit
     assert {p.id: p.active_memories for p in report.projects}[world["project"]] == 0
     assert report.entries == ()
+
+
+@pytest.mark.parametrize("table, statement, location", [
+    ("memory_source_sets",
+     "INSERT INTO memory_source_sets VALUES ('not an id', 1)", "memory_source_sets"),
+    ("memory_sources",
+     "INSERT INTO memory_sources VALUES ('bbbbbbbbbb', 1, 'cccccccccc', 1, 'dddddddddd', 'x')",
+     "memory_sources/bbbbbbbbbb"),
+    ("memory_reads",
+     "INSERT INTO memory_reads VALUES ('bbbbbbbbbb', 1, 'yesterday', 'codex', NULL)",
+     "memory_reads/bbbbbbbbbb"),
+    ("dream_changes",
+     ("INSERT INTO dream_changes VALUES ('bbbbbbbbbb', 'r', 'merge', 'dddddddddd', "
+      "'2026-09-25T00:00:00.000000Z', '[]', 'why', NULL)"),
+     "dream_changes/bbbbbbbbbb"),
+    ("dream_reviews",
+     ("INSERT INTO dream_reviews VALUES ('bbbbbbbbbb', 1, 'yesterday', 'keep', 'r', 0, "
+      "'2026-09-25T00:00:00.000000Z', 'r', 'claude', 'dream-1')"),
+     "dream_reviews/bbbbbbbbbb"),
+    ("dream_state", "INSERT INTO dream_state VALUES ('consolidate:x', '', 'later')",
+     "dream_state"),
+    ("dream_runs",
+     ("INSERT INTO dream_runs VALUES ('bbbbbbbbbb', 'later', NULL, 'manual', NULL, "
+      "'running', '{}')"),
+     "dream_runs/bbbbbbbbbb"),
+])
+def test_an_invalid_dream_row_is_reported_as_invalid_row(world, table, statement, location):
+    # a raw connection has foreign keys off, so a row naming no memory plants cleanly
+    _sql(world["store"], statement)
+    report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+    found = [(f.kind, f.location_hint) for f in report.findings]
+    assert ("invalid-row", location) in found, table
+
+
+def test_valid_dream_rows_are_not_findings(world):
+    _sql(world["store"], "INSERT INTO dream_state VALUES ('consolidate:x', 'abc', "
+                         "'2026-09-25T00:00:00.000000Z')")
+    report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+    assert report.findings == ()
+
+
+def test_a_change_row_naming_another_memorys_before_image_is_reported_as_invalid_row(world):
+    memory = _plant(world["store"], _memory(world["project"]))
+    change = Change(change_id=new_id(), run_id="r", kind="merge", project_id=world["project"],
+                    applied_at=now(),
+                    rows=(ChangeRow(new_id(), memory_object(memory), (), memory.version + 1),),
+                    reason="x", undone_at=None)
+    _sql(world["store"], f"INSERT INTO dream_changes ({CHANGE_COLUMNS}) VALUES (?,?,?,?,?,?,?,?)",
+         *change_to_row(change))
+    report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+    assert ("invalid-row", f"dream_changes/{change.change_id}") in \
+        [(f.kind, f.location_hint) for f in report.findings]
+
+
+@pytest.mark.parametrize("table", [
+    "memory_source_sets", "memory_sources", "memory_reads", "dream_reviews",
+])
+def test_a_dangling_maintenance_table_reference_is_reported_as_invalid_row(world, table):
+    dangling = new_id()
+    rows_by_table = {
+        "memory_source_sets": (dangling, 1),
+        # dangling as derived_id: the compound FK to memory_source_sets has nothing to
+        # find, so its violation names this row's own first column, same as the others
+        "memory_sources": (dangling, 1, new_id(), 1, world["project"],
+                          '{"type":"user","description":"d","body":"b"}'),
+        "memory_reads": (dangling, 1, "2026-09-25T00:00:00.000000Z", "codex", None),
+        "dream_reviews": (dangling, 1, "2026-09-25T00:00:00.000000Z", "keep", "r", 0,
+                          "2026-09-25T00:00:00.000000Z", "r", "claude", "dream-1"),
+    }
+    row = rows_by_table[table]
+    placeholders = ", ".join("?" for _ in row)
+    # a raw connection has foreign keys off, so a well-shaped but dangling reference plants
+    # cleanly: PRAGMA foreign_key_check must catch what the shape checks cannot
+    _sql(world["store"], f"INSERT INTO {table} VALUES ({placeholders})", *row)
+    report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+    assert ("invalid-row", f"{table}/{dangling}") in \
+        [(f.kind, f.location_hint) for f in report.findings]
+
+
+def test_a_source_row_with_an_impossible_memory_type_is_reported_as_invalid_row(world):
+    # foreign keys clean (a real derived memory, a real source memory, and the
+    # derived row's source-set): only the snapshot's impossible type is wrong,
+    # so `PRAGMA foreign_key_check` cannot be what catches this on its own
+    derived = _plant(world["store"], _memory(world["project"]))
+    source = _plant(world["store"], _memory(world["project"]))
+    _sql(world["store"], "INSERT INTO memory_source_sets VALUES (?, 1)", derived.id)
+    _sql(world["store"], "INSERT INTO memory_sources VALUES "
+                         "(?, 1, ?, 1, ?, ?)", derived.id, source.id, world["project"],
+         '{"type":"invalid","description":"","body":"x"}')
+    report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+    assert not any(f.location_hint.startswith("memory_source_sets/")
+                  or f.location_hint == "memory_source_sets" for f in report.findings)
+    assert "invalid-row" in [f.kind for f in report.findings
+                             if f.location_hint.startswith("memory_sources/")]

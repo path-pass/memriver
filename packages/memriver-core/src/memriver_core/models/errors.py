@@ -56,7 +56,17 @@ class IdCollision(MemoryError):
         self.identifier = identifier
 
 
-class ContentRejected(MemoryError): ...      # from ContentPolicy; the message is the rule
+class ContentRejected(MemoryError):
+    """From ContentPolicy; the message is the rule.
+
+    `rule_id` names the secret rule that matched, when one did -- an id from
+    the vendored ruleset, never the matched text; None for an empty or
+    oversized value.
+    """
+
+    def __init__(self, message: str, *, rule_id: str | None = None) -> None:
+        super().__init__(message)
+        self.rule_id = rule_id
 
 
 class ProjectUnavailable(MemoryError):
@@ -109,6 +119,19 @@ BINDING_REASONS = frozenset({
 })
 
 
+class MemoryReferenced(MemoryError):
+    """A hard delete named a memory that derived entries cite as a source; nothing was deleted.
+
+    Fields only: `derived_ids` are the citing entries, active or deleted. The
+    CLI owns the sentence that tells the user to delete them first.
+    """
+
+    def __init__(self, memory_id: str, derived_ids: tuple[str, ...]) -> None:
+        super().__init__(f"memory referenced: {memory_id}")
+        self.memory_id = memory_id
+        self.derived_ids = derived_ids
+
+
 class BindingRefused(MemoryError):
     """A directory could not be planned, bound or unbound; nothing was written.
 
@@ -122,3 +145,28 @@ class BindingRefused(MemoryError):
         super().__init__(f"binding refused: {reason}")
         self.reason = reason
         self.project_id = project_id
+
+
+class GroupConflict(MemoryError):
+    """A change group's precondition failed inside its transaction; nothing was written.
+
+    Fields only: `ids` are the rows (or projects) that failed a check;
+    `change_id` is None because nothing was applied.
+    """
+
+    def __init__(self, change_id: str | None, ids: tuple[str, ...]) -> None:
+        super().__init__(f"group conflict: {', '.join(ids)}")
+        self.change_id = change_id
+        self.ids = ids
+
+
+class UndoConflict(MemoryError):
+    """A row of the change group moved since it was applied; nothing was restored.
+
+    Fields only: `ids` are the rows no longer at the version the group left.
+    """
+
+    def __init__(self, change_id: str, ids: tuple[str, ...]) -> None:
+        super().__init__(f"undo conflict: {change_id}")
+        self.change_id = change_id
+        self.ids = ids

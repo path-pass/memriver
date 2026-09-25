@@ -15,6 +15,13 @@ ID_LENGTH = 10
 ID_RE = re.compile(r"[0-9a-hjkmnp-tv-z]{10}")
 
 
+# a harness name is persisted verbatim into stored rows, so without a shape
+# check it is a policy-free channel for secrets or megabytes of text. The shape
+# caps size and charset; the content policy then rejects the values that still
+# look like credentials. Neither check echoes the rejected value.
+HARNESS_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
+
+
 def new_id() -> str:
     return "".join(secrets.choice(ID_ALPHABET) for _ in range(ID_LENGTH))
 
@@ -80,3 +87,29 @@ def now_strictly_after(previous: str) -> str:
         return stamp
     # both are the same fixed-width form, so lexicographic order is chronological
     return max(stamp, earliest)
+
+
+_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
+# strftime does not zero-pad a year below 1000 on every platform, so the two
+# edges are spelled out rather than formatted
+_EARLIEST = "0001-01-01T00:00:00.000000Z"
+_LATEST = "9999-12-31T23:59:59.999999Z"
+
+
+def timestamp_shift(value: str, *, days: float = 0, minutes: float = 0) -> str:
+    """`value` moved by `days` and `minutes` (negative: earlier), in the same fixed-width form.
+
+    ValueError for a value that is not a timestamp. A result outside
+    datetime's range clamps to its edge: a TTL cutoff before every stored
+    instant, or a review date after all of them, is what such an offset means.
+    """
+    if not is_timestamp(value):
+        raise ValueError("not a timestamp")
+    moment = datetime.strptime(value, _FORMAT).replace(tzinfo=UTC)
+    try:
+        moved = moment + timedelta(days=days, minutes=minutes)
+    except OverflowError:
+        return _EARLIEST if days * 1440 + minutes < 0 else _LATEST
+    if moved.year < 1000:
+        return _EARLIEST
+    return moved.strftime(_FORMAT)

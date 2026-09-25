@@ -9,12 +9,12 @@ or settings: every limit is injected.
 
 from __future__ import annotations
 
-import re
 import sys
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol
 
 from memriver_core.models import (
+    HARNESS_RE,
     DiagnosticsReport,
     Memory,
     Project,
@@ -28,6 +28,7 @@ from memriver_core.models import (
     UnbindPlan,
     now,
     single_line,
+    timestamp_shift,
 )
 from memriver_core.models.errors import (
     ContentRejected,
@@ -36,6 +37,8 @@ from memriver_core.models.errors import (
     ProjectUnavailable,
     StorageFailure,
 )
+
+from . import LazyPolicy
 
 if TYPE_CHECKING:
     from memriver_core.content_policy.protocol import ContentPolicy
@@ -55,12 +58,6 @@ class Diagnostics(Protocol):
 
     def run(self, *, now: str | None, stale_days: int,
             jaccard_threshold: float) -> DiagnosticsReport: ...
-
-# 'harness' is persisted verbatim into the stored memory, so without this it
-# is a policy-free channel for secrets or megabytes of text. The shape check
-# caps size and charset; the content policy then rejects the values that still
-# look like credentials. Neither error echoes the rejected value.
-_HARNESS_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 
 # What MemoryService.index returns when nothing is visible -- the single
 # source transports compare against.
@@ -118,7 +115,8 @@ class MemoryService:
                  session_recent_prompts: int, session_prompt_scan_max_bytes: int,
                  stop_nudge_min_prompts: int, stop_nudge_interval_prompts: int,
                  session_search_limit_default: int, session_search_limit_max: int,
-                 tool_call_retention_s: int) -> None:
+                 tool_call_retention_s: int,
+                 memory_reads_retention_days: int | None = None) -> None:
         self._memory_store = memory_store
         self._project_store = project_store
         self._session_store = session_store
@@ -130,8 +128,7 @@ class MemoryService:
         self._root_is_intact = root_is_intact
         # built on first use: a read-only caller (the Stop hook, doctor, the
         # human views) never pays for loading and compiling the scanner rules
-        self._content_policy_factory = content_policy_factory
-        self._content_policy: ContentPolicy | None = None
+        self._policy_cache = LazyPolicy(content_policy_factory)
         self._diagnostics = diagnostics
         self._max_body_chars = max_body_chars
         # metadata keeps its own budget so that lowering the configured body
@@ -151,11 +148,10 @@ class MemoryService:
         self._session_search_limit_default = session_search_limit_default
         self._session_search_limit_max = session_search_limit_max
         self._tool_call_retention_s = tool_call_retention_s
+        self._memory_reads_retention_days = memory_reads_retention_days
 
     def _policy(self) -> ContentPolicy:
-        if self._content_policy is None:
-            self._content_policy = self._content_policy_factory()
-        return self._content_policy
+        return self._policy_cache.get()
 
     def _field(self, value: str) -> str:
         """One stored value as it may appear in the agent-facing header."""
@@ -534,7 +530,7 @@ class MemoryService:
             # no reason: the transport resolved the project, so it says why
             # there is none
             raise ProjectUnavailable()
-        if not _HARNESS_RE.fullmatch(harness):
+        if not HARNESS_RE.fullmatch(harness):
             raise ContentRejected("invalid harness identifier "
                                   "(allowed: letters, digits, ., _, -, max 64 chars)")
         policy = self._policy()
@@ -554,10 +550,18 @@ class MemoryService:
         self._mark_saved(context)
         return memory
 
-    def read(self, memory_id: str, context: ProjectContext) -> Memory:
+    def read(self, memory_id: str, context: ProjectContext, *,
+             harness: str = "unknown") -> Memory:
         memory = self._memory_store.read(memory_id, context.read_write_set)
+        at = now()
+        retention = self._memory_reads_retention_days
         try:
-            self._memory_store.touch_read(memory.id, now())
+            self._memory_store.touch_read(
+                memory.id, at, memory_version=memory.version,
+                harness=harness if HARNESS_RE.fullmatch(harness) else "unknown",
+                session_id=None if context.session_key is None
+                else context.session_key.session_id,
+                prune_before=None if retention is None else timestamp_shift(at, days=-retention))
         except StorageFailure:
             pass                            # best effort (spec §3.3): never fails the read
         return memory
@@ -580,6 +584,12 @@ class MemoryService:
         self._refuse_pending(context)
         return self._memory_store.delete(memory_id, context.read_write_set,
                                          expected_version=expected_version, hard=hard)
+
+    def delete_global(self, memory_id: str, *, expected_version: int,
+                      hard: bool = False) -> int:
+        """The management delete of a global entry: the human CLI only, never MCP."""
+        return self._memory_store.delete_global(memory_id, expected_version=expected_version,
+                                                hard=hard)
 
     # --- collections ---
 

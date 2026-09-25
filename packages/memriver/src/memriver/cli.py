@@ -203,7 +203,7 @@ def _add_view_commands(commands) -> None:
 
     sessions = add("sessions", "list every recorded session, or one project's")
     sessions.add_argument("query", nargs="?", default="",
-                          help="only sessions matching this word in a prompt, "
+                          help="only sessions matching this word in a prompt, summary, "
                                "branch or entry directory")
     sessions.add_argument("--project", default=None, help="only this project id")
     sessions.add_argument("--limit", type=_positive_int, default=None)
@@ -211,7 +211,8 @@ def _add_view_commands(commands) -> None:
                           help="emit the session_search item shape as JSON")
     sessions.set_defaults(handler=_view_sessions)
 
-    delete = add("delete", "delete one memory of the current directory's project")
+    delete = add("delete", "delete one memory: a global one by id, any other from its project's "
+                           "directory")
     delete.add_argument("memory_id")
     delete.add_argument("--version", type=_positive_int, required=True,
                         help="the version memriver show printed")

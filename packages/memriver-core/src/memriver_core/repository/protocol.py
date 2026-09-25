@@ -3,15 +3,26 @@ from __future__ import annotations
 from typing import Protocol
 
 from memriver_core.models import (
+    Candidate,
+    Change,
+    ChangeGroup,
+    DreamRun,
     Memory,
     Project,
     PromptEntry,
     ReadWriteSet,
     Resolution,
+    Review,
     RootPlan,
+    RunStatus,
     Session,
     SessionKey,
+    SourceRef,
+    SummaryInput,
+    SummaryProgress,
+    SummaryStatus,
     UnbindPlan,
+    UndoResult,
 )
 
 
@@ -38,13 +49,28 @@ class MemoryStore(Protocol):
     - `delete(hard=True)`: the same checks, but a soft-deleted row of a
       writable project is accepted at its current version; the row is removed
       and 0 is returned.
+    - `delete(hard=True)` and `delete_global(hard=True)` on a row any
+      `memory_sources` row cites as a source raise
+      `MemoryReferenced(memory_id, derived_ids)`; nothing is deleted. Every
+      citing id is validated first; a malformed one (damage, or a write
+      outside this store) is `StorageFailure` instead, never a value a
+      caller echoes.
+    - `delete_global`: the management delete of a global entry (human CLI
+      only, never MCP): any project's global row by id, the same version
+      rules as `delete`; a row that is not global raises
+      `ProjectUnavailable(reason="not-global")`.
     - `read_any`: the management read (human CLI only): any project, no
       read/write set; deleted rows only with `include_deleted`.
     - `touch_read`: best effort, after a successful `memory_read` (spec §3.3):
       moves `last_read_at` to `max(stored, at)`, never backwards; `version`
       and `updated` are untouched. An unknown id, a malformed `at`, and a
       store that is absent or fails, are all no-ops -- nothing here creates a
-      store, and a failure never fails the read that asked for it.
+      store, and a failure never fails the read that asked for it. In the same
+      transaction it inserts one `memory_reads` row (`memory_version` as
+      given -- the version the read returned -- `at`, `harness`, `session_id`),
+      only while the row is active, and, with `prune_before`, deletes every
+      `memory_reads` row read before it. A failure of either rolls both back
+      and is still a no-op for the caller.
     - Errors carry fields, never words (see `models.errors`).
     """
 
@@ -54,8 +80,11 @@ class MemoryStore(Protocol):
                body: str, description: str | None) -> Memory: ...
     def delete(self, memory_id: str, read_write_set: ReadWriteSet, *, expected_version: int,
                hard: bool) -> int: ...
+    def delete_global(self, memory_id: str, *, expected_version: int, hard: bool) -> int: ...
     def read_any(self, memory_id: str, *, include_deleted: bool) -> Memory: ...
-    def touch_read(self, memory_id: str, at: str) -> None: ...
+    def touch_read(self, memory_id: str, at: str, *, memory_version: int,
+                   harness: str = "unknown", session_id: str | None = None,
+                   prune_before: str | None = None) -> None: ...
 
 
 class ProjectStore(Protocol):
@@ -142,7 +171,15 @@ class SessionStore(Protocol):
       unknown key.
     - `search`: `project_id=None` is every row (the human CLI); otherwise
       that project's registered rows. A case-insensitive substring of a
-      prompt text, `entry_cwd` or `branch`; newest `last_active_at` first.
+      prompt text, `entry_cwd`, `branch` or the summary; newest `last_active_at` first.
+    - `due_for_summary(before, limit)`: registered rows with a project, idle since
+      `before`, that are never summarized, active since, or hold a retryable outcome
+      (`failed`, or an incomplete snapshot); never-attempted first, then least recently
+      attempted.
+    - `write_summary` and `write_summary_progress`: compare-and-set on `last_active_at`,
+      both stamping `summary_attempted_at`; `write_summary` clears the checkpoint. False
+      and nothing written when the session moved on.
+    - `mark_summary_attempt`: stamps the attempt only.
     - `record_call`: maps a harness's tool-call id to `key`'s session
       (replacing an earlier mapping of the same id), then drops every
       mapping recorded more than `retention_s` seconds before `at`, in the
@@ -168,6 +205,92 @@ class SessionStore(Protocol):
     def confirm(self, key: SessionKey) -> Session | None: ...
     def assign_project(self, key: SessionKey, project_id: str) -> Session | None: ...
     def search(self, project_id: str | None, query: str, limit: int) -> list[Session]: ...
+    def due_for_summary(self, before: str, limit: int) -> list[Session]: ...
+    def write_summary(self, key: SessionKey, *, expected_last_active_at: str,
+                      summary: str | None, status: SummaryStatus,
+                      summary_input: SummaryInput, at: str) -> bool: ...
+    def write_summary_progress(self, key: SessionKey, *, expected_last_active_at: str,
+                               progress: SummaryProgress | None, at: str) -> bool: ...
+    def mark_summary_attempt(self, key: SessionKey, at: str) -> None: ...
     def record_call(self, key: SessionKey, call_id: str, at: str, *,
                     retention_s: int) -> None: ...
     def session_for_call(self, harness: str, call_id: str) -> SessionKey | None: ...
+
+
+class MaintenanceStore(Protocol):
+    """What the maintenance run reads and writes (spec §4); reached only through
+    MaintenanceService, which MCP never composes, so global is an ordinary target.
+
+    - No read touches `last_read_at`. A row that fails validation is skipped
+      (a doctor finding), never raised, so one damaged row cannot stop a run.
+    - `memories(project_id)` / `active_memories()`: active rows of one project /
+      of every project, oldest `created` first.
+    - `sources_of(memory_id)`: the entry's effective source set -- the set recorded at
+      the greatest version not above its current one (an empty set is no sources; a
+      version written without a set carries the earlier one); `derived_from(memory_id)`:
+      active entries whose effective set cites it.
+    - `ttl_candidates(now=, ttl_days=, multiplier_max=, limit=)`: active rows whose
+      last use -- the latest of created, updated and last_read_at -- lies at or
+      before `now` minus their effective TTL (`effective_ttl_days` over their
+      `memory_reads` count), with no review whose `next_review_at` is after `now`;
+      oldest last use first.
+    - `fingerprint_of(scope)`: the stored fingerprint or None; `changes(limit)`:
+      the change log, newest first; `change(change_id)`: one change or None.
+    - `apply_group`: the whole group in one transaction under the rules of spec
+      §4.2 (every precondition re-checked -- versions, activity, scope, the
+      re-run guard, no reference cycle through source rows of any version; a
+      failure raises `GroupConflict` and writes nothing; a taken id raises
+      `IdCollision`); every version it writes gets a source set (an update's is
+      the effective set carried forward plus the newly consumed sources); the
+      change row, set rows and source rows are written in the same transaction.
+    - `set_fingerprint(scope, fingerprint, now)`: stores or replaces the scope's
+      fingerprint.
+    - `undo`: every row back to its before-image, source marks and before
+      source set (an empty set included), versions moving forward, only while
+      each row is still at the version the group left; otherwise
+      `UndoConflict` and nothing written. An unknown change is `not-found`, an
+      undone one `already-undone`; neither writes.
+    - `retire`: the TTL soft delete; requires `review.memory_id == memory_id`
+      and `review.memory_version == judged_version` -- a mismatch is
+      `ValueError`, nothing written, before anything else runs. Then, in one
+      transaction, it re-checks the row is active, at `judged_version`, still
+      past its effective TTL on the stored times and current read count, and
+      not covered by a review with `next_review_at > now`; then writes the
+      delete review and a `retire` change. False, nothing written, when any of
+      those checks fails.
+    - `record_review`: upserts the latest review, touching no memory, only
+      while the memory is active and at `review.memory_version`; False,
+      nothing written, otherwise.
+    - `quarantine`: soft-deletes one row still at `expected_version` as a
+      `secret` change whose reason is the rule id; None when it moved.
+    - `start_run`: marks every other `running` row `failed`, then inserts
+      this one (the caller holds the run lock); `insert_run`: inserts
+      without that clean-up (a skipped run). `runs(limit)` newest first;
+      `run(run_id)`.
+    """
+
+    def memories(self, project_id: str) -> list[Memory]: ...
+    def active_memories(self) -> list[Memory]: ...
+    def sources_of(self, memory_id: str) -> list[SourceRef]: ...
+    def derived_from(self, memory_id: str) -> list[str]: ...
+    def ttl_candidates(self, *, now: str, ttl_days: int, multiplier_max: int,
+                       limit: int) -> list[Candidate]: ...
+    def fingerprint_of(self, scope: str) -> str | None: ...
+    def changes(self, limit: int) -> list[Change]: ...
+    def change(self, change_id: str) -> Change | None: ...
+    def apply_group(self, group: ChangeGroup, *, change_id: str,
+                    created_ids: tuple[str, ...], now: str) -> None: ...
+    def set_fingerprint(self, scope: str, fingerprint: str, now: str) -> None: ...
+    def undo(self, change_id: str, *, now: str) -> UndoResult: ...
+    def retire(self, memory_id: str, *, judged_version: int, ttl_days: int,
+              multiplier_max: int, now: str, review: Review, change_id: str) -> bool: ...
+    def record_review(self, review: Review) -> bool: ...
+    def quarantine(self, memory_id: str, *, expected_version: int, run_id: str, rule_id: str,
+                   change_id: str, now: str) -> Change | None: ...
+    def start_run(self, run: DreamRun) -> None: ...
+    def insert_run(self, run: DreamRun) -> None: ...
+    def finish_run(self, run_id: str, *, status: RunStatus, report: dict,
+                   finished_at: str) -> None: ...
+    def runs(self, limit: int) -> list[DreamRun]: ...
+    def run(self, run_id: str) -> DreamRun | None: ...
+    def changes_of_run(self, run_id: str) -> list[Change]: ...
