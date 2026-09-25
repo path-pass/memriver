@@ -78,8 +78,7 @@ def review(run: Run, candidate: Candidate) -> tuple[str, dict | None]:
         return "policy", None               # the safety re-scan normally caught it already
     others = [m for m in run.maintenance.memories(memory.project_id)
               if m.id != memory.id and run.maintenance.passes_policy(m)]
-    entry = _candidate_entry(run, memory)
-    candidate_text = json.dumps(entry, ensure_ascii=False)
+    candidate_text = json.dumps(_candidate_entry(run, memory), ensure_ascii=False)
     for _ in range(2):                      # a too-large answer: once more, half the comparison
         prompt = _PROMPT.format(memory=candidate_text,
                                 others="\n".join(_other_text(m) for m in others))
@@ -92,11 +91,9 @@ def review(run: Run, candidate: Candidate) -> tuple[str, dict | None]:
         others = others[:len(others) // 2]
     if isinstance(result, str):
         return result, None                 # nothing recorded; the next run asks again
-    # a decision resting on a memory it was never shown is not a judgment of what was sent
-    shown = {memory.id, *entry["derived"], *(s["id"] for s in entry["sources"]),
-             *(m.id for m in others)}
+    # evidence is neither stored nor acted on: only the candidate, at the version sent, is
     reason = _reason(result["reason"])
-    if reason is None or not set(result["evidence"]) <= shown:
+    if reason is None:
         return "invalid", None
     if not run.maintenance.text_passes_policy(result["reason"]):
         return "rejected", None

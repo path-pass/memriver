@@ -1,4 +1,5 @@
-"""One executor call, checked: the answer must parse and match its schema (spec C9)."""
+"""One executor call, checked: the answer must parse and match its schema (spec C9);
+and the helpers every phase shares to build what it sends and to vet what it stores."""
 
 from __future__ import annotations
 

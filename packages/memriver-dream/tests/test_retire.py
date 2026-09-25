@@ -172,20 +172,24 @@ def test_one_unstorable_reason_fails_only_its_own_candidate(world):
     assert world.service.show(first).deleted_at is None
 
 
-def test_a_decision_citing_a_memory_it_was_never_shown_is_invalid(world):
+def test_a_delete_citing_an_unknown_id_still_retires_evidence_is_never_acted_on(world):
     memory_id = _stale(world)
     world.executor.replies = [{"decision": "delete", "reason": "superseded",
                                "evidence": ["0" * 26]}]
-    assert _phase(world).outcomes == {"invalid": 1}
-    assert world.service.show(memory_id).deleted_at is None
-
-
-def test_evidence_may_cite_the_candidate_and_the_comparison(world):
-    memory_id = _stale(world)
-    other = world.plant(world.project.id, "stage-3 was replaced by stage-4")
-    world.executor.replies = [{"decision": "delete", "reason": "replaced",
-                               "evidence": [memory_id, other]}]
     assert _phase(world).outcomes == {"retired": 1}
+    assert world.service.show(memory_id, include_deleted=True).deleted_at is not None
+
+
+def test_a_keep_citing_an_unknown_id_is_still_recorded(world):
+    memory_id = _stale(world)
+    run_at = now()
+    world.executor.replies = [{"decision": "keep", "reason": "still holds",
+                               "evidence": ["0" * 26, "not an id"]}]
+    phase = PhaseReport()
+    run(world.run(now=run_at), phase)
+    assert phase.outcomes == {"keep": 1}
+    assert world.sql("SELECT decision, next_review_at FROM dream_reviews WHERE memory_id = ?",
+                     memory_id) == [("keep", timestamp_shift(run_at, days=world.settings.dream.ttl_days))]
 
 
 def test_an_answer_of_the_wrong_shape_records_nothing(world):
