@@ -48,7 +48,8 @@ from memriver_core.settings import Settings
 
 INDEX_LINE = "- [user] likes-tea: drinks oolong (2026-01-01)"
 
-# a session started outside every project is registered with none, for good
+# a session started outside every project is registered with none, until
+# session_register assigns it one
 SESSION_NONE_HEADER = ("project: none — this session was registered with no project, so "
                        "global is read-only; to save, ask the user to run memriver project "
                        "init where this session started, then call session_register")
@@ -626,7 +627,7 @@ def test_an_unusable_store_is_one_path_free_stderr_line(failing, tmp_path,
 
 
 @pytest.mark.parametrize("event", ["session-start", "user-prompt-submit", "stop",
-                                   "session-end"])
+                                   "session-end", "pre-tool-use"])
 def test_an_unknown_harness_never_raises_out_of_run_hook(event, tmp_path):
     """argparse choices make this unreachable from the CLI; never-raise is still
     the library contract, so an unknown harness names no session and the hook
@@ -643,13 +644,14 @@ def test_an_unknown_harness_never_raises_out_of_run_hook(event, tmp_path):
 
 @pytest.mark.parametrize("harness", ["claude-code", "codex"])
 @pytest.mark.parametrize("event", ["session-start", "user-prompt-submit", "stop",
-                                   "session-end"])
+                                   "session-end", "pre-tool-use"])
 def test_a_missing_store_makes_every_hook_a_silent_no_op(event, harness, tmp_path,
                                                          registered):
     """No store, nothing to route: no hook creates one, whatever the payload."""
     store = tmp_path / "never-created"
     result = hook(event, harness, {"source": "startup", "prompt": "hello",
-                                   "stop_hook_active": False, "cwd": str(registered)},
+                                   "stop_hook_active": False, "cwd": str(registered),
+                                   "tool_use_id": "toolu_1"},
                   root=store)
     assert result == HookResult()
     assert not store.exists()
@@ -731,7 +733,7 @@ def test_an_unreadable_root_never_fails_the_session(tmp_path, capsys):
 # --- stop ----------------------------------------------------------------
 
 
-EVENTS = ["session-start", "user-prompt-submit", "stop", "session-end"]
+EVENTS = ["session-start", "user-prompt-submit", "stop", "session-end", "pre-tool-use"]
 
 
 def _rows(store, table) -> list[dict]:
@@ -876,6 +878,100 @@ def test_stop_falls_back_to_the_configured_store_root(tmp_path, registered,
                       root=None, project_dir=None, cwd=tmp_path)
 
     assert json.loads(result.stdout) == {"decision": "block", "reason": STOP_NUDGE}
+
+
+# --- pre-tool-use --------------------------------------------------------
+
+
+def pre_tool_use(harness="claude-code", *, root, session_id=SESSION_ID,
+                 tool_use_id="toolu_1", **extra):
+    """A PreToolUse payload as Claude Code sends it for a memriver tool."""
+    payload = {"session_id": session_id, "tool_use_id": tool_use_id,
+               "hook_event_name": "PreToolUse", "tool_name": "mcp__memriver__memory_index",
+               "tool_input": {}, "cwd": str(root), "permission_mode": "default"} | extra
+    return run_hook("pre-tool-use", harness, json.dumps(payload), root=root,
+                    project_dir=None, cwd=root)
+
+
+def _call_rows(store) -> list[tuple]:
+    with closing(sqlite3.connect(store / "memriver.db")) as conn:
+        return conn.execute("SELECT harness, call_id, session_id FROM tool_calls").fetchall()
+
+
+def test_pre_tool_use_records_the_call_silently(tmp_path):
+    store = _store(tmp_path)
+    assert pre_tool_use(root=store, tool_use_id="toolu_1") == HookResult()
+    assert pre_tool_use(root=store, tool_use_id="toolu_2", session_id="session-2") == \
+        HookResult()
+    service = _real_service(store)
+    assert service.session_key_for_call("claude-code", "toolu_1") == \
+        SessionKey("claude-code", SESSION_ID)
+    assert service.session_key_for_call("claude-code", "toolu_2") == \
+        SessionKey("claude-code", "session-2")
+
+
+@pytest.mark.parametrize("fields", [
+    {"tool_use_id": None}, {"tool_use_id": ""}, {"tool_use_id": "a b"},
+    {"tool_use_id": 17}, {"tool_use_id": "x" * 257},
+    {"session_id": None}, {"session_id": "a b"}, {"session_id": 17},
+])
+def test_pre_tool_use_with_an_invalid_id_records_nothing(fields, tmp_path):
+    store = _store(tmp_path)
+    assert pre_tool_use(root=store, **fields) == HookResult()
+    assert _call_rows(store) == []
+
+
+@pytest.mark.parametrize("payload_text", ["not-json", "[]", "", "null",
+                                          json.dumps({"tool_use_id": "toolu_1"})])
+def test_pre_tool_use_with_an_unusable_payload_records_nothing(payload_text, tmp_path):
+    store = _store(tmp_path)
+    assert run_hook("pre-tool-use", "claude-code", payload_text, root=store,
+                    project_dir=None, cwd=tmp_path) == HookResult()
+    assert _call_rows(store) == []
+
+
+def test_pre_tool_use_is_a_silent_no_op_for_codex(tmp_path):
+    """memriver installs no PreToolUse hook for Codex: its calls name their session."""
+    store = _store(tmp_path)
+    assert pre_tool_use("codex", root=store) == HookResult()
+    assert _call_rows(store) == []
+
+
+def test_pre_tool_use_never_creates_the_store(tmp_path):
+    store = tmp_path / "never-created"
+    assert pre_tool_use(root=store) == HookResult()
+    assert not store.exists()
+
+
+def test_a_failing_pre_tool_use_never_fails_the_harness(tmp_path, monkeypatch):
+    def boom(*args, **kwargs):
+        raise OSError("/private/secret is on fire")
+
+    monkeypatch.setattr(bootstrap, "build_service", boom)
+    assert pre_tool_use(root=_store(tmp_path)) == HookResult()
+
+
+def test_pre_tool_use_stays_light(tmp_path):
+    # PreToolUse runs before every memriver tool call: the content policy (the
+    # secret scanner and its rules) must never load on this path
+    store = _store(tmp_path)
+    script = (
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "from memriver.hooks import run_hook\n"
+        f"payload = json.dumps({{'session_id': {SESSION_ID!r}, 'tool_use_id': 'toolu_1'}})\n"
+        f"result = run_hook('pre-tool-use', 'claude-code', payload, root=Path({str(store)!r}),\n"
+        f"                  project_dir=None, cwd=Path({str(tmp_path)!r}))\n"
+        "bad = [m for m in sys.modules if m.startswith(\n"
+        "       ('memriver_core.content_policy.secret_scanner', 'detect_secrets'))]\n"
+        "print(json.dumps([bad, result.stdout, result.stderr]))\n"
+    )
+    out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                         check=True)
+    assert json.loads(out.stdout) == [[], "", ""]
+    # the mapping really was written: a hook that did nothing would import
+    # nothing either, and would pass this test for the wrong reason
+    assert _call_rows(store) == [("claude-code", "toolu_1", SESSION_ID)]
 
 
 # --- user-prompt-submit --------------------------------------------------

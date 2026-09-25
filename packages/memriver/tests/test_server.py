@@ -962,6 +962,89 @@ def _observe(world, key, directory, prompt):
                                             transcript_path=None)
 
 
+# --- Claude Code: the PreToolUse call mapping (spec U15) ---------------------------
+
+
+def _claude_meta(call_id):
+    return {"claudecode/toolUseId": call_id}
+
+
+def _write_watermark(world, key) -> int:
+    return next(s for s in _service(world["store"]).list_sessions()
+                if s.key == key).last_write_prompt_count
+
+
+async def test_a_mapped_claude_code_call_answers_for_the_session_that_made_it(world,
+                                                                              monkeypatch):
+    """Claude Code keeps one MCP server across /clear and an in-app /resume, so its
+    environment names the startup session; the PreToolUse mapping names the current one."""
+    other = world["dir"].parent / "other"
+    startup, current = SessionKey("claude-code", "s1"), SessionKey("claude-code", "s2")
+    _start(world, startup, world["dir"])
+    _start(world, current, other, source="clear")
+    for number in range(3):
+        _observe(world, current, other, f"task {number}")
+    _service(world["store"]).record_tool_call(current, "call-1")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "s1")
+    server = build_server(root=world["store"], project_dir=world["dir"], harness="claude-code")
+
+    index = await _call(server, "memory_index", meta=_claude_meta("call-1"))
+    assert index.splitlines()[0] == _registered_header(world, other)
+    written = await _call(server, "memory_write", meta=_claude_meta("call-1"),
+                          content="fact", type="project")
+    assert written["project_id"] == world["other"]
+    assert _write_watermark(world, current) == 3
+    assert _write_watermark(world, startup) == 0
+
+    # an unknown call, or none named, falls back to the server's environment
+    for meta in (_claude_meta("call-unknown"), None, {"claudecode/toolUseId": 17}):
+        fallback = await _call(server, "memory_index", meta=meta)
+        assert fallback.splitlines()[0] == _registered_header(world, world["dir"]), meta
+
+
+async def test_a_codex_server_ignores_a_claude_code_call_id(world):
+    _start(world, SessionKey("codex", CODEX_ID), world["dir"])
+    _start(world, SessionKey("claude-code", "s2"), world["dir"].parent / "other")
+    _service(world["store"]).record_tool_call(SessionKey("claude-code", "s2"), "call-1")
+    server = build_server(root=world["store"], project_dir=world["dir"], harness="codex")
+    meta = _codex_meta(CODEX_ID) | _claude_meta("call-1")
+    index = await _call(server, "memory_index", meta=meta)
+    assert index.splitlines()[0] == _registered_header(world, world["dir"])
+
+
+async def test_claude_code_follows_a_clear_through_real_hooks_end_to_end(world, monkeypatch):
+    """Real hooks: start S1 in demo, /clear into S2 whose entry is other, S2's
+    PreToolUse maps call-X; the one MCP server, still carrying S1 in its
+    environment, answers call-X for S2, and S2's Stop is silent after the save
+    while S1 -- whose watermark never moved -- is still nudged."""
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    other = world["dir"].parent / "other"
+
+    def hook(event, session_id, **payload):
+        return run_hook(event, "claude-code",
+                        json.dumps({"session_id": session_id} | payload),
+                        root=world["store"], project_dir=None, cwd=world["dir"])
+
+    hook("session-start", "s1", cwd=str(world["dir"]), source="startup")
+    for session_id, directory in (("s1", world["dir"]), ("s2", other)):
+        if session_id == "s2":
+            hook("session-start", "s2", cwd=str(directory), source="clear")
+        for number in range(5):
+            assert hook("user-prompt-submit", session_id, cwd=str(directory),
+                        prompt=f"task {number}") == HookResult()
+    assert hook("pre-tool-use", "s2", tool_use_id="call-X",
+                tool_name="mcp__memriver__memory_write", cwd=str(other)) == HookResult()
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "s1")
+    server = build_server(root=world["store"], project_dir=world["dir"], harness="claude-code")
+
+    written = await _call(server, "memory_write", meta=_claude_meta("call-X"),
+                          content="fact", type="project")
+    assert written["project_id"] == world["other"]
+    assert hook("stop", "s2", stop_hook_active=False) == HookResult()
+    nudge = hook("stop", "s1", stop_hook_active=False)
+    assert json.loads(nudge.stdout) == {"decision": "block", "reason": STOP_NUDGE}
+
+
 async def test_session_search_is_limited_to_the_callers_project(world):
     other = world["dir"].parent / "other"
     me = SessionKey("codex", CODEX_ID)

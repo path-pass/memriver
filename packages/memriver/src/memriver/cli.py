@@ -61,7 +61,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     hook = commands.add_parser("hook", help="run a harness hook over stdin/stdout")
     hook.add_argument("event", choices=["session-start", "user-prompt-submit", "stop",
-                                        "session-end"])
+                                        "session-end", "pre-tool-use"])
     # spelled out here, like install's below: importing hooks.HookEvent and
     # hooks.Harness at parse time would pull memriver_core.models into every
     # invocation, including install/uninstall/--version.

@@ -1,8 +1,11 @@
-"""Harness hooks: four events on the session's row in the store.
+"""Harness hooks: five events on the session's row in the store.
 
 SessionStart registers the session (or finds its row) and injects the index
 its row grants; UserPromptSubmit counts and records the prompt; Stop decides
-the save nudge; SessionEnd records the end. Every event names its session by
+the save nudge; SessionEnd records the end; Claude Code's PreToolUse, matched
+to memriver's own tools, records which session is making the call, because
+Claude Code keeps its MCP server across ``/clear`` and an in-app ``/resume``
+and only the call names the current session. Every event names its session by
 the payload's ``session_id``: without a valid one, or without a store (asked
 first, through ``store_exists``), a hook does nothing -- and no hook ever
 creates the store.
@@ -22,9 +25,12 @@ harness even where both currently build the same object: the schemas are owned
 by two vendors and have diverged before. Composition of the text itself is
 shared, because that is ours.
 
-*Stop stays light.* The Stop path only moves the session's nudge watermark
-through the core facade (``stop_decision``): it never loads the content
-policy, never scans memories and never creates the store.
+*Stop and PreToolUse stay light.* The Stop path only moves the session's
+nudge watermark through the core facade (``stop_decision``), and PreToolUse
+only records one call mapping (``record_tool_call``): neither loads the
+content policy, scans memories or creates the store. PreToolUse never writes
+anything to stdout -- no decision, no context -- so it can neither block nor
+alter the tool call it precedes.
 """
 
 from __future__ import annotations
@@ -54,7 +60,8 @@ if TYPE_CHECKING:
     from memriver_core.models import ProjectContext, SessionKey
 
 Harness = Literal["claude-code", "codex"]
-HookEvent = Literal["session-start", "user-prompt-submit", "stop", "session-end"]
+HookEvent = Literal["session-start", "user-prompt-submit", "stop", "session-end",
+                    "pre-tool-use"]
 
 INVALID_INPUT = "memriver hook: invalid input\n"
 STORE_UNAVAILABLE = "memriver hook: memory store is unavailable\n"
@@ -170,6 +177,8 @@ def run_hook(event: HookEvent, harness: Harness, payload_text: str, *,
                                    project_dir=project_dir, cwd=cwd)
     if event == "session-end":
         return _session_end(harness, payload_text, root=root)
+    if event == "pre-tool-use":
+        return _pre_tool_use(harness, payload_text, root=root)
     return _session_start(harness, payload_text, root=root,
                           project_dir=project_dir, cwd=cwd)
 
@@ -194,6 +203,15 @@ def _open_service(root: Path | None):
     return build_service(settings, root=settings.root)
 
 
+def _light_service(root: Path | None):
+    """The facade without loading settings.toml: for the hooks that must stay light."""
+    from memriver_core.bootstrap import build_service
+    from memriver_core.settings import Settings, storage_root
+
+    store_root = Path(root) if root is not None else storage_root()
+    return build_service(Settings(root=store_root), root=store_root)
+
+
 def _transcript_path(payload: dict[str, Any]) -> str | None:
     value = payload.get("transcript_path")
     return value if isinstance(value, str) else None
@@ -214,15 +232,39 @@ def _stop(harness: Harness, payload_text: str, *, root: Path | None) -> HookResu
             return HookResult()
         # the watermark write only: no content policy, and a missing store
         # stays missing
-        from memriver_core.bootstrap import build_service
-        from memriver_core.settings import Settings, storage_root
-
-        store_root = Path(root) if root is not None else storage_root()
-        service = build_service(Settings(root=store_root), root=store_root)
+        service = _light_service(root)
         if not (service.store_exists() and service.stop_decision(key)):
             return HookResult()
         return HookResult(stdout=_emit(_STOP_ENCODERS[harness](STOP_NUDGE)))
     except Exception:  # noqa: BLE001 - a failed nudge is never worth a message
+        return HookResult()
+
+
+def _pre_tool_use(harness: Harness, payload_text: str, *, root: Path | None) -> HookResult:
+    """Record ``tool_use_id -> session_id`` for the memriver call about to run.
+
+    Claude Code only: its MCP server keeps its startup session id across
+    ``/clear`` and an in-app ``/resume``, and routes each call by this mapping
+    (the payload's ``tool_use_id`` is the call's ``_meta["claudecode/toolUseId"]``,
+    and the hook finishes before the call is sent). Always silent.
+    """
+    try:
+        if harness != "claude-code":
+            return HookResult()             # not installed for Codex: its calls name their session
+        payload = json.loads(payload_text)
+        if not isinstance(payload, dict):
+            return HookResult()
+        from memriver_core.models import is_call_id
+
+        key = _session_key(harness, payload)
+        call_id = payload.get("tool_use_id")
+        if key is None or not is_call_id(call_id):
+            return HookResult()
+        # the mapping write only: no content policy, and a missing store
+        # stays missing (the write is a no-op without one)
+        _light_service(root).record_tool_call(key, call_id)
+        return HookResult()
+    except Exception:  # noqa: BLE001 - a missed mapping falls back to the server's session id
         return HookResult()
 
 

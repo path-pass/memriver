@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Literal, NoReturn
+from typing import Any, Literal, NoReturn
 
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
@@ -77,7 +77,8 @@ _SESSION_NO_PROJECT = {
 _SESSION_REFUSAL = {
     "pending": ("this session is awaiting the user's confirmation; ask the user, then call "
                 "session_confirm"),
-    # nothing to confirm: confirming would register no project for good
+    # nothing to confirm: confirming would register no project, which only
+    # session_register can change
     "pending-no-candidate": ("this session is not registered, and the directory it was first "
                              "observed in is not in any registered project; once the user has "
                              "run memriver project init covering this session's start "
@@ -211,16 +212,22 @@ def _hit(memory: Memory, collection: str) -> dict:
             "description": memory.description, "snippet": snippet}
 
 
-def _session_key(harness: str, ctx: Context) -> SessionKey | None:
+def _session_key(harness: str, ctx: Context, service: Any) -> SessionKey | None:
     """The calling session, read from this call alone; None when it names none validly."""
+    # FastMCP hands `_meta` over as a model object
+    meta = ctx.request_context.meta if ctx.request_context is not None else None
+    data = meta.model_dump() if meta is not None else {}
     if harness == "claude-code":
+        # Claude Code keeps this server across /clear and an in-app /resume,
+        # so its environment keeps naming the startup session; the PreToolUse
+        # hook mapped this call's id to the session making it (spec U15)
+        mapped = service.session_key_for_call(harness, data.get("claudecode/toolUseId"))
+        if mapped is not None:
+            return mapped
         session_id = os.environ.get("CLAUDE_CODE_SESSION_ID")
     else:
-        # FastMCP hands `_meta` over as a model object; Codex nests its
-        # turn metadata as an object, and anything else (a JSON string) is
-        # not taken apart
-        meta = ctx.request_context.meta if ctx.request_context is not None else None
-        data = meta.model_dump() if meta is not None else {}
+        # Codex nests its turn metadata as an object, and anything else (a
+        # JSON string) is not taken apart
         nested = data.get("x-codex-turn-metadata")
         session_id = nested.get("session_id") if isinstance(nested, dict) else None
     if session_id is None:
@@ -263,7 +270,7 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
         def context_of(ctx: Context) -> ProjectContext:
             # per call, from the call itself: parallel calls never share a
             # "current session", and nothing is cached between them
-            return service.session_context(_session_key(harness, ctx))
+            return service.session_context(_session_key(harness, ctx, service))
     else:
         instructions = INSTRUCTIONS
         # resolved once, at build time: every tool answers for the same
@@ -380,7 +387,7 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
         if not session_mode:
             raise ToolError(_SESSION_TOOLS_UNAVAILABLE, log_level=logging.DEBUG)
         try:
-            key = _session_key(harness, ctx)
+            key = _session_key(harness, ctx, service)
             if key is None:
                 raise ProjectUnavailable(reason="unidentified")
             return {"header": service.confirm_session(key).header}
@@ -396,7 +403,7 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
         if not session_mode:
             raise ToolError(_SESSION_TOOLS_UNAVAILABLE, log_level=logging.DEBUG)
         try:
-            key = _session_key(harness, ctx)
+            key = _session_key(harness, ctx, service)
             if key is None:
                 raise ProjectUnavailable(reason="unidentified")
             context = service.register_session(key)
