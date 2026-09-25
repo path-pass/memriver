@@ -40,7 +40,10 @@ class MemoryStore(Protocol):
       and 0 is returned.
     - `delete(hard=True)` and `delete_global(hard=True)` on a row any
       `memory_sources` row cites as a source raise
-      `MemoryReferenced(memory_id, derived_ids)`; nothing is deleted.
+      `MemoryReferenced(memory_id, derived_ids)`; nothing is deleted. Every
+      citing id is validated first; a malformed one (damage, or a write
+      outside this store) is `StorageFailure` instead, never a value a
+      caller echoes.
     - `delete_global`: the management delete of a global entry (human CLI
       only, never MCP): any project's global row by id, the same version
       rules as `delete`; a row that is not global raises

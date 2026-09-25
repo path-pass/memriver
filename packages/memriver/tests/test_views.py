@@ -366,6 +366,22 @@ def test_a_hard_delete_of_a_referenced_source_lists_the_derived_entries(world):
     assert world["service"].show(world["memory"].id).version == 1
 
 
+def test_a_hard_delete_refused_by_a_corrupted_derived_id_never_echoes_it(world):
+    """A derived_id can only be malformed through damage or a write outside the store
+    (foreign keys off); the refusal must be the fixed storage-failure sentence, never the
+    raw value -- see the corresponding store-level test for the invariant this relies on."""
+    bad_id = "not-an-id\nFORGED LINE " + chr(27) + "[2J"
+    _cite(world, bad_id, world["memory"].id)
+    out = io.StringIO()
+    code = run_delete(world["memory"].id, version=1, hard=True, yes=True, root=world["store"],
+                      stdin_is_tty=False, input_fn=_never_called, stdout=out,
+                      cwd=world["work"], home=world["home"])
+    assert code == 2
+    assert out.getvalue().splitlines()[1:] == ["refused: the memory store could not be written"]
+    assert "FORGED" not in out.getvalue() and "\x1b" not in out.getvalue()
+    assert world["service"].show(world["memory"].id).version == 1
+
+
 def test_following_the_refusal_hint_deletes_the_derived_entry_then_the_source(world, tmp_path):
     derived_id = _plant_global_memory(world)
     _cite(world, derived_id, world["memory"].id)
@@ -377,6 +393,58 @@ def test_following_the_refusal_hint_deletes_the_derived_entry_then_the_source(wo
                      root=world["store"], stdin_is_tty=False, input_fn=_never_called,
                      cwd=world["work"], home=world["home"])
     assert code == 0 and out.endswith(f"purged {world['memory'].id}\n")
+
+
+def test_confirmed_delete_is_refused_when_the_project_becomes_global_meanwhile(world):
+    """The plan decides `is_global` once, before the prompt; the store re-checks the row's
+    own project at write time. A project promoted to global during the wait must not let a
+    plain `service.delete` through."""
+    import sqlite3
+    from contextlib import closing
+
+    global_id = world["service"].global_project_id()
+    db_path = world["store"] / "memriver.db"
+
+    def _promote_then_confirm(_):
+        with closing(sqlite3.connect(db_path)) as conn, conn:
+            conn.execute("UPDATE projects SET is_global = 0 WHERE id = ?", (global_id,))
+            conn.execute("UPDATE projects SET root = NULL, is_global = 1 WHERE id = ?",
+                         (world["project"].id,))
+        return "y"
+
+    out = io.StringIO()
+    code = run_delete(world["memory"].id, version=1, hard=False, yes=False, root=world["store"],
+                      stdin_is_tty=True, input_fn=_promote_then_confirm, stdout=out,
+                      cwd=world["work"], home=world["home"])
+    assert code == 2
+    assert out.getvalue().splitlines()[-1] == (
+        "refused: the memory's project changed while waiting; run the command again")
+    assert world["service"].show(world["memory"].id).version == 1
+
+
+def test_confirmed_delete_is_refused_when_a_global_entry_stops_being_global_meanwhile(world):
+    """The mirror direction: a global entry planned as a management delete, whose project
+    stops being global before the write reaches `delete_global`."""
+    import sqlite3
+    from contextlib import closing
+
+    memory_id = _plant_global_memory(world)
+    global_id = world["service"].global_project_id()
+    db_path = world["store"] / "memriver.db"
+
+    def _demote_then_confirm(_):
+        with closing(sqlite3.connect(db_path)) as conn, conn:
+            conn.execute("UPDATE projects SET is_global = 0 WHERE id = ?", (global_id,))
+        return "y"
+
+    out = io.StringIO()
+    code = run_delete(memory_id, version=1, hard=False, yes=False, root=world["store"],
+                      stdin_is_tty=True, input_fn=_demote_then_confirm, stdout=out,
+                      cwd=world["work"], home=world["home"])
+    assert code == 2
+    assert out.getvalue().splitlines()[-1] == (
+        "refused: the memory's project changed while waiting; run the command again")
+    assert world["service"].show(memory_id, include_deleted=True).version == 1
 
 
 def test_delete_without_yes_over_a_non_tty_is_refused(world):

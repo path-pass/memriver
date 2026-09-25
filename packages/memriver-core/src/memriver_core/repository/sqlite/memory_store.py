@@ -66,10 +66,20 @@ def _joined(conn: sqlite3.Connection | None, memory_id: str, *, include_deleted:
 
 
 def _derived_ids(conn: sqlite3.Connection, memory_id: str) -> tuple[str, ...]:
-    """Every entry citing `memory_id` as a source, in any of its versions."""
-    return tuple(row[0] for row in conn.execute(
+    """Every entry citing `memory_id` as a source, in any of its versions.
+
+    Each id is validated like any other before it leaves this function: a
+    malformed or non-text `derived_id` (only reachable through damage, or a
+    write outside this store with foreign keys off) is `StorageFailure`,
+    never a value a caller goes on to echo. Filtering it out and continuing
+    the delete would silently drop a citation instead of refusing on damage.
+    """
+    ids = tuple(row[0] for row in conn.execute(
         "SELECT DISTINCT derived_id FROM memory_sources WHERE source_id = ? "
         "ORDER BY derived_id", (memory_id,)))
+    if not all(_addressable(derived_id) for derived_id in ids):
+        raise StorageFailure
+    return ids
 
 
 class SqliteMemoryStore:

@@ -12,6 +12,7 @@ from memriver_core.models.errors import (
     MemoryNotFound,
     MemoryReferenced,
     ProjectUnavailable,
+    StorageFailure,
     VersionConflict,
 )
 from memriver_core.repository.sqlite import SqliteMemoryStore, SqliteProjectStore
@@ -152,3 +153,17 @@ def test_delete_global_refuses_a_project_entry_and_an_unknown_id(world):
     assert caught.value.reason == "not-global"
     with pytest.raises(MemoryNotFound):
         world["memory_store"].delete_global("zzzzzzzzzz", expected_version=1, hard=False)
+
+
+def test_hard_delete_refuses_when_a_derived_id_is_corrupted(world):
+    """A row inserted outside the store (foreign keys off) can carry a derived_id that is
+    not a valid memory id; a hard delete must refuse it as damage, not echo it."""
+    source = _record(world, "fact")
+    bad_id = "not-an-id\nFORGED LINE " + chr(27) + "[2J"
+    _sql(world, "INSERT INTO memory_source_sets VALUES (?, 1)", bad_id)
+    _sql(world, "INSERT INTO memory_sources VALUES (?, 1, ?, 1, ?, ?)", bad_id, source.id,
+         source.project_id, '{"type":"project","description":"cue","body":"fact"}')
+    with pytest.raises(StorageFailure):
+        world["memory_store"].delete(source.id, world["read_write_set"], expected_version=1,
+                                     hard=True)
+    assert world["memory_store"].read(source.id, world["read_write_set"]).version == 1
