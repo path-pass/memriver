@@ -106,3 +106,15 @@ def test_umbrella_never_names_the_concrete_inspector_or_diagnostics_service():
                 f"{module} references {name}; neither may be constructed or "
                 "imported outside memriver_core.bootstrap"
             )
+
+
+# the umbrella composes memriver_dream for `memriver dream`; the paths every
+# session start and every tool call pay for never load it
+HOT_PATHS = ("memriver.hooks", "memriver.server", "memriver.install")
+
+
+def test_the_hot_paths_never_import_memriver_dream():
+    for module in SOURCES:
+        if any(_under(module, hot) for hot in HOT_PATHS):
+            offenders = [t for t in _imported_modules(module) if _under(t, "memriver_dream")]
+            assert not offenders, f"{module} imports memriver_dream: {offenders}"

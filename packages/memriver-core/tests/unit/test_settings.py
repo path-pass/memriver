@@ -303,3 +303,127 @@ def test_memory_reads_retention_is_unset_by_default_and_positive_when_set(tmp_pa
 def test_memory_reads_retention_is_read_from_the_settings_file(tmp_path):
     root = _root(tmp_path, "memory_reads_retention_days = 60\n")
     assert load_settings(root_override=root).memory_reads_retention_days == 60
+
+
+# --- the [dream] table ---
+
+DREAM_TABLE = '[dream]\nexecutor = "codex"\nexecutor_path = "/opt/bin/codex"\n'
+
+
+def test_no_dream_table_means_no_dream_settings(tmp_path):
+    settings = load_settings(root_override=_root(tmp_path, "max_body_chars = 42\n"))
+    assert (settings.dream, settings.dream_invalid) == (None, False)
+
+
+def test_a_dream_table_is_read_with_its_defaults(tmp_path):
+    settings = load_settings(root_override=_root(tmp_path, DREAM_TABLE + "ttl_days = 30\n"))
+    dream = settings.dream
+    assert (dream.executor, dream.executor_path, dream.ttl_days) == ("codex", "/opt/bin/codex", 30)
+    assert (dream.ttl_read_multiplier_max, dream.uncertain_limit, dream.idle_minutes,
+            dream.schedule_at, dream.max_sessions_per_run, dream.max_groups_per_run,
+            dream.max_candidates_per_run) == (5, 2, 60, "04:00", 20, 20, 30)
+
+
+@pytest.mark.parametrize("table", [
+    '[dream]\nexecutor = "gpt"\nexecutor_path = "/opt/bin/codex"\n',
+    '[dream]\nexecutor = "codex"\nexecutor_path = "relative/codex"\n',
+    DREAM_TABLE + "ttl_days = 0\n",
+    DREAM_TABLE + "ttl_days = true\n",
+    DREAM_TABLE + 'schedule_at = "25:00"\n',
+    DREAM_TABLE + "unknown_key = 1\n",
+    DREAM_TABLE + '[dream.codex_overrides]\n"features.hooks" = false\n',
+    "dream = 5\n",
+])
+def test_an_invalid_dream_table_is_dropped_alone_and_flagged(tmp_path, caplog, table):
+    text = "max_body_chars = 42\n" + table
+    with caplog.at_level("WARNING"):
+        settings = load_settings(root_override=_root(tmp_path, text))
+    assert (settings.dream, settings.dream_invalid, settings.max_body_chars) == (None, True, 42)
+    assert "[dream]" in caplog.text
+
+
+def test_a_dream_table_missing_its_executor_is_invalid(tmp_path):
+    settings = load_settings(root_override=_root(tmp_path, "[dream]\nttl_days = 30\n"))
+    assert (settings.dream, settings.dream_invalid) == (None, True)
+
+
+CODEX_PROVIDER = (
+    '[dream.codex_overrides]\n"model_provider" = "foundry"\n"model" = "deployment-a"\n'
+    '"model_providers.foundry.name" = "Foundry"\n'
+    '"model_providers.foundry.base_url" = "https://example.invalid/openai/v1"\n'
+    '"model_providers.foundry.env_key" = "FOUNDRY_API_KEY"\n'
+    '"model_providers.foundry.wire_api" = "responses"\n'
+    '"model_providers.foundry.requires_openai_auth" = false\n')
+
+
+def test_codex_overrides_default_to_empty(tmp_path):
+    assert load_settings(root_override=_root(tmp_path, DREAM_TABLE)).dream.codex_overrides == {}
+
+
+def test_a_whitelisted_codex_provider_is_read_with_its_types(tmp_path):
+    settings = load_settings(root_override=_root(tmp_path, DREAM_TABLE + CODEX_PROVIDER))
+    overrides = settings.dream.codex_overrides
+    assert (overrides["model_provider"], overrides["model_providers.foundry.env_key"]) == (
+        "foundry", "FOUNDRY_API_KEY")
+    assert overrides["model_providers.foundry.requires_openai_auth"] is False
+    assert len(overrides) == 7
+
+
+PASTED = "sk-" + "q" * 24                  # what a pasted credential could look like
+
+
+@pytest.mark.parametrize("overrides", [
+    {"features.hooks": False},
+    {"mcp_servers.sentinel.command": "sh"},
+    {"web_search": "live"},
+    {"model_instructions_file": "/tmp/other.md"},
+    {"project_doc_max_bytes": "1000"},
+    {"model_providers": {"foundry": {"name": "Foundry"}}},            # a whole table
+    {"model_provider": "foundry", "model_providers.foundry": {"name": "Foundry"}},
+    {"model_provider": "foundry", "model_providers.foundry.name.extra": "x"},  # prefix only
+    {"model_provider": "foundry", "model_providers.foundry.experimental_bearer_token": PASTED},
+    {"model_provider": "foundry", "model_providers.foundry.http_headers.api-key": PASTED},
+    {"model_provider": "foundry", "model_providers.foundry.query_params.key": PASTED},
+    {"model": True},
+    {"model": "two\nlines"},
+    {"model": " "},
+    {"model_provider": "foundry", "model_providers.foundry.env_key": PASTED},
+    {"model_provider": "foundry", "model_providers.foundry.requires_openai_auth": "false"},
+    {"model_provider": "foundry", "model_providers.foundry.wire_api": "chat"},
+    {"model_provider": "foundry",
+     "model_providers.foundry.base_url": f"https://u:{PASTED}@example.invalid/v1"},
+    {"model_provider": "foundry",
+     "model_providers.foundry.base_url": f"https://example.invalid/v1?key={PASTED}"},
+    {"model_provider": "foundry", "model_providers.foundry.base_url": "https://example.invalid/#x"},
+    {"model_provider": "foundry", "model_providers.foundry.base_url": "file:///etc/hosts"},
+    {"model_provider": "a", "model_providers.b.name": "B"},           # not the selected one
+    {"model_provider": "a", "model_providers.a.name": "A", "model_providers.b.name": "B"},
+    {"model_providers.a.name": "A"},                                  # nothing selects it
+    ["model", "x"],
+])
+def test_codex_overrides_outside_the_whitelist_are_refused_without_echoing_values(
+        overrides):
+    from memriver_core.settings import DreamSettings
+
+    with pytest.raises(ValidationError) as caught:
+        DreamSettings(executor="codex", executor_path="/opt/bin/codex",
+                      codex_overrides=overrides)
+    reasons = [str(error["ctx"]["error"]) for error in caught.value.errors()
+               if error["type"] == "value_error"]
+    assert reasons and all(reason.startswith("codex_overrides") for reason in reasons)
+    assert not any(PASTED in reason for reason in reasons)
+
+
+DREAM_CONSTANTS = {
+    "DREAM_CONTEXT_BUDGET_TOKENS": 100_000, "DREAM_OUTPUT_RESERVE_TOKENS": 4_000,
+    "DREAM_INPUT_MARGIN_TOKENS": 16_000,
+    "DREAM_SUMMARY_MAX_CHARS": 1_200, "DREAM_CHUNK_SUMMARY_CHARS": 1_500,
+    "DREAM_TOOL_OUTPUT_CHARS": 2_000, "DREAM_MAX_CALLS_PER_SESSION": 12,
+    "DREAM_CALL_TIMEOUT_S": 300, "DREAM_MAX_QUARANTINE_PER_RUN": 1_000,
+}
+
+
+def test_the_dream_constants_live_in_settings():
+    from memriver_core import settings
+    assert {name: getattr(settings, name) for name in DREAM_CONSTANTS} == DREAM_CONSTANTS
+    assert set(DREAM_CONSTANTS) <= set(settings.__all__)

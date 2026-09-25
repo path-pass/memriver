@@ -7,7 +7,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-echo "==> building wheels (memriver, memriver-core) into e2e/wheels"
+echo "==> building wheels (memriver, memriver-core, memriver-dream) into e2e/wheels"
 rm -rf e2e/wheels
 uv build --all-packages --out-dir e2e/wheels
 

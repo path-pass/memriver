@@ -134,7 +134,7 @@ entering from the registered project and one from unregistered `/root`:
 bash e2e/run-stage1.sh
 ```
 
-This rebuilds the `memriver`/`memriver-core` wheels into `e2e/wheels/` (`rm -rf
+This rebuilds the `memriver`/`memriver-core`/`memriver-dream` wheels into `e2e/wheels/` (`rm -rf
 e2e/wheels && uv build --all-packages --out-dir e2e/wheels` -- every
 `run-stage*.sh` does this first, so the container can never resolve a stale
 wheel; the container's uv cache is fresh on every `--rm` run), builds the

@@ -1,7 +1,7 @@
 [project]
-name = "memriver"
+name = "memriver-dream"
 version = "0.1.0"
-description = "Shared memory layer for coding agents across harnesses, exposed via MCP"
+description = "memriver dream: offline session summaries, memory consolidation and TTL retirement"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
@@ -9,26 +9,14 @@ license-files = ["LICENSE"]
 authors = [{ name = "path-pass" }]
 classifiers = [
     "Development Status :: 3 - Alpha",
-    "Environment :: Console",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-dependencies = [
-    "memriver-core>=0.1.0",
-    "memriver-dream>=0.1.0",
-    "fastmcp>=3.4.7,<4",
-    "pydantic>=2",
-    "tomlkit",
-]
-
-[project.scripts]
-memriver = "memriver.cli:main"
-
-[project.optional-dependencies]
-# Filled in Phase 3+: vector = ["memriver-vector"], dream = [...], sync = [...], all = [...]
+# harness-neutral by rule: no LLM client, no harness, no third-party dependency
+dependencies = ["memriver-core>=0.1.0"]
 
 [project.urls]
 Homepage = "https://github.com/path-pass/memriver"
@@ -37,7 +25,6 @@ Issues = "https://github.com/path-pass/memriver/issues"
 
 [tool.uv.sources]
 memriver-core = { workspace = true }
-memriver-dream = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
