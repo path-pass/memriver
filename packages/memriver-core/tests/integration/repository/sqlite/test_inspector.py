@@ -350,7 +350,7 @@ def test_doctor_as_the_first_opener_upgrades_and_reports_no_unknown_schema(tmp_p
     report = SqliteStoreInspector(store, busy_timeout_ms=2000).inspect()
     assert "unknown-schema" not in [f.kind for f in report.findings]
     with closing(sqlite3.connect(store / "memriver.db")) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
 
 
 def test_a_failed_upgrade_is_reported_as_unknown_schema_not_a_crash(tmp_path, monkeypatch):
@@ -497,3 +497,42 @@ def test_directory_checks_run_after_the_read_transaction(world, monkeypatch):
     # the report is still the snapshot read before the peer's commit
     assert {p.id: p.active_memories for p in report.projects}[world["project"]] == 0
     assert report.entries == ()
+
+
+@pytest.mark.parametrize("table, statement, location", [
+    ("memory_source_sets",
+     "INSERT INTO memory_source_sets VALUES ('not an id', 1)", "memory_source_sets"),
+    ("memory_sources",
+     "INSERT INTO memory_sources VALUES ('bbbbbbbbbb', 1, 'cccccccccc', 1, 'dddddddddd', 'x')",
+     "memory_sources/bbbbbbbbbb"),
+    ("memory_reads",
+     "INSERT INTO memory_reads VALUES ('bbbbbbbbbb', 1, 'yesterday', 'codex', NULL)",
+     "memory_reads/bbbbbbbbbb"),
+    ("dream_changes",
+     ("INSERT INTO dream_changes VALUES ('bbbbbbbbbb', 'r', 'merge', 'dddddddddd', "
+      "'2026-09-25T00:00:00.000000Z', '[]', 'why', NULL)"),
+     "dream_changes/bbbbbbbbbb"),
+    ("dream_reviews",
+     ("INSERT INTO dream_reviews VALUES ('bbbbbbbbbb', 1, 'yesterday', 'keep', 'r', 0, "
+      "'2026-09-25T00:00:00.000000Z', 'r', 'claude', 'dream-1')"),
+     "dream_reviews/bbbbbbbbbb"),
+    ("dream_state", "INSERT INTO dream_state VALUES ('consolidate:x', '', 'later')",
+     "dream_state"),
+    ("dream_runs",
+     ("INSERT INTO dream_runs VALUES ('bbbbbbbbbb', 'later', NULL, 'manual', NULL, "
+      "'running', '{}')"),
+     "dream_runs/bbbbbbbbbb"),
+])
+def test_an_invalid_dream_row_is_reported_as_invalid_row(world, table, statement, location):
+    # a raw connection has foreign keys off, so a row naming no memory plants cleanly
+    _sql(world["store"], statement)
+    report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+    found = [(f.kind, f.location_hint) for f in report.findings]
+    assert ("invalid-row", location) in found, table
+
+
+def test_valid_dream_rows_are_not_findings(world):
+    _sql(world["store"], "INSERT INTO dream_state VALUES ('consolidate:x', 'abc', "
+                         "'2026-09-25T00:00:00.000000Z')")
+    report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+    assert report.findings == ()

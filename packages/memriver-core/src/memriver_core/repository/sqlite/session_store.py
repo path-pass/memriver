@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import dataclasses
-import json
 import sqlite3
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
@@ -23,6 +22,8 @@ from memriver_core.models import (
 from memriver_core.models.errors import ProjectUnavailable, StorageFailure
 
 from .database import Database
+from .database import dumps_json as _dumps
+from .database import loads_json as _loads
 
 SESSION_COLUMNS = ("harness, session_id, status, origin, project_id, candidate_id, "
                    "candidate_root, entry_cwd, branch, transcript_path, started_at, "
@@ -46,10 +47,6 @@ _TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 _T = TypeVar("_T")
 
 
-def _dumps(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-
-
 def _entry_object(entry: PromptEntry) -> dict[str, str]:
     if entry.text is not None:
         return {"at": entry.at, "text": entry.text}
@@ -60,21 +57,6 @@ def _entry_from_object(value: object) -> PromptEntry:
     if not isinstance(value, dict) or set(value) not in ({"at", "text"}, {"at", "omitted"}):
         raise ValueError("a prompt entry is not {at, text} or {at, omitted}")
     return PromptEntry(**value)
-
-
-def _loads(raw: object) -> object:
-    """A JSON column's value; ValueError for anything but text memriver could have written."""
-    if not isinstance(raw, str):
-        raise ValueError("a JSON column holds something else")  # noqa: TRY004 - a bad row
-    try:
-        value = json.loads(raw)
-    except RecursionError as err:           # nested past the interpreter's limit
-        raise ValueError("a JSON column is nested too deeply") from err
-    # only the one form `_dumps` writes reads back: anything else is a
-    # hand-edit, and a hand-edit is damage
-    if _dumps(value) != raw:
-        raise ValueError("a JSON column is not in its written form")
-    return value
 
 
 def session_to_row(session: Session) -> tuple:

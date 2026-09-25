@@ -23,7 +23,7 @@ Status:
 ## The store under test
 
 The store is one SQLite file, `<root>/memriver.db` (mode `0600`, `PRAGMA
-user_version = 2`, foreign keys on). The two tables the stages seed and read:
+user_version = 3`, foreign keys on). The two tables the stages seed and read:
 
 - `projects(id, name, root, is_global)` -- exactly one row has `is_global = 1`
   (name `global`, `root` NULL); every other row is a registered project.
@@ -58,7 +58,7 @@ Each container starts from a fresh `HOME=/root`; the store is memriver's default
    file is written and prints `memory store: ready (global project <id>)`.
    Asserted: exit 0, **empty stderr** (install failures go to stderr), that
    line present, `<root>/memriver.db` exists with mode `0600` and
-   `user_version = 2`, its one `is_global = 1` row is `(<that id>, "global",
+   `user_version = 3`, its one `is_global = 1` row is `(<that id>, "global",
    NULL)`, and no old file-store name exists.
 3. The harness config entries. For Claude Code (stage 1): the MCP server is
    `uvx memriver serve --harness claude-code`, the five hooks

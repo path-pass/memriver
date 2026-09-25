@@ -3,7 +3,7 @@
 The serving read paths skip what they cannot trust, which is right for an
 agent and wrong for a doctor. This inspector walks the same tables and keeps
 what reads drop, each finding with a fixed reason. It never creates the
-database; the one change it may make is the v1 -> v2 schema upgrade every
+database; the one change it may make is the v1/v2 -> v3 schema upgrade every
 opener runs first (`upgrade_if_needed`), after which it reads read-only.
 """
 
@@ -27,13 +27,27 @@ from memriver_core.models.errors import StorageFailure
 
 from .. import directories
 from .database import (
+    CHANGE_COLUMNS,
     DATABASE_FILENAME,
     MEMORY_COLUMNS,
     PROJECT_COLUMNS,
+    READ_COLUMNS,
+    REVIEW_COLUMNS,
+    RUN_COLUMNS,
     SCHEMA_VERSION,
+    SET_COLUMNS,
+    SOURCE_COLUMNS,
+    STATE_COLUMNS,
     _lenient_text,
+    change_from_row,
     memory_from_row,
     project_from_row,
+    read_row_check,
+    review_from_row,
+    run_from_row,
+    set_row_check,
+    source_from_row,
+    state_row_check,
     upgrade_if_needed,
 )
 from .session_store import SESSION_COLUMNS, session_from_row
@@ -85,9 +99,22 @@ def _session_location(harness: object, session_id: object) -> str:
     return "sessions"
 
 
+# (table, columns, decoder, whether the first column is an addressable id
+# worth naming in the location hint)
+_DREAM_TABLES = (
+    ("memory_source_sets", SET_COLUMNS, set_row_check, True),
+    ("memory_sources", SOURCE_COLUMNS, source_from_row, True),
+    ("memory_reads", READ_COLUMNS, read_row_check, True),
+    ("dream_changes", CHANGE_COLUMNS, change_from_row, True),
+    ("dream_reviews", REVIEW_COLUMNS, review_from_row, True),
+    ("dream_state", STATE_COLUMNS, state_row_check, False),
+    ("dream_runs", RUN_COLUMNS, run_from_row, True),
+)
+
+
 class SqliteStoreInspector:
     """`StoreInspector` over the SQLite store: every row, read-only once the
-    v1 -> v2 upgrade (if one is due) has run."""
+    v1/v2 -> v3 upgrade (if one is due) has run."""
 
     def __init__(self, root: Path, *, busy_timeout_ms: int) -> None:
         self.root = Path(root)
@@ -199,7 +226,19 @@ class SqliteStoreInspector:
                 entries.append(InspectedMemory(memory=memory,
                                                location_hint=f"memories/{memory.id}"))
         self._sessions(conn, findings)
+        self._dream_rows(conn, findings)
         return initialized, entries, rows
+
+    def _dream_rows(self, conn: sqlite3.Connection, findings: list[StoreFinding]) -> None:
+        """Every maintenance-table row memriver could not have written."""
+        for table, columns, decode, named in _DREAM_TABLES:
+            for row in conn.execute(f"SELECT {columns} FROM {table} ORDER BY rowid"):
+                try:
+                    decode(row)
+                except ValueError:
+                    shaped = _shaped_id(row[0]) if named else None
+                    findings.append(_finding("invalid-row",
+                                             f"{table}/{shaped}" if shaped else table))
 
     def _sessions(self, conn: sqlite3.Connection, findings: list[StoreFinding]) -> None:
         """Session-row findings only: `memriver sessions` reads sessions itself

@@ -12,15 +12,37 @@ import threading
 from contextlib import closing
 
 import pytest
-from memriver_core.models import Memory, new_id, now
+from memriver_core.models import (
+    Change,
+    ChangeRow,
+    DreamRun,
+    Memory,
+    Review,
+    SourceRef,
+    is_timestamp,
+    new_id,
+    now,
+)
 from memriver_core.models.errors import StorageFailure
 from memriver_core.repository.sqlite import database as database_module
 from memriver_core.repository.sqlite.database import (
     MEMORY_COLUMNS,
     Database,
+    change_from_row,
+    change_to_row,
+    memory_from_object,
     memory_from_row,
+    memory_object,
     memory_to_row,
     project_from_row,
+    read_row_check,
+    review_from_row,
+    review_to_row,
+    run_from_row,
+    run_to_row,
+    set_row_check,
+    source_from_row,
+    state_row_check,
     upgrade_if_needed,
 )
 
@@ -81,9 +103,11 @@ def test_the_first_write_creates_a_private_directory_file_and_schema(tmp_path):
     assert stat.S_IMODE(os.stat(root).st_mode) == 0o700
     assert stat.S_IMODE(os.stat(root / "memriver.db").st_mode) == 0o600
     with closing(sqlite3.connect(root / "memriver.db")) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert tables == {"projects", "memories", "sessions", "tool_calls"}
+    assert tables == {"projects", "memories", "sessions", "tool_calls", "memory_source_sets",
+                      "memory_sources", "memory_reads", "dream_changes", "dream_reviews",
+                      "dream_state", "dream_runs"}
 
 
 def test_a_failed_first_write_leaves_no_schema(tmp_path):
@@ -130,16 +154,18 @@ def test_a_version_one_database_is_upgraded_in_place(tmp_path):
         conn.execute(f"INSERT INTO memories ({v1_columns}) VALUES ({placeholders})",
                      memory_to_row(memory)[:-1])   # v1 has no last_read_at column yet
     with _db(root).read() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        assert {"sessions", "tool_calls"} <= tables
+        assert {"sessions", "tool_calls", "memory_sources", "dream_changes"} <= tables
         indexes = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
-        assert "tool_calls_by_recorded_at" in indexes
+        assert {"tool_calls_by_recorded_at", "memory_reads_by_memory"} <= indexes
         row = conn.execute(f"SELECT {MEMORY_COLUMNS} FROM memories WHERE id = ?",
                            (memory.id,)).fetchone()
     seen = memory_from_row(row)
+    # one upgrade runs both steps: v2 adds the column, v3 starts its TTL clock (D11)
+    assert is_timestamp(seen.last_read_at)
+    seen.last_read_at = None
     assert seen == memory
-    assert seen.last_read_at is None
 
 
 def test_two_openers_upgrade_a_version_one_database_once(tmp_path):
@@ -164,7 +190,7 @@ def test_two_openers_upgrade_a_version_one_database_once(tmp_path):
         thread.join()
     assert errors == []
     with closing(sqlite3.connect(root / "memriver.db")) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
         columns = {r[1] for r in conn.execute("PRAGMA table_info(memories)")}
     assert "last_read_at" in columns
 
@@ -392,3 +418,206 @@ def test_a_valid_project_row_reads_back():
     pid = new_id()
     project, is_global = project_from_row((pid, "demo", "/w", 0))
     assert (project.id, project.name, project.root, is_global) == (pid, "demo", "/w", False)
+
+
+def _build_v2(path) -> None:
+    """A v2 file: the v1 schema plus the v1 -> v2 step, exactly as an upgrade left it."""
+    _build_v1(path)
+    with closing(sqlite3.connect(path)) as conn, conn:
+        for statement in database_module._UPGRADE_STATEMENTS:
+            conn.execute(statement)
+        conn.execute("PRAGMA user_version = 2")
+
+
+def _insert_memory(path, memory: Memory) -> None:
+    placeholders = ", ".join("?" for _ in MEMORY_COLUMNS.split(","))
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.execute(f"INSERT INTO memories ({MEMORY_COLUMNS}) VALUES ({placeholders})",
+                     memory_to_row(memory))
+
+
+def test_a_version_two_database_is_upgraded_to_three_and_last_read_at_is_set_once(tmp_path):
+    root = tmp_path / "store"
+    root.mkdir()
+    path = root / "memriver.db"
+    _build_v2(path)
+    pid = new_id()
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.execute("INSERT INTO projects (id, name, root, is_global) VALUES (?, 'p', NULL, 0)",
+                     (pid,))
+    never = Memory.new(body="a", type="project", project_id=pid, source={"harness": "h",
+                                                                          "method": "agent"})
+    read = Memory.new(body="b", type="project", project_id=pid, source={"harness": "h",
+                                                                         "method": "agent"})
+    read.last_read_at = "2026-01-01T00:00:00.000000Z"
+    deleted = Memory.new(body="c", type="project", project_id=pid, source={"harness": "h",
+                                                                            "method": "agent"})
+    deleted.deleted_at = now()
+    for memory in (never, read, deleted):
+        _insert_memory(path, memory)
+    with _db(root).read() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        session_columns = {r[1] for r in conn.execute("PRAGMA table_info(sessions)")}
+        stamps = dict(conn.execute("SELECT id, last_read_at FROM memories"))
+    assert {"summary", "summary_at", "summary_input", "summary_status",
+            "summary_attempted_at", "summary_progress"} <= session_columns
+    assert stamps[read.id] == "2026-01-01T00:00:00.000000Z"
+    # deleted rows too, so an undelete does not revive a row already past its TTL
+    assert is_timestamp(stamps[never.id]) and stamps[never.id] == stamps[deleted.id]
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.execute("UPDATE memories SET last_read_at = NULL WHERE id = ?", (never.id,))
+    with _db(root).read() as conn:
+        assert conn.execute("SELECT last_read_at FROM memories WHERE id = ?",
+                            (never.id,)).fetchone()[0] is None     # the upgrade ran once
+
+
+def test_a_v2_to_v3_upgrade_failing_part_way_leaves_version_two_intact(tmp_path, monkeypatch):
+    root = tmp_path / "store"
+    root.mkdir()
+    path = root / "memriver.db"
+    _build_v2(path)
+    broken = list(database_module._V3_STATEMENTS)
+    broken[-1] = "CREATE INDEX nothing ON no_such_table(x)"
+    monkeypatch.setattr(database_module, "_V3_STATEMENTS", broken)
+    with pytest.raises(StorageFailure):
+        upgrade_if_needed(path, busy_timeout_ms=2000)
+    with closing(sqlite3.connect(path)) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        session_columns = {r[1] for r in conn.execute("PRAGMA table_info(sessions)")}
+    assert "memory_sources" not in tables and "summary" not in session_columns
+
+
+def _columns(path) -> dict[str, list[tuple]]:
+    with closing(sqlite3.connect(path)) as conn:
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
+        return {table: [tuple(r[1:]) for r in conn.execute(f"PRAGMA table_info({table})")]
+                for table in tables}
+
+
+def test_a_fresh_database_and_an_upgraded_one_hold_the_same_columns(tmp_path):
+    fresh = tmp_path / "fresh"
+    with _db(fresh).write():
+        pass
+    upgraded = tmp_path / "upgraded"
+    upgraded.mkdir()
+    _build_v1(upgraded / "memriver.db")
+    upgrade_if_needed(upgraded / "memriver.db", busy_timeout_ms=2000)
+    assert _columns(fresh / "memriver.db") == _columns(upgraded / "memriver.db")
+
+
+def _review(**fields) -> Review:
+    values = {"memory_id": new_id(), "memory_version": 3, "decided_at": now(),
+              "decision": "keep", "reason": "still true", "uncertain_streak": 0,
+              "next_review_at": now(), "run_id": "run1", "executor": "claude",
+              "prompt_version": "dream-1"}
+    return Review(**(values | fields))
+
+
+def _change(**fields) -> Change:
+    memory = Memory.new(body="b", type="project", project_id=new_id(),
+                        source={"harness": "h", "method": "agent"})
+    values = {"change_id": new_id(), "run_id": "run1", "kind": "merge",
+              "project_id": memory.project_id, "applied_at": now(),
+              "rows": (ChangeRow(new_id(), None, None, 1),
+                       ChangeRow(memory.id, memory_object(memory),
+                                 (SourceRef(new_id(), 3, memory.project_id,
+                                            {"type": "user", "description": "", "body": "b"}),),
+                                 2),
+                       ChangeRow(new_id(), memory_object(memory), (), 5)),
+              "reason": "same fact twice", "undone_at": None}
+    return Change(**(values | fields))
+
+
+def test_the_dream_rows_round_trip_through_their_codecs():
+    review = _review()
+    assert review_from_row(review_to_row(review)) == review
+    change = _change()
+    assert change_from_row(change_to_row(change)) == change
+    memory = Memory.new(body="b", type="user", project_id=new_id(),
+                        source={"harness": "h", "method": "agent"})
+    assert memory_from_object(memory_object(memory)) == memory
+    derived, source = new_id(), new_id()
+    snapshot = '{"type":"user","description":"d","body":"b"}'
+    assert source_from_row((derived, 2, source, 1, memory.project_id, snapshot)) == (
+        derived, 2, SourceRef(source, 1, memory.project_id,
+                              {"type": "user", "description": "d", "body": "b"}))
+    read_row_check((memory.id, 1, now(), "codex", None))
+    state_row_check(("consolidate:" + memory.project_id, "abc", now()))
+    run = DreamRun(run_id=new_id(), started_at=now(), finished_at=None, trigger="manual",
+                   executor=None, status="running", report={"secrets": {"done": 0}})
+    assert run_from_row(run_to_row(run)) == run
+
+
+@pytest.mark.parametrize("row_index, value", [
+    (0, "short"), (1, "later"), (2, "later"), (3, "cron"), (4, ""), (5, "done"),
+    (6, "[]"), (6, "not json"),
+])
+def test_a_run_row_memriver_could_not_have_written_is_invalid(row_index, value):
+    row = list(run_to_row(DreamRun(run_id=new_id(), started_at=now(), finished_at=now(),
+                                   trigger="schedule", executor="codex", status="completed",
+                                   report={})))
+    row[row_index] = value
+    with pytest.raises(ValueError):
+        run_from_row(tuple(row))
+
+
+@pytest.mark.parametrize("change", [
+    {"decision": "maybe"}, {"memory_version": 0}, {"uncertain_streak": -1},
+    {"decided_at": "yesterday"}, {"reason": ""}, {"memory_id": "../../evil"},
+])
+def test_a_review_row_memriver_could_not_have_written_is_invalid(change):
+    with pytest.raises(ValueError):
+        review_from_row(review_to_row(_review(**change)))
+
+
+@pytest.mark.parametrize("row_index, value", [
+    (0, "short"), (2, "delete"), (4, "not-a-time"), (5, "[]"), (5, "[{}]"),
+    (5, '[{"id":"aaaaaaaaaa","before":null,"before_sources":null,"after_version":0}]'),
+    (5, '[{"id":"aaaaaaaaaa","before":{"id":"x"},"before_sources":[],"after_version":1}]'),
+    (5, '[{"id":"aaaaaaaaaa","before":null,"before_sources":[],"after_version":1}]'),
+    (5, '[{"id":"aaaaaaaaaa","before":null,"after_version":1}]'),    # no before_sources
+    (5, ('[{"id":"aaaaaaaaaa","before":null,"before_sources":[{"source_id":"x"}],'
+         '"after_version":1}]')),
+    (5, '[ {"id":"aaaaaaaaaa","before":null,"before_sources":null,"after_version":1}]'),
+    (7, "later"),
+])
+def test_a_change_row_memriver_could_not_have_written_is_invalid(row_index, value):
+    row = list(change_to_row(_change()))
+    row[row_index] = value
+    with pytest.raises(ValueError):
+        change_from_row(tuple(row))
+
+
+@pytest.mark.parametrize("row", [
+    ("bad", 1, new_id(), 1, new_id(), '{"type":"user","description":"d","body":"b"}'),
+    (new_id(), 0, new_id(), 1, new_id(), '{"type":"user","description":"d","body":"b"}'),
+    (new_id(), 1, new_id(), 1, new_id(), '{"type":"user","body":"b"}'),
+    (new_id(), 1, new_id(), 1, new_id(), "not json"),
+])
+def test_a_source_row_memriver_could_not_have_written_is_invalid(row):
+    with pytest.raises(ValueError):
+        source_from_row(row)
+
+
+@pytest.mark.parametrize("row", [("bad", 1), (new_id(), 0), (new_id(), True)])
+def test_a_source_set_row_memriver_could_not_have_written_is_invalid(row):
+    with pytest.raises(ValueError):
+        set_row_check(row)
+
+
+@pytest.mark.parametrize("row", [
+    ("bad", 1, now(), "codex", None), (new_id(), 0, now(), "codex", None),
+    (new_id(), 1, "later", "codex", None), (new_id(), 1, now(), "", None),
+    (new_id(), 1, now(), "codex", ""), (new_id(), 1, now(), "x" * 65, None),
+])
+def test_a_read_row_memriver_could_not_have_written_is_invalid(row):
+    with pytest.raises(ValueError):
+        read_row_check(row)
+
+
+@pytest.mark.parametrize("row", [("", "f", now()), ("s", "", now()), ("s", "f", "later")])
+def test_a_state_row_memriver_could_not_have_written_is_invalid(row):
+    with pytest.raises(ValueError):
+        state_row_check(row)
