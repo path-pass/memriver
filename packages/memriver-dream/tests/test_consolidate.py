@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from memriver_core.models import now
+from memriver_core.settings import DREAM_REASON_CHARS
 from memriver_dream.consolidate import SYSTEM_PROMPT, run
 from memriver_dream.protocols import ExecutorResult
 from memriver_dream.report import PhaseReport
@@ -301,6 +302,33 @@ def test_model_text_that_cannot_be_stored_is_invalid_and_later_groups_apply(worl
     assert (phase.outcomes["invalid"], phase.outcomes["merge"]) == (3, 1)
     assert len(world.maintenance.changes(10)) == 1
     assert world.maintenance.fingerprint_of(f"consolidate:{world.project.id}") is None
+
+
+def test_a_reason_over_the_limit_is_truncated_and_the_group_still_applies(world):
+    # the prompt never states DREAM_REASON_CHARS (phase 3 truncates too, instead of
+    # invalidating): a long but safe reason must not throw away an otherwise-valid group
+    a, b = (world.plant(world.project.id, text) for text in ("a", "b"))
+    long_reason = "same fact, explained at length: " + "x" * DREAM_REASON_CHARS
+    world.executor.replies = [_groups(
+        ("merge", long_reason, _op("create", description="c", body="x",
+                                   sources=((a, 1), (b, 1)))))]
+    phase = _phase(world)
+    assert phase.outcomes["merge"] == 1
+    (change,) = world.maintenance.changes(10)
+    assert change.reason == long_reason[:DREAM_REASON_CHARS]
+
+
+def test_a_secret_spanning_the_reason_limit_is_rejected_not_invalid(world):
+    # the policy must see the whole reason before any limit cuts it, exactly like
+    # phase 3 (retire.py): a secret placed past DREAM_REASON_CHARS must still be caught
+    a, b, c, d = (world.plant(world.project.id, text) for text in ("a", "b", "c", "d"))
+    reason = "x" * DREAM_REASON_CHARS + " " + SECRET
+    world.executor.replies = [_groups(
+        ("merge", reason, _op("create", description="c", body="x",
+                              sources=((a, 1), (b, 1)))),
+        _merge(c, d))]
+    phase = _phase(world)
+    assert (phase.outcomes["rejected"], phase.outcomes["merge"]) == (1, 1)
 
 
 def test_a_rejected_group_skips_only_itself(world):

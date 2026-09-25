@@ -19,6 +19,7 @@ from memriver_core.models import (
     Memory,
     SoftDeleteOp,
     UpdateOp,
+    single_line,
 )
 from memriver_core.settings import DREAM_REASON_CHARS
 
@@ -147,20 +148,32 @@ def _as_sent(op: dict, pairs: tuple[tuple[str, int], ...], scope: _Scope) -> boo
     return all(sent[memory_id].version == version for memory_id, version in named)
 
 
-def _group(run: Run, raw: dict, scope: _Scope) -> ChangeGroup | None:
-    """The model's group as core will apply it, or None when it breaks a rule."""
-    kind, reason, ops = raw["kind"], raw["reason"].strip(), raw["ops"]
-    if len(ops) != 1 or not 0 < len(reason) <= DREAM_REASON_CHARS:
-        return None
+def _group(run: Run, raw: dict, scope: _Scope) -> tuple[str, ChangeGroup | None]:
+    """The model's group as core will apply it, and the outcome to record: (kind, group)
+    when it applies; ("invalid", None) when it breaks a rule; ("rejected", None) when its
+    reason fails the content policy."""
+    kind, ops = raw["kind"], raw["ops"]
+    # the policy sees the whole reason before any limit cuts it -- exactly like phase 3
+    # (retire.py) -- so a secret past DREAM_REASON_CHARS is still caught, and a reason
+    # that is merely long (the prompt never states the limit) is truncated, not thrown
+    # away with the rest of an otherwise-valid group
+    reason = single_line(raw["reason"])
+    if not storable(reason) or not reason:      # an empty reason stays invalid
+        return "invalid", None
+    if not run.maintenance.text_passes_policy(raw["reason"]):
+        return "rejected", None
+    reason = reason[:DREAM_REASON_CHARS]
+    if len(ops) != 1:
+        return "invalid", None
     op = ops[0]
     pairs = tuple((source["id"], source["version"]) for source in op["sources"])
     source_ids = [source_id for source_id, _ in pairs]
     # a source named twice is the model's mistake, not a reason for core to fail the run
     if len(set(source_ids)) != len(source_ids) or not _valid(kind, op, source_ids, scope):
-        return None
+        return "invalid", None
     if not _as_sent(op, pairs, scope) or not all(
-            storable(text) for text in (reason, op["description"], op["body"])):
-        return None
+            storable(text) for text in (op["description"], op["body"])):
+        return "invalid", None
     target = scope.global_id if kind == "extract" else scope.project_id
     if op["op"] == "create":
         operation = CreateOp(target, op["type"], op["description"], op["body"], pairs)
@@ -168,8 +181,8 @@ def _group(run: Run, raw: dict, scope: _Scope) -> ChangeGroup | None:
         operation = UpdateOp(op["id"], op["version"], op["description"], op["body"], pairs)
     else:
         operation = SoftDeleteOp(op["id"], op["version"])
-    return ChangeGroup(run_id=run.run_id, kind=kind, project_id=target, reason=reason,
-                       harness=run.executor.harness, ops=(operation,))
+    return kind, ChangeGroup(run_id=run.run_id, kind=kind, project_id=target, reason=reason,
+                             harness=run.executor.harness, ops=(operation,))
 
 
 def _consolidate(run: Run, project_id: str, global_id: str, phase: PhaseReport,
@@ -209,9 +222,9 @@ def _consolidate(run: Run, project_id: str, global_id: str, phase: PhaseReport,
             phase.record("group-limit")
             clean = False
             break
-        group = _group(run, raw, scope)
+        outcome, group = _group(run, raw, scope)
         if group is None:
-            phase.record("invalid")
+            phase.record(outcome)
             clean = False
             continue
         try:

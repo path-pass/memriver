@@ -64,8 +64,8 @@ def world(tmp_path, executor, transcripts):
     store, home, work = tmp_path / "store", tmp_path / "home", tmp_path / "work"
     home.mkdir()
     work.mkdir()
-    settings = Settings(root=store, dream=DreamSettings(executor="claude",
-                                                        executor_path="/usr/bin/true"))
+    settings = Settings(root=store)
+    settings._dream = DreamSettings(executor="claude", executor_path="/usr/bin/true")
     service = bootstrap.build_service(settings, root=store, home=home)
     global_id = service.ensure_global()
     project = service.init_project("demo", service.plan_root(str(work)))

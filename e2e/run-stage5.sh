@@ -13,7 +13,7 @@ cd "$REPO_ROOT"
 . "$REPO_ROOT/e2e/foundry-env.sh"
 load_foundry_env AZURE_FOUNDRY_BASEURL AZURE_FOUNDRY_API_KEY AZURE_FOUNDRY_GPT_DEPLOYMENT
 
-echo "==> building wheels (memriver, memriver-core) into e2e/wheels"
+echo "==> building wheels (memriver, memriver-core, memriver-dream) into e2e/wheels"
 rm -rf e2e/wheels
 uv build --all-packages --out-dir e2e/wheels
 

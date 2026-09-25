@@ -294,8 +294,16 @@ class Settings(BaseSettings):
     # unset keeps every memory_reads row; a number of days prunes older rows
     # whenever a new one is written
     memory_reads_retention_days: int | None = Field(None, gt=0)
-    dream: DreamSettings | None = None
+    # not a field: a BaseSettings field named "dream" makes MEMRIVER_DREAM a config
+    # entry pydantic-settings tries to parse, so a direct Settings(root=...) call
+    # (outside load_settings) would raise on a bad env value. Set only by
+    # load_settings, after construction, like `_dream_invalid`.
+    _dream: DreamSettings | None = PrivateAttr(default=None)
     _dream_invalid: bool = PrivateAttr(default=False)
+
+    @property
+    def dream(self) -> DreamSettings | None:
+        return self._dream
 
     @field_validator("max_body_chars", "search_limit_default", "search_limit_max",
                      "index_budget_lines", "memory_reads_retention_days", mode="before")
@@ -346,6 +354,10 @@ def _read_settings_file(path: Path) -> dict:
             # chicken and egg: the root is what located this file
             log.warning("ignoring 'root' in %s: set MEMRIVER_ROOT or --root instead",
                         SETTINGS_FILENAME)
+        elif key == "dream":
+            # not a Settings field (see the class docstring); load_settings pulls it
+            # out and validates it on its own via _dream_settings
+            values[key] = value
         elif key in known:
             values[key] = value
         else:
@@ -389,7 +401,7 @@ def load_settings(root_override: Path | None = None) -> Settings:
     # both sources combine (env raises a max, the file lowers a default under it)
     # must reach that combined validation, never a premature env-only construction
     try:
-        settings = Settings(root=root, dream=dream, **file_values)
+        settings = Settings(root=root, **file_values)
     except ValidationError:
         # a typo'd *value* is as likely as a typo'd key, and neither may stop an
         # agent's memory server from starting. The whole file is dropped rather
@@ -400,6 +412,7 @@ def load_settings(root_override: Path | None = None) -> Settings:
         # be a path.
         log.warning("ignoring %s, falling back to environment and defaults",
                     SETTINGS_FILENAME)
-        settings = Settings(root=root, dream=dream)
+        settings = Settings(root=root)
+    settings._dream = dream
     settings._dream_invalid = dream_invalid
     return settings

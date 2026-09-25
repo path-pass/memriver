@@ -18,7 +18,10 @@ import pytest
 SRC = Path(memriver_dream.__file__).parent
 ROOT_PKG = "memriver_dream"
 PUBLIC_CORE = ("memriver_core.bootstrap", "memriver_core.models", "memriver_core.settings")
-FORBIDDEN_STDLIB = {"subprocess"}
+FORBIDDEN_STDLIB = {"subprocess", "pty", "multiprocessing"}
+# os itself is used for ordinary things (os.path, ...); only these calls shell out or
+# spawn another process
+_FORBIDDEN_OS_CALLS = ("system", "popen", "fork", "forkpty")
 HARNESS_WORDS = ("claude", "codex", "jsonl", "anthropic", "openai")
 STDLIB = set(sys.stdlib_module_names)
 
@@ -57,6 +60,28 @@ def _under(candidate: str, package: str) -> bool:
     return candidate == package or candidate.startswith(package + ".")
 
 
+def _os_alias(tree: ast.AST) -> str | None:
+    """The local name a plain `import os` (or `import os as alias`) binds; None when
+    `os` is not imported that way."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "os":
+                    return alias.asname or "os"
+    return None
+
+
+def _forbidden_os_calls(module: str) -> list[str]:
+    """`os.<name>` calls that shell out or spawn another process."""
+    tree = ast.parse(SOURCES[module].read_text(encoding="utf-8"))
+    alias = _os_alias(tree)
+    return [node.func.attr for node in ast.walk(tree)
+           if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+           and isinstance(node.func.value, ast.Name) and node.func.value.id == alias
+           and (node.func.attr in _FORBIDDEN_OS_CALLS
+                or node.func.attr.startswith(("spawn", "exec")))]
+
+
 def _allowed_core(target: str) -> bool:
     # the root package is the public error surface: `from memriver_core import GroupConflict`
     return (target == "memriver_core" or target.removeprefix("memriver_core.")
@@ -76,6 +101,11 @@ def test_dream_imports_only_stdlib_itself_and_the_public_core_surface():
                 assert root not in FORBIDDEN_STDLIB, f"{module} imports {root}"
             else:
                 pytest.fail(f"{module} imports {target}: memriver-dream adds no dependency")
+
+
+def test_dream_never_shells_out_or_spawns_a_process_via_os():
+    for module in SOURCES:
+        assert not _forbidden_os_calls(module), f"{module} calls os.<forbidden>"
 
 
 @pytest.mark.parametrize("word", HARNESS_WORDS)

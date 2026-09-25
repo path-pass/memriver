@@ -102,13 +102,16 @@ def test_a_judgment_of_content_that_moved_meanwhile_records_nothing(world, chang
 
 
 def test_a_too_large_answer_retries_once_with_half_the_comparison(world):
-    _stale(world)
+    memory_id = _stale(world)
     for index in range(4):
         world.plant(world.project.id, f"recent fact {index}")
     world.executor.replies = [ExecutorResult(error="too-large"), _decision("keep")]
     assert _phase(world).outcomes == {"keep": 1}
     first, second = (call["prompt"] for call in world.executor.calls)
     assert len(second) < len(first)
+    assert (first.count("recent fact"), second.count("recent fact")) == (4, 2)
+    assert _review_row(world, memory_id) == ("keep", 0)
+    assert world.maintenance.changes(10) == []      # the candidate is kept, never retired
 
 
 def test_a_failed_call_records_nothing(world):
@@ -242,3 +245,4 @@ def test_a_storage_failure_is_not_swallowed(world, monkeypatch):
     world.executor.replies = [_decision("keep")]
     with pytest.raises(StorageFailure):
         _phase(world)
+

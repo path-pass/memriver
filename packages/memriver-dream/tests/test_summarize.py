@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from memriver_core.models import SessionKey, SummaryInput, now, timestamp_shift
+from memriver_core.settings import DREAM_SUMMARY_MAX_CHARS
 from memriver_dream.protocols import ExecutorResult, Record, Transcript
 from memriver_dream.report import PhaseReport
 from memriver_dream.run import run_dream
@@ -456,3 +457,61 @@ def test_a_lone_surrogate_in_a_record_fails_no_other_session(world):
     world.executor.default = {"status": "ok", "summary": "Did the work"}
     assert _phase(world).outcomes == {"ok": 2}
     assert _stored(world, bad).summary == _stored(world, good).summary == "Did the work"
+
+
+def test_a_final_summary_with_a_lone_surrogate_is_invalid_not_a_storage_failure(world):
+    # a model may answer with a lone surrogate (valid JSON, no UTF-8 codec takes it);
+    # it must never reach write_summary, which would raise StorageFailure and fail the
+    # whole run (phases 2-3 never run)
+    bad, good = _session(world, "bad"), _session(world, "good")
+    world.transcripts.by_session["bad"] = _transcript("bad work")
+    world.transcripts.by_session["good"] = _transcript("good work")
+
+    def answer(prompt, schema):
+        if "bad work" in prompt:
+            return {"status": "ok", "summary": "x" + chr(0xD800)}
+        return {"status": "ok", "summary": "Did the work"}
+
+    world.executor.default = answer
+    report = run_dream(world.maintenance, world.executor, world.transcripts, world.settings,
+                       timestamp_shift(now(), minutes=61), phases=("summarize",))
+    assert report.status == "completed"
+    assert report.phases["summarize"].outcomes == {"invalid": 1, "ok": 1}
+    assert _stored(world, bad).summary_status is None
+    assert _stored(world, good).summary == "Did the work"
+
+
+def test_a_checkpointed_partial_with_a_lone_surrogate_is_invalid_not_a_storage_failure(world):
+    # same rule for a partial (map) summary: it must never be checkpointed via
+    # write_summary_progress, which would raise StorageFailure on the same text (and
+    # crash the run, along with every other session's summary)
+    bad, good = _session(world, "bad"), _session(world, "good")
+    world.transcripts.by_session["bad"] = _transcript(*LONG)
+    world.transcripts.by_session["good"] = _transcript("good work")
+    seen = {"n": 0}
+
+    def answer(prompt, schema):
+        if "<session-part>" in prompt and "step 0:" in prompt:
+            seen["n"] += 1
+            if seen["n"] == 1:
+                return {"summary": "x" + chr(0xD800)}
+        return _echo(prompt, schema)
+
+    world.executor.default = answer
+    phase = _phase(world, budget_tokens=ROOM_100)
+    assert phase.outcomes == {"invalid": 1, "ok": 1}
+    assert _stored(world, bad).summary_status is None
+    assert _stored(world, bad).summary_progress is None
+    assert _stored(world, good).summary is not None
+
+
+def test_a_final_summary_with_trailing_whitespace_at_the_limit_is_stored_stripped(world):
+    # the length check strips the text but the raw text (with its trailing
+    # whitespace) used to be the one stored
+    key = _session(world)
+    world.transcripts.by_session["s1"] = _transcript("work")
+    text = "x" * (DREAM_SUMMARY_MAX_CHARS - 1) + " "
+    assert len(text) == DREAM_SUMMARY_MAX_CHARS
+    world.executor.replies = [{"status": "ok", "summary": text}]
+    assert _phase(world).outcomes == {"ok": 1}
+    assert _stored(world, key).summary == text.strip()

@@ -21,7 +21,7 @@ from memriver_core.settings import (
 )
 
 from .budget import cut, estimate_tokens
-from .calls import DATA_RULE, PROMPT_VERSION, call
+from .calls import DATA_RULE, PROMPT_VERSION, call, storable
 from .protocols import Record, Run
 from .report import PhaseReport
 
@@ -149,6 +149,10 @@ class _Attempt:
             return ""
         if not text.strip() or len(text) > DREAM_CHUNK_SUMMARY_CHARS:
             raise _Stop("schema")
+        # a lone surrogate is valid JSON but no UTF-8 column takes it: never fed to
+        # another call or checkpointed
+        if not storable(text):
+            raise _Stop("invalid")
         # nothing a policy refuses is fed to another call or stored (spec §6)
         if not self.run.maintenance.text_passes_policy(text):
             raise _Stop("rejected")
@@ -191,9 +195,14 @@ class _Attempt:
                       schema=FINAL_SCHEMA)
         if isinstance(result, str):
             raise _Stop(result)
-        if result["status"] == "ok" and not (
-                0 < len(result["summary"].strip()) <= DREAM_SUMMARY_MAX_CHARS):
-            raise _Stop("schema")
+        if result["status"] == "ok":
+            text = result["summary"].strip()
+            if not 0 < len(text) <= DREAM_SUMMARY_MAX_CHARS:
+                raise _Stop("schema")
+            # a lone surrogate is valid JSON but no UTF-8 column takes it
+            if not storable(text):
+                raise _Stop("invalid")
+            result = {**result, "summary": text}      # store the stripped text, not raw
         return result
 
 

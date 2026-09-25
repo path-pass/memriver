@@ -362,6 +362,21 @@ def test_a_dream_table_missing_its_executor_is_invalid(tmp_path):
     assert (settings.dream, settings.dream_invalid) == (None, True)
 
 
+def test_direct_settings_construction_ignores_a_bad_dream_env_var(tmp_path, monkeypatch):
+    # regression: `dream` was a BaseSettings field, so MEMRIVER_DREAM became a config
+    # entry pydantic-settings tried to parse; a direct Settings(root=...) construction
+    # (outside load_settings) then raised on a value like "notjson", which PR1 ignored.
+    monkeypatch.setenv("MEMRIVER_DREAM", "notjson")
+    settings = Settings(root=tmp_path)
+    assert settings.dream is None
+
+
+def test_dream_is_read_only(tmp_path):
+    settings = Settings(root=tmp_path)
+    with pytest.raises((AttributeError, ValidationError)):
+        settings.dream = None
+
+
 CODEX_PROVIDER = (
     '[dream.codex_overrides]\n"model_provider" = "foundry"\n"model" = "deployment-a"\n'
     '"model_providers.foundry.name" = "Foundry"\n'
