@@ -230,11 +230,14 @@ class MaintenanceStore(Protocol):
       each row is still at the version the group left; otherwise
       `UndoConflict` and nothing written. An unknown change is `not-found`, an
       undone one `already-undone`; neither writes.
-    - `retire`: the TTL soft delete; in one transaction it re-checks the row is
-      active, at `judged_version`, still past its effective TTL on the stored
-      times and current read count, and not covered by a review with
-      `next_review_at > now`; then writes the delete review and a `retire`
-      change. False, nothing written, when any check fails.
+    - `retire`: the TTL soft delete; requires `review.memory_id == memory_id`
+      and `review.memory_version == judged_version` -- a mismatch is
+      `ValueError`, nothing written, before anything else runs. Then, in one
+      transaction, it re-checks the row is active, at `judged_version`, still
+      past its effective TTL on the stored times and current read count, and
+      not covered by a review with `next_review_at > now`; then writes the
+      delete review and a `retire` change. False, nothing written, when any of
+      those checks fails.
     - `record_review`: upserts the latest review, touching no memory, only
       while the memory is active and at `review.memory_version`; False,
       nothing written, otherwise.

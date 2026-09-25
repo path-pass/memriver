@@ -176,7 +176,10 @@ class MaintenanceService:
     def retire(self, memory_id: str, *, judged_version: int, ttl_days: int,
               multiplier_max: int, now: str, review: Review) -> str | None:
         """The TTL soft delete after a model review: its change id, or None when the
-        row moved meanwhile and nothing was written."""
+        row moved meanwhile and nothing was written.
+
+        ValueError when `review.decision` is not `"delete"`, or when the review does
+        not name `(memory_id, judged_version)` -- nothing written either way."""
         if review.decision != "delete":
             raise ValueError("a retirement records a delete decision")
         self._policy_cache.get().check(review.reason, self._metadata_max_chars)

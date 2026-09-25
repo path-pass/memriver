@@ -416,6 +416,11 @@ class SqliteMaintenanceStore:
 
     def retire(self, memory_id: str, *, judged_version: int, ttl_days: int,
               multiplier_max: int, now: str, review: Review, change_id: str) -> bool:
+        # the review must be a judgment of this exact memory and version: a
+        # mismatch here would delete one row while recording the judgment as
+        # if it were about another, or about a version that never existed
+        if (review.memory_id, review.memory_version) != (memory_id, judged_version):
+            raise ValueError("retire: review must judge memory_id at judged_version")
         with self._database.write(create=False) as conn:
             memory = _row(conn, memory_id, include_deleted=False)
             # memory_read never moves the version, so the version alone cannot

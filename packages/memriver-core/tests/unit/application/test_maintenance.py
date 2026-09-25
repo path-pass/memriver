@@ -583,3 +583,26 @@ def test_a_review_reason_that_breaks_the_policy_is_refused(world):
         world.maintenance.record_review(_review(memory_id, 1, "keep", reason=SECRET))
     with pytest.raises(ValueError):
         world.maintenance.record_review(_review(memory_id, 1, "delete"))
+
+
+def test_retire_refuses_a_review_naming_a_different_memory(world):
+    stale = _stale(world)
+    kept = _write(world, "kept fact").id
+    world.maintenance.record_review(_review(kept, 1, "keep"))
+    with pytest.raises(ValueError):
+        world.maintenance.retire(stale, judged_version=1, ttl_days=90, multiplier_max=5,
+                                 now=now(), review=_review(kept, 1))
+    assert world.service.show(stale).deleted_at is None
+    assert world.service.show(kept).deleted_at is None
+    assert _sql(world, "SELECT decision FROM dream_reviews WHERE memory_id = ?",
+                kept) == [("keep",)]
+    assert (_count(world, "dream_reviews"), _count(world, "dream_changes")) == (1, 0)
+
+
+def test_retire_refuses_a_review_whose_version_does_not_match_judged_version(world):
+    memory_id = _stale(world)
+    with pytest.raises(ValueError):
+        world.maintenance.retire(memory_id, judged_version=1, ttl_days=90, multiplier_max=5,
+                                 now=now(), review=_review(memory_id, 999))
+    assert world.service.show(memory_id).deleted_at is None
+    assert (_count(world, "dream_reviews"), _count(world, "dream_changes")) == (0, 0)
