@@ -1262,3 +1262,21 @@ async def test_a_meta_value_of_the_wrong_shape_is_read_as_absent(world, monkeypa
     call_id_not_a_string = {"claudecode/toolUseId": 17}
     assert (await _call(claude_server, "memory_index", meta=call_id_not_a_string)) \
         .splitlines()[0] == _registered_header(world, world["dir"])
+
+
+async def test_memory_read_records_the_server_harness_and_the_calling_session(world,
+                                                                              monkeypatch):
+    _start(world, SessionKey("claude-code", "s-read"), world["dir"])
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "s-read")
+    server = build_server(root=world["store"], project_dir=world["dir"], harness="claude-code")
+    written = await _call(server, "memory_write", content="fact", type="project")
+    await _call(server, "memory_read", memory_id=written["id"])
+    assert _sql(world["store"], "SELECT memory_id, harness, session_id FROM memory_reads") == [
+        (written["id"], "claude-code", "s-read")]
+
+
+async def test_a_server_without_a_harness_records_reads_as_unknown(server, world):
+    written = await _call(server, "memory_write", content="fact", type="project")
+    await _call(server, "memory_read", memory_id=written["id"])
+    assert _sql(world["store"], "SELECT harness, session_id FROM memory_reads") == [
+        ("unknown", None)]

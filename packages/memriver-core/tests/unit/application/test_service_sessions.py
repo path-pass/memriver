@@ -95,6 +95,7 @@ class World:
         self.policy = SecretScanner()
         self.session_store = SqliteSessionStore(self.store, busy_timeout_ms=BUSY_TIMEOUT_MS)
         self.memory_store = SqliteMemoryStore(self.store, busy_timeout_ms=BUSY_TIMEOUT_MS)
+        self.retention: int | None = None
         self.service = self.build()
 
     def build(self) -> MemoryService:
@@ -118,7 +119,8 @@ class World:
             session_prompt_chars=512, session_recent_prompts=5,
             session_prompt_scan_max_bytes=65536, stop_nudge_min_prompts=5,
             stop_nudge_interval_prompts=5, session_search_limit_default=10,
-            session_search_limit_max=50, tool_call_retention_s=3600)
+            session_search_limit_max=50, tool_call_retention_s=3600,
+            memory_reads_retention_days=self.retention)
 
     def initialize(self) -> None:
         self.global_id = self.service.ensure_global()
@@ -924,3 +926,64 @@ def test_a_pending_session_without_a_candidate_is_refused_with_its_own_reason(wo
         with pytest.raises(ProjectUnavailable) as caught:
             attempt()
         assert caught.value.reason == "pending-no-candidate"
+
+
+def test_a_read_records_its_harness_and_the_calling_session(world):
+    context = world.start()
+    memory = world.write(context)
+    world.service.read(memory.id, context, harness="claude-code")
+    with closing(sqlite3.connect(world.store / DATABASE_FILENAME)) as conn:
+        rows = conn.execute("SELECT memory_id, memory_version, harness, session_id "
+                            "FROM memory_reads").fetchall()
+    assert rows == [(memory.id, 1, "claude-code", KEY.session_id)]
+
+
+def test_a_directory_context_read_records_no_session(world):
+    context = world.service.open_project_context(str(world.work))
+    memory = world.write(context)
+    world.service.read(memory.id, context, harness="cursor")
+    with closing(sqlite3.connect(world.store / DATABASE_FILENAME)) as conn:
+        assert conn.execute("SELECT harness, session_id FROM memory_reads").fetchall() == [
+            ("cursor", None)]
+
+
+def test_a_failing_read_record_never_fails_the_read(world):
+    context = world.start()
+    memory = world.write(context)
+    world.sql("DROP TABLE memory_reads")
+    assert world.service.read(memory.id, context, harness="codex") == memory
+
+
+def test_the_recorded_version_is_the_one_returned_when_a_writer_moves_the_row_first(world):
+    context = world.start()
+    memory = world.write(context)
+    inner = world.memory_store
+
+    class Interleaved:
+        """Another writer's update lands between the read and its record."""
+
+        def __getattr__(self, name):
+            return getattr(inner, name)
+
+        def touch_read(self, memory_id, at, **kwargs):
+            inner.update(memory_id, context.read_write_set, expected_version=1,
+                         body="moved on", description=None)
+            inner.touch_read(memory_id, at, **kwargs)
+
+    world.memory_store = Interleaved()
+    assert world.build().read(memory.id, context, harness="codex").version == 1
+    with closing(sqlite3.connect(world.store / DATABASE_FILENAME)) as conn:
+        assert conn.execute("SELECT memory_version FROM memory_reads").fetchall() == [(1,)]
+    assert world.service.show(memory.id).version == 2
+
+
+def test_the_retention_setting_prunes_old_reads_when_a_read_is_recorded(world):
+    context = world.start()
+    memory = world.write(context)
+    world.sql("INSERT INTO memory_reads VALUES (?, 1, '2020-01-01T00:00:00.000000Z', 'codex', "
+              "NULL)", memory.id)
+    world.retention = 30
+    world.build().read(memory.id, context, harness="codex")
+    with closing(sqlite3.connect(world.store / DATABASE_FILENAME)) as conn:
+        stamps = [r[0] for r in conn.execute("SELECT read_at FROM memory_reads")]
+    assert len(stamps) == 1 and stamps[0] > "2020-01-01T00:00:00.000000Z"

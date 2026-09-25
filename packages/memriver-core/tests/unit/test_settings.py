@@ -289,3 +289,17 @@ def test_the_session_constants_live_in_settings():
     from memriver_core import settings
     assert {name: getattr(settings, name) for name in SESSION_CONSTANTS} == SESSION_CONSTANTS
     assert set(SESSION_CONSTANTS) <= set(settings.__all__)
+
+
+def test_memory_reads_retention_is_unset_by_default_and_positive_when_set(tmp_path):
+    assert Settings(root=tmp_path).memory_reads_retention_days is None
+    assert Settings(root=tmp_path, memory_reads_retention_days=30).memory_reads_retention_days \
+        == 30
+    for bad in (0, -1, True):
+        with pytest.raises(ValidationError):
+            Settings(root=tmp_path, memory_reads_retention_days=bad)
+
+
+def test_memory_reads_retention_is_read_from_the_settings_file(tmp_path):
+    root = _root(tmp_path, "memory_reads_retention_days = 60\n")
+    assert load_settings(root_override=root).memory_reads_retention_days == 60

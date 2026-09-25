@@ -286,17 +286,19 @@ def test_an_orphan_memory_is_never_readable(backend, root, world):
 def test_touch_read_sets_last_read_at_and_nothing_else(root, world):
     memory_store, read_write_set = world["memory_store"], world["read_write_set"]
     memory = _record(world)
-    memory_store.touch_read(memory.id, "2026-09-24T00:00:01.000000Z")
+    memory_store.touch_read(memory.id, "2026-09-24T00:00:01.000000Z", memory_version=1)
     seen = memory_store.read(memory.id, read_write_set)
     assert seen.last_read_at == "2026-09-24T00:00:01.000000Z"
     assert (seen.version, seen.updated, seen.body) == (memory.version, memory.updated, memory.body)
     # an earlier timestamp never moves it back
-    memory_store.touch_read(memory.id, "2020-01-01T00:00:00.000000Z")
+    memory_store.touch_read(memory.id, "2020-01-01T00:00:00.000000Z", memory_version=1)
     assert memory_store.read(memory.id, read_write_set).last_read_at == \
         "2026-09-24T00:00:01.000000Z"
-    memory_store.touch_read(new_id(), "2026-09-24T00:00:01.000000Z")   # unknown id: a no-op
+    memory_store.touch_read(new_id(), "2026-09-24T00:00:01.000000Z",
+                            memory_version=1)   # unknown id: a no-op
     shutil.rmtree(root)
-    memory_store.touch_read(memory.id, "2026-09-24T00:00:01.000000Z")  # absent store: a no-op
+    memory_store.touch_read(memory.id, "2026-09-24T00:00:01.000000Z",
+                            memory_version=1)  # absent store: a no-op
 
 
 # built with chr(...), never a raw non-ASCII digit in the file
@@ -313,10 +315,11 @@ _FULLWIDTH_AT = "2026-09-24T00:00:01.000000Z".translate(_FULLWIDTH_DIGITS)
 def test_touch_read_with_a_malformed_at_is_a_no_op(world, bad_at):
     memory_store, read_write_set = world["memory_store"], world["read_write_set"]
     memory = _record(world)
-    memory_store.touch_read(memory.id, bad_at)
+    memory_store.touch_read(memory.id, bad_at, memory_version=1)
     assert memory_store.read(memory.id, read_write_set).last_read_at is None
-    memory_store.touch_read(memory.id, "2026-09-24T00:00:01.000000Z")
-    memory_store.touch_read(memory.id, bad_at)   # a bad value never overwrites a good one
+    memory_store.touch_read(memory.id, "2026-09-24T00:00:01.000000Z", memory_version=1)
+    memory_store.touch_read(memory.id, bad_at,
+                            memory_version=1)   # a bad value never overwrites a good one
     assert memory_store.read(memory.id, read_write_set).last_read_at == \
         "2026-09-24T00:00:01.000000Z"
 

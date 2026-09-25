@@ -28,6 +28,7 @@ from memriver_core.models import (
     UnbindPlan,
     now,
     single_line,
+    timestamp_shift,
 )
 from memriver_core.models.errors import (
     ContentRejected,
@@ -118,7 +119,8 @@ class MemoryService:
                  session_recent_prompts: int, session_prompt_scan_max_bytes: int,
                  stop_nudge_min_prompts: int, stop_nudge_interval_prompts: int,
                  session_search_limit_default: int, session_search_limit_max: int,
-                 tool_call_retention_s: int) -> None:
+                 tool_call_retention_s: int,
+                 memory_reads_retention_days: int | None = None) -> None:
         self._memory_store = memory_store
         self._project_store = project_store
         self._session_store = session_store
@@ -151,6 +153,7 @@ class MemoryService:
         self._session_search_limit_default = session_search_limit_default
         self._session_search_limit_max = session_search_limit_max
         self._tool_call_retention_s = tool_call_retention_s
+        self._memory_reads_retention_days = memory_reads_retention_days
 
     def _policy(self) -> ContentPolicy:
         if self._content_policy is None:
@@ -554,10 +557,18 @@ class MemoryService:
         self._mark_saved(context)
         return memory
 
-    def read(self, memory_id: str, context: ProjectContext) -> Memory:
+    def read(self, memory_id: str, context: ProjectContext, *,
+             harness: str = "unknown") -> Memory:
         memory = self._memory_store.read(memory_id, context.read_write_set)
+        at = now()
+        retention = self._memory_reads_retention_days
         try:
-            self._memory_store.touch_read(memory.id, now())
+            self._memory_store.touch_read(
+                memory.id, at, memory_version=memory.version,
+                harness=harness if _HARNESS_RE.fullmatch(harness) else "unknown",
+                session_id=None if context.session_key is None
+                else context.session_key.session_id,
+                prune_before=None if retention is None else timestamp_shift(at, days=-retention))
         except StorageFailure:
             pass                            # best effort (spec §3.3): never fails the read
         return memory

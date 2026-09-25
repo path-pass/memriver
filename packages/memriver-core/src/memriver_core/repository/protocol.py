@@ -44,7 +44,12 @@ class MemoryStore(Protocol):
       moves `last_read_at` to `max(stored, at)`, never backwards; `version`
       and `updated` are untouched. An unknown id, a malformed `at`, and a
       store that is absent or fails, are all no-ops -- nothing here creates a
-      store, and a failure never fails the read that asked for it.
+      store, and a failure never fails the read that asked for it. In the same
+      transaction it inserts one `memory_reads` row (`memory_version` as
+      given -- the version the read returned -- `at`, `harness`, `session_id`),
+      only while the row is active, and, with `prune_before`, deletes every
+      `memory_reads` row read before it. A failure of either rolls both back
+      and is still a no-op for the caller.
     - Errors carry fields, never words (see `models.errors`).
     """
 
@@ -55,7 +60,9 @@ class MemoryStore(Protocol):
     def delete(self, memory_id: str, read_write_set: ReadWriteSet, *, expected_version: int,
                hard: bool) -> int: ...
     def read_any(self, memory_id: str, *, include_deleted: bool) -> Memory: ...
-    def touch_read(self, memory_id: str, at: str) -> None: ...
+    def touch_read(self, memory_id: str, at: str, *, memory_version: int,
+                   harness: str = "unknown", session_id: str | None = None,
+                   prune_before: str | None = None) -> None: ...
 
 
 class ProjectStore(Protocol):

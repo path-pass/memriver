@@ -151,7 +151,9 @@ class SqliteMemoryStore:
                          (now(), memory_id, expected_version))
             return expected_version + 1
 
-    def touch_read(self, memory_id: str, at: str) -> None:
+    def touch_read(self, memory_id: str, at: str, *, memory_version: int,
+                   harness: str = "unknown", session_id: str | None = None,
+                   prune_before: str | None = None) -> None:
         if not _addressable(memory_id) or not is_timestamp(at):
             return
         try:
@@ -159,6 +161,15 @@ class SqliteMemoryStore:
                 conn.execute(
                     "UPDATE memories SET last_read_at = max(coalesce(last_read_at, ''), ?) "
                     "WHERE id = ? AND deleted_at IS NULL", (at, memory_id))
+                # the version the caller was handed, not the row's current one:
+                # another writer may have moved the row since the read
+                conn.execute(
+                    "INSERT INTO memory_reads (memory_id, memory_version, read_at, harness, "
+                    "session_id) SELECT id, ?, ?, ?, ? FROM memories "
+                    "WHERE id = ? AND deleted_at IS NULL",
+                    (memory_version, at, harness, session_id, memory_id))
+                if prune_before is not None:
+                    conn.execute("DELETE FROM memory_reads WHERE read_at < ?", (prune_before,))
         except StorageFailure:
             pass   # best effort (spec §3.3): a missing store, or any failure, never fails the read
 

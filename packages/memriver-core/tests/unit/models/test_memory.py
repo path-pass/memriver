@@ -103,3 +103,18 @@ def test_single_line_collapses_control_and_line_separators():
 def test_a_new_memory_starts_at_version_one_and_not_deleted():
     memory = Memory.new(body="b", type="user", project_id="aaaaaaaaaa", source={})
     assert (memory.version, memory.deleted_at) == (1, None)
+
+
+def test_timestamp_shift_moves_a_timestamp_and_clamps_at_the_calendar_edges():
+    from memriver_core.models import timestamp_shift
+
+    assert timestamp_shift("2026-09-25T10:00:00.000000Z", days=-90) == \
+        "2026-06-27T10:00:00.000000Z"
+    assert timestamp_shift("2026-09-25T10:00:00.000000Z", minutes=-60) == \
+        "2026-09-25T09:00:00.000000Z"
+    assert timestamp_shift("2026-09-25T10:00:00.000000Z", days=-10**7) == \
+        "0001-01-01T00:00:00.000000Z"
+    assert timestamp_shift("2026-09-25T10:00:00.000000Z", days=10**7) == \
+        "9999-12-31T23:59:59.999999Z"
+    with pytest.raises(ValueError):
+        timestamp_shift("yesterday", days=1)

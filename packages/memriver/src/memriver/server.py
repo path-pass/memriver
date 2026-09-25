@@ -324,7 +324,7 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
         """Read one memory in full by id, including the version that
         memory_update and memory_delete must name."""
         try:
-            return _full(service.read(memory_id, context_of(ctx)))
+            return _full(service.read(memory_id, context_of(ctx), harness=source_harness))
         except Exception as err:  # noqa: BLE001
             _fail("read", err, memory_id=memory_id)
 

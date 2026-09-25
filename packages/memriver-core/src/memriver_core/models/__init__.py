@@ -7,6 +7,7 @@ from .helpers import (
     now,
     now_strictly_after,
     single_line,
+    timestamp_shift,
 )
 from .maintenance import (
     Change,
@@ -91,4 +92,5 @@ __all__ = [
     "now_strictly_after",
     "project_name",
     "single_line",
+    "timestamp_shift",
 ]

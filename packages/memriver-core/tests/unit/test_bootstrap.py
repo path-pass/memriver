@@ -114,3 +114,8 @@ def test_building_the_service_never_loads_the_secret_scanner(tmp_path):
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
                             check=True)
     assert result.stdout.strip() == "False"
+
+
+def test_injects_the_memory_reads_retention(tmp_path):
+    service = bootstrap.build_service(Settings(root=tmp_path, memory_reads_retention_days=7))
+    assert service._memory_reads_retention_days == 7

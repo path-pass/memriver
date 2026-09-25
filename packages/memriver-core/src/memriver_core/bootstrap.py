@@ -97,4 +97,5 @@ def build_service(settings: Settings, *, root: Path | None = None,
         session_search_limit_default=SESSION_SEARCH_LIMIT_DEFAULT,
         session_search_limit_max=SESSION_SEARCH_LIMIT_MAX,
         tool_call_retention_s=TOOL_CALL_RETENTION_S,
+        memory_reads_retention_days=settings.memory_reads_retention_days,
     )
