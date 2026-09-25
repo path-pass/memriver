@@ -618,7 +618,7 @@ def test_quarantine_soft_deletes_a_planted_secret_naming_only_the_rule(world):
     assert world.service.show(clean).deleted_at is None
     for memory_id in (in_body, in_cue):
         assert world.service.show(memory_id, include_deleted=True).deleted_at is not None
-    # the matched text is nowhere in the change log
+    # the matched text is absent from change reasons
     assert all("ghp_" not in c.reason for c in world.maintenance.changes(10))
 
 
@@ -630,6 +630,19 @@ def test_quarantine_stops_at_its_limit_and_skips_a_row_that_moved(world):
     assert world.maintenance._maintenance_store.quarantine(
         first, expected_version=1, run_id="run1", rule_id="github-pat",
         change_id=new_id(), now=now()) is None          # already moved to version 2
+
+
+def test_quarantine_leaves_a_row_edited_clean_since_the_scan_untouched(world):
+    memory_id = _plant(world, world.project.id, SECRET)
+    # the scan saw the secret at version 1; before quarantine runs, an ordinary
+    # edit replaces it with clean content -- still active, but at version 2
+    world.service.update(memory_id, "clean content", world.context, expected_version=1)
+    assert world.maintenance._maintenance_store.quarantine(
+        memory_id, expected_version=1, run_id="run1", rule_id="github-pat",
+        change_id=new_id(), now=now()) is None
+    current = world.service.show(memory_id)
+    assert (current.deleted_at, current.body, current.version) == (None, "clean content", 2)
+    assert _count(world, "dream_changes") == 0
 
 
 def test_a_run_is_recorded_and_a_killed_run_is_marked_failed_by_the_next(world):
@@ -663,3 +676,19 @@ def test_the_groups_a_run_committed_are_found_by_its_id_even_if_it_never_finishe
     assert [c.change_id for c in world.maintenance.changes_of_run(run_id)] == [
         c.change_id for c in (*first, *second)]
     assert world.maintenance.changes_of_run(other) == []
+
+
+def test_finish_run_rejects_a_bad_finished_at_and_leaves_the_run_untouched(world):
+    run_id = world.maintenance.start_run("manual", None, now())
+    with pytest.raises(ValueError):
+        world.maintenance.finish_run(run_id, "completed", {}, "not-a-timestamp")
+    running = world.maintenance.run(run_id)
+    assert (running.status, running.finished_at, running.report) == ("running", None, {})
+
+
+def test_finish_run_rejects_a_non_dict_report_and_leaves_the_run_untouched(world):
+    run_id = world.maintenance.start_run("manual", None, now())
+    with pytest.raises(ValueError):
+        world.maintenance.finish_run(run_id, "completed", ["not", "a", "dict"], now())
+    running = world.maintenance.run(run_id)
+    assert (running.status, running.finished_at, running.report) == ("running", None, {})

@@ -485,13 +485,26 @@ class SqliteMaintenanceStore:
     @staticmethod
     def _insert_run(conn: sqlite3.Connection, run: DreamRun) -> None:
         row = run_to_row(run)
-        run_from_row(row)
+        run_from_row(row)                   # the run table only holds rows it can read back
         conn.execute(f"INSERT INTO dream_runs ({RUN_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)", row)
 
     def finish_run(self, run_id: str, *, status: str, report: dict, finished_at: str) -> None:
         with self._database.write(create=False) as conn:
+            found = conn.execute(f"SELECT {RUN_COLUMNS} FROM dream_runs WHERE run_id = ?",
+                                 (run_id,)).fetchone()
+            if found is None:
+                return                       # unknown run_id: nothing to finish
+            try:
+                current = run_from_row(found)
+            except ValueError as err:
+                raise StorageFailure from err
+            updated = dataclasses.replace(current, status=status, report=report,
+                                          finished_at=finished_at)
+            row = run_to_row(updated)
+            run_from_row(row)                # reject an update the table could not read back;
+                                              # nothing written, the current row stays as it was
             conn.execute("UPDATE dream_runs SET status = ?, report = ?, finished_at = ? "
-                         "WHERE run_id = ?", (status, dumps_json(report), finished_at, run_id))
+                         "WHERE run_id = ?", (row[5], row[6], row[2], run_id))
 
     def runs(self, limit: int) -> list[DreamRun]:
         return _decoded(self._rows(f"SELECT {RUN_COLUMNS} FROM dream_runs "
