@@ -219,7 +219,7 @@ to. The protocol reaches their agents through three layers:
 Layers 1–2 alone make an MCP-only harness work correctly in directory mode
 (Cursor, Kiro, or any client connected with no `--harness`); layer 3
 upgrades "works" to "works well". A Claude Code/Codex session additionally
-needs its four hooks: without them a session's row is never registered, so
+needs its hooks (four for Codex, five for Claude Code): without them a session's row is never registered, so
 MCP alone leaves it reading global memory only, with no project of its own
 to write to. The taxonomy's four words fitting in a tool description is
 itself part of why it was adopted.

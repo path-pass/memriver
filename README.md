@@ -29,7 +29,7 @@ Symlinked targets are refused. What it writes, per harness:
 
 | Harness | MCP server | Session hooks | Static instructions |
 |---|---|---|---|
-| Claude Code | `uvx memriver serve --harness claude-code` | `SessionStart` + `UserPromptSubmit` + `Stop` + `SessionEnd` | — |
+| Claude Code | `uvx memriver serve --harness claude-code` | `SessionStart` + `UserPromptSubmit` + `Stop` + `SessionEnd` + `PreToolUse` (memriver tools only) | — |
 | Codex | `uvx memriver serve --harness codex` | `SessionStart` + `UserPromptSubmit` + `Stop` + `SessionEnd` | — |
 | Cursor | `uvx memriver serve --harness cursor` | — | marker block in the project's `AGENTS.md` |
 | Kiro | `uvx memriver serve --harness kiro` | — | `.kiro/steering/memriver.md` |
@@ -46,6 +46,16 @@ get that same proposal instead (see *What your agent sees*). Cursor and
 Kiro stay directory mode: `--harness cursor|kiro` resolves `--project-dir`
 once, when the server starts, and that never changes for the life of the
 process.
+
+Claude Code keeps its MCP server running across `/clear` and an in-app
+`/resume`, so the server's own environment keeps naming the session it
+started with. memriver follows the current session anyway: its
+`PreToolUse` hook, matched to memriver's own tools only
+(`mcp__memriver__.*`), records which session is making each memriver tool
+call, and the server answers that call for that session; with no record
+it falls back to the session the server started with. The cost is one
+short hook run before every memriver tool call, never before any other
+tool. The hook only records: it never blocks or changes the call.
 
 Turning off the harness's own memory feature (Claude Code, Codex) is a
 separately confirmed change, never implied by the rest. Codex only runs hooks
@@ -114,12 +124,12 @@ reports go to stderr.
 
 Hooks never fail the harness: an unreadable store is stated inline, in the
 injected header itself, as a labelled "unavailable" session -- exit 0, empty
-stderr, nothing blocked. Of the four, only `SessionStart` ever writes to
+stderr, nothing blocked. Of the five, only `SessionStart` ever writes to
 stderr: when it hits something it cannot route around at all (a malformed
 payload, some other unhandled failure) it skips the injection entirely and
-prints one fixed, path-free stderr line instead. `UserPromptSubmit`, `Stop`
-and `SessionEnd` degrade the same failures silently -- empty stdout, empty
-stderr, exit 0 -- since none of them owes the agent a header. If memories
+prints one fixed, path-free stderr line instead. `UserPromptSubmit`, `Stop`,
+`SessionEnd` and `PreToolUse` degrade the same failures silently -- empty
+stdout, empty stderr, exit 0 -- since none of them owes the agent a header. If memories
 seem to be missing, `memriver doctor` shows what the store actually holds.
 
 Known limits: `session_search`/`memriver sessions` only look at each
@@ -365,11 +375,13 @@ Cursor (`~/.cursor/mcp.json`) / Kiro: the same `command`/`args` shape under
 hooks.
 
 `--harness claude-code|codex` alone only makes the MCP server session-routed;
-session registration also needs the four hooks run by hand, one per event,
+session registration also needs the hooks run by hand, one per event,
 e.g. `uv run --project /path/to/repo memriver hook session-start --harness
-claude-code` (and `user-prompt-submit`, `stop`, `session-end`), wired into
-`~/.claude/settings.json`'s `hooks.SessionStart` etc. (or Codex's
-`~/.codex/hooks.json`) the way `memriver install` does. Without them the
+claude-code` (and `user-prompt-submit`, `stop`, `session-end`; Claude Code
+also `pre-tool-use`, in a `hooks.PreToolUse` group with `"matcher":
+"mcp__memriver__.*"`), wired into `~/.claude/settings.json`'s
+`hooks.SessionStart` etc. (or Codex's `~/.codex/hooks.json`) the way
+`memriver install` does. Without them the
 server still answers per session -- reading global memory is still allowed --
 but no session is ever registered, so no session ever gets a project of its
 own to write to, and `session_search` sees none of them; a session that
