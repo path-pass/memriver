@@ -16,7 +16,14 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from memriver_core.models import Candidate, Change, Memory, Project, SourceRef
+from memriver_core.models import (
+    Candidate,
+    Change,
+    Memory,
+    Project,
+    SourceRef,
+    single_line,
+)
 from memriver_core.models.errors import ContentRejected
 
 from . import LazyPolicy
@@ -46,9 +53,12 @@ class MaintenanceService:
         """The content-policy rule `text` breaks, or None.
 
         Size is never the reason (the budget is the text itself), and an empty
-        text breaks nothing: an optional description may be empty.
+        text breaks nothing: an optional description may be empty. Emptiness is
+        decided the same way the scanner decides it -- control characters do
+        not count as content -- so a control-characters-only text reads as
+        empty here too, rather than surfacing as a generic rejection.
         """
-        if not text.strip():
+        if not single_line(text):
             return None
         try:
             self._policy_cache.get().check(text, len(text))

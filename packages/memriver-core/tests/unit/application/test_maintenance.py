@@ -159,3 +159,11 @@ def test_passes_policy_refuses_a_memory_whose_body_or_description_breaks_a_rule(
 def test_an_untouched_store_has_no_fingerprints_and_no_changes(world):
     assert world.maintenance.fingerprint_of(f"consolidate:{world.project.id}") is None
     assert world.maintenance.changes(10) == []
+
+
+def test_a_description_of_only_control_characters_is_treated_as_empty_not_rejected(world):
+    control_only = chr(1) + chr(2) + chr(3)
+    memory_id = _plant(world, world.project.id, "fact", description=control_only)
+    by_id = {m.id: m for m in world.maintenance.memories(world.project.id)}
+    assert world.maintenance.text_passes_policy(control_only)
+    assert world.maintenance.passes_policy(by_id[memory_id])

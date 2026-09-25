@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from memriver_core.models import (
+    ID_RE,
     Candidate,
     Change,
     Memory,
@@ -19,11 +20,13 @@ from .database import (
     MEMORY_COLUMNS,
     REVIEW_COLUMNS,
     SOURCE_COLUMNS,
+    STATE_COLUMNS,
     Database,
     change_from_row,
     memory_from_row,
     review_from_row,
     source_from_row,
+    state_row_check,
 )
 
 _M = ", ".join(f"m.{column.strip()}" for column in MEMORY_COLUMNS.split(","))
@@ -77,10 +80,14 @@ class SqliteMaintenanceStore:
         return [ref for _, _, ref in _decoded(rows, source_from_row)]
 
     def derived_from(self, memory_id: str) -> list[str]:
-        return [row[0] for row in self._rows(
+        rows = self._rows(
             "SELECT DISTINCT d.id FROM memory_sources s JOIN memories d ON d.id = s.derived_id "
             f"WHERE s.source_id = ? AND d.deleted_at IS NULL AND {_EFFECTIVE} ORDER BY d.id",
-            (memory_id,))]
+            (memory_id,))
+        # a lenient text_factory hands back raw bytes for an id that is not valid
+        # UTF-8; that, or any id the store could never have written, is skipped
+        # like any other row that fails validation, never echoed to a caller
+        return [row[0] for row in rows if isinstance(row[0], str) and ID_RE.fullmatch(row[0])]
 
     def ttl_candidates(self, *, now: str, ttl_days: int, multiplier_max: int,
                        limit: int) -> list[Candidate]:
@@ -109,8 +116,14 @@ class SqliteMaintenanceStore:
         return [candidate for _, _, candidate in due[:limit]]
 
     def fingerprint_of(self, scope: str) -> str | None:
-        rows = self._rows("SELECT fingerprint FROM dream_state WHERE scope = ?", (scope,))
-        return rows[0][0] if rows and isinstance(rows[0][0], str) else None
+        rows = self._rows(f"SELECT {STATE_COLUMNS} FROM dream_state WHERE scope = ?", (scope,))
+        if not rows:
+            return None
+        try:
+            state_row_check(rows[0])
+        except ValueError:
+            return None                     # a doctor finding, never a failed run
+        return rows[0][1]
 
     def changes(self, limit: int) -> list[Change]:
         return _decoded(self._rows(f"SELECT {CHANGE_COLUMNS} FROM dream_changes "
