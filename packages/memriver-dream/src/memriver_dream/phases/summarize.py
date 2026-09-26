@@ -35,14 +35,16 @@ SYSTEM_PROMPT = (
     "Cover the goal, what was done, the results and what is still open. Keep file names, "
     "branches, PR numbers, commands and error names exactly as written. Write in the "
     "session's own language. Keep what was only planned apart from what was done.")
+_WORTH = ("A goal or task the user stated, and any file, branch, PR, command or decision "
+          "named, is worth finding again even when no result followed. ")
 CHUNK_PROMPT = ("Summarize this consecutive part of the session in at most {limit} "
-                "characters; answer an empty summary when nothing in it is worth finding "
-                "again.\n\n<session-part>\n{body}\n</session-part>")
+                "characters; answer an empty summary only when nothing in it is worth "
+                "finding again. " + _WORTH + "\n\n<session-part>\n{body}\n</session-part>")
 MERGE_PROMPT = ("Merge these consecutive partial summaries, in order, into one summary of at "
                 "most {limit} characters.\n\n<partial-summaries>\n{body}\n</partial-summaries>")
 FINAL_PROMPT = ("Write the summary of the whole session in at most {limit} characters. Answer "
-                "status \"empty\" with an empty summary when nothing in it is worth finding "
-                "again.\n\n<{tag}>\n{body}\n</{tag}>")
+                "status \"empty\" with an empty summary only when nothing in it is worth "
+                "finding again. " + _WORTH + "\n\n<{tag}>\n{body}\n</{tag}>")
 CHUNK_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["summary"],
                 "properties": {"summary": {"type": "string"}}}
 FINAL_SCHEMA = {"type": "object", "additionalProperties": False,
