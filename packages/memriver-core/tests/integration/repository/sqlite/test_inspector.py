@@ -543,6 +543,36 @@ def test_valid_dream_rows_are_not_findings(world):
     assert report.findings == ()
 
 
+def test_the_reports_sources_include_a_derived_entrys_effective_source_set(world):
+    derived = _plant(world["store"], _memory(world["project"]))
+    source = _plant(world["store"], _memory(world["project"]))
+    _sql(world["store"], "INSERT INTO memory_source_sets VALUES (?, 1)", derived.id)
+    _sql(world["store"], "INSERT INTO memory_sources VALUES (?, 1, ?, 1, ?, ?)",
+         derived.id, source.id, world["project"],
+         '{"type":"project","description":"","body":"b"}')
+    report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+    assert (derived.id, source.id) in report.sources
+
+
+def test_a_source_set_superseded_by_a_later_one_is_not_the_effective_one(world):
+    derived = _plant(world["store"], _memory(world["project"]))
+    old_source = _plant(world["store"], _memory(world["project"]))
+    new_source = _plant(world["store"], _memory(world["project"]))
+    _sql(world["store"], "INSERT INTO memory_source_sets VALUES (?, 1)", derived.id)
+    _sql(world["store"], "INSERT INTO memory_sources VALUES (?, 1, ?, 1, ?, ?)",
+         derived.id, old_source.id, world["project"],
+         '{"type":"project","description":"","body":"b"}')
+    with closing(sqlite3.connect(world["store"] / "memriver.db")) as conn, conn:
+        conn.execute("UPDATE memories SET version = 2 WHERE id = ?", (derived.id,))
+    _sql(world["store"], "INSERT INTO memory_source_sets VALUES (?, 2)", derived.id)
+    _sql(world["store"], "INSERT INTO memory_sources VALUES (?, 2, ?, 1, ?, ?)",
+         derived.id, new_source.id, world["project"],
+         '{"type":"project","description":"","body":"b"}')
+    report = SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+    assert (derived.id, new_source.id) in report.sources
+    assert (derived.id, old_source.id) not in report.sources
+
+
 def test_a_change_row_naming_another_memorys_before_image_is_reported_as_invalid_row(world):
     memory = _plant(world["store"], _memory(world["project"]))
     change = Change(change_id=new_id(), run_id="r", kind="merge", project_id=world["project"],

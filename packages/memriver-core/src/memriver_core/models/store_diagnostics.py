@@ -43,6 +43,11 @@ class StoreReport:
     entries: tuple[InspectedMemory, ...]
     projects: tuple[InspectedProject, ...]
     findings: tuple[StoreFinding, ...]
+    # (derived_id, source_id) for every active memory's effective source set (spec
+    # §3.2's "effective set" -- the set recorded at the greatest version not above
+    # the memory's current one); lets a policy tell a dream-kept original apart
+    # from an unrelated near-duplicate without touching SQL itself
+    sources: frozenset[tuple[str, str]] = frozenset()
 
 
 @dataclass(frozen=True)
