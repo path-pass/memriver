@@ -22,9 +22,10 @@ from memriver.executors import make_executor
 from memriver.launch_agent import plist_path
 from memriver_core.bootstrap import build_maintenance_service, build_service
 from memriver_core.models import ChangeGroup, CreateOp, new_id, now
-from memriver_core.settings import DREAM_LAUNCH_AGENT_LABEL, Settings, load_settings
+from memriver_core.settings import Settings, SettingsError
 from memriver_dream.lock import run_lock
 from memriver_dream.protocols import ExecutorResult
+from memriver_dream.settings import DREAM_LAUNCH_AGENT_LABEL, load_dream_settings
 
 SECRET = "token ghp_" + "a" * 36
 
@@ -195,24 +196,37 @@ def test_init_refuses_a_memriver_inside_uvs_cache(world, tmp_path):
     assert not plist_path(world["home"]).exists()
 
 
-@pytest.mark.parametrize(("table", "key"), [
-    ("[dream]\nuncertain_limit = 0\n", "uncertain_limit"),
-    ("[dream]\nnot_a_key = 1\n", "not_a_key"),
-])
-def test_init_refuses_an_invalid_key_it_does_not_own(world, table, key):
-    before = "max_body_chars = 4000\n" + table
+def test_init_refuses_an_invalid_key_it_does_not_own(world):
+    before = "max_body_chars = 4000\n[dream]\nuncertain_limit = 0\n"
     (world["store"] / "settings.toml").write_text(before, encoding="utf-8")
     code, out = _init(world)
-    assert code == 2 and f"invalid keys: {key}" in out
+    assert code == 2 and "invalid keys: uncertain_limit" in out
     assert (world["store"] / "settings.toml").read_text(encoding="utf-8") == before
+
+
+def test_init_keeps_an_unknown_key_which_every_reader_ignores(world):
+    (world["store"] / "settings.toml").write_text(
+        "max_body_chars = 4000\n[dream]\nnot_a_key = 1\n", encoding="utf-8")
+    assert _init(world)[0] == 0
+    assert _settings(world)["dream"]["not_a_key"] == 1
+    assert load_dream_settings(world["store"]).executor == "claude"
+
+
+def test_init_repairs_an_invalid_key_it_owns(world):
+    # an invalid [dream] table stops `dream run`; init rewrites the keys it owns
+    (world["store"] / "settings.toml").write_text(
+        'max_body_chars = 4000\n[dream]\nexecutor_path = "relative"\n', encoding="utf-8")
+    with pytest.raises(SettingsError):
+        load_dream_settings(world["store"])
+    assert _init(world)[0] == 0
+    assert load_dream_settings(world["store"]).executor_path == str(world["bin"] / "claude")
 
 
 def test_after_init_the_table_loads_and_a_run_works(world):
     (world["store"] / "settings.toml").write_text(
         "max_body_chars = 4000\n[dream]\nidle_minutes = 30\n", encoding="utf-8")
     assert _init(world)[0] == 0
-    settings = load_settings(root_override=world["store"])
-    assert (settings.dream_invalid, settings.dream.idle_minutes) == (False, 30)
+    assert load_dream_settings(world["store"]).idle_minutes == 30
     assert _run(world)[0] == 0
 
 
@@ -274,7 +288,7 @@ def test_init_with_codex_refuses_a_provider_variable_missing_here_then_keeps_the
         "HOME": str(world["home"]), "PATH": f"{world['bin']}:/usr/bin:/bin",
         "MEMRIVER_ROOT": str(world["store"])}
     # settings -> executor factory -> argv, the real path a run takes
-    dream = load_settings(root_override=world["store"]).dream
+    dream = load_dream_settings(world["store"])
     argv = make_executor(dream, env={}).argv(files=Path("/files"))
     assert 'model_providers.foundry.env_key="DREAM_TEST_PROVIDER_KEY"' in argv
     assert "synthetic" not in " ".join(argv)
@@ -360,14 +374,17 @@ def test_run_with_an_executor_runs_every_phase(world):
     assert code == 0 and "consolidation: done" in out and "TTL retirement" in out
 
 
-@pytest.mark.parametrize(("table", "options", "fragment"), [
-    ("[dream]\nexecutor = 'gpt'\n", {}, "invalid"),
-    ("", {"phase": "retire"}, "--phase needs an executor"),
-])
-def test_run_configuration_errors_exit_1(world, table, options, fragment):
-    (world["store"] / "settings.toml").write_text(table, encoding="utf-8")
-    code, _, err = _run(world, **options)
-    assert code == 1 and fragment in err
+def test_run_with_a_phase_but_no_executor_exits_1(world):
+    code, _, err = _run(world, phase="retire")
+    assert code == 1 and "--phase needs an executor" in err
+
+
+def test_run_with_an_invalid_dream_table_raises_the_settings_error(world):
+    # cli.main prints it (test_an_invalid_dream_table_stops_dream_run_naming_the_field)
+    (world["store"] / "settings.toml").write_text("[dream]\nexecutor = 'gpt'\n",
+                                                  encoding="utf-8")
+    with pytest.raises(SettingsError, match="field dream.executor"):
+        _run(world)
 
 
 def test_run_skipped_for_the_lock_exits_0(world):
@@ -555,19 +572,35 @@ def test_report_neutralizes_the_stored_run_fields(world):
         assert chr(27) not in out and "\nforged line" not in out
 
 
-@pytest.mark.parametrize(("command", "expected"), [
-    ("init", 2), ("run", 1), ("report", 2), ("undo", 2)])
-def test_an_invalid_environment_setting_is_one_line_never_its_value(world, monkeypatch,
-                                                                     command, expected):
-    monkeypatch.setenv("MEMRIVER_MAX_BODY_CHARS", "SENTINEL-VALUE")
-    if command == "init":
-        code, out = _init(world)
-    elif command == "run":
-        code, out, err = _run(world)
-        out += err
-    elif command == "report":
-        code, out = _report(world)
-    else:
-        code, out = _undo(world, "aaaaaaaaaa")
-    assert code == expected and "SENTINEL" not in out
-    assert len(out.strip().splitlines()) == 1
+@pytest.mark.parametrize("command", [["init", "--yes"], ["run"], ["report"],
+                                     ["undo", "aaaaaaaaaa", "--yes"]])
+@pytest.mark.parametrize(("env", "text", "line"), [
+    ({"MEMRIVER_MAX_BODY_CHARS": "SENTINEL-VALUE"}, "",
+     "memriver: environment variable MEMRIVER_MAX_BODY_CHARS is invalid\n"),
+    ({}, 'max_body_chars = "SENTINEL-VALUE"\n',
+     "memriver: settings.toml is invalid: field max_body_chars\n"),
+    ({}, "max_body_chars = = 1\n", "memriver: settings.toml could not be read\n"),
+])
+def test_an_unusable_setting_stops_every_dream_command_with_one_named_line(
+        world, monkeypatch, capsys, command, env, text, line):
+    from memriver.cli import main
+
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    if text:
+        (world["store"] / "settings.toml").write_text(text, encoding="utf-8")
+    code = main(["dream", *command, "--root", str(world["store"])])
+    captured = capsys.readouterr()
+    assert (code, captured.out, captured.err) == (1, "", line)
+
+
+def test_an_invalid_dream_table_stops_dream_run_naming_the_field(world, capsys):
+    from memriver.cli import main
+
+    (world["store"] / "settings.toml").write_text(
+        '[dream]\nexecutor = "claude"\nexecutor_path = "/opt/claude"\nttl_days = 0\n',
+        encoding="utf-8")
+    code = main(["dream", "run", "--root", str(world["store"])])
+    captured = capsys.readouterr()
+    assert (code, captured.out) == (1, "")
+    assert captured.err == "memriver: settings.toml is invalid: field dream.ttl_days\n"

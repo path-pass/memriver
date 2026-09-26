@@ -24,19 +24,23 @@ from memriver_core.bootstrap import build_maintenance_service, build_service
 from memriver_core.models import Change, DreamRun
 from memriver_core.models import now as _now
 from memriver_core.settings import (
+    SETTINGS_FILENAME,
+    Settings,
+    SettingsError,
+    load_settings,
+)
+from memriver_dream import run_dream
+from memriver_dream.run import MODEL_PHASES
+from memriver_dream.settings import (
     DEFAULT_DREAM_SCHEDULE_AT,
     DEFAULT_DREAM_TTL_DAYS,
     DREAM_DIRECTORY,
     DREAM_LAUNCH_AGENT_LABEL,
     DREAM_LOG_FILENAME,
     DREAM_TOOL_OUTPUT_CHARS,
-    SETTINGS_FILENAME,
     DreamSettings,
-    Settings,
-    load_settings,
+    load_dream_settings,
 )
-from memriver_dream import run_dream
-from memriver_dream.run import MODEL_PHASES
 from pydantic import ValidationError
 
 from . import launch_agent, views
@@ -47,8 +51,6 @@ from .project_context import visible
 from .transcripts import HarnessTranscripts
 
 STORE_FAILURE = "memriver dream: the memory store could not be read or written\n"
-# pydantic's error echoes the value, which is never shown
-INVALID_ENVIRONMENT = "a MEMRIVER_* environment variable holds an invalid value; fix or unset it\n"
 _PHASE_TITLES = {"secrets": "secrets (safety re-scan)", "summarize": "session summaries",
                  "consolidate": "consolidation", "retire": "TTL retirement"}
 _PHASE_OF_KIND = {"secret": "secrets", "merge": "consolidate", "rewrite": "consolidate",
@@ -56,14 +58,6 @@ _PHASE_OF_KIND = {"secret": "secrets", "merge": "consolidate", "rewrite": "conso
 UV_CACHE_REFUSAL = ("refused: the memriver running this command lives in uv's cache (uvx), "
                     "which uv may delete at any time; install it persistently "
                     "(uv tool install memriver) and run memriver dream init from there\n")
-
-
-def _load_settings(root: Path | None) -> Settings | None:
-    """The settings; None when a MEMRIVER_* environment variable is invalid."""
-    try:
-        return load_settings(root_override=root)
-    except ValidationError:
-        return None
 
 
 def _services(settings: Settings):
@@ -150,15 +144,18 @@ def run_init(*, executor: str | None, ttl_days: int | None, at: str | None, yes:
              platform: str = sys.platform, uid: int | None = None,
              memriver_path: str | None = None, executable: str = sys.executable,
              label: str = DREAM_LAUNCH_AGENT_LABEL) -> int:
-    settings = _load_settings(root)
-    if settings is None:
-        stdout.write(f"refused: {INVALID_ENVIRONMENT}")
-        return 2
+    # an unusable settings.toml or MEMRIVER_* value raises SettingsError: cli.main
+    # prints its one line
+    settings = load_settings(root_override=root)
     if not _store_ready(settings):
         stdout.write("refused: the memory store is not initialized; run memriver install first\n")
         return 2
     store = Path(os.path.abspath(settings.root))
-    current = settings.dream
+    try:
+        current = load_dream_settings(store)
+    except SettingsError:
+        # init rewrites the keys it owns: the table as it will stand is checked below
+        current = None
     name = executor or (current.executor if current else None) or next(
         (candidate for candidate in ("claude", "codex") if which(candidate)), None)
     if name is None:
@@ -259,19 +256,15 @@ def run_init(*, executor: str | None, ttl_days: int | None, at: str | None, yes:
 
 def run_run(*, phase: str | None, trigger: str, root: Path | None, stdout: IO[str],
             stderr: IO[str], executor_factory=None, transcripts=None) -> int:
-    settings = _load_settings(root)
-    if settings is None:
-        stderr.write(f"memriver dream: {INVALID_ENVIRONMENT}")
-        return 1
-    if settings.dream_invalid:
-        stderr.write("memriver dream: the [dream] table in settings.toml is invalid; run "
-                     "memriver dream init\n")
-        return 1
-    if phase is not None and settings.dream is None:
+    # an unusable settings.toml, [dream] table or MEMRIVER_* value raises
+    # SettingsError: cli.main prints its one line
+    settings = load_settings(root_override=root)
+    dream = load_dream_settings(settings.root)
+    if phase is not None and dream is None:
         stderr.write("memriver dream: --phase needs an executor; run memriver dream init\n")
         return 1
-    if settings.dream is not None and settings.dream.executor == "codex":
-        missing = missing_env(settings.dream.codex_overrides, os.environ)
+    if dream is not None and dream.executor == "codex":
+        missing = missing_env(dream.codex_overrides, os.environ)
         if missing:
             # never Codex's default provider instead (a scheduled job sees only its own
             # environment)
@@ -285,11 +278,12 @@ def run_run(*, phase: str | None, trigger: str, root: Path | None, stdout: IO[st
                          "install\n")
             return 1
         executor = sources = None
-        if settings.dream is not None:
-            executor = (executor_factory or (lambda dream: make_executor(
-                dream, env=os.environ)))(settings.dream)
+        if dream is not None:
+            executor = (executor_factory or (lambda table: make_executor(
+                table, env=os.environ)))(dream)
             sources = transcripts or HarnessTranscripts(tool_output_chars=DREAM_TOOL_OUTPUT_CHARS)
-        report = run_dream(maintenance, executor, sources, settings, _now(), trigger=trigger,
+        report = run_dream(maintenance, executor, sources, settings.root, dream, _now(),
+                           trigger=trigger,
                            phases=(phase,) if phase else MODEL_PHASES,
                            log=lambda line: stdout.write(f"{_now()} {line}\n"))
         if report.status == "skipped":         # run_dream logged "skipped: locked"
@@ -360,10 +354,7 @@ def render_run(run: DreamRun, *, service, maintenance) -> str:
 
 def run_report(run_id: str | None, *, list_count: int | None, root: Path | None,
                stdout: IO[str]) -> int:
-    settings = _load_settings(root)
-    if settings is None:
-        stdout.write(f"refused: {INVALID_ENVIRONMENT}")
-        return 2
+    settings = load_settings(root_override=root)
     try:
         service, maintenance = _services(settings)
         if list_count is not None:
@@ -392,10 +383,7 @@ def run_report(run_id: str | None, *, list_count: int | None, root: Path | None,
 
 def run_undo(change_id: str, *, yes: bool, root: Path | None, stdin_is_tty: bool,
              input_fn: Callable[[str], str], stdout: IO[str]) -> int:
-    settings = _load_settings(root)
-    if settings is None:
-        stdout.write(f"refused: {INVALID_ENVIRONMENT}")
-        return 2
+    settings = load_settings(root_override=root)
     try:
         service, maintenance = _services(settings)
         change = maintenance.change(change_id)

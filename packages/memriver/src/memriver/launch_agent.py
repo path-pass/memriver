@@ -15,7 +15,7 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from memriver_core.settings import DREAM_LAUNCH_AGENT_LABEL
+from memriver_dream.settings import DREAM_LAUNCH_AGENT_LABEL
 
 from .install import replace_atomically
 

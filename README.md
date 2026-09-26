@@ -416,7 +416,7 @@ memriver` and run `memriver dream init` from that installation (run it again
 after moving the installation). Elsewhere, `init` writes the settings and
 prints the command line to add to your own scheduler. `init` is idempotent
 (running it again replaces the schedule), and it refuses when the `[dream]`
-table already holds a key it cannot use, naming the key; a failed
+table already holds a value it cannot use, naming the key; a failed
 replacement puts the previous schedule back, and says so if it cannot;
 `uninstall` removes the schedule and keeps the settings and data, and says
 so, keeping the plist, when launchd would not let go of it or could not say.
@@ -654,9 +654,10 @@ index_budget_lines = 100    # entries memory_index lists before truncating
 One more top-level key, unset by default: `memory_reads_retention_days = N`
 drops `memory_reads` rows older than N days whenever a new one is written
 (unset keeps every row; pruned reads no longer lengthen a memory's TTL).
-The `[dream]` table is `memriver dream init`'s (see *Dream*); an invalid
-`[dream]` table is ignored on its own, with a warning, and never resets the
-other settings.
+The `[dream]` table is `memriver dream init`'s (see *Dream*), read by the
+`memriver dream` commands only: an invalid one stops `memriver dream run` with
+the same one-line error (`field dream.<key>`), never the server or the other
+commands, and `memriver dream init` rewrites the keys it owns.
 
 `search_limit_default` may not exceed `search_limit_max`. The root itself is
 set with `--root` or `MEMRIVER_ROOT`, not in this file: it is what locates the

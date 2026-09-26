@@ -20,8 +20,8 @@ from memriver.executors import (
     make_executor,
     run_process,
 )
-from memriver_core.settings import DREAM_KILL_GRACE_S, DreamSettings
 from memriver_dream.protocols import ExecutorResult
+from memriver_dream.settings import DREAM_KILL_GRACE_S, DreamSettings
 
 SCHEMA = {"type": "object", "additionalProperties": False, "required": ["summary"],
           "properties": {"summary": {"type": "string"}}}
