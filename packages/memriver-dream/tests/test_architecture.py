@@ -67,26 +67,46 @@ def _under(candidate: str, package: str) -> bool:
     return candidate == package or candidate.startswith(package + ".")
 
 
-def _os_alias(tree: ast.AST) -> str | None:
-    """The local name a plain `import os` (or `import os as alias`) binds; None when
-    `os` is not imported that way."""
+def _os_aliases(tree: ast.AST) -> set[str]:
+    """Every local name a plain `import os` (or `import os as alias`) binds -- a module
+    can bind more than one (`import os` and `import os as x`, or two aliases)."""
+    return {alias.asname or alias.name for node in ast.walk(tree) if isinstance(node, ast.Import)
+           for alias in node.names if alias.name == "os"}
+
+
+def _os_from_imports(tree: ast.AST) -> dict[str, str]:
+    """Local name -> real os attribute, for every `from os import x [as y]`."""
+    return {alias.asname or alias.name: alias.name for node in ast.walk(tree)
+           if isinstance(node, ast.ImportFrom) and node.module == "os"
+           for alias in node.names}
+
+
+def _forbidden(name: str) -> bool:
+    return name in _FORBIDDEN_OS_CALLS or name.startswith(("spawn", "exec"))
+
+
+def _forbidden_os_calls_in(source: str) -> list[str]:
+    """`os.<name>` calls, or a name imported straight from os, that shell out or spawn
+    another process -- through any import alias or from-import binding."""
+    tree = ast.parse(source)
+    aliases = _os_aliases(tree)
+    from_names = _os_from_imports(tree)
+    found = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name == "os":
-                    return alias.asname or "os"
-    return None
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) \
+                and func.value.id in aliases and _forbidden(func.attr):
+            found.append(func.attr)
+        elif isinstance(func, ast.Name) and func.id in from_names \
+                and _forbidden(from_names[func.id]):
+            found.append(from_names[func.id])
+    return found
 
 
 def _forbidden_os_calls(module: str) -> list[str]:
-    """`os.<name>` calls that shell out or spawn another process."""
-    tree = ast.parse(SOURCES[module].read_text(encoding="utf-8"))
-    alias = _os_alias(tree)
-    return [node.func.attr for node in ast.walk(tree)
-           if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-           and isinstance(node.func.value, ast.Name) and node.func.value.id == alias
-           and (node.func.attr in _FORBIDDEN_OS_CALLS
-                or node.func.attr.startswith(("spawn", "exec")))]
+    return _forbidden_os_calls_in(SOURCES[module].read_text(encoding="utf-8"))
 
 
 def _allowed_core(target: str) -> bool:
@@ -120,6 +140,19 @@ def test_only_the_settings_module_imports_the_settings_libraries():
 def test_dream_never_shells_out_or_spawns_a_process_via_os():
     for module in SOURCES:
         assert not _forbidden_os_calls(module), f"{module} calls os.<forbidden>"
+
+
+def test_a_name_imported_straight_from_os_is_still_caught():
+    assert _forbidden_os_calls_in("from os import system\nsystem('rm -rf /')\n") == ["system"]
+
+
+def test_an_aliased_from_import_is_still_caught():
+    assert _forbidden_os_calls_in("from os import popen as p\np('ls')\n") == ["popen"]
+
+
+def test_a_second_import_os_as_alias_is_still_caught():
+    source = "import os as a\nimport os as b\na.path.join('x')\nb.system('rm -rf /')\n"
+    assert _forbidden_os_calls_in(source) == ["system"]
 
 
 @pytest.mark.parametrize("word", HARNESS_WORDS)

@@ -6,10 +6,7 @@ import re
 
 from memriver_core.models import SessionKey, SummaryInput, now, timestamp_shift
 from memriver_core.settings import SESSION_SUMMARY_MAX_CHARS
-from memriver_dream.protocols import ExecutorResult, Record, Transcript
-from memriver_dream.report import PhaseReport
-from memriver_dream.run import run_dream
-from memriver_dream.summarize import (
+from memriver_dream.phases.summarize import (
     CUT_MARK,
     NOTHING_KEPT,
     OMITTED,
@@ -18,6 +15,9 @@ from memriver_dream.summarize import (
     plan_chunks,
     run,
 )
+from memriver_dream.protocols import ExecutorResult, Record, Transcript
+from memriver_dream.report import PhaseReport
+from memriver_dream.run import run_dream
 
 SECRET = "token ghp_" + "a" * 36
 AT = "2026-09-25T10:00:00.000Z"

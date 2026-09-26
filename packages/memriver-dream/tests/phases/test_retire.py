@@ -5,9 +5,9 @@ from __future__ import annotations
 import pytest
 from memriver_core import StorageFailure
 from memriver_core.models import now, timestamp_shift
+from memriver_dream.phases.retire import SYSTEM_PROMPT, run
 from memriver_dream.protocols import ExecutorResult
 from memriver_dream.report import PhaseReport
-from memriver_dream.retire import SYSTEM_PROMPT, run
 from memriver_dream.settings import DREAM_REASON_CHARS
 
 SECRET = "token ghp_" + "a" * 36
@@ -245,4 +245,3 @@ def test_a_storage_failure_is_not_swallowed(world, monkeypatch):
     world.executor.replies = [_decision("keep")]
     with pytest.raises(StorageFailure):
         _phase(world)
-

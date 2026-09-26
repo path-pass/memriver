@@ -14,8 +14,8 @@ from typing import TYPE_CHECKING
 from memriver_core.models import RunTrigger
 from memriver_core.models import now as _now
 
-from . import consolidate, retire, summarize
 from .lock import run_lock
+from .phases import consolidate, retire, summarize
 from .protocols import Executor, Run, TranscriptSource
 from .report import PhaseReport, RunReport
 from .settings import DREAM_MAX_QUARANTINE_PER_RUN, DreamSettings

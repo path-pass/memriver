@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from memriver_core.models import now
-from memriver_dream.consolidate import SYSTEM_PROMPT, run
+from memriver_dream.phases.consolidate import SYSTEM_PROMPT, run
 from memriver_dream.protocols import ExecutorResult
 from memriver_dream.report import PhaseReport
 from memriver_dream.run import run_dream
