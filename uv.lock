@@ -692,10 +692,16 @@ version = "0.1.0"
 source = { editable = "packages/memriver-dream" }
 dependencies = [
     { name = "memriver-core" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "memriver-core", editable = "packages/memriver-core" }]
+requires-dist = [
+    { name = "memriver-core", editable = "packages/memriver-core" },
+    { name = "pydantic", specifier = ">=2" },
+    { name = "pydantic-settings", specifier = ">=2" },
+]
 
 [[package]]
 name = "more-itertools"

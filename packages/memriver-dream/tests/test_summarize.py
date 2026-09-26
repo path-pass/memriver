@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 from memriver_core.models import SessionKey, SummaryInput, now, timestamp_shift
-from memriver_core.settings import DREAM_SUMMARY_MAX_CHARS
+from memriver_core.settings import SESSION_SUMMARY_MAX_CHARS
 from memriver_dream.protocols import ExecutorResult, Record, Transcript
 from memriver_dream.report import PhaseReport
 from memriver_dream.run import run_dream
@@ -309,7 +309,7 @@ def test_sessions_that_keep_failing_do_not_keep_a_new_one_out(world):
         _session(world, name)                     # no transcripts: each attempt fails
     _phase(world)
     new = _session(world, "new")
-    limited = world.settings.dream.model_copy(update={"max_sessions_per_run": 1})
+    limited = world.dream.model_copy(update={"max_sessions_per_run": 1})
     assert _phase(world, dream=limited).items == [
         {"harness": "codex", "session_id": "new", "status": "failed"}]
     assert _stored(world, new).summary_status == "failed"
@@ -353,7 +353,7 @@ def test_run_dream_runs_the_summarize_phase(world):
     key = _session(world)
     world.transcripts.by_session["s1"] = _transcript("work")
     world.executor.replies = [{"status": "ok", "summary": "Did the work"}]
-    report = run_dream(world.maintenance, world.executor, world.transcripts, world.settings,
+    report = run_dream(world.maintenance, world.executor, world.transcripts, world.store, world.dream,
                        timestamp_shift(now(), minutes=61), phases=("summarize",))
     assert report.phases["summarize"].outcomes == {"ok": 1}
     assert _stored(world, key).summary == "Did the work"
@@ -473,7 +473,7 @@ def test_a_final_summary_with_a_lone_surrogate_is_invalid_not_a_storage_failure(
         return {"status": "ok", "summary": "Did the work"}
 
     world.executor.default = answer
-    report = run_dream(world.maintenance, world.executor, world.transcripts, world.settings,
+    report = run_dream(world.maintenance, world.executor, world.transcripts, world.store, world.dream,
                        timestamp_shift(now(), minutes=61), phases=("summarize",))
     assert report.status == "completed"
     assert report.phases["summarize"].outcomes == {"invalid": 1, "ok": 1}
@@ -510,8 +510,8 @@ def test_a_final_summary_with_trailing_whitespace_at_the_limit_is_stored_strippe
     # whitespace) used to be the one stored
     key = _session(world)
     world.transcripts.by_session["s1"] = _transcript("work")
-    text = "x" * (DREAM_SUMMARY_MAX_CHARS - 1) + " "
-    assert len(text) == DREAM_SUMMARY_MAX_CHARS
+    text = "x" * (SESSION_SUMMARY_MAX_CHARS - 1) + " "
+    assert len(text) == SESSION_SUMMARY_MAX_CHARS
     world.executor.replies = [{"status": "ok", "summary": text}]
     assert _phase(world).outcomes == {"ok": 1}
     assert _stored(world, key).summary == text.strip()

@@ -15,8 +15,14 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-# harness-neutral by rule: no LLM client, no harness, no third-party dependency
-dependencies = ["memriver-core>=0.1.0"]
+# harness-neutral by rule: no LLM client, no harness, and no third-party dependency
+# beyond the pydantic/pydantic-settings baseline core already brings (the settings
+# module reads the [dream] table with them directly)
+dependencies = [
+    "memriver-core>=0.1.0",
+    "pydantic>=2",
+    "pydantic-settings>=2",
+]
 
 [project.urls]
 Homepage = "https://github.com/path-pass/memriver"

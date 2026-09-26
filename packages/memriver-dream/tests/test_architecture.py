@@ -1,5 +1,7 @@
 """memriver-dream's dependency rules: core only through its public surface, and no
 harness anywhere -- no harness name, no subprocess, no harness file format.
+The one exception is the settings module: it parses the user's [dream] table,
+whose keys and values (executor = "codex", codex_overrides) name the executor.
 
 The same import normalization as the core and umbrella architecture tests:
 every import spelling (plain, from, relative, aliased) is treated alike.
@@ -24,6 +26,11 @@ FORBIDDEN_STDLIB = {"subprocess", "pty", "multiprocessing"}
 _FORBIDDEN_OS_CALLS = ("system", "popen", "fork", "forkpty")
 HARNESS_WORDS = ("claude", "codex", "jsonl", "anthropic", "openai")
 STDLIB = set(sys.stdlib_module_names)
+# the settings baseline core already depends on, declared again in dream's own
+# pyproject because the settings module imports it directly
+THIRD_PARTY = {"pydantic", "pydantic_settings"}
+# parses the user's [dream] table, whose file format names the executor
+SETTINGS_MODULE = "memriver_dream.settings"
 
 
 def _module_name(path: Path) -> str:
@@ -99,8 +106,15 @@ def test_dream_imports_only_stdlib_itself_and_the_public_core_surface():
                 assert _allowed_core(target), f"{module} reaches into core: {target}"
             elif root in STDLIB:
                 assert root not in FORBIDDEN_STDLIB, f"{module} imports {root}"
-            else:
+            elif root not in THIRD_PARTY:
                 pytest.fail(f"{module} imports {target}: memriver-dream adds no dependency")
+
+
+def test_only_the_settings_module_imports_the_settings_libraries():
+    for module in SOURCES:
+        if module != SETTINGS_MODULE:
+            roots = {target.split(".", 1)[0] for target in _imports(module)}
+            assert not roots & THIRD_PARTY, f"{module} imports a settings library"
 
 
 def test_dream_never_shells_out_or_spawns_a_process_via_os():
@@ -111,4 +125,6 @@ def test_dream_never_shells_out_or_spawns_a_process_via_os():
 @pytest.mark.parametrize("word", HARNESS_WORDS)
 def test_dream_sources_name_no_harness(word):
     for module, path in SOURCES.items():
+        if module == SETTINGS_MODULE:
+            continue
         assert word not in path.read_text(encoding="utf-8").lower(), f"{module} names {word}"

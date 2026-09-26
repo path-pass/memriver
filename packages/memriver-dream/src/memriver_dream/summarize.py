@@ -13,17 +13,17 @@ import hashlib
 
 from memriver_core import ContentRejected
 from memriver_core.models import Session, SummaryInput, SummaryProgress
-from memriver_core.settings import (
-    DREAM_CHUNK_SUMMARY_CHARS,
-    DREAM_MAX_CALLS_PER_SESSION,
-    DREAM_MAX_ROOM_HALVINGS,
-    DREAM_SUMMARY_MAX_CHARS,
-)
+from memriver_core.settings import SESSION_SUMMARY_MAX_CHARS
 
 from .budget import cut, estimate_tokens
 from .calls import DATA_RULE, PROMPT_VERSION, call, storable
 from .protocols import Record, Run
 from .report import PhaseReport
+from .settings import (
+    DREAM_CHUNK_SUMMARY_CHARS,
+    DREAM_MAX_CALLS_PER_SESSION,
+    DREAM_MAX_ROOM_HALVINGS,
+)
 
 OMITTED = "[omitted]"
 CUT_MARK = " [cut]"
@@ -190,14 +190,14 @@ class _Attempt:
     def _final(self, body: str, tag: str) -> dict:
         self._spend()
         result = call(self.run.executor, system_prompt=SYSTEM_PROMPT,
-                      prompt=FINAL_PROMPT.format(limit=DREAM_SUMMARY_MAX_CHARS, tag=tag,
+                      prompt=FINAL_PROMPT.format(limit=SESSION_SUMMARY_MAX_CHARS, tag=tag,
                                                  body=body),
                       schema=FINAL_SCHEMA)
         if isinstance(result, str):
             raise _Stop(result)
         if result["status"] == "ok":
             text = result["summary"].strip()
-            if not 0 < len(text) <= DREAM_SUMMARY_MAX_CHARS:
+            if not 0 < len(text) <= SESSION_SUMMARY_MAX_CHARS:
                 raise _Stop("schema")
             # a lone surrogate is valid JSON but no UTF-8 column takes it
             if not storable(text):

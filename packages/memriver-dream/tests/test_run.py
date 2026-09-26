@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 from memriver_core import StorageFailure
 from memriver_core.models import now
-from memriver_core.settings import Settings
 from memriver_dream import run as run_module
 from memriver_dream.lock import run_lock
 from memriver_dream.run import run_dream
@@ -13,15 +12,11 @@ from memriver_dream.run import run_dream
 SECRET = "token ghp_" + "a" * 36
 
 
-def _unconfigured(world) -> Settings:
-    return Settings(root=world.store)             # no [dream] table
-
-
 def test_phase_0_quarantines_secrets_even_with_no_executor_configured(world):
     in_project = world.plant(world.project.id, SECRET)
     in_global = world.plant(world.global_id, "fact", description=SECRET)
     clean = world.plant(world.project.id, "fact")
-    report = run_dream(world.maintenance, None, None, _unconfigured(world), now(),
+    report = run_dream(world.maintenance, None, None, world.store, None, now(),
                        log=world.lines.append)
     secrets = report.phases["secrets"].as_json()
     assert report.status == "completed"
@@ -46,7 +41,7 @@ def test_a_held_lock_records_a_skipped_run_and_leaves_the_live_one_alone(world):
     with run_lock(world.store) as held:
         assert held
         report = run_dream(world.maintenance, world.executor, world.transcripts,
-                           world.settings, now())
+                           world.store, world.dream, now())
     assert report.status == "skipped"
     assert world.maintenance.run(report.run_id).status == "skipped"
     assert world.maintenance.run(live).status == "running"
@@ -54,7 +49,7 @@ def test_a_held_lock_records_a_skipped_run_and_leaves_the_live_one_alone(world):
 
 def test_a_run_left_running_by_a_killed_process_is_marked_failed_by_the_next(world):
     killed = world.maintenance.start_run("schedule", "fake", now())
-    run_dream(world.maintenance, None, None, _unconfigured(world), now())
+    run_dream(world.maintenance, None, None, world.store, None, now())
     assert world.maintenance.run(killed).status == "failed"
 
 
@@ -64,7 +59,7 @@ def test_model_phases_run_in_order_with_the_run_context(world, monkeypatch):
         monkeypatch.setitem(run_module._PHASES, name,
                             lambda run, phase, _n=name: (seen.append((_n, run.run_id)),
                                                          phase.record("ok")))
-    report = run_dream(world.maintenance, world.executor, world.transcripts, world.settings,
+    report = run_dream(world.maintenance, world.executor, world.transcripts, world.store, world.dream,
                        now(), trigger="schedule", phases=("consolidate", "summarize"))
     assert seen == [("consolidate", report.run_id), ("summarize", report.run_id)]
     assert world.maintenance.run(report.run_id).trigger == "schedule"
@@ -76,7 +71,7 @@ def test_a_store_failure_marks_the_run_failed_and_propagates(world, monkeypatch)
 
     monkeypatch.setitem(run_module._PHASES, "summarize", broken)
     with pytest.raises(StorageFailure):
-        run_dream(world.maintenance, world.executor, world.transcripts, world.settings, now(),
+        run_dream(world.maintenance, world.executor, world.transcripts, world.store, world.dream, now(),
                   phases=("summarize",))
     (recorded,) = world.maintenance.runs(1)
     assert recorded.status == "failed"
@@ -91,7 +86,7 @@ def test_phase_0_runs_before_the_model_phases(world, monkeypatch):
         phase.record("ok")
 
     monkeypatch.setitem(run_module._PHASES, "summarize", check_quarantined)
-    run_dream(world.maintenance, world.executor, world.transcripts, world.settings, now(),
+    run_dream(world.maintenance, world.executor, world.transcripts, world.store, world.dream, now(),
              phases=("summarize",))
     assert seen["deleted_at"] is not None
 
@@ -112,7 +107,7 @@ def test_a_secret_scan_interrupted_after_a_partial_commit_stores_an_unknown_repo
 
     monkeypatch.setattr(store, "quarantine", flaky)
     with pytest.raises(StorageFailure):
-        run_dream(world.maintenance, None, None, _unconfigured(world), now())
+        run_dream(world.maintenance, None, None, world.store, None, now())
     (recorded,) = world.maintenance.runs(1)
     assert recorded.status == "failed"
     assert recorded.report == {}

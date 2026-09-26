@@ -8,16 +8,17 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from memriver_core.models import RunTrigger
 from memriver_core.models import now as _now
-from memriver_core.settings import DREAM_MAX_QUARANTINE_PER_RUN, Settings
 
 from . import consolidate, retire, summarize
 from .lock import run_lock
 from .protocols import Executor, Run, TranscriptSource
 from .report import PhaseReport, RunReport
+from .settings import DREAM_MAX_QUARANTINE_PER_RUN, DreamSettings
 
 if TYPE_CHECKING:
     from memriver_core.bootstrap import MaintenanceService
@@ -44,12 +45,15 @@ def _secrets(maintenance: MaintenanceService, report: RunReport, now: str,
 
 
 def run_dream(maintenance: MaintenanceService, executor: Executor | None,
-              transcripts: TranscriptSource | None, config: Settings, now: str, *,
+              transcripts: TranscriptSource | None, root: Path, dream: DreamSettings | None,
+              now: str, *,
               trigger: RunTrigger = "manual", phases: Sequence[str] = MODEL_PHASES,
               log: Callable[[str], None] = _discard,
               clock: Callable[[], str] = _now) -> RunReport:
+    """One run over the store at `root`; `dream` is the [dream] table, None when it
+    is not configured (only phase 0 then does anything)."""
     executor_name = None if executor is None else executor.name
-    with run_lock(config.root) as held:
+    with run_lock(root) as held:
         if not held:
             log("skipped: locked")
             return RunReport(run_id=maintenance.record_skipped_run(trigger, executor_name, now),
@@ -58,12 +62,12 @@ def run_dream(maintenance: MaintenanceService, executor: Executor | None,
                            status="running")
         try:
             _secrets(maintenance, report, now, log)
-            ready = executor is not None and transcripts is not None and config.dream is not None
+            ready = executor is not None and transcripts is not None and dream is not None
             for name in phases:
                 phase = report.phase(name)
                 if ready:
                     _PHASES[name](Run(maintenance=maintenance, executor=executor,
-                                      transcripts=transcripts, dream=config.dream, now=now,
+                                      transcripts=transcripts, dream=dream, now=now,
                                       run_id=report.run_id, log=log), phase)
                 else:
                     phase.record("not-configured")

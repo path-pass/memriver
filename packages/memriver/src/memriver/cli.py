@@ -244,17 +244,13 @@ def _normalize_legacy_serve(argv: list[str]) -> list[str]:
 
 def _serve(args: argparse.Namespace) -> int:
     from memriver_core.settings import load_settings
-    from pydantic import ValidationError
 
     from .server import build_server
 
-    try:
-        settings = load_settings(root_override=args.root)
-    except ValidationError as err:
-        # an invalid settings *file* is warned about and ignored; only a bad
-        # MEMRIVER_* environment variable reaches here, and that is worth
-        # failing on -- but as a readable message, not a bare traceback
-        raise SystemExit(f"memriver: invalid MEMRIVER_* environment setting\n{err}")
+    # an unusable settings.toml or MEMRIVER_* value raises SettingsError, which
+    # main() turns into one stderr line -- what an MCP client shows for a server
+    # that failed to start
+    settings = load_settings(root_override=args.root)
     build_server(root=settings.root, project_dir=args.project_dir,
                  settings=settings, harness=args.harness).run()  # stdio
     return 0
@@ -289,7 +285,9 @@ def _install(args: argparse.Namespace) -> int:
     harnesses = [args.harness] if args.harness else list(HARNESSES)
     try:
         store_step = _store_step()
-    except Exception:  # noqa: BLE001 - any cause is one fixed, path-free line
+    except Exception as err:    # any other cause is one fixed, path-free line
+        if _is_settings_error(err):
+            raise                       # main() names the file and the field
         # a store that cannot even be read is not initialized behind the
         # user's back, and no harness is pointed at it
         sys.stderr.write("memriver install: the memory store could not be read; "
@@ -429,8 +427,7 @@ def _configure_logging() -> None:
     """Pin memriver's own loggers to stderr, wherever the root logger points.
 
     Under stdio transport, stdout is the JSON-RPC/hook channel and stderr is
-    the only place a loader warning (an unreadable settings.toml, an unknown
-    key) can surface. `logging.basicConfig` cannot promise that: it is a no-op
+    the only place a core warning (a skipped entry, say) can surface. `logging.basicConfig` cannot promise that: it is a no-op
     once the root logger has a handler, so a process that embeds `main()`
     after configuring logging to stdout would leak those warnings into the
     protocol stream. Configuring the two memriver loggers directly, and taking
@@ -454,12 +451,29 @@ def _configure_logging() -> None:
         logger.handlers[:] = [logging.StreamHandler(sys.stderr)]
 
 
+def _is_settings_error(err: BaseException) -> bool:
+    """True for core's SettingsError. Imported only once something failed, so a
+    command that never loads settings never pays for the settings stack."""
+    from memriver_core.settings import SettingsError
+
+    return isinstance(err, SettingsError)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     # before any handler can reach load_settings
     _configure_logging()
     raw = list(sys.argv[1:] if argv is None else argv)
     args = _build_parser().parse_args(_normalize_legacy_serve(raw))
-    return args.handler(args)
+    try:
+        return args.handler(args)
+    except Exception as err:
+        # an unusable settings.toml or MEMRIVER_* value stops every command the
+        # same way: one line naming the file and the field, exit 1, no traceback
+        if not _is_settings_error(err):
+            raise
+        # its str() names only the file (or variable) and the fields
+        sys.stderr.write(f"memriver: {err}\n")
+        return 1
 
 
 if __name__ == "__main__":

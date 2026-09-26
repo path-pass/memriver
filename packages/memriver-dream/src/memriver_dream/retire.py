@@ -11,7 +11,6 @@ import json
 
 from memriver_core import ContentRejected
 from memriver_core.models import Candidate, Memory, Review, single_line, timestamp_shift
-from memriver_core.settings import DREAM_REASON_CHARS
 
 from .budget import estimate_tokens
 from .calls import (
@@ -24,6 +23,7 @@ from .calls import (
 )
 from .protocols import Run
 from .report import PhaseReport
+from .settings import DREAM_REASON_CHARS
 
 SYSTEM_PROMPT = (
     "You review one memory from a coding agent's long-term memory that has not been used for "

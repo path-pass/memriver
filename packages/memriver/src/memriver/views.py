@@ -52,12 +52,14 @@ def _export_value(memory: Memory, field: str) -> object:
 def _service(root: Path | None, home: Path):
     """The facade; a bad MEMRIVER_* value is reported like an unreadable store."""
     from memriver_core.bootstrap import build_service
-    from memriver_core.settings import load_settings
+    from memriver_core.settings import SettingsError, load_settings
 
     try:
         settings = load_settings(root_override=root)
         return build_service(settings, root=settings.root, home=home)
-    except Exception as err:   # pydantic's ValidationError echoes the value: never shown
+    except SettingsError:
+        raise               # cli.main names the file and the field
+    except Exception as err:   # never shown: its text may carry a path
         raise StorageFailure from err
 
 

@@ -21,7 +21,6 @@ from memriver_core.models import (
     UpdateOp,
     single_line,
 )
-from memriver_core.settings import DREAM_REASON_CHARS
 
 from .budget import estimate_tokens
 from .calls import (
@@ -34,6 +33,7 @@ from .calls import (
 )
 from .protocols import Run
 from .report import PhaseReport
+from .settings import DREAM_REASON_CHARS
 
 _KINDS_RULES = (
     "merge: create one memory from two or more memories of the project that state the same "

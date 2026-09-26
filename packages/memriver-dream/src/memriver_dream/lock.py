@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from memriver_core.settings import DREAM_DIRECTORY, DREAM_LOCK_FILENAME
+from .settings import DREAM_DIRECTORY, DREAM_LOCK_FILENAME
 
 
 @contextmanager

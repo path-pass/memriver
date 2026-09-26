@@ -5,10 +5,10 @@ from __future__ import annotations
 import pytest
 from memriver_core import StorageFailure
 from memriver_core.models import now, timestamp_shift
-from memriver_core.settings import DREAM_REASON_CHARS
 from memriver_dream.protocols import ExecutorResult
 from memriver_dream.report import PhaseReport
 from memriver_dream.retire import SYSTEM_PROMPT, run
+from memriver_dream.settings import DREAM_REASON_CHARS
 
 SECRET = "token ghp_" + "a" * 36
 
@@ -192,7 +192,7 @@ def test_a_keep_citing_an_unknown_id_is_still_recorded(world):
     run(world.run(now=run_at), phase)
     assert phase.outcomes == {"keep": 1}
     assert world.sql("SELECT decision, next_review_at FROM dream_reviews WHERE memory_id = ?",
-                     memory_id) == [("keep", timestamp_shift(run_at, days=world.settings.dream.ttl_days))]
+                     memory_id) == [("keep", timestamp_shift(run_at, days=world.dream.ttl_days))]
 
 
 def test_an_answer_of_the_wrong_shape_records_nothing(world):

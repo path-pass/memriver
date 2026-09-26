@@ -10,8 +10,9 @@ from types import SimpleNamespace
 import pytest
 from memriver_core import bootstrap
 from memriver_core.models import new_id, now
-from memriver_core.settings import DreamSettings, Settings
+from memriver_core.settings import Settings
 from memriver_dream.protocols import ExecutorResult, Run
+from memriver_dream.settings import DreamSettings
 
 
 class FakeExecutor:
@@ -65,7 +66,7 @@ def world(tmp_path, executor, transcripts):
     home.mkdir()
     work.mkdir()
     settings = Settings(root=store)
-    settings._dream = DreamSettings(executor="claude", executor_path="/usr/bin/true")
+    dream = DreamSettings(executor="claude", executor_path="/usr/bin/true")
     service = bootstrap.build_service(settings, root=store, home=home)
     global_id = service.ensure_global()
     project = service.init_project("demo", service.plan_root(str(work)))
@@ -74,7 +75,7 @@ def world(tmp_path, executor, transcripts):
 
     def run(**overrides) -> Run:
         values = {"maintenance": maintenance, "executor": executor,
-                  "transcripts": transcripts, "dream": settings.dream, "now": now(),
+                  "transcripts": transcripts, "dream": dream, "now": now(),
                   "run_id": new_id(), "log": lines.append}
         return Run(**(values | overrides))
 
@@ -92,7 +93,7 @@ def world(tmp_path, executor, transcripts):
             memory_id, project_id, type, description, body, stamp, stamp, last_read_at)
         return memory_id
 
-    return SimpleNamespace(store=store, settings=settings, service=service,
+    return SimpleNamespace(store=store, settings=settings, dream=dream, service=service,
                            maintenance=maintenance, global_id=global_id, project=project,
                            context=service.open_project_context(str(work)),
                            executor=executor, transcripts=transcripts, lines=lines, run=run,

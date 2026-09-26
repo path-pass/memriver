@@ -315,30 +315,79 @@ def test_settings_file_in_root_is_honoured_end_to_end(tmp_path):
     assert _active_memories(root, project_id) == 0
 
 
-def test_bad_env_value_reports_readably(tmp_path):
-    """A bad MEMRIVER_* env var fails loudly, but not as a bare traceback."""
-    env = {**os.environ, "MEMRIVER_MAX_BODY_CHARS": "abc"}
-    out = subprocess.run([sys.executable, "-m", "memriver.cli",
-                          "--root", str(tmp_path / "mem")],
-                         capture_output=True, text=True, env=env, timeout=30, check=False)
-    assert out.returncode != 0
-    assert "Traceback" not in out.stderr
-    assert "MEMRIVER_" in out.stderr and "max_body_chars" in out.stderr
+def _cli(*args: str, env: dict | None = None,
+         stdin: str = "") -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, "-m", "memriver.cli", *args], input=stdin,
+                          capture_output=True, text=True, env={**os.environ, **(env or {})},
+                          timeout=30, check=False)
 
 
-def test_bad_env_value_leaves_doctor_a_path_free_exit_two(tmp_path):
-    """The same bad env var that `serve` fails loudly on is, for doctor, a
-    store it could not read: exit 2 and the one fixed line, never a traceback
-    carrying source paths and the rejected value."""
-    env = {**os.environ, "MEMRIVER_MAX_BODY_CHARS": "not-a-number"}
-    out = subprocess.run([sys.executable, "-m", "memriver.cli", "doctor",
-                          "--root", str(tmp_path / "mem")],
-                         capture_output=True, text=True, env=env, timeout=30,
-                         check=False)
+def test_bad_env_value_reports_the_variable_in_one_line(tmp_path):
+    """A bad MEMRIVER_* env var stops serve with one line naming the variable --
+    never the value, never a traceback."""
+    out = _cli("--root", str(tmp_path / "mem"), env={"MEMRIVER_MAX_BODY_CHARS": "abc"})
+    assert (out.returncode, out.stdout) == (1, "")
+    assert out.stderr == "memriver: environment variable MEMRIVER_MAX_BODY_CHARS is invalid\n"
+
+
+def _broken_settings(tmp_path, text: str | bytes) -> Path:
+    root = tmp_path / "mem"
+    root.mkdir()
+    (root / "settings.toml").write_bytes(text if isinstance(text, bytes) else text.encode())
+    return root
+
+
+INVALID_LINE = "memriver: settings.toml is invalid: field search_limit_default\n"
+UNREADABLE_LINE = "memriver: settings.toml could not be read\n"
+
+
+@pytest.mark.parametrize(("text", "line"), [
+    ('search_limit_default = "/secret/value"\n', INVALID_LINE),
+    (b"search_limit_default = = 1\n", UNREADABLE_LINE),
+])
+@pytest.mark.parametrize("command", [["serve"], ["list"], ["search", "x"], ["sessions"],
+                                     ["show", "0" * 26]])
+def test_a_broken_settings_file_stops_a_command_with_one_named_line(tmp_path, text, line,
+                                                                    command):
+    root = _broken_settings(tmp_path, text)
+    out = _cli(*command, "--root", str(root))
+    assert (out.returncode, out.stdout, out.stderr) == (1, "", line)
+    assert "/secret/value" not in out.stderr and str(root) not in out.stderr
+
+
+def test_a_broken_settings_file_gives_doctor_the_named_line_and_exit_two(tmp_path):
+    root = _broken_settings(tmp_path, 'search_limit_default = "/secret/value"\n')
+    out = _cli("doctor", "--root", str(root))
+    assert (out.returncode, out.stdout, out.stderr) == (2, "", INVALID_LINE)
+
+
+@pytest.mark.parametrize("event", ["session-start", "user-prompt-submit", "session-end"])
+def test_a_broken_settings_file_fails_each_settings_loading_hook_with_the_line(tmp_path,
+                                                                              event):
+    # the hook exits 1 (a failing, non-blocking hook) so the harness shows the line
+    root = _broken_settings(tmp_path, 'search_limit_default = "/secret/value"\n')
+    payload = json.dumps({"session_id": "0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee",
+                          "prompt": "hello", "cwd": str(tmp_path)})
+    out = _cli("hook", event, "--harness", "claude-code", "--root", str(root), stdin=payload)
+    assert (out.returncode, out.stdout, out.stderr) == (1, "", INVALID_LINE)
+
+
+def test_a_broken_settings_file_stops_install_before_any_change(tmp_path):
+    root = _broken_settings(tmp_path, 'search_limit_default = "/secret/value"\n')
+    home = tmp_path / "home"
+    home.mkdir()
+    out = _cli("install", "--dry-run", env={"MEMRIVER_ROOT": str(root), "HOME": str(home)})
+    assert (out.returncode, out.stdout, out.stderr) == (1, "", INVALID_LINE)
+
+
+def test_bad_env_value_gives_doctor_the_named_line_and_exit_two(tmp_path):
+    """For doctor, a bad env var is still exit 2 (it never looked at the store),
+    with the one line naming the variable -- never the value or a traceback."""
+    out = _cli("doctor", "--root", str(tmp_path / "mem"),
+               env={"MEMRIVER_MAX_BODY_CHARS": "not-a-number"})
     assert out.returncode == 2
     assert out.stdout == ""
-    assert out.stderr == "memriver doctor: memory store is inaccessible\n"
-    assert "not-a-number" not in out.stderr
+    assert out.stderr == "memriver: environment variable MEMRIVER_MAX_BODY_CHARS is invalid\n"
 
 
 @pytest.mark.parametrize(("event", "stderr"), [

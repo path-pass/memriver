@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from memriver_core.models import now
-from memriver_core.settings import DREAM_REASON_CHARS
 from memriver_dream.consolidate import SYSTEM_PROMPT, run
 from memriver_dream.protocols import ExecutorResult
 from memriver_dream.report import PhaseReport
 from memriver_dream.run import run_dream
+from memriver_dream.settings import DREAM_REASON_CHARS
 
 SECRET = "token ghp_" + "a" * 36
 
@@ -210,7 +210,7 @@ def test_a_scope_too_large_for_the_budget_is_skipped_without_a_call_then_retried
 def test_the_group_limit_cuts_the_run_and_the_scope_is_planned_again(world):
     a, b, c, d = (world.plant(world.project.id, text) for text in ("a", "b", "c", "d"))
     world.executor.replies = [_groups(_merge(a, b), _merge(c, d))]
-    limited = world.settings.dream.model_copy(update={"max_groups_per_run": 1})
+    limited = world.dream.model_copy(update={"max_groups_per_run": 1})
     phase = _phase(world, dream=limited)
     # the group that did not fit, then global left unplanned
     assert (phase.outcomes["merge"], phase.outcomes["group-limit"]) == (1, 2)
@@ -355,7 +355,7 @@ def test_run_dream_runs_the_phase_and_never_sends_a_time_field_the_policy_refuse
     a = world.plant(world.project.id, "uv manages python")
     b = world.plant(world.project.id, "python is managed with uv", created=SECRET)
     world.executor.replies = [_groups(_merge(a, b))]
-    report = run_dream(world.maintenance, world.executor, world.transcripts, world.settings,
+    report = run_dream(world.maintenance, world.executor, world.transcripts, world.store, world.dream,
                        now(), phases=("consolidate",))
     assert report.status == "completed"
     assert report.phases["consolidate"].outcomes["merge"] == 1

@@ -11,7 +11,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol
 
 from memriver_core.models import Session
-from memriver_core.settings import (
+
+from .settings import (
     DREAM_CONTEXT_BUDGET_TOKENS,
     DREAM_INPUT_MARGIN_TOKENS,
     DREAM_OUTPUT_RESERVE_TOKENS,
