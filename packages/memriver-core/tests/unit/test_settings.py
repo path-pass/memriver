@@ -12,6 +12,7 @@ from memriver_core.settings import (
     DEFAULT_SEARCH_LIMIT,
     DEFAULT_SEARCH_LIMIT_MAX,
     Settings,
+    SettingsError,
     load_settings,
     storage_root,
 )
@@ -186,68 +187,188 @@ def test_settings_file_is_found_under_the_env_root(monkeypatch, tmp_path):
     assert load_settings().search_limit_max == 11
 
 
-def test_unknown_key_warns_and_does_not_crash(monkeypatch, tmp_path, caplog):
-    root = _root(tmp_path, "max_body_chars = 42\nnot_a_setting = 1\n")
-    monkeypatch.delenv("MEMRIVER_MAX_BODY_CHARS", raising=False)
-    with caplog.at_level("WARNING"):
+def test_an_unknown_key_and_a_foreign_table_are_ignored_silently(monkeypatch, tmp_path,
+                                                                caplog):
+    # another package's table ([dream]) and a key core does not know are skipped
+    # without a word: the file is shared, and core owns only its top-level keys
+    root = _root(tmp_path, "max_body_chars = 42\nnot_a_setting = 1\n"
+                           '[dream]\nexecutor = "codex"\n[other]\nx = 1\n')
+    with caplog.at_level("DEBUG"):
         s = load_settings(root_override=root)
     assert s.max_body_chars == 42
-    assert "not_a_setting" in caplog.text
+    assert caplog.text == ""
+    assert not hasattr(s, "dream") and not hasattr(s, "not_a_setting")
 
 
-def test_unreadable_settings_file_warns_and_does_not_crash(tmp_path, caplog):
-    root = _root(tmp_path, "this is not = = valid toml\n")
-    with caplog.at_level("WARNING"):
-        s = load_settings(root_override=root)
-    assert s.max_body_chars == 8000 and s.root == root
-    assert SETTINGS in caplog.text
+def test_a_file_key_spelled_like_a_constructor_option_is_just_unknown(monkeypatch, tmp_path):
+    # BaseSettings' constructor takes _cli_parse_args/_secrets_dir/...; a file key
+    # must never reach it
+    monkeypatch.setattr("sys.argv", ["memriver", "--max_body_chars", "7"])
+    root = _root(tmp_path, '_cli_parse_args = true\n_secrets_dir = "/nowhere"\n')
+    assert load_settings(root_override=root).max_body_chars == 8000
+
+
+def test_precedence_is_init_then_env_then_file_then_defaults(monkeypatch, tmp_path):
+    # through the one TOML settings source: each layer sets what those above leave
+    root = _root(tmp_path, "max_body_chars = 3\nsearch_limit_max = 30\n"
+                           "index_budget_lines = 7\n")
+    monkeypatch.setenv("MEMRIVER_MAX_BODY_CHARS", "2")
+    monkeypatch.setenv("MEMRIVER_SEARCH_LIMIT_MAX", "20")
+    s = load_settings(root_override=root)
+    assert (s.root, s.max_body_chars, s.search_limit_max, s.index_budget_lines,
+            s.search_limit_default) == (root, 2, 20, 7, 5)
+
+
+def test_a_direct_construction_reads_no_settings_file(tmp_path):
+    root = _root(tmp_path, "max_body_chars = 42\n")
+    assert Settings(root=root).max_body_chars == 8000
+
+
+def _raised(root: Path) -> SettingsError:
+    with pytest.raises(SettingsError) as caught:
+        load_settings(root_override=root)
+    # never chained: a ValidationError echoes the value, an OSError the path
+    assert caught.value.__cause__ is None and caught.value.__suppress_context__
+    return caught.value
+
+
+@pytest.mark.parametrize("content", [b"this is not = = valid toml\n", b"a = '\xff'\n"])
+def test_an_unreadable_settings_file_is_an_error(tmp_path, content):
+    root = _root(tmp_path)
+    (root / SETTINGS).write_bytes(content)
+    error = _raised(root)
+    assert str(error) == "settings.toml could not be read"
+    assert (error.fields, error.env_fields, error.unreadable) == ((), (), True)
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
-def test_unreadable_settings_file_never_logs_the_absolute_path(tmp_path, caplog):
-    """R5: a permission-denied settings.toml is a plausible real-world case (a
-    locked-down store root), and its OSError text routinely repeats the
-    absolute path -- the warning must name only SETTINGS, never `root`."""
+def test_a_permission_denied_settings_file_is_an_error_that_never_names_the_path(tmp_path):
+    """A locked-down store root is a plausible real-world case, and its OSError text
+    repeats the absolute path -- the error names only SETTINGS, never `root`."""
     root = _root(tmp_path, "max_body_chars = 42\n")
     (root / SETTINGS).chmod(0o000)
     try:
-        with caplog.at_level("WARNING"):
-            s = load_settings(root_override=root)
+        error = _raised(root)
     finally:
         (root / SETTINGS).chmod(0o600)
-    assert s.max_body_chars == 8000
-    assert SETTINGS in caplog.text
-    assert str(root) not in caplog.text
+    assert str(error) == "settings.toml could not be read"
+    assert str(root) not in str(error)
+
+
+def _shape(root: Path, shape: str) -> None:
+    path = root / SETTINGS
+    if shape == "directory":
+        path.mkdir()
+    elif shape == "fifo":
+        os.mkfifo(path)
+    elif shape == "symlink-loop":
+        path.symlink_to(path)
+    elif shape == "dangling-symlink":
+        path.symlink_to(root / "nowhere.toml")
+
+
+SHAPES = ["directory", "fifo", "symlink-loop", "dangling-symlink"]
+
+
+@pytest.mark.parametrize("shape", SHAPES)
+def test_a_settings_path_that_is_not_a_readable_file_is_an_error(tmp_path, shape):
+    # only a genuinely absent path means "no file"; a FIFO is never opened
+    root = _root(tmp_path)
+    _shape(root, shape)
+    error = _raised(root)
+    assert str(error) == "settings.toml could not be read"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+def test_a_root_that_cannot_be_searched_is_an_error_not_a_missing_file(tmp_path):
+    root = _root(tmp_path, "max_body_chars = 42\n")
+    root.chmod(0o000)
+    try:
+        error = _raised(root)
+    finally:
+        root.chmod(0o700)
+    assert str(error) == "settings.toml could not be read"
+
+
+def test_a_symlink_to_a_settings_file_is_read(tmp_path):
+    root = _root(tmp_path)
+    (tmp_path / "real.toml").write_text("max_body_chars = 42\n", encoding="utf-8")
+    (root / SETTINGS).symlink_to(tmp_path / "real.toml")
+    assert load_settings(root_override=root).max_body_chars == 42
+
+
+def test_file_keys_match_fields_in_any_case(tmp_path):
+    # pydantic-settings' source matches keys case-insensitively (pinned: the
+    # declared lower bound must keep this)
+    assert load_settings(root_override=_root(tmp_path, "MAX_BODY_CHARS = 42\n")) \
+        .max_body_chars == 42
 
 
 def test_missing_settings_file_is_fine(tmp_path):
     assert load_settings(root_override=tmp_path / "nowhere").max_body_chars == 8000
 
 
-def test_invalid_value_in_settings_file_falls_back_to_defaults(tmp_path, caplog):
-    # a typo'd value must never stop the server from starting
-    root = _root(tmp_path, 'max_body_chars = "abc"\n')
-    with caplog.at_level("WARNING"):
-        s = load_settings(root_override=root)
-    assert s.max_body_chars == 8000 and s.root == root
-    assert SETTINGS in caplog.text
+@pytest.mark.parametrize(("text", "field"), [
+    ('max_body_chars = "/secret/abc"\n', "max_body_chars"),      # a typo'd value
+    ("[max_body_chars]\nnested = 1\n", "max_body_chars"),        # a table, not a value
+    # pydantic's lax mode reads True as 1, which would silently cap every search at
+    # a single hit
+    ("search_limit_max = true\n", "search_limit_max"),
+    ("search_limit_default = 100\n", "search_limit_default"),    # above the max
+    ("memory_reads_retention_days = 0\n", "memory_reads_retention_days"),
+])
+def test_an_invalid_value_in_the_settings_file_is_an_error_naming_the_field(tmp_path, text,
+                                                                            field):
+    error = _raised(_root(tmp_path, text))
+    assert str(error) == f"settings.toml is invalid: field {field}"
+    assert (error.fields, error.env_fields) == ((field,), ())
+    assert "/secret/abc" not in str(error)
 
 
-def test_settings_file_table_instead_of_value_falls_back(tmp_path, caplog):
-    root = _root(tmp_path, "[max_body_chars]\nnested = 1\n")
-    with caplog.at_level("WARNING"):
-        s = load_settings(root_override=root)
-    assert s.max_body_chars == 8000
+def test_every_invalid_field_is_named_once(tmp_path):
+    error = _raised(_root(tmp_path, 'max_body_chars = 0\nindex_budget_lines = "x"\n'))
+    assert str(error) == "settings.toml is invalid: field max_body_chars, index_budget_lines"
 
 
-def test_boolean_in_settings_file_is_rejected_not_coerced(tmp_path, caplog):
-    # pydantic's lax mode reads True as 1, which would silently cap every
-    # search at a single hit; the whole file must be refused instead
-    root = _root(tmp_path, "search_limit_max = true\n")
-    with caplog.at_level("WARNING"):
-        s = load_settings(root_override=root)
-    assert s.search_limit_max == 50
-    assert SETTINGS in caplog.text
+def test_an_invalid_environment_value_is_an_error_naming_the_variable(monkeypatch, tmp_path):
+    monkeypatch.setenv("MEMRIVER_MAX_BODY_CHARS", "/secret/abc")
+    error = _raised(_root(tmp_path, "index_budget_lines = 7\n"))
+    assert str(error) == "environment variable MEMRIVER_MAX_BODY_CHARS is invalid"
+    assert (error.fields, error.env_fields) == ((), ("max_body_chars",))
+
+
+def test_a_cross_field_failure_from_the_environment_alone_blames_the_environment(
+        monkeypatch, tmp_path):
+    # no settings.toml at all: the env max falls under the default default
+    monkeypatch.setenv("MEMRIVER_SEARCH_LIMIT_MAX", "3")
+    error = _raised(_root(tmp_path))
+    assert str(error) == "environment variable MEMRIVER_SEARCH_LIMIT_MAX is invalid"
+    assert (error.fields, error.env_fields) == ((), ("search_limit_max",))
+
+
+def test_a_cross_field_failure_from_the_file_names_the_files_max(tmp_path):
+    error = _raised(_root(tmp_path, "search_limit_max = 3\n"))
+    assert str(error) == "settings.toml is invalid: field search_limit_max"
+
+
+def test_an_env_failure_is_never_blamed_on_a_file_without_the_field(monkeypatch, tmp_path):
+    monkeypatch.setenv("MEMRIVER_SEARCH_LIMIT_DEFAULT", "9")
+    error = _raised(_root(tmp_path, "search_limit_max = 8\nindex_budget_lines = 7\n"))
+    # the env default is what exceeds the file's max: the variable is named
+    assert str(error) == "environment variable MEMRIVER_SEARCH_LIMIT_DEFAULT is invalid"
+
+
+def test_env_and_file_failures_are_both_reported_env_first(monkeypatch, tmp_path):
+    monkeypatch.setenv("MEMRIVER_MAX_BODY_CHARS", "abc")
+    error = _raised(_root(tmp_path, 'index_budget_lines = "x"\n'))
+    assert str(error) == ("environment variable MEMRIVER_MAX_BODY_CHARS is invalid; "
+                          "settings.toml is invalid: field index_budget_lines")
+    assert (error.fields, error.env_fields) == (("index_budget_lines",), ("max_body_chars",))
+
+
+def test_an_error_naming_no_field_is_invalid_not_unreadable():
+    assert str(SettingsError()) == "the settings are invalid"
+    assert str(SettingsError(unreadable=True)) == "settings.toml could not be read"
 
 
 def test_valid_settings_file_still_wins_after_the_guard(tmp_path):
@@ -255,16 +376,49 @@ def test_valid_settings_file_still_wins_after_the_guard(tmp_path):
     assert load_settings(root_override=root).max_body_chars == 42
 
 
-def test_root_key_in_settings_file_is_ignored_and_warns(tmp_path, caplog):
+@pytest.mark.parametrize("value", ['"/somewhere/else"', "5"])
+def test_root_key_in_settings_file_is_ignored(tmp_path, value):
     # chicken and egg: the root is what located this file, so a 'root' key
-    # inside it can never take effect -- it is dropped, not applied
-    root = _root(tmp_path, 'root = "/somewhere/else"\nmax_body_chars = 42\n')
-    with caplog.at_level("WARNING"):
-        s = load_settings(root_override=root)
-    assert s.root == root
-    assert s.max_body_chars == 42
-    assert "root" in caplog.text
-    assert "MEMRIVER_ROOT" in caplog.text
+    # inside it can never take effect -- not even an invalid one
+    root = _root(tmp_path, f"root = {value}\nmax_body_chars = 42\n")
+    s = load_settings(root_override=root)
+    assert (s.root, s.max_body_chars) == (root, 42)
+
+
+def test_a_root_key_never_beats_the_env_root(monkeypatch, tmp_path):
+    root = _root(tmp_path, 'root = "/somewhere/else"\n')
+    monkeypatch.setenv("MEMRIVER_ROOT", str(root))
+    assert load_settings().root == root
+
+
+@pytest.mark.parametrize("with_dream", [False, True], ids=["no_dream", "with_dream"])
+def test_env_and_file_fields_combine_before_cross_field_validation(monkeypatch, tmp_path,
+                                                                    with_dream):
+    # regression: a field valid only once env and file combine (env lowers the max,
+    # the file lowers the default under it) is validated on the merged configuration,
+    # never on a premature env-only one
+    text = "search_limit_default = 2\n" + ('[dream]\nexecutor = "codex"\n' if with_dream else "")
+    monkeypatch.setenv("MEMRIVER_SEARCH_LIMIT_MAX", "3")
+    settings = load_settings(root_override=_root(tmp_path, text))
+    assert (settings.search_limit_default, settings.search_limit_max) == (2, 3)
+
+
+def test_memriver_dream_is_not_a_config_entry(tmp_path, monkeypatch):
+    # regression: a Settings field named "dream" made MEMRIVER_DREAM a config entry
+    # pydantic-settings tried to parse, so a value like "notjson" raised
+    monkeypatch.setenv("MEMRIVER_DREAM", "notjson")
+    assert not hasattr(Settings(root=tmp_path), "dream")
+    assert not hasattr(load_settings(root_override=_root(tmp_path)), "dream")
+
+
+def test_loading_one_root_leaves_no_file_behind_for_the_next_construction(tmp_path):
+    root = _root(tmp_path, "max_body_chars = 42\n")
+    assert load_settings(root_override=root).max_body_chars == 42
+    assert Settings(root=root).max_body_chars == 8000
+    (root / SETTINGS).write_text("max_body_chars = 0\n", encoding="utf-8")
+    with pytest.raises(SettingsError):
+        load_settings(root_override=root)
+    assert Settings(root=root).max_body_chars == 8000
 
 
 def test_the_fixed_length_and_timeout_constants_live_in_settings():
@@ -281,7 +435,7 @@ SESSION_CONSTANTS = {
     "SESSION_PROMPT_SCAN_MAX_BYTES": 65536, "STOP_NUDGE_MIN_PROMPTS": 5,
     "STOP_NUDGE_INTERVAL_PROMPTS": 5, "GIT_QUERY_TIMEOUT_S": 2,
     "SESSION_SEARCH_LIMIT_DEFAULT": 10, "SESSION_SEARCH_LIMIT_MAX": 50,
-    "TOOL_CALL_RETENTION_S": 3600,
+    "TOOL_CALL_RETENTION_S": 3600, "SESSION_SUMMARY_MAX_CHARS": 1_200,
 }
 
 

@@ -12,6 +12,7 @@ resolution-markers = [
 members = [
     "memriver",
     "memriver-core",
+    "memriver-dream",
 ]
 
 [manifest.dependency-groups]
@@ -656,6 +657,7 @@ source = { editable = "packages/memriver" }
 dependencies = [
     { name = "fastmcp" },
     { name = "memriver-core" },
+    { name = "memriver-dream" },
     { name = "pydantic" },
     { name = "tomlkit" },
 ]
@@ -664,6 +666,7 @@ dependencies = [
 requires-dist = [
     { name = "fastmcp", specifier = ">=3.4.7,<4" },
     { name = "memriver-core", editable = "packages/memriver-core" },
+    { name = "memriver-dream", editable = "packages/memriver-dream" },
     { name = "pydantic", specifier = ">=2" },
     { name = "tomlkit" },
 ]
@@ -680,7 +683,24 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "pydantic", specifier = ">=2" },
-    { name = "pydantic-settings", specifier = ">=2" },
+    { name = "pydantic-settings", specifier = ">=2.15.0" },
+]
+
+[[package]]
+name = "memriver-dream"
+version = "0.1.0"
+source = { editable = "packages/memriver-dream" }
+dependencies = [
+    { name = "memriver-core" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "memriver-core", editable = "packages/memriver-core" },
+    { name = "pydantic", specifier = ">=2" },
+    { name = "pydantic-settings", specifier = ">=2.15.0" },
 ]
 
 [[package]]

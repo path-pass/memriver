@@ -707,7 +707,7 @@ def test_partial_corruption_shows_the_healthy_entries(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root can read an unreadable store")
-def test_an_unreadable_root_never_fails_the_session(tmp_path, capsys):
+def test_an_unreadable_root_reports_the_unreadable_settings_file(tmp_path, capsys):
     root = tmp_path / "root"
     root.mkdir()
     root.chmod(0o000)
@@ -715,18 +715,14 @@ def test_an_unreadable_root_never_fails_the_session(tmp_path, capsys):
         result = session_start("claude-code", {"cwd": str(tmp_path)}, root=root)
     finally:
         root.chmod(0o700)
-    # an unreadable store is a labelled, empty project context -- the same
-    # header and body the MCP server shows through `open_project_context` --
-    # not a failure
-    assert (result.stderr, result.exit_code) == ("", 0)
-    text = additional_context(result)
-    assert _line_after_begin(text) == ("project: unavailable — the memory store could not be "
-                                       "read; ask the user to run memriver doctor")
-    assert "(no memories yet)" in text
-    # CLI-boundary regression: memriver_core's own stdlib logging (e.g. an
-    # unreadable settings.toml) must not slip onto the real process stderr --
-    # logging.lastResort writes straight to sys.stderr, bypassing
-    # HookResult.stderr entirely.
+    # its settings.toml cannot even be looked for: the one settings line, no path,
+    # and a failing (non-blocking) hook rather than an index built on a guess
+    assert (result.stdout, result.stderr, result.exit_code) == (
+        "", "memriver: settings.toml could not be read\n", 1)
+    assert str(root) not in result.stderr
+    # CLI-boundary regression: memriver_core's own stdlib logging must not slip
+    # onto the real process stderr -- logging.lastResort writes straight to
+    # sys.stderr, bypassing HookResult.stderr entirely.
     assert capsys.readouterr().err == ""
 
 

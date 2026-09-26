@@ -444,10 +444,11 @@ its cached one. `install` prints a note when `uvx` itself is not on `PATH`.
 
 Settings are read from `--root` / `MEMRIVER_*` environment variables and an
 optional `<root>/settings.toml`, in that order of precedence. All four file
-settings are positive integers; an unknown key, an unparsable file or an invalid
-value is warned about and the file is ignored, so a typo can never stop the
-server from starting (a bad `MEMRIVER_*` variable does fail, with a readable
-message):
+settings are positive integers. A key or table memriver does not use is ignored.
+An unreadable file, bad TOML or an invalid value (in the file or in a
+`MEMRIVER_*` variable) stops the server, the hooks and every command with one
+stderr line naming the file (or variable) and the field, never the value -- for
+example `memriver: settings.toml is invalid: field search_limit_default`:
 
 ```toml
 # ~/agent-memory/settings.toml

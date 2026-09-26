@@ -34,10 +34,10 @@ RUN set -eux; \
     apt-get autoremove -y; \
     rm -rf /var/lib/apt/lists/*
 
-# Wheels for memriver + memriver-core are bind-mounted read-only at /wheels at
-# runtime (see run-stage1.sh / run-stage2.sh). This makes every literal
-# `uvx memriver ...` command the installer writes -- and `uv run --with
-# memriver` -- resolve locally with no package index involved.
+# Wheels for memriver + memriver-core + memriver-dream are bind-mounted
+# read-only at /wheels at runtime (see run-stage1.sh / run-stage2.sh). This
+# makes every literal `uvx memriver ...` command the installer writes -- and
+# `uv run --with memriver` -- resolve locally with no package index involved.
 ENV UV_FIND_LINKS=/wheels
 # The same setting as a uv config file, which is how a real machine points uv
 # at local wheels before the PyPI release: harnesses start MCP servers with a

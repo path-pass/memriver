@@ -34,7 +34,6 @@ from .repository.worktree import current_branch, main_tree_path
 from .settings import (
     BUSY_TIMEOUT_MS,
     DEFAULT_MAX_BODY_CHARS,
-    DREAM_SUMMARY_MAX_CHARS,
     GIT_QUERY_TIMEOUT_S,
     HEADER_FIELD_CHARS,
     INDEX_CUE_CHARS,
@@ -44,6 +43,7 @@ from .settings import (
     SESSION_RECENT_PROMPTS,
     SESSION_SEARCH_LIMIT_DEFAULT,
     SESSION_SEARCH_LIMIT_MAX,
+    SESSION_SUMMARY_MAX_CHARS,
     STOP_NUDGE_INTERVAL_PROMPTS,
     STOP_NUDGE_MIN_PROMPTS,
     TOOL_CALL_RETENTION_S,
@@ -117,5 +117,5 @@ def build_maintenance_service(settings: Settings, *, root: Path | None = None,
         _content_policy,
         max_body_chars=settings.max_body_chars,
         metadata_max_chars=DEFAULT_MAX_BODY_CHARS,
-        summary_max_chars=DREAM_SUMMARY_MAX_CHARS,
+        summary_max_chars=SESSION_SUMMARY_MAX_CHARS,
     )
