@@ -29,8 +29,9 @@ SYSTEM_PROMPT = (
     "You review one memory from a coding agent's long-term memory that has not been used for "
     "a long time. Decide whether there is enough reason to retire it -- not whether it was "
     "used. Answer delete only when the memory itself or the other memories show it is wrong, "
-    "obsolete, duplicated or no longer relevant; keep when it may still hold; uncertain when "
-    "you cannot tell. A rule whose description already carries it, and that nothing "
+    "obsolete (it or another memory says what it describes is gone, replaced or "
+    "decommissioned), duplicated or no longer relevant; keep when it may still hold; "
+    "uncertain when you cannot tell. A rule whose description already carries it, and that nothing "
     "contradicts, is kept: it does its work without being read. List in evidence the ids of "
     "the memories your decision rests on.")
 _PROMPT = ("The memory under review:\n<memory>\n{memory}\n</memory>\n\n"

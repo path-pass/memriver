@@ -706,3 +706,39 @@ def test_serve_hands_its_harness_to_the_server(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "build_server", build)
     assert cli.main(["serve", "--root", str(tmp_path), "--harness", "codex"]) == 0
     assert built[0]["harness"] == "codex"
+
+
+@pytest.mark.parametrize(("argv", "handler", "expected"), [
+    (["dream", "init", "--executor", "codex", "--ttl-days", "30", "--at", "05:30", "--yes"],
+     "_dream_init", {"executor": "codex", "ttl_days": 30, "at": "05:30", "yes": True,
+                     "agent_label": None}),
+    (["dream", "init", "--agent-label", "test.memriver.dream"], "_dream_init",
+     {"agent_label": "test.memriver.dream"}),
+    (["dream", "run"], "_dream_run", {"phase": None, "trigger": "manual", "root": None}),
+    (["dream", "run", "--phase", "retire", "--trigger", "schedule"], "_dream_run",
+     {"phase": "retire", "trigger": "schedule"}),
+    (["dream", "report"], "_dream_report", {"run_id": None, "list_count": None}),
+    (["dream", "report", "--list"], "_dream_report", {"list_count": 10}),
+    (["dream", "report", "--list", "3"], "_dream_report", {"list_count": 3}),
+    (["dream", "report", "aaaaaaaaaa"], "_dream_report", {"run_id": "aaaaaaaaaa"}),
+    (["dream", "undo", "aaaaaaaaaa", "--yes"], "_dream_undo",
+     {"change_id": "aaaaaaaaaa", "yes": True}),
+    (["dream", "uninstall"], "_dream_uninstall", {"agent_label": None}),
+])
+def test_dream_subcommands_parse(argv, handler, expected):
+    args = cli._build_parser().parse_args(argv)
+    assert args.handler is getattr(cli, handler)
+    assert {key: getattr(args, key) for key in expected} == expected
+
+
+def test_dream_help_lists_the_commands_and_hides_the_internal_options():
+    out = _run_cli("dream", "--help")
+    for command in ("init", "run", "report", "undo", "uninstall"):
+        assert command in out.stdout
+    assert "--trigger" not in _run_cli("dream", "run", "--help").stdout
+    assert "--agent-label" not in _run_cli("dream", "init", "--help").stdout
+
+
+def test_an_agent_label_with_odd_characters_is_a_usage_error():
+    out = _run_cli("dream", "uninstall", "--agent-label", "a b")
+    assert out.returncode == 2 and "argument --agent-label" in out.stderr

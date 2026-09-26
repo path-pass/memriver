@@ -186,13 +186,16 @@ class SqliteStoreInspector:
             return snapshot
         # the directory checks stat the filesystem, so they run only after the
         # ROLLBACK: a hung network mount must not hold the read lock and block writers
-        initialized, entries, rows = snapshot
+        initialized, entries, rows, sources = snapshot
         projects = _classify_roots(rows, findings)
         return StoreReport(initialized=initialized, entries=tuple(entries),
-                           projects=tuple(projects), findings=_sorted_findings(findings))
+                           projects=tuple(projects), findings=_sorted_findings(findings),
+                           sources=sources)
 
     def _inspect(self, conn: sqlite3.Connection, findings: list[StoreFinding]
-                 ) -> StoreReport | tuple[bool, list[InspectedMemory], list[InspectedProject]]:
+                 ) -> (StoreReport |
+                       tuple[bool, list[InspectedMemory], list[InspectedProject],
+                             frozenset[tuple[str, str]]]):
         """A finished report for an empty or unknown store, else the snapshot's rows."""
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         tables = conn.execute("SELECT count(*) FROM sqlite_master").fetchone()[0]
@@ -235,7 +238,25 @@ class SqliteStoreInspector:
         self._sessions(conn, findings)
         self._dream_rows(conn, findings)
         self._dream_foreign_keys(conn, findings)
-        return initialized, entries, rows
+        return initialized, entries, rows, self._sources(conn)
+
+    def _sources(self, conn: sqlite3.Connection) -> frozenset[tuple[str, str]]:
+        """(derived_id, source_id) for every memory's effective source set (the
+        set recorded at the greatest `memory_source_sets` version not above the
+        memory's own -- the same rule `MaintenanceStore.sources_of` applies),
+        so a diagnostics policy can tell a dream-kept source apart from an
+        unrelated near-duplicate without reaching past this port into SQL."""
+        pairs: set[tuple[str, str]] = set()
+        for derived_id, source_id in conn.execute(
+                "SELECT s.derived_id, s.source_id FROM memory_sources s "
+                "JOIN memories d ON d.id = s.derived_id "
+                "WHERE s.derived_version = (SELECT max(t.derived_version) "
+                "FROM memory_source_sets t "
+                "WHERE t.derived_id = d.id AND t.derived_version <= d.version)"):
+            derived, source = _shaped_id(derived_id), _shaped_id(source_id)
+            if derived and source:
+                pairs.add((derived, source))
+        return frozenset(pairs)
 
     def _dream_rows(self, conn: sqlite3.Connection, findings: list[StoreFinding]) -> None:
         """Every maintenance-table row memriver could not have written."""

@@ -121,6 +121,11 @@ def _duplicate_findings(report: StoreReport,
     for (entry_a, grams_a), (entry_b, grams_b) in combinations(grams, 2):
         if not grams_a or not grams_b:
             continue
+        id_a, id_b = entry_a.memory.id, entry_b.memory.id
+        if (id_a, id_b) in report.sources or (id_b, id_a) in report.sources:
+            # dream deliberately keeps a source until the TTL review retires
+            # it, so it and what it derived are expected to still read alike
+            continue
         jaccard = len(grams_a & grams_b) / len(grams_a | grams_b)
         if jaccard >= jaccard_threshold:
             findings.append(DiagnosticFinding(

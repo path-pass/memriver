@@ -249,6 +249,26 @@ def test_new_backend_kinds_get_their_own_suggestion(kind, suggestion):
     assert mapped.suggestion == suggestion
 
 
+def test_a_dream_kept_source_is_not_flagged_as_a_near_duplicate_of_what_it_derived():
+    original = inspected("orig000001", body="alpha beta gamma delta epsilon")
+    merged = inspected("merged00001", body="alpha beta gamma delta epsilon")
+    report = StoreReport(True, (original, merged), (), (),
+                         sources=frozenset({("merged00001", "orig000001")}))
+    result = DiagnosticsService(FakeInspector(report)).run(now=FIXED_NOW, jaccard_threshold=0.6)
+    assert not [f for f in result.findings if f.kind == "near-duplicate"]
+
+
+def test_unrelated_near_duplicates_are_still_flagged_when_other_sources_exist():
+    a = inspected("dup-a", body="alpha beta gamma delta epsilon")
+    b = inspected("dup-b", body="alpha beta gamma delta epsilon")
+    report = StoreReport(True, (a, b), (), (),
+                         sources=frozenset({("some-other", "unrelated")}))
+    result = DiagnosticsService(FakeInspector(report)).run(now=FIXED_NOW, jaccard_threshold=0.6)
+    dupes = [f for f in result.findings if f.kind == "near-duplicate"]
+    assert len(dupes) == 1
+    assert dupes[0].memory_ids == ("dup-a", "dup-b")
+
+
 def test_mixed_empty_and_nonempty_trigram_pair_yields_no_finding():
     a = inspected("short", body="ab")
     b = inspected("long", body="alpha beta gamma delta epsilon")
