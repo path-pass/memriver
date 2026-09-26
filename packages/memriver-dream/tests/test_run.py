@@ -59,8 +59,9 @@ def test_model_phases_run_in_order_with_the_run_context(world, monkeypatch):
         monkeypatch.setitem(run_module._PHASES, name,
                             lambda run, phase, _n=name: (seen.append((_n, run.run_id)),
                                                          phase.record("ok")))
-    report = run_dream(world.maintenance, world.executor, world.transcripts, world.store, world.dream,
-                       now(), trigger="schedule", phases=("consolidate", "summarize"))
+    report = run_dream(world.maintenance, world.executor, world.transcripts, world.store,
+                       world.dream, now(), trigger="schedule",
+                       phases=("consolidate", "summarize"))
     assert seen == [("consolidate", report.run_id), ("summarize", report.run_id)]
     assert world.maintenance.run(report.run_id).trigger == "schedule"
 
@@ -71,8 +72,8 @@ def test_a_store_failure_marks_the_run_failed_and_propagates(world, monkeypatch)
 
     monkeypatch.setitem(run_module._PHASES, "summarize", broken)
     with pytest.raises(StorageFailure):
-        run_dream(world.maintenance, world.executor, world.transcripts, world.store, world.dream, now(),
-                  phases=("summarize",))
+        run_dream(world.maintenance, world.executor, world.transcripts, world.store,
+                  world.dream, now(), phases=("summarize",))
     (recorded,) = world.maintenance.runs(1)
     assert recorded.status == "failed"
 
@@ -86,8 +87,8 @@ def test_phase_0_runs_before_the_model_phases(world, monkeypatch):
         phase.record("ok")
 
     monkeypatch.setitem(run_module._PHASES, "summarize", check_quarantined)
-    run_dream(world.maintenance, world.executor, world.transcripts, world.store, world.dream, now(),
-             phases=("summarize",))
+    run_dream(world.maintenance, world.executor, world.transcripts, world.store,
+              world.dream, now(), phases=("summarize",))
     assert seen["deleted_at"] is not None
 
 

@@ -427,8 +427,9 @@ def _configure_logging() -> None:
     """Pin memriver's own loggers to stderr, wherever the root logger points.
 
     Under stdio transport, stdout is the JSON-RPC/hook channel and stderr is
-    the only place a core warning (a skipped entry, say) can surface. `logging.basicConfig` cannot promise that: it is a no-op
-    once the root logger has a handler, so a process that embeds `main()`
+    the only place a core warning (a skipped entry, say) can surface.
+    `logging.basicConfig` cannot promise that: it is a no-op once the root
+    logger has a handler, so a process that embeds `main()`
     after configuring logging to stdout would leak those warnings into the
     protocol stream. Configuring the two memriver loggers directly, and taking
     them off propagation, makes the destination independent of the root.

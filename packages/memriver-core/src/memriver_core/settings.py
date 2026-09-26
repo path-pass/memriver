@@ -92,24 +92,28 @@ _settings_file: ContextVar[Path | None] = ContextVar("_settings_file", default=N
 class SettingsError(Exception):
     """settings.toml or a MEMRIVER_* variable cannot be used; nothing was loaded.
 
-    Fields only, like the storage errors: `source` is SETTINGS_FILENAME or
-    "environment", `fields` the setting names that failed validation (empty
-    when the file could not be read at all). Its str() is one line safe to
-    print -- never the path, the rejected value, or pydantic's own text, which
-    echoes the value back.
+    Fields only, like the storage errors: `fields` names the settings.toml fields
+    that failed validation, `env_fields` the fields whose MEMRIVER_* variable did,
+    and `unreadable` says the file could not be read at all. Its str() is one line
+    safe to print -- never the path, the rejected value, or pydantic's own text,
+    which echoes the value back. Both sources failing are reported env first.
     """
 
-    def __init__(self, source: str = SETTINGS_FILENAME, fields: tuple[str, ...] = ()) -> None:
-        if not fields:
-            message = f"{source} could not be read"
-        elif source == "environment":
-            names = ", ".join(f"{ENV_PREFIX}{name.upper()}" for name in fields)
-            message = f"environment variable {names} is invalid"
-        else:
-            message = f"{source} is invalid: field {', '.join(fields)}"
-        super().__init__(message)
-        self.source = source
+    def __init__(self, fields: tuple[str, ...] = (), env_fields: tuple[str, ...] = (), *,
+                 unreadable: bool = False) -> None:
+        parts = []
+        if unreadable:
+            parts.append(f"{SETTINGS_FILENAME} could not be read")
+        if env_fields:
+            names = ", ".join(f"{ENV_PREFIX}{name.upper()}" for name in env_fields)
+            parts.append(f"environment variable {names} is invalid")
+        if fields:
+            parts.append(f"{SETTINGS_FILENAME} is invalid: field {', '.join(fields)}")
+        # a validation error that names no field still is one, never "could not be read"
+        super().__init__("; ".join(parts) or "the settings are invalid")
         self.fields = fields
+        self.env_fields = env_fields
+        self.unreadable = unreadable
 
 
 def validation_fields(error: ValidationError, prefix: str = "") -> tuple[str, ...]:
@@ -220,6 +224,27 @@ def _env_set(name: str) -> bool:
     return f"{ENV_PREFIX}{name}".upper() in {key.upper() for key in os.environ}
 
 
+def _attribute(error: ValidationError, path: Path) -> SettingsError:
+    """Each failing field blamed on the source that set it: its MEMRIVER_* variable,
+    else settings.toml when the file holds it, else the environment. A default
+    that only fails against the max (the cross-field rule) is blamed on whichever
+    source set search_limit_max, by that name."""
+    try:
+        in_file = set(TomlConfigSettingsSource(Settings, toml_file=path)())
+    except (OSError, ValueError):     # changed since it was read: blame no file field
+        in_file = set()
+    fields: list[str] = []
+    env_fields: list[str] = []
+    for name in validation_fields(error):
+        if not _env_set(name) and name not in in_file and name == "search_limit_default":
+            name = "search_limit_max"
+        if _env_set(name) or name not in in_file:
+            env_fields.append(name)
+        else:
+            fields.append(name)
+    return SettingsError(tuple(dict.fromkeys(fields)), tuple(dict.fromkeys(env_fields)))
+
+
 def load_settings(root_override: Path | None = None) -> Settings:
     """CLI override > env > <root>/settings.toml > defaults, or SettingsError.
 
@@ -237,14 +262,11 @@ def load_settings(root_override: Path | None = None) -> Settings:
     try:
         return Settings(root=root)
     except ValidationError as err:
-        fields = validation_fields(err)
-        env_only = bool(fields) and all(_env_set(name) for name in fields)
-        source = "environment" if env_only else SETTINGS_FILENAME
         # from None: the cause echoes the rejected value, which could be a secret
-        raise SettingsError(source, fields) from None
+        raise _attribute(err, root / SETTINGS_FILENAME) from None
     except (OSError, ValueError):
         # OSError: permission denied and the like; ValueError: TOMLDecodeError
         # and UnicodeDecodeError. Their text repeats the path, so it is dropped.
-        raise SettingsError() from None
+        raise SettingsError(unreadable=True) from None
     finally:
         _settings_file.reset(token)

@@ -238,7 +238,7 @@ def test_an_unreadable_settings_file_is_an_error(tmp_path, content):
     (root / SETTINGS).write_bytes(content)
     error = _raised(root)
     assert str(error) == "settings.toml could not be read"
-    assert (error.source, error.fields) == (SETTINGS, ())
+    assert (error.fields, error.env_fields, error.unreadable) == ((), (), True)
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
@@ -272,7 +272,7 @@ def test_an_invalid_value_in_the_settings_file_is_an_error_naming_the_field(tmp_
                                                                             field):
     error = _raised(_root(tmp_path, text))
     assert str(error) == f"settings.toml is invalid: field {field}"
-    assert (error.source, error.fields) == (SETTINGS, (field,))
+    assert (error.fields, error.env_fields) == ((field,), ())
     assert "/secret/abc" not in str(error)
 
 
@@ -285,7 +285,41 @@ def test_an_invalid_environment_value_is_an_error_naming_the_variable(monkeypatc
     monkeypatch.setenv("MEMRIVER_MAX_BODY_CHARS", "/secret/abc")
     error = _raised(_root(tmp_path, "index_budget_lines = 7\n"))
     assert str(error) == "environment variable MEMRIVER_MAX_BODY_CHARS is invalid"
-    assert (error.source, error.fields) == ("environment", ("max_body_chars",))
+    assert (error.fields, error.env_fields) == ((), ("max_body_chars",))
+
+
+def test_a_cross_field_failure_from_the_environment_alone_blames_the_environment(
+        monkeypatch, tmp_path):
+    # no settings.toml at all: the env max falls under the default default
+    monkeypatch.setenv("MEMRIVER_SEARCH_LIMIT_MAX", "3")
+    error = _raised(_root(tmp_path))
+    assert str(error) == "environment variable MEMRIVER_SEARCH_LIMIT_MAX is invalid"
+    assert (error.fields, error.env_fields) == ((), ("search_limit_max",))
+
+
+def test_a_cross_field_failure_from_the_file_names_the_files_max(tmp_path):
+    error = _raised(_root(tmp_path, "search_limit_max = 3\n"))
+    assert str(error) == "settings.toml is invalid: field search_limit_max"
+
+
+def test_an_env_failure_is_never_blamed_on_a_file_without_the_field(monkeypatch, tmp_path):
+    monkeypatch.setenv("MEMRIVER_SEARCH_LIMIT_DEFAULT", "9")
+    error = _raised(_root(tmp_path, "search_limit_max = 8\nindex_budget_lines = 7\n"))
+    # the env default is what exceeds the file's max: the variable is named
+    assert str(error) == "environment variable MEMRIVER_SEARCH_LIMIT_DEFAULT is invalid"
+
+
+def test_env_and_file_failures_are_both_reported_env_first(monkeypatch, tmp_path):
+    monkeypatch.setenv("MEMRIVER_MAX_BODY_CHARS", "abc")
+    error = _raised(_root(tmp_path, 'index_budget_lines = "x"\n'))
+    assert str(error) == ("environment variable MEMRIVER_MAX_BODY_CHARS is invalid; "
+                          "settings.toml is invalid: field index_budget_lines")
+    assert (error.fields, error.env_fields) == (("index_budget_lines",), ("max_body_chars",))
+
+
+def test_an_error_naming_no_field_is_invalid_not_unreadable():
+    assert str(SettingsError()) == "the settings are invalid"
+    assert str(SettingsError(unreadable=True)) == "settings.toml could not be read"
 
 
 def test_valid_settings_file_still_wins_after_the_guard(tmp_path):

@@ -353,8 +353,9 @@ def test_run_dream_runs_the_summarize_phase(world):
     key = _session(world)
     world.transcripts.by_session["s1"] = _transcript("work")
     world.executor.replies = [{"status": "ok", "summary": "Did the work"}]
-    report = run_dream(world.maintenance, world.executor, world.transcripts, world.store, world.dream,
-                       timestamp_shift(now(), minutes=61), phases=("summarize",))
+    report = run_dream(world.maintenance, world.executor, world.transcripts, world.store,
+                       world.dream, timestamp_shift(now(), minutes=61),
+                       phases=("summarize",))
     assert report.phases["summarize"].outcomes == {"ok": 1}
     assert _stored(world, key).summary == "Did the work"
 
@@ -473,8 +474,9 @@ def test_a_final_summary_with_a_lone_surrogate_is_invalid_not_a_storage_failure(
         return {"status": "ok", "summary": "Did the work"}
 
     world.executor.default = answer
-    report = run_dream(world.maintenance, world.executor, world.transcripts, world.store, world.dream,
-                       timestamp_shift(now(), minutes=61), phases=("summarize",))
+    report = run_dream(world.maintenance, world.executor, world.transcripts, world.store,
+                       world.dream, timestamp_shift(now(), minutes=61),
+                       phases=("summarize",))
     assert report.status == "completed"
     assert report.phases["summarize"].outcomes == {"invalid": 1, "ok": 1}
     assert _stored(world, bad).summary_status is None

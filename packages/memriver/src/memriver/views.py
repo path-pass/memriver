@@ -50,7 +50,8 @@ def _export_value(memory: Memory, field: str) -> object:
 
 
 def _service(root: Path | None, home: Path):
-    """The facade; a bad MEMRIVER_* value is reported like an unreadable store."""
+    """The facade. An unusable settings.toml or MEMRIVER_* value raises SettingsError
+    (cli.main names the file and the field); any other failure is StorageFailure."""
     from memriver_core.bootstrap import build_service
     from memriver_core.settings import SettingsError, load_settings
 

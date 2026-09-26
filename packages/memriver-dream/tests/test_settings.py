@@ -83,7 +83,7 @@ def test_an_invalid_dream_table_raises_naming_only_the_file_and_the_field(tmp_pa
     root = _root(tmp_path, "max_body_chars = 42\n" + table)
     with pytest.raises(SettingsError) as caught:
         load_dream_settings(root)
-    assert caught.value.fields == (field,)
+    assert (caught.value.fields, caught.value.env_fields) == ((field,), ())
     assert str(caught.value) == f"settings.toml is invalid: field {field}"
     assert caught.value.__cause__ is None and caught.value.__suppress_context__
     assert PASTED not in str(caught.value) and str(root) not in str(caught.value)

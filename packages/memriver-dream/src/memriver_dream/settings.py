@@ -215,13 +215,12 @@ def load_dream_settings(root: Path) -> DreamSettings | None:
         return None
     except AttributeError:
         # `dream = 5`: the key exists but is not a table
-        raise SettingsError(SETTINGS_FILENAME, (DREAM_TABLE,)) from None
+        raise SettingsError((DREAM_TABLE,)) from None
     except (OSError, ValueError):
         # permission denied, bad TOML, bad UTF-8: their text repeats the path
-        raise SettingsError() from None
+        raise SettingsError(unreadable=True) from None
     try:
         return DreamSettings.model_validate(table)
     except ValidationError as err:
         # from None: the cause echoes the rejected value, which could be a secret
-        raise SettingsError(SETTINGS_FILENAME,
-                            validation_fields(err, prefix=f"{DREAM_TABLE}.")) from None
+        raise SettingsError(validation_fields(err, prefix=f"{DREAM_TABLE}.")) from None

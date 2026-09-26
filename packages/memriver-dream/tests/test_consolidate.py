@@ -355,8 +355,8 @@ def test_run_dream_runs_the_phase_and_never_sends_a_time_field_the_policy_refuse
     a = world.plant(world.project.id, "uv manages python")
     b = world.plant(world.project.id, "python is managed with uv", created=SECRET)
     world.executor.replies = [_groups(_merge(a, b))]
-    report = run_dream(world.maintenance, world.executor, world.transcripts, world.store, world.dream,
-                       now(), phases=("consolidate",))
+    report = run_dream(world.maintenance, world.executor, world.transcripts, world.store,
+                       world.dream, now(), phases=("consolidate",))
     assert report.status == "completed"
     assert report.phases["consolidate"].outcomes["merge"] == 1
     (change,) = world.maintenance.changes_of_run(report.run_id)

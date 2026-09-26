@@ -1,7 +1,8 @@
 """Silence memriver_core's own stdlib logging for one CLI-boundary call.
 
-memriver_core logs diagnostic warnings (a skipped entry, say) through stdlib logging, which -- unconfigured, as it is here -- writes
-straight to the real process stderr via `logging.lastResort`, bypassing
+memriver_core logs diagnostic warnings (a skipped entry, say) through stdlib
+logging, which -- unconfigured, as it is here -- writes straight to the real
+process stderr via `logging.lastResort`, bypassing
 doctor's/hooks' own explicit stderr text entirely. Both promise exactly one
 fixed, path-free stderr line on failure; scoping suppression to one call (and
 to the memriver_core logger only) keeps that promise without silencing
