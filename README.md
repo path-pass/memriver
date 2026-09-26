@@ -650,14 +650,18 @@ Settings are read from `--root` / `MEMRIVER_*` environment variables and an
 optional `<root>/settings.toml`, in that order of precedence. All four file
 settings are positive integers. A key or table memriver does not use is ignored.
 An unreadable file, bad TOML or an invalid value (in the file or in a
-`MEMRIVER_*` variable) stops the server and every command with one stderr
-line naming the file (or variable) and the field, never the value -- for
-example `memriver: settings.toml is invalid: field search_limit_default`;
+`MEMRIVER_*` variable) stops every entry point that reads settings with one
+stderr line naming the file (or variable) and the field, never the value --
+for example `memriver: settings.toml is invalid: field search_limit_default`;
 `memriver doctor` prints that same one line and exits 2 instead of a report.
-The `Stop` and `PreToolUse` hooks never read `settings.toml` at all, and
-`memriver dream uninstall` never reads it either, so neither is affected.
+Four entry points never read `settings.toml` at all, so none of them are
+affected: the `Stop` and `PreToolUse` hooks, and both `memriver uninstall`
+and `memriver dream uninstall` (each resolves the store root without parsing
+the file). Everything else -- the server, the other three hooks, every
+`memriver project` and browsing command, `memriver install`, and `memriver
+dream init`/`run`/`report`/`undo` -- reads settings and stops on this error.
 This is new in this release: an invalid settings.toml used to be silently
-ignored; now the server and every other command stop until it is fixed.
+ignored by the entry points that read it; now they stop until it is fixed.
 
 ```toml
 # ~/agent-memory/settings.toml
