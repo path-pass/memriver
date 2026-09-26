@@ -654,12 +654,16 @@ An unreadable file, bad TOML or an invalid value (in the file or in a
 stderr line naming the file (or variable) and the field, never the value --
 for example `memriver: settings.toml is invalid: field search_limit_default`;
 `memriver doctor` prints that same one line and exits 2 instead of a report.
+Under Codex, the hook and MCP surfaces don't carry that line: a failed hook
+shows only `hook: SessionStart Failed` (or `UserPromptSubmit Failed`), and a
+failed MCP server start prints nothing by default. Run `memriver doctor` (or
+any other memriver command that reads settings) to see the one-line reason.
 Four entry points never read `settings.toml` at all, so none of them are
 affected: the `Stop` and `PreToolUse` hooks, and both `memriver uninstall`
-and `memriver dream uninstall` (each resolves the store root without parsing
-the file). Everything else -- the server, the other three hooks, every
-`memriver project` and browsing command, `memriver install`, and `memriver
-dream init`/`run`/`report`/`undo` -- reads settings and stops on this error.
+and `memriver dream uninstall`. Everything else -- the server, the other three
+hooks, every `memriver project` and browsing command, `memriver install`, and
+`memriver dream init`/`run`/`report`/`undo` -- reads settings and stops on
+this error.
 This is new in this release: an invalid settings.toml used to be silently
 ignored by the entry points that read it; now they stop until it is fixed.
 
