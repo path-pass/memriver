@@ -53,6 +53,11 @@ Runner = Callable[..., Completed]
 
 def run_process(argv: list[str], *, cwd: Path, env: Mapping[str, str], timeout_s: int,
                 stdin_text: str) -> Completed:
+    # ponytail: communicate() buffers this call's whole stdout and stderr in memory
+    # (as does this module's Codex last-message file, read whole elsewhere), so a
+    # harness that floods either one can grow this process without bound; upgrade
+    # path, if a harness is ever seen to do that: a chunked read with a fixed cap
+    # per stream.
     try:
         process = subprocess.Popen(argv, cwd=cwd, env=dict(env), stdin=subprocess.PIPE,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,

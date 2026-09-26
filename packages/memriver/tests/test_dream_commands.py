@@ -233,6 +233,30 @@ def test_init_replaces_an_invalid_upper_case_key_it_owns(world):
     assert "EXECUTOR" not in _settings(world)["dream"]
 
 
+def test_init_salvages_a_valid_owned_key_when_the_table_fails_to_load(world):
+    # the table as a whole is unusable (executor is invalid), but ttl_days validates
+    # on its own: init keeps it instead of silently resetting it to the default
+    (world["store"] / "settings.toml").write_text(
+        "max_body_chars = 4000\n[dream]\nEXECUTOR = 'gpt'\nttl_days = 30\n",
+        encoding="utf-8")
+    with pytest.raises(SettingsError):
+        load_dream_settings(world["store"])
+    assert _init(world)[0] == 0
+    dream = load_dream_settings(world["store"])
+    assert (dream.executor, dream.ttl_days) == ("claude", 30)
+
+
+def test_init_salvages_owned_keys_across_case_with_yes(world):
+    (world["store"] / "settings.toml").write_text(
+        "max_body_chars = 4000\n[dream]\nexecutor = 'codex'\nTTL_DAYS = 30\n"
+        "schedule_at = 'bad'\n", encoding="utf-8")
+    with pytest.raises(SettingsError):
+        load_dream_settings(world["store"])
+    assert _init(world, yes=True)[0] == 0
+    dream = load_dream_settings(world["store"])
+    assert (dream.executor, dream.ttl_days, dream.schedule_at) == ("codex", 30, "04:00")
+
+
 def test_init_keeps_an_unknown_key_which_every_reader_ignores(world):
     (world["store"] / "settings.toml").write_text(
         "max_body_chars = 4000\n[dream]\nnot_a_key = 1\n", encoding="utf-8")
@@ -323,7 +347,7 @@ def test_init_with_codex_refuses_a_provider_variable_missing_here_then_keeps_the
     assert "synthetic" not in " ".join(argv)
 
 
-def test_init_names_a_refused_override_key_and_never_its_value(world):
+def test_init_names_only_the_codex_overrides_field_never_the_key_or_value(world):
     _init(world)
     _add_overrides(world, '\n[dream.codex_overrides]\n'
                           '"model_providers.x.experimental_bearer_token" = "sk-synthetic"\n')
@@ -406,6 +430,42 @@ def test_run_with_an_executor_runs_every_phase(world):
 def test_run_with_a_phase_but_no_executor_exits_1(world):
     code, _, err = _run(world, phase="retire")
     assert code == 1 and "--phase needs an executor" in err
+
+
+class _SkippedReport:
+    status = "skipped"
+
+
+def test_run_flushes_each_log_line_immediately(world, monkeypatch):
+    # a killed run must keep whatever it already logged, and its lines must stay in
+    # order with stderr: block-buffered stdout (a redirected dream.log) would hold
+    # this run's lines in memory until the process exits normally
+    calls: list[str] = []
+
+    class TrackedStdout(io.StringIO):
+        def write(self, text):
+            calls.append(f"write:{text}")
+            return super().write(text)
+
+        def flush(self):
+            calls.append("flush")
+            return super().flush()
+
+    captured = {}
+
+    def fake_run_dream(*args, **kwargs):
+        captured["log"] = kwargs["log"]
+        return _SkippedReport()
+
+    monkeypatch.setattr(dream_commands, "run_dream", fake_run_dream)
+    stdout = TrackedStdout()
+    code = dream_commands.run_run(phase=None, trigger="manual", root=world["store"],
+                                  stdout=stdout, stderr=io.StringIO(),
+                                  executor_factory=lambda dream: Executor(), transcripts=None)
+    assert code == 0
+    captured["log"]("secrets (safety re-scan): done")
+    assert len(calls) == 2 and calls[0].startswith("write:") and calls[1] == "flush"
+    assert "secrets (safety re-scan): done" in calls[0]
 
 
 def test_run_with_an_invalid_dream_table_raises_the_settings_error(world):
@@ -548,6 +608,19 @@ def test_init_that_cannot_write_its_settings_says_nothing_was_written(world, mon
     code, out = _init(world)
     assert code == 1 and "could not be written" in out and "no space" not in out
     assert "settings were written" not in out and world["launchctl"].calls == []
+
+
+def test_init_writes_through_a_symlinked_settings_toml_and_keeps_the_link(world):
+    real = world["tmp"] / "real-settings.toml"
+    real.write_text("max_body_chars = 4000\n", encoding="utf-8")
+    settings_path = world["store"] / "settings.toml"
+    settings_path.unlink()
+    settings_path.symlink_to(real)
+    assert _init(world)[0] == 0
+    assert settings_path.is_symlink() and settings_path.resolve() == real.resolve()
+    written = tomllib.loads(real.read_text(encoding="utf-8"))
+    assert written["max_body_chars"] == 4000 and written["dream"]["executor"] == "claude"
+    assert load_dream_settings(world["store"]).executor == "claude"
 
 
 def test_init_that_cannot_make_the_dream_directory_says_the_settings_were_written(world):

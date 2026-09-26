@@ -117,6 +117,21 @@ def _with(table: dict, values: dict) -> dict:
     return kept | values
 
 
+def _salvaged(raw: Mapping, key: str) -> object | None:
+    """`raw`'s own value for `key` (matched case-insensitively, as the run matches it),
+    if it validates on its own; None otherwise. Used only when the whole [dream] table
+    failed to load, so one bad sibling key does not throw out an otherwise-good owned
+    value along with it."""
+    for name, value in raw.items():
+        if isinstance(name, str) and name.lower() == key:
+            try:
+                return getattr(check_dream_table(
+                    {"executor": "claude", "executor_path": "/x", key: value}), key)
+            except ValidationError:
+                return None
+    return None
+
+
 def _write_dream_table(path: Path, values: dict) -> None:
     """Set the [dream] keys init owns, keeping every other line of the file."""
     try:
@@ -131,7 +146,12 @@ def _write_dream_table(path: Path, values: dict) -> None:
         del table[key]
     for key, value in values.items():
         table[key] = value
-    replace_atomically(path, tomlkit.dumps(document).encode("utf-8"), 0o600, os.replace)
+    # write through a symlinked settings.toml to its resolved target and keep the link:
+    # os.replace on the link itself would silently swap it for a regular file. The
+    # temp file still lands beside the target (replace_atomically uses its parent), so
+    # the swap stays atomic and exclusive.
+    replace_atomically(path.resolve(), tomlkit.dumps(document).encode("utf-8"), 0o600,
+                       os.replace)
 
 
 def _agent_env(home: Path, memriver: str, executor_path: str, root: Path) -> dict[str, str]:
@@ -159,13 +179,17 @@ def run_init(*, executor: str | None, ttl_days: int | None, at: str | None, yes:
         stdout.write("refused: the memory store is not initialized; run memriver install first\n")
         return 2
     store = Path(os.path.abspath(settings.root))
+    settings_file = store / SETTINGS_FILENAME
+    raw_table = _existing_table(settings_file)
     try:
         current = load_dream_settings(store)
     except SettingsError:
-        # init rewrites the keys it owns: the table as it will stand is checked below
+        # init rewrites the keys it owns: the table as it will stand is checked below.
+        # A key it owns may still be individually valid even though a sibling key sank
+        # the whole table -- that value is kept rather than silently reset.
         current = None
-    name = executor or (current.executor if current else None) or next(
-        (candidate for candidate in ("claude", "codex") if which(candidate)), None)
+    name = executor or (current.executor if current else _salvaged(raw_table, "executor")) \
+        or next((candidate for candidate in ("claude", "codex") if which(candidate)), None)
     if name is None:
         stdout.write("refused: neither claude nor codex is on PATH; install one, or pass "
                      "--executor\n")
@@ -179,14 +203,16 @@ def run_init(*, executor: str | None, ttl_days: int | None, at: str | None, yes:
         stdout.write(UV_CACHE_REFUSAL)
         return 2
     values = {"executor": name, "executor_path": os.path.abspath(found),
-              "ttl_days": ttl_days or (current.ttl_days if current else DEFAULT_DREAM_TTL_DAYS),
+              "ttl_days": ttl_days or (current.ttl_days if current
+                                       else _salvaged(raw_table, "ttl_days"))
+                          or DEFAULT_DREAM_TTL_DAYS,
               "schedule_at": at or (current.schedule_at if current
-                                    else DEFAULT_DREAM_SCHEDULE_AT)}
-    settings_file = store / SETTINGS_FILENAME
+                                    else _salvaged(raw_table, "schedule_at"))
+                             or DEFAULT_DREAM_SCHEDULE_AT}
     try:
         # the whole table as it will stand, read the way the run reads it: a bad key
         # init does not own is never kept
-        table = check_dream_table(_with(_existing_table(settings_file), values))
+        table = check_dream_table(_with(raw_table, values))
     except ValidationError as err:
         fields = validation_fields(err)
         given = [name for name in fields if name in values]
@@ -294,10 +320,17 @@ def run_run(*, phase: str | None, trigger: str, root: Path | None, stdout: IO[st
             executor = (executor_factory or (lambda table: make_executor(
                 table, env=os.environ)))(dream)
             sources = transcripts or HarnessTranscripts(tool_output_chars=DREAM_TOOL_OUTPUT_CHARS)
+
+        def _log(line: str) -> None:
+            # flushed line by line: dream.log is a redirected file (block-buffered by
+            # default), and a killed run must keep what it already logged, in order
+            # with stderr
+            stdout.write(f"{_now()} {line}\n")
+            stdout.flush()
+
         report = run_dream(maintenance, executor, sources, settings.root, dream, _now(),
                            trigger=trigger,
-                           phases=(phase,) if phase else MODEL_PHASES,
-                           log=lambda line: stdout.write(f"{_now()} {line}\n"))
+                           phases=(phase,) if phase else MODEL_PHASES, log=_log)
         if report.status == "skipped":         # run_dream logged "skipped: locked"
             return 0
         recorded = maintenance.run(report.run_id)
