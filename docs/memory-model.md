@@ -62,8 +62,8 @@ body:        All language runtimes on this machine are managed by mise, not nvm/
   `memory_update`/`memory_delete` can require it back (*Updates, deletion,
   and history*). A row also carries `deleted_at` (set only by a soft delete)
   and `last_read_at` (set by a successful `memory_read`, and backfilled once,
-  to the schema-v3 upgrade time rather than left `NULL`, for every row that
-  predates it -- not a recorded read, so it adds no `memory_reads` row);
+  for every row where it is `NULL`, to the schema-v3 upgrade time rather than
+  left `NULL` -- not a recorded read, so it adds no `memory_reads` row);
   neither is ever part of what an agent can read — the fields above are the
   whole set an agent may know.
 - **sync** — per-entry boundary for future replication: `false` keeps this

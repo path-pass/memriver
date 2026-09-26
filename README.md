@@ -129,15 +129,21 @@ reports go to stderr.
   have no session routing: they resolve `--project-dir` once, when the
   server starts, and never re-resolve it for the life of that process.
 
-Hooks never fail the harness: an unreadable store is stated inline, in the
-injected header itself, as a labelled "unavailable" session -- exit 0, empty
-stderr, nothing blocked. Of the five, only `SessionStart` ever writes to
-stderr: when it hits something it cannot route around at all (a malformed
-payload, some other unhandled failure) it skips the injection entirely and
-prints one fixed, path-free stderr line instead. `UserPromptSubmit`, `Stop`,
-`SessionEnd` and `PreToolUse` degrade the same failures silently -- empty
-stdout, empty stderr, exit 0 -- since none of them owes the agent a header. If memories
-seem to be missing, `memriver doctor` shows what the store actually holds.
+Hooks never fail the harness on a store they can degrade: an unreadable store
+is stated inline, in the injected header itself, as a labelled "unavailable"
+session -- exit 0, empty stderr, nothing blocked. Of the five, only
+`SessionStart` ever writes to stderr for a failure of this kind: when it hits
+something it cannot route around at all (a malformed payload, some other
+unhandled failure) it skips the injection entirely and prints one fixed,
+path-free stderr line instead, still exit 0. `Stop` and `PreToolUse` never
+read `settings.toml`, so neither is affected by anything below. The one
+deliberate exception is an invalid `settings.toml` or `MEMRIVER_*` value:
+`SessionStart`, `UserPromptSubmit` and `SessionEnd` do read settings, so each
+prints its own one-line settings error (naming the file and the field, never
+the value) and exits 1 -- a failing, non-blocking hook whose stderr the
+harness shows, because a broken settings file needs the user to fix it rather
+than being silently ignored. If memories seem to be missing, `memriver
+doctor` shows what the store actually holds.
 
 Known limits: `session_search`/`memriver sessions` only look at each
 session's first prompt and its five most recent, each saved as at most 512
@@ -415,14 +421,16 @@ at any time, so `init` refuses there -- install it with `uv tool install
 memriver` and run `memriver dream init` from that installation (run it again
 after moving the installation). Elsewhere, `init` writes the settings and
 prints the command line to add to your own scheduler. `init` is idempotent
-(running it again replaces the schedule), and it refuses when the `[dream]`
-table already holds a value it cannot use, naming the key; a failed
-replacement puts the previous schedule back, and says so if it cannot;
+(running it again replaces the schedule); it repairs an invalid key it owns
+rather than refusing, and refuses only when the `[dream]` table holds an
+invalid key it does not own, naming the key; a failed replacement puts the
+previous schedule back, and says so if it cannot;
 `uninstall` removes the schedule and keeps the settings and data, and says
 so, keeping the plist, when launchd would not let go of it or could not say.
 
 ```toml
-# ~/agent-memory/settings.toml -- [dream], every key shown with its default;
+# ~/agent-memory/settings.toml -- [dream], every key shown with its default
+# except executor and executor_path, which have none;
 # init itself writes only executor, executor_path, ttl_days and schedule_at
 [dream]
 executor = "claude"                   # or "codex"
@@ -455,8 +463,9 @@ keeps it and checks it:
 Only these keys (and `model_providers.<id>.requires_openai_auth`, a boolean)
 are accepted, for the one provider `model_provider` names; anything else --
 features, tools, MCP servers, hooks, whole tables, token or header fields,
-a URL with credentials, a query or a fragment -- is refused by name, and the
-value is never printed. Never put a key itself in this table: `env_key` names
+a URL with credentials, a query or a fragment -- is refused, and the error
+names only the field `dream.codex_overrides`, never the offending key or its
+value. Never put a key itself in this table: `env_key` names
 the environment variable that holds it. `init` and every run refuse when that
 variable is not set, rather than falling back to Codex's default provider.
 The scheduled job does not see your shell's environment and memriver never
@@ -503,7 +512,9 @@ findings use store-relative location hints such as `projects/<id>` or
 `memories/<id>`. The projects section is where an absolute directory appears:
 every bound project's `root`, printed for a person and, with `--json`,
 returned as a plain field. An inaccessible store exits with status 2 (with
-`--json`, a `{"error": ...}` object is still emitted on stdout).
+`--json`, a `{"error": ...}` object is still emitted on stdout). An invalid
+`settings.toml` or `MEMRIVER_*` value exits the same way, printing the same
+one-line settings error (see *Settings*) in place of a report.
 
 ## Uninstall
 
@@ -639,9 +650,14 @@ Settings are read from `--root` / `MEMRIVER_*` environment variables and an
 optional `<root>/settings.toml`, in that order of precedence. All four file
 settings are positive integers. A key or table memriver does not use is ignored.
 An unreadable file, bad TOML or an invalid value (in the file or in a
-`MEMRIVER_*` variable) stops the server, the hooks and every command with one
-stderr line naming the file (or variable) and the field, never the value -- for
-example `memriver: settings.toml is invalid: field search_limit_default`:
+`MEMRIVER_*` variable) stops the server and every command with one stderr
+line naming the file (or variable) and the field, never the value -- for
+example `memriver: settings.toml is invalid: field search_limit_default`;
+`memriver doctor` prints that same one line and exits 2 instead of a report.
+The `Stop` and `PreToolUse` hooks never read `settings.toml` at all, and
+`memriver dream uninstall` never reads it either, so neither is affected.
+This is new in this release: an invalid settings.toml used to be silently
+ignored; now the server and every other command stop until it is fixed.
 
 ```toml
 # ~/agent-memory/settings.toml
@@ -655,9 +671,11 @@ One more top-level key, unset by default: `memory_reads_retention_days = N`
 drops `memory_reads` rows older than N days whenever a new one is written
 (unset keeps every row; pruned reads no longer lengthen a memory's TTL).
 The `[dream]` table is `memriver dream init`'s (see *Dream*), read by the
-`memriver dream` commands only: an invalid one stops `memriver dream run` with
-the same one-line error (`field dream.<key>`), never the server or the other
-commands, and `memriver dream init` rewrites the keys it owns.
+`memriver dream` commands only: keys are matched case-insensitively, and an
+invalid key it does not own stops `memriver dream run` (and `memriver dream
+init` itself) with the same one-line error (`field dream.<key>`), never the
+server or the other commands; a key it owns, `memriver dream init` repairs
+instead of refusing.
 
 `search_limit_default` may not exceed `search_limit_max`. The root itself is
 set with `--root` or `MEMRIVER_ROOT`, not in this file: it is what locates the
