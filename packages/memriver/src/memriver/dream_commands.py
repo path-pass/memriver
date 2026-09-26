@@ -180,7 +180,14 @@ def run_init(*, executor: str | None, ttl_days: int | None, at: str | None, yes:
         return 2
     store = Path(os.path.abspath(settings.root))
     settings_file = store / SETTINGS_FILENAME
-    raw_table = _existing_table(settings_file)
+    try:
+        # load_settings above already read this file once, through a different call
+        # (tomllib.load on an open binary handle); this second, dream-specific read
+        # can still fail on its own -- a race, a transient I/O fault -- and must be
+        # named the same one-line way, never a traceback with the path in it
+        raw_table = _existing_table(settings_file)
+    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+        raise SettingsError(unreadable=True) from None
     try:
         current = load_dream_settings(store)
     except SettingsError:
@@ -223,8 +230,6 @@ def run_init(*, executor: str | None, ttl_days: int | None, at: str | None, yes:
         stdout.write(f"refused: invalid value given for {', '.join(given)}; nothing was "
                      "written\n")
         return 2
-    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
-        raise SettingsError(unreadable=True) from None
     variables = sorted({value for key, value in table.codex_overrides.items()
                         if key.endswith(".env_key")}) if name == "codex" else []
     missing = missing_env(table.codex_overrides, env) if name == "codex" else []

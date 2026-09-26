@@ -3,6 +3,7 @@ scripted executor -- never the real harnesses, LaunchAgents or store."""
 
 from __future__ import annotations
 
+import errno
 import io
 import json
 import os
@@ -694,6 +695,40 @@ def test_an_unusable_setting_stops_every_dream_command_with_one_named_line(
     code = main(["dream", *command, "--root", str(world["store"])])
     captured = capsys.readouterr()
     assert (code, captured.out, captured.err) == (1, "", line)
+
+
+def _break_raw_table_read(monkeypatch, target: Path, action):
+    """Make `Path.read_text` misbehave for `target` alone, as init's raw [dream]-table
+    read could independently of `load_settings`'s own read of the same file: the two
+    go through different lower-level calls (`Path.open('rb')` + `tomllib.load` there,
+    `Path.read_text` + `tomllib.loads` here), so the first can succeed while the
+    second still fails."""
+    original = Path.read_text
+
+    def patched(self, *args, **kwargs):
+        return action() if self == target else original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", patched)
+
+
+@pytest.mark.parametrize("action", [
+    lambda: (_ for _ in ()).throw(OSError(errno.EIO, "Input/output error")),
+    lambda: "not [ valid = toml",
+    lambda: (_ for _ in ()).throw(
+        UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")),
+], ids=["eio", "bad-toml", "bad-utf8"])
+def test_init_maps_a_raw_table_read_failure_to_the_settings_error(
+        world, monkeypatch, capsys, action):
+    from memriver.cli import main
+
+    settings_path = world["store"] / "settings.toml"
+    before = settings_path.read_bytes()
+    _break_raw_table_read(monkeypatch, settings_path, action)
+    code = main(["dream", "init", "--yes", "--root", str(world["store"])])
+    captured = capsys.readouterr()
+    assert (code, captured.out, captured.err) == (
+        1, "", "memriver: settings.toml could not be read\n")
+    assert settings_path.read_bytes() == before
 
 
 def test_an_invalid_dream_table_stops_dream_run_naming_the_field(world, capsys):
