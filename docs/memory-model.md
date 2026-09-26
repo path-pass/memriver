@@ -93,6 +93,115 @@ Codex) also resolves a directory once, but per session rather than per
 process: at the session's own start, into its persistent row, kept for as
 long as that session lives, even after its working directory changes.
 
+The tables of `memriver.db` (schema version 3). Solid lines are foreign keys;
+dotted lines are references the schema does not enforce (a run id, a session
+key, a project id used as a scope name, memory ids inside a change's JSON
+`rows`).
+
+```mermaid
+erDiagram
+    projects ||--o{ memories : "project_id"
+    projects |o--o{ sessions : "project_id / candidate_id"
+    sessions ||..o{ tool_calls : "(harness, session_id)"
+    memories ||--o{ memory_reads : "memory_id"
+    memories ||--o{ memory_source_sets : "derived_id: one set per version"
+    memory_source_sets ||--o{ memory_sources : "(derived_id, derived_version)"
+    memories ||--o{ memory_sources : "source_id: RESTRICT on hard delete"
+    memories ||--o| dream_reviews : "memory_id"
+    dream_runs ||..o{ dream_changes : "run_id"
+    dream_runs ||..o{ dream_reviews : "run_id"
+    dream_changes }o..o{ memories : "rows: before-image and after_version"
+    projects ||..o| dream_state : "scope"
+
+    projects {
+        text id PK
+        text name
+        text root "bound directory; NULL for global"
+        int is_global
+    }
+    memories {
+        text id PK
+        text project_id FK
+        text type "user | feedback | project | reference"
+        text trust "user | agent | untrusted-derived"
+        int sync "team sharing only"
+        text description
+        text body
+        int version
+        text last_read_at
+        text deleted_at "soft delete"
+    }
+    sessions {
+        text harness PK
+        text session_id PK
+        text status "registered | pending"
+        text project_id FK
+        text candidate_id FK
+        text last_active_at
+        text summary "written by dream"
+        text summary_status "ok | empty | omitted | failed"
+        text summary_progress "resumable checkpoint"
+    }
+    tool_calls {
+        text harness PK
+        text call_id PK
+        text session_id
+        text recorded_at
+    }
+    memory_reads {
+        text memory_id FK
+        int memory_version "the version returned"
+        text read_at
+        text harness
+        text session_id "NULL for directory mode"
+    }
+    memory_source_sets {
+        text derived_id PK
+        int derived_version PK
+    }
+    memory_sources {
+        text derived_id PK
+        int derived_version PK
+        text source_id PK
+        int source_version
+        text source_project
+        text snapshot "the source as it was"
+    }
+    dream_runs {
+        text run_id PK
+        text trigger "schedule | manual"
+        text executor
+        text status "running | completed | failed | skipped"
+        text report "JSON counts per phase"
+    }
+    dream_changes {
+        text change_id PK
+        text run_id
+        text kind "merge | rewrite | extract | retire | secret | unsafe"
+        text project_id
+        text rows "JSON before-images, for undo"
+        text reason
+        text undone_at
+    }
+    dream_reviews {
+        text memory_id PK
+        int memory_version "the version judged"
+        text decision "keep | delete | uncertain"
+        int uncertain_streak
+        text next_review_at
+        text run_id
+    }
+    dream_state {
+        text scope PK "a project id"
+        text fingerprint "input of the last clean pass"
+        text processed_at
+    }
+```
+
+`memory_reads` is written by `memory_read`; every other `dream_*` and
+`memory_source*` row, and the `summary*` columns of `sessions`, are written only
+by `memriver dream` (see *Maintenance*).
+
 ## Identity
 
 memriver generates every id: a memory's id and a project's id are 10 random
