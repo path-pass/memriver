@@ -186,16 +186,33 @@ def test_the_pre_0_157_agents_md_header_with_no_for_clause_is_still_dropped(tmp_
         _session("codex", codex)).records] == [xml]
 
 
-def test_a_hook_prompt_block_is_dropped(tmp_path):
+@pytest.mark.parametrize("hook_prompt", [
+    "<hook_prompt session-start>run the checks</hook_prompt>",
+    "<hook_prompt>run the checks</hook_prompt>",
+    '<hook_prompt attr="x">run the checks</hook_prompt>',
+])
+def test_a_hook_prompt_block_is_dropped(tmp_path, hook_prompt):
     codex = tmp_path / "x.jsonl"
     xml = "<task>Fix PR #1234 in auth.py</task>"
     _write(codex, [{"timestamp": AT, "type": "response_item", "ordinal": 1, "payload": {
         "type": "message", "role": "user", "content": [
-            {"type": "input_text",
-             "text": "<hook_prompt session-start>run the checks</hook_prompt>"},
+            {"type": "input_text", "text": hook_prompt},
             {"type": "input_text", "text": xml}]}}])
     assert [r.text for r in CodexTranscripts(tool_output_chars=100).read(
         _session("codex", codex)).records] == [xml]
+
+
+@pytest.mark.parametrize("near_miss", [
+    "<hook_prompt_examples>a real prompt that starts with this tag name</hook_prompt_examples>",
+    "<hook_prompter>another real prompt sharing the tag's prefix</hook_prompter>",
+])
+def test_a_tag_that_merely_shares_the_hook_prompt_prefix_is_kept(tmp_path, near_miss):
+    codex = tmp_path / "x.jsonl"
+    _write(codex, [{"timestamp": AT, "type": "response_item", "ordinal": 1, "payload": {
+        "type": "message", "role": "user",
+        "content": [{"type": "input_text", "text": near_miss}]}}])
+    assert [r.text for r in CodexTranscripts(tool_output_chars=100).read(
+        _session("codex", codex)).records] == [near_miss]
 
 
 def test_a_real_prompt_mentioning_agents_md_mid_text_is_kept(tmp_path):
