@@ -25,9 +25,13 @@ from memriver_dream.protocols import Record, Transcript
 
 CUT_MARK = " [cut]"
 # the context Codex injects as user message blocks -- known wrappers only: a user's
-# own markup (<task>...</task>) is a prompt like any other
-_CODEX_INJECTED = ("<environment_context>", "<user_instructions>",
-                   "# AGENTS.md instructions for ")
+# own markup (<task>...</task>) is a prompt like any other. The AGENTS.md header has
+# drifted across codex-cli versions -- 0.157.1 writes "...instructions for <path>",
+# 0.156.1 "...instructions" alone before a blank line -- so both header shapes are
+# listed; either still requires the line to *start* with the header, so a real
+# prompt that merely mentions AGENTS.md mid-text is never caught by it.
+_CODEX_INJECTED = ("<environment_context>", "<user_instructions>", "<hook_prompt",
+                   "# AGENTS.md instructions for ", "# AGENTS.md instructions\n")
 
 
 def _read(path: str | None) -> tuple[list[dict], str, bool] | None:

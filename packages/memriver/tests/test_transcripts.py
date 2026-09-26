@@ -172,6 +172,42 @@ def test_a_users_own_markup_is_a_prompt_in_both_harnesses(tmp_path):
         _session("codex", codex)).records] == [xml]
 
 
+def test_the_pre_0_157_agents_md_header_with_no_for_clause_is_still_dropped(tmp_path):
+    # codex-cli 0.156.1 writes "# AGENTS.md instructions\n\n<INSTRUCTIONS>", with no
+    # "for <path>" clause -- the 0.157.1 shape memriver already knew
+    codex = tmp_path / "x.jsonl"
+    xml = "<task>Fix PR #1234 in auth.py</task>"
+    _write(codex, [{"timestamp": AT, "type": "response_item", "ordinal": 1, "payload": {
+        "type": "message", "role": "user", "content": [
+            {"type": "input_text",
+             "text": "# AGENTS.md instructions\n\n<INSTRUCTIONS>be terse</INSTRUCTIONS>"},
+            {"type": "input_text", "text": xml}]}}])
+    assert [r.text for r in CodexTranscripts(tool_output_chars=100).read(
+        _session("codex", codex)).records] == [xml]
+
+
+def test_a_hook_prompt_block_is_dropped(tmp_path):
+    codex = tmp_path / "x.jsonl"
+    xml = "<task>Fix PR #1234 in auth.py</task>"
+    _write(codex, [{"timestamp": AT, "type": "response_item", "ordinal": 1, "payload": {
+        "type": "message", "role": "user", "content": [
+            {"type": "input_text",
+             "text": "<hook_prompt session-start>run the checks</hook_prompt>"},
+            {"type": "input_text", "text": xml}]}}])
+    assert [r.text for r in CodexTranscripts(tool_output_chars=100).read(
+        _session("codex", codex)).records] == [xml]
+
+
+def test_a_real_prompt_mentioning_agents_md_mid_text_is_kept(tmp_path):
+    codex = tmp_path / "x.jsonl"
+    text = "can you update the AGENTS.md instructions for the team while you're at it"
+    _write(codex, [{"timestamp": AT, "type": "response_item", "ordinal": 1, "payload": {
+        "type": "message", "role": "user",
+        "content": [{"type": "input_text", "text": text}]}}])
+    assert [r.text for r in CodexTranscripts(tool_output_chars=100).read(
+        _session("codex", codex)).records] == [text]
+
+
 @pytest.mark.parametrize("reader, harness, bad", [
     (ClaudeTranscripts, "claude-code",
      {"type": "user", "timestamp": AT, "message": {"role": "user", "content": 1}}),
