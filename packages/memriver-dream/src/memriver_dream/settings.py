@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
@@ -22,7 +23,7 @@ from memriver_core.settings import (
     validation_fields,
 )
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
-from pydantic_settings import TomlConfigSettingsSource
+from pydantic_settings import InitSettingsSource, TomlConfigSettingsSource
 
 __all__ = [
     "DEFAULT_DREAM_IDLE_MINUTES",
@@ -50,6 +51,7 @@ __all__ = [
     "DREAM_TOOL_OUTPUT_CHARS",
     "DreamSettings",
     "check_codex_overrides",
+    "check_dream_table",
     "load_dream_settings",
 ]
 
@@ -197,6 +199,16 @@ class DreamSettings(BaseModel):
         return value
 
 
+def check_dream_table(table: Mapping[str, object]) -> DreamSettings:
+    """A raw [dream] table validated exactly as load_dream_settings reads it: keys are
+    matched to fields case-insensitively, the first spelling in the table winning.
+    Raises ValidationError. memriver dream init checks the table as it will stand
+    with this, so it never accepts a table the run then refuses."""
+    # typed for a BaseSettings, but reads only model_fields and model_config
+    fields = InitSettingsSource(DreamSettings, dict(table))()  # type: ignore[arg-type]
+    return DreamSettings.model_validate(fields)
+
+
 def load_dream_settings(root: Path) -> DreamSettings | None:
     """The [dream] table of <root>/settings.toml; None when there is none.
 
@@ -220,7 +232,7 @@ def load_dream_settings(root: Path) -> DreamSettings | None:
         # permission denied, bad TOML, bad UTF-8: their text repeats the path
         raise SettingsError(unreadable=True) from None
     try:
-        return DreamSettings.model_validate(table)
+        return check_dream_table(table)
     except ValidationError as err:
         # from None: the cause echoes the rejected value, which could be a secret
         raise SettingsError(validation_fields(err, prefix=f"{DREAM_TABLE}.")) from None

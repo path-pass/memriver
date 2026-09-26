@@ -38,7 +38,7 @@ from memriver_dream.settings import (
     DREAM_LAUNCH_AGENT_LABEL,
     DREAM_LOG_FILENAME,
     DREAM_TOOL_OUTPUT_CHARS,
-    DreamSettings,
+    check_dream_table,
     load_dream_settings,
 )
 from pydantic import ValidationError
@@ -176,8 +176,9 @@ def run_init(*, executor: str | None, ttl_days: int | None, at: str | None, yes:
                                     else DEFAULT_DREAM_SCHEDULE_AT)}
     settings_file = store / SETTINGS_FILENAME
     try:
-        # the whole table as it will stand: a bad key init does not own is never kept
-        table = DreamSettings(**(_existing_table(settings_file) | values))
+        # the whole table as it will stand, read the way the run reads it: a bad key
+        # init does not own is never kept
+        table = check_dream_table(_existing_table(settings_file) | values)
     except ValidationError as err:
         keys = sorted({_invalid_key(error) for error in err.errors() if error["loc"]})
         stdout.write(f"refused: the [dream] table in {SETTINGS_FILENAME} has invalid keys: "

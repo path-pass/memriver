@@ -204,6 +204,18 @@ def test_init_refuses_an_invalid_key_it_does_not_own(world):
     assert (world["store"] / "settings.toml").read_text(encoding="utf-8") == before
 
 
+def test_init_checks_the_table_as_the_run_reads_it_keys_in_any_case(world):
+    # the run matches keys case-insensitively, so EXECUTOR = 'gpt' is what it reads
+    # beside the executor init writes: init refuses instead of a nightly failing run
+    before = "max_body_chars = 4000\n[dream]\nEXECUTOR = 'gpt'\n"
+    (world["store"] / "settings.toml").write_text(before, encoding="utf-8")
+    with pytest.raises(SettingsError, match="field dream.executor"):
+        load_dream_settings(world["store"])
+    code, out = _init(world)
+    assert code == 2 and "invalid keys: executor" in out
+    assert (world["store"] / "settings.toml").read_text(encoding="utf-8") == before
+
+
 def test_init_keeps_an_unknown_key_which_every_reader_ignores(world):
     (world["store"] / "settings.toml").write_text(
         "max_body_chars = 4000\n[dream]\nnot_a_key = 1\n", encoding="utf-8")
