@@ -21,7 +21,9 @@ classifiers = [
 dependencies = [
     "memriver-core>=0.1.0",
     "pydantic>=2",
-    "pydantic-settings>=2",
+    # 2.15.0: the first release whose TomlConfigSettingsSource takes toml_table_header
+    # and matches file keys case-insensitively, both relied on by the settings loaders
+    "pydantic-settings>=2.15.0",
 ]
 
 [project.urls]

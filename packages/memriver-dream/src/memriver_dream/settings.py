@@ -16,9 +16,9 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 from memriver_core.settings import (
-    SETTINGS_FILENAME,
     SettingsError,
     reject_boolean,
+    settings_file,
     validation_fields,
 )
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -202,12 +202,10 @@ def load_dream_settings(root: Path) -> DreamSettings | None:
     dream never runs on a guess. Its fields carry the "dream." prefix, never a
     value, the path or pydantic's text.
     """
-    path = Path(root) / SETTINGS_FILENAME
+    path = settings_file(root)      # raises when the file cannot be read
+    if path is None:
+        return None
     try:
-        if not path.is_file():
-            # the source reads a missing file as an empty table, not as no table
-            return None
-        # typed for a BaseSettings, but reads only model_fields and model_config
         table = TomlConfigSettingsSource(DreamSettings,  # type: ignore[arg-type]
                                          toml_file=path, toml_table_header=(DREAM_TABLE,))()
     except KeyError:

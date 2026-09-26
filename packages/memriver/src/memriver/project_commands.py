@@ -32,13 +32,19 @@ BINDING_CHANGED = "refused: the binding changed while waiting; nothing was chang
 
 
 def _service(store: Path, home: Path):
-    """The core facade over this store. Building it reads settings, never the disk."""
+    """The core facade over this store, with its settings.toml and MEMRIVER_* values.
+
+    An unusable setting raises SettingsError, which cli.main names in one stderr
+    line; any other failure building the facade is a store failure.
+    """
     from memriver_core.bootstrap import build_service
-    from memriver_core.settings import Settings
+    from memriver_core.settings import SettingsError, load_settings
 
     try:
-        return build_service(Settings(root=store), root=store, home=home)
-    except Exception as err:   # a bad MEMRIVER_* value: reported as a store failure
+        return build_service(load_settings(root_override=store), root=store, home=home)
+    except SettingsError:
+        raise
+    except Exception as err:
         raise StorageFailure from err
 
 

@@ -9,6 +9,7 @@ Other packages read their own table of the same file (memriver-dream reads
 from __future__ import annotations
 
 import os
+import stat
 from collections.abc import Mapping
 from contextvars import ContextVar
 from pathlib import Path
@@ -46,6 +47,7 @@ __all__ = [
     "SettingsError",
     "load_settings",
     "reject_boolean",
+    "settings_file",
     "storage_root",
     "validation_fields",
 ]
@@ -124,6 +126,34 @@ def validation_fields(error: ValidationError, prefix: str = "") -> tuple[str, ..
     """
     return tuple(dict.fromkeys(f"{prefix}{item['loc'][0]}" for item in error.errors()
                                if item["loc"]))
+
+
+def settings_file(root: Path) -> Path | None:
+    """<root>/settings.toml when it is a regular file to read; None only when the
+    path is genuinely absent. Anything else -- a directory, a FIFO, a link that
+    dangles or loops, a root that cannot be searched -- raises SettingsError
+    ("could not be read"): an unreadable file never means "no settings".
+
+    The type is checked with stat before anything opens the path, so a FIFO never
+    blocks; `Path.is_file()` is not used because it turns a stat failure (on some
+    Python versions even EACCES) into a quiet False.
+    """
+    path = Path(root) / SETTINGS_FILENAME
+    try:
+        mode = path.stat().st_mode
+    except FileNotFoundError:
+        try:
+            path.lstat()          # a link whose target is missing is broken, not absent
+        except FileNotFoundError:
+            return None
+        except OSError:
+            pass
+        raise SettingsError(unreadable=True) from None
+    except OSError:               # ELOOP, EACCES, EIO, ENOTDIR, ...
+        raise SettingsError(unreadable=True) from None
+    if not stat.S_ISREG(mode):
+        raise SettingsError(unreadable=True) from None
+    return path
 
 
 def storage_root(env: Mapping[str, str] | None = None,
@@ -224,13 +254,13 @@ def _env_set(name: str) -> bool:
     return f"{ENV_PREFIX}{name}".upper() in {key.upper() for key in os.environ}
 
 
-def _attribute(error: ValidationError, path: Path) -> SettingsError:
+def _attribute(error: ValidationError, path: Path | None) -> SettingsError:
     """Each failing field blamed on the source that set it: its MEMRIVER_* variable,
     else settings.toml when the file holds it, else the environment. A default
     that only fails against the max (the cross-field rule) is blamed on whichever
     source set search_limit_max, by that name."""
     try:
-        in_file = set(TomlConfigSettingsSource(Settings, toml_file=path)())
+        in_file = set(TomlConfigSettingsSource(Settings, toml_file=path)()) if path else set()
     except (OSError, ValueError):     # changed since it was read: blame no file field
         in_file = set()
     fields: list[str] = []
@@ -258,12 +288,13 @@ def load_settings(root_override: Path | None = None) -> Settings:
     nothing falls back to the defaults, so a typo is never silently ignored.
     """
     root = Path(root_override) if root_override is not None else storage_root()
-    token = _settings_file.set(root / SETTINGS_FILENAME)
+    path = settings_file(root)     # None: no file; raises when it cannot be read
+    token = _settings_file.set(path)
     try:
         return Settings(root=root)
     except ValidationError as err:
         # from None: the cause echoes the rejected value, which could be a secret
-        raise _attribute(err, root / SETTINGS_FILENAME) from None
+        raise _attribute(err, path) from None
     except (OSError, ValueError):
         # OSError: permission denied and the like; ValueError: TOMLDecodeError
         # and UnicodeDecodeError. Their text repeats the path, so it is dropped.

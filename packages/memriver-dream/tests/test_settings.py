@@ -112,6 +112,39 @@ def test_a_permission_denied_settings_file_never_names_the_path(tmp_path):
     assert str(caught.value) == "settings.toml could not be read"
 
 
+@pytest.mark.parametrize("shape", ["directory", "fifo", "symlink-loop", "dangling-symlink"])
+def test_a_settings_path_that_is_not_a_readable_file_is_an_error(tmp_path, shape):
+    root = _root(tmp_path)
+    path = root / "settings.toml"
+    if shape == "directory":
+        path.mkdir()
+    elif shape == "fifo":
+        os.mkfifo(path)
+    elif shape == "symlink-loop":
+        path.symlink_to(path)
+    else:
+        path.symlink_to(root / "nowhere.toml")
+    with pytest.raises(SettingsError, match=r"^settings\.toml could not be read$"):
+        load_dream_settings(root)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+def test_a_root_that_cannot_be_searched_is_an_error_not_no_table(tmp_path):
+    root = _root(tmp_path, DREAM_TABLE)
+    root.chmod(0o000)
+    try:
+        with pytest.raises(SettingsError, match="could not be read"):
+            load_dream_settings(root)
+    finally:
+        root.chmod(0o700)
+
+
+def test_table_keys_match_fields_in_any_case(tmp_path):
+    text = '[dream]\nEXECUTOR = "codex"\nExecutor_Path = "/opt/bin/codex"\nTTL_DAYS = 7\n'
+    dream = load_dream_settings(_root(tmp_path, text))
+    assert (dream.executor, dream.executor_path, dream.ttl_days) == ("codex", "/opt/bin/codex", 7)
+
+
 CODEX_PROVIDER = (
     '[dream.codex_overrides]\n"model_provider" = "foundry"\n"model" = "deployment-a"\n'
     '"model_providers.foundry.name" = "Foundry"\n'

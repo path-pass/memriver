@@ -355,6 +355,29 @@ def test_a_broken_settings_file_stops_a_command_with_one_named_line(tmp_path, te
     assert "/secret/value" not in out.stderr and str(root) not in out.stderr
 
 
+def test_a_settings_path_that_is_a_directory_stops_serve(tmp_path):
+    root = tmp_path / "mem"
+    (root / "settings.toml").mkdir(parents=True)
+    out = _cli("serve", "--root", str(root))
+    assert (out.returncode, out.stdout, out.stderr) == (1, "", UNREADABLE_LINE)
+
+
+@pytest.mark.parametrize(("env", "text", "line"), [
+    ({}, 'search_limit_default = "/secret/value"\n', INVALID_LINE),
+    ({"MEMRIVER_MAX_BODY_CHARS": "/secret/value"}, None,
+     "memriver: environment variable MEMRIVER_MAX_BODY_CHARS is invalid\n"),
+])
+def test_an_unusable_setting_stops_project_commands_with_the_named_line(tmp_path, env, text,
+                                                                        line):
+    root = tmp_path / "mem"
+    root.mkdir()
+    if text is not None:
+        (root / "settings.toml").write_text(text, encoding="utf-8")
+    out = _cli("project", "explain", "--root", str(root), "--project-dir", str(tmp_path),
+               env=env)
+    assert (out.returncode, out.stdout, out.stderr) == (1, "", line)
+
+
 def test_a_broken_settings_file_gives_doctor_the_named_line_and_exit_two(tmp_path):
     root = _broken_settings(tmp_path, 'search_limit_default = "/secret/value"\n')
     out = _cli("doctor", "--root", str(root))

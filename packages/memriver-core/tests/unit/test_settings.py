@@ -255,6 +255,55 @@ def test_a_permission_denied_settings_file_is_an_error_that_never_names_the_path
     assert str(root) not in str(error)
 
 
+def _shape(root: Path, shape: str) -> None:
+    path = root / SETTINGS
+    if shape == "directory":
+        path.mkdir()
+    elif shape == "fifo":
+        os.mkfifo(path)
+    elif shape == "symlink-loop":
+        path.symlink_to(path)
+    elif shape == "dangling-symlink":
+        path.symlink_to(root / "nowhere.toml")
+
+
+SHAPES = ["directory", "fifo", "symlink-loop", "dangling-symlink"]
+
+
+@pytest.mark.parametrize("shape", SHAPES)
+def test_a_settings_path_that_is_not_a_readable_file_is_an_error(tmp_path, shape):
+    # only a genuinely absent path means "no file"; a FIFO is never opened
+    root = _root(tmp_path)
+    _shape(root, shape)
+    error = _raised(root)
+    assert str(error) == "settings.toml could not be read"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+def test_a_root_that_cannot_be_searched_is_an_error_not_a_missing_file(tmp_path):
+    root = _root(tmp_path, "max_body_chars = 42\n")
+    root.chmod(0o000)
+    try:
+        error = _raised(root)
+    finally:
+        root.chmod(0o700)
+    assert str(error) == "settings.toml could not be read"
+
+
+def test_a_symlink_to_a_settings_file_is_read(tmp_path):
+    root = _root(tmp_path)
+    (tmp_path / "real.toml").write_text("max_body_chars = 42\n", encoding="utf-8")
+    (root / SETTINGS).symlink_to(tmp_path / "real.toml")
+    assert load_settings(root_override=root).max_body_chars == 42
+
+
+def test_file_keys_match_fields_in_any_case(tmp_path):
+    # pydantic-settings' source matches keys case-insensitively (pinned: the
+    # declared lower bound must keep this)
+    assert load_settings(root_override=_root(tmp_path, "MAX_BODY_CHARS = 42\n")) \
+        .max_body_chars == 42
+
+
 def test_missing_settings_file_is_fine(tmp_path):
     assert load_settings(root_override=tmp_path / "nowhere").max_body_chars == 8000
 
