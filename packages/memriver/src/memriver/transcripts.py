@@ -31,21 +31,27 @@ CUT_MARK = " [cut]"
 # listed; either still requires the line to *start* with the header, so a real
 # prompt that merely mentions AGENTS.md mid-text is never caught by it. Both tags
 # here are matched whole (through their closing `>`), so they need no separate
-# boundary check the way the hook-prompt tag below does.
+# boundary check the way the tag-name prefixes below do. "<no retained transcript
+# delta" is not a tag either -- there is no closing `>` to require -- so any
+# character (or none) may follow it.
 _CODEX_INJECTED = ("<environment_context>", "<user_instructions>",
-                   "# AGENTS.md instructions for ", "# AGENTS.md instructions\n")
-# matched by tag name alone, since it carries attributes (<hook_prompt session-start>):
+                   "# AGENTS.md instructions for ", "# AGENTS.md instructions\n",
+                   "<no retained transcript delta")
+# matched by tag name alone, since some carry attributes (<hook_prompt session-start>):
 # the character right after the name must close the tag or start an attribute, or a
-# real prompt starting with a longer tag name (<hook_prompt_examples>, <hook_prompter>)
-# would be dropped too.
-_HOOK_PROMPT_TAG = "<hook_prompt"
+# real prompt starting with a longer tag name (<hook_prompt_examples>, <hook_prompter>,
+# <recommended_plugins_list>) would be dropped too.
+_TAG_NAME_PREFIXES = ("<hook_prompt", "<guardian_tool_descriptions", "<recommended_plugins")
 
 
 def _is_codex_injected(text: str) -> bool:
     if text.startswith(_CODEX_INJECTED):
         return True
-    boundary = text[len(_HOOK_PROMPT_TAG):len(_HOOK_PROMPT_TAG) + 1]
-    return text.startswith(_HOOK_PROMPT_TAG) and (boundary == ">" or boundary.isspace())
+    for tag in _TAG_NAME_PREFIXES:
+        boundary = text[len(tag):len(tag) + 1]
+        if text.startswith(tag) and (boundary == ">" or boundary.isspace()):
+            return True
+    return False
 
 
 def _read(path: str | None) -> tuple[list[dict], str, bool] | None:

@@ -190,6 +190,10 @@ def test_the_pre_0_157_agents_md_header_with_no_for_clause_is_still_dropped(tmp_
     "<hook_prompt session-start>run the checks</hook_prompt>",
     "<hook_prompt>run the checks</hook_prompt>",
     '<hook_prompt attr="x">run the checks</hook_prompt>',
+    "<guardian_tool_descriptions>tool catalogue</guardian_tool_descriptions>",
+    '<guardian_tool_descriptions version="2">tool catalogue</guardian_tool_descriptions>',
+    "<recommended_plugins>use these</recommended_plugins>",
+    '<recommended_plugins source="registry">use these</recommended_plugins>',
 ])
 def test_a_hook_prompt_block_is_dropped(tmp_path, hook_prompt):
     codex = tmp_path / "x.jsonl"
@@ -202,9 +206,23 @@ def test_a_hook_prompt_block_is_dropped(tmp_path, hook_prompt):
         _session("codex", codex)).records] == [xml]
 
 
+def test_a_no_retained_transcript_delta_block_is_dropped(tmp_path):
+    codex = tmp_path / "x.jsonl"
+    xml = "<task>Fix PR #1234 in auth.py</task>"
+    notice = "<no retained transcript delta: history compacted>"
+    _write(codex, [{"timestamp": AT, "type": "response_item", "ordinal": 1, "payload": {
+        "type": "message", "role": "user", "content": [
+            {"type": "input_text", "text": notice},
+            {"type": "input_text", "text": xml}]}}])
+    assert [r.text for r in CodexTranscripts(tool_output_chars=100).read(
+        _session("codex", codex)).records] == [xml]
+
+
 @pytest.mark.parametrize("near_miss", [
     "<hook_prompt_examples>a real prompt that starts with this tag name</hook_prompt_examples>",
     "<hook_prompter>another real prompt sharing the tag's prefix</hook_prompter>",
+    "<guardian_tool_descriptions_extra>shares the tag's prefix</guardian_tool_descriptions_extra>",
+    "<recommended_plugins_list>shares the tag's prefix</recommended_plugins_list>",
 ])
 def test_a_tag_that_merely_shares_the_hook_prompt_prefix_is_kept(tmp_path, near_miss):
     codex = tmp_path / "x.jsonl"

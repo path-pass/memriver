@@ -137,6 +137,19 @@ def test_the_unsafe_rule_flags_only_commands_to_the_agent_and_defaults_to_no_fla
     assert "When in doubt, do not flag" in prompt
 
 
+@pytest.mark.parametrize("prompt", [SYSTEM_PROMPT, GLOBAL_SYSTEM_PROMPT])
+def test_the_rewrite_rule_forbids_citing_its_own_target_as_a_source(prompt):
+    # a rewrite that names itself as evidence would let the model consume the very
+    # memory it is changing, instead of pointing to what contradicted it
+    assert "never the memory being updated" in prompt
+
+
+def test_the_extract_rule_keeps_project_local_facts_out_of_global():
+    # a fact scoped to this repo would read wrong once copied into every project
+    assert "reads right in any project" in SYSTEM_PROMPT
+    assert "never make a project-local requirement global without its condition" in SYSTEM_PROMPT
+
+
 def test_an_invalid_group_is_skipped_and_nothing_is_applied(world):
     a = world.plant(world.project.id, "a fact")
     world.executor.replies = [_groups(
