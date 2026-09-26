@@ -28,6 +28,7 @@ from memriver_core.settings import (
     Settings,
     SettingsError,
     load_settings,
+    validation_fields,
 )
 from memriver_dream import run_dream
 from memriver_dream.run import MODEL_PHASES
@@ -103,6 +104,19 @@ def _existing_table(path: Path) -> dict:
     return dict(table) if isinstance(table, dict) else {}
 
 
+def _variants(table: Mapping, owned: Mapping) -> list:
+    """The table's keys that spell a key init owns in another case: the run matches
+    keys case-insensitively, first spelling winning, so each would shadow init's."""
+    return [key for key in table if isinstance(key, str) and key.lower() in owned
+            and key not in owned]
+
+
+def _with(table: dict, values: dict) -> dict:
+    """The table as init leaves it: every spelling of an owned key replaced by `values`."""
+    kept = {key: value for key, value in table.items() if key not in _variants(table, values)}
+    return kept | values
+
+
 def _write_dream_table(path: Path, values: dict) -> None:
     """Set the [dream] keys init owns, keeping every other line of the file."""
     try:
@@ -113,17 +127,11 @@ def _write_dream_table(path: Path, values: dict) -> None:
     if not isinstance(table, Mapping):
         table = tomlkit.table()
         document["dream"] = table
+    for key in _variants(table, values):         # the same rule as _with
+        del table[key]
     for key, value in values.items():
         table[key] = value
     replace_atomically(path, tomlkit.dumps(document).encode("utf-8"), 0o600, os.replace)
-
-
-def _invalid_key(error: Mapping) -> str:
-    """The offending key; for codex_overrides the validator's fixed reason, which names
-    the inner key and never its value."""
-    if error["loc"][0] == "codex_overrides" and error["type"] == "value_error":
-        return str(error["ctx"]["error"])
-    return str(error["loc"][0])
 
 
 def _agent_env(home: Path, memriver: str, executor_path: str, root: Path) -> dict[str, str]:
@@ -178,16 +186,19 @@ def run_init(*, executor: str | None, ttl_days: int | None, at: str | None, yes:
     try:
         # the whole table as it will stand, read the way the run reads it: a bad key
         # init does not own is never kept
-        table = check_dream_table(_existing_table(settings_file) | values)
+        table = check_dream_table(_with(_existing_table(settings_file), values))
     except ValidationError as err:
-        keys = sorted({_invalid_key(error) for error in err.errors() if error["loc"]})
-        stdout.write(f"refused: the [dream] table in {SETTINGS_FILENAME} has invalid keys: "
-                     f"{', '.join(keys)}; fix or remove them, then run memriver dream init "
-                     "again\n")
+        fields = validation_fields(err)
+        given = [name for name in fields if name in values]
+        if len(given) < len(fields):
+            # a bad value the file itself holds: the settings error cli.main prints
+            raise SettingsError(tuple(f"dream.{name}" for name in fields
+                                      if name not in values)) from None
+        stdout.write(f"refused: invalid value given for {', '.join(given)}; nothing was "
+                     "written\n")
         return 2
     except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
-        stdout.write(f"refused: {SETTINGS_FILENAME} could not be read; fix it first\n")
-        return 2
+        raise SettingsError(unreadable=True) from None
     variables = sorted({value for key, value in table.codex_overrides.items()
                         if key.endswith(".env_key")}) if name == "codex" else []
     missing = missing_env(table.codex_overrides, env) if name == "codex" else []

@@ -172,7 +172,7 @@ def test_init_elsewhere_prints_a_command_that_works_with_a_spaced_root(tmp_path,
 @pytest.mark.parametrize(("options", "fragment"), [
     ({"which": lambda name: None}, "neither claude nor codex is on PATH"),
     ({"executor": "codex", "which": lambda name: None}, "codex is not on PATH"),
-    ({"at": "25:00"}, "invalid keys: schedule_at"),
+    ({"at": "25:00"}, "refused: invalid value given for schedule_at; nothing was written"),
     ({"yes": False}, "stdin is not a terminal"),
 ])
 def test_init_refusals_write_nothing(world, options, fragment):
@@ -199,21 +199,38 @@ def test_init_refuses_a_memriver_inside_uvs_cache(world, tmp_path):
 def test_init_refuses_an_invalid_key_it_does_not_own(world):
     before = "max_body_chars = 4000\n[dream]\nuncertain_limit = 0\n"
     (world["store"] / "settings.toml").write_text(before, encoding="utf-8")
-    code, out = _init(world)
-    assert code == 2 and "invalid keys: uncertain_limit" in out
+    # the file's own bad value is the settings error cli.main prints on stderr
+    with pytest.raises(SettingsError, match=r"^settings\.toml is invalid: field "
+                                             r"dream\.uncertain_limit$"):
+        _init(world)
     assert (world["store"] / "settings.toml").read_text(encoding="utf-8") == before
 
 
-def test_init_checks_the_table_as_the_run_reads_it_keys_in_any_case(world):
-    # the run matches keys case-insensitively, so EXECUTOR = 'gpt' is what it reads
-    # beside the executor init writes: init refuses instead of a nightly failing run
-    before = "max_body_chars = 4000\n[dream]\nEXECUTOR = 'gpt'\n"
-    (world["store"] / "settings.toml").write_text(before, encoding="utf-8")
+def test_init_replaces_every_case_variant_of_the_keys_it_owns(world):
+    # the run matches keys case-insensitively, first spelling winning: an upper-case
+    # key left beside the one init writes would silently keep the old value
+    (world["store"] / "settings.toml").write_text(
+        "max_body_chars = 4000\n[dream]\nEXECUTOR = 'claude'\nEXECUTOR_PATH = '/old/claude'\n"
+        "TTL_DAYS = 90\nSchedule_At = '04:00'\nnot_a_key = 1\n", encoding="utf-8")
+    code, _ = _init(world, executor="codex", ttl_days=30, at="05:30")
+    assert code == 0
+    dream = load_dream_settings(world["store"])
+    assert (dream.executor, dream.executor_path, dream.ttl_days, dream.schedule_at) == (
+        "codex", str(world["bin"] / "codex"), 30, "05:30")
+    assert set(_settings(world)["dream"]) == {"executor", "executor_path", "ttl_days",
+                                              "schedule_at", "not_a_key"}
+    assert plistlib.loads(plist_path(world["home"]).read_bytes())[
+        "StartCalendarInterval"] == {"Hour": 5, "Minute": 30}
+
+
+def test_init_replaces_an_invalid_upper_case_key_it_owns(world):
+    (world["store"] / "settings.toml").write_text(
+        "max_body_chars = 4000\n[dream]\nEXECUTOR = 'gpt'\n", encoding="utf-8")
     with pytest.raises(SettingsError, match="field dream.executor"):
         load_dream_settings(world["store"])
-    code, out = _init(world)
-    assert code == 2 and "invalid keys: executor" in out
-    assert (world["store"] / "settings.toml").read_text(encoding="utf-8") == before
+    assert _init(world)[0] == 0
+    assert load_dream_settings(world["store"]).executor == "claude"
+    assert "EXECUTOR" not in _settings(world)["dream"]
 
 
 def test_init_keeps_an_unknown_key_which_every_reader_ignores(world):
@@ -310,10 +327,10 @@ def test_init_names_a_refused_override_key_and_never_its_value(world):
     _init(world)
     _add_overrides(world, '\n[dream.codex_overrides]\n'
                           '"model_providers.x.experimental_bearer_token" = "sk-synthetic"\n')
-    code, out = _init(world)
-    assert code == 2
-    assert "model_providers.x.experimental_bearer_token is not an allowed key" in out
-    assert "sk-synthetic" not in out
+    with pytest.raises(SettingsError) as caught:
+        _init(world)
+    assert str(caught.value) == "settings.toml is invalid: field dream.codex_overrides"
+    assert "sk-synthetic" not in str(caught.value)
 
 
 def test_run_with_codex_refuses_a_missing_provider_variable_and_builds_no_executor(
