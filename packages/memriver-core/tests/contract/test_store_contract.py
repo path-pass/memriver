@@ -289,6 +289,9 @@ def test_citing_sources_is_not_an_agent_operation(world):
         _write(world, Update(source.id, source.version,
                              sources=(SourceRef(source.id, source.version),)))
     assert world["memory_store"].read(source.id, world["read_write_set"]) == source
+    with pytest.raises(ValueError):     # clearing the set is setting it too
+        _write(world, Update(source.id, source.version, sources=()))
+    assert world["memory_store"].read(source.id, world["read_write_set"]) == source
 
 
 # --- MemoryStore: read / update / delete ------------------------------------

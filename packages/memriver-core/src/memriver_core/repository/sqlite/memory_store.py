@@ -498,7 +498,9 @@ class SqliteMemoryStore:
         # another project's memories through "source"/"cycle" conflicts
         if isinstance(op, Restore):
             raise ValueError("restore is not an agent operation")  # noqa: TRY004
-        if isinstance(op, (Create, Update)) and op.sources not in (None, ()):
+        # an agent never sets sources: a Create cites none, an Update keeps them
+        if (isinstance(op, Create) and op.sources != ()) or \
+                (isinstance(op, Update) and op.sources is not None):
             raise ValueError("citing sources is not an agent operation")
         # a malformed target id answers exactly like a missing one, never as
         # storage damage: SQLite never sees it
