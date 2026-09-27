@@ -1274,10 +1274,11 @@ async def test_a_meta_value_of_the_wrong_shape_is_read_as_absent(world, monkeypa
         .splitlines()[0] == _registered_header(world, world["dir"])
 
 
-@pytest.mark.parametrize(("harness", "changed_via", "read_harness"),
-                         [("cursor", "cursor", "cursor"), (None, None, "unknown")])
+@pytest.mark.parametrize(("harness", "changed_via"),
+                         [("cursor", "cursor"), (None, "unknown")])
 async def test_mcp_writes_are_changed_by_mcp_via_the_harness_and_reads_name_it(
-        world, monkeypatch, harness, changed_via, read_harness):
+        world, monkeypatch, harness, changed_via):
+    read_harness = changed_via
     # spec §3.4 / R6: changed_by and changed_via come from the entry point, never from a
     # tool argument; a read records the harness it came through
     from memriver import server as server_module
@@ -1307,4 +1308,4 @@ async def test_mcp_writes_are_changed_by_mcp_via_the_harness_and_reads_name_it(
     services = build_services(Settings(root=world["store"]), root=world["store"])
     versions = sorted(services.memory.versions(written["id"]), key=lambda v: v.version)
     assert [v.change.changed_by for v in versions] == ["mcp", "mcp", "mcp"]
-    assert [v.change.changed_via for v in versions[1:]] == [changed_via, changed_via]
+    assert [v.change.changed_via for v in versions] == [changed_via, changed_via, changed_via]

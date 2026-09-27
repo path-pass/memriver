@@ -615,3 +615,122 @@ def test_a_change_a_hard_delete_cut_is_listed_as_incomplete_but_not_a_finding(tm
     report = json.loads(invoke_doctor(root=store, json_output=True).stdout)
     assert (report["state"], report["findings"]) == ("healthy", [])
     assert report["incomplete_changes"] == [pair.change_id]
+
+
+# --- fix round 1: a policy scan failure never erases the diagnosis --------------
+
+# a diagnosis that already shows the file or schema cannot be read safely is not
+# queried again for a policy scan; the finding itself is kept, not replaced by the
+# generic "inaccessible" fallback
+def test_doctor_keeps_the_diagnosis_when_the_schema_is_unrecognized(tmp_path):
+    store = tmp_path / "mem"
+    build_services(Settings(root=store), root=store).project.ensure_global()
+    with closing(sqlite3.connect(store / "memriver.db")) as conn:
+        conn.execute("PRAGMA user_version = 99")
+    result = invoke_doctor(root=store, json_output=True)
+    assert result.exit_code == 1
+    report = json.loads(result.stdout)
+    assert "unknown-schema" in {f["kind"] for f in report["findings"]}
+
+
+def test_doctor_keeps_the_diagnosis_when_the_database_is_a_symlink(tmp_path):
+    store = tmp_path / "mem"
+    build_services(Settings(root=store), root=store).project.ensure_global()
+    real = store / "memriver.db"
+    target = tmp_path / "outside.db"
+    real.rename(target)
+    real.symlink_to(target)
+    result = invoke_doctor(root=store, json_output=True)
+    assert result.exit_code == 1
+    report = json.loads(result.stdout)
+    assert "unsafe-database" in {f["kind"] for f in report["findings"]}
+
+
+# scan_policy() failing for any other reason still keeps the diagnosis already run;
+# only the policy scan itself is reported as incomplete
+def test_an_injected_policy_scan_failure_keeps_the_diagnosis_and_marks_it_incomplete(
+        monkeypatch, tmp_path):
+    class _FlakyScan:
+        def diagnose(self, **kw) -> DiagnosticsReport:
+            return DiagnosticsReport(state="healthy", findings=(), initialized=True)
+
+        def scan_policy(self) -> list:
+            raise StorageFailure
+
+    monkeypatch.setattr("memriver_core.bootstrap.build_services",
+                        lambda settings, *, root=None, home=None:
+                        SimpleNamespace(maintenance=_FlakyScan()))
+
+    result = invoke_doctor(root=tmp_path, json_output=True)
+    assert result.exit_code == 1
+    report = json.loads(result.stdout)
+    assert (report["state"], report["findings"]) == ("healthy", [])
+    assert report["policy_scan"] == "incomplete"
+
+    text_result = invoke_doctor(root=tmp_path)
+    assert text_result.exit_code == 1
+    assert text_result.stdout.startswith("store is healthy\n")
+    assert "policy scan did not complete" in text_result.stdout
+
+
+# every other degraded store -- a few bad rows, say -- still scans normally
+def test_a_store_with_ordinary_findings_still_scans(monkeypatch, tmp_path):
+    maintenance = _PolicyMaintenance(
+        DiagnosticsReport(state="degraded", findings=(_finding("invalid-row"),),
+                         initialized=True),
+        [PolicyHit("mmmmmmmmmm", 1, "github-pat", True)])
+    monkeypatch.setattr("memriver_core.bootstrap.build_services",
+                        lambda settings, *, root=None, home=None:
+                        SimpleNamespace(maintenance=maintenance))
+
+    result = invoke_doctor(root=tmp_path, json_output=True)
+    report = json.loads(result.stdout)
+    assert report["state"] == "degraded"
+    assert report["policy_hits"] == [
+        {"memory_id": "mmmmmmmmmm", "version": 1, "rule_id": "github-pat", "current": True}]
+    assert "policy_scan" not in report
+
+
+def _damage_the_only_memorys_id(store, raw_id: bytes) -> None:
+    with closing(sqlite3.connect(store / "memriver.db")) as conn, conn:
+        conn.execute("UPDATE memory_versions SET memory_id = CAST(? AS TEXT)", (raw_id,))
+        conn.execute("UPDATE memories SET id = CAST(? AS TEXT)", (raw_id,))
+
+
+def _seed_a_policy_matching_memory(store, work):
+    """A memory the write path would refuse, planted the way a history row already
+    holding it looks (the content policy blocks it at write time, never at rest)."""
+    services = build_services(Settings(root=store), root=store)
+    context = services.project.open_project_context(str(work))
+    services.memory.record(content="clean", type="project", sync=True, harness="t",
+                           description="cue", context=context)
+    secret = "aws key AKIAIOSFODNN7EXAMPLE ok"
+    with closing(sqlite3.connect(store / "memriver.db")) as conn, conn:
+        conn.execute("UPDATE memory_versions SET body = ?", (secret,))
+        conn.execute("UPDATE memories SET body = ?", (secret,))
+
+
+# a policy-matching row whose id is invalid UTF-8 never becomes a PolicyHit --
+# doctor --json succeeds and the inspector's own invalid-row finding is present
+def test_doctor_json_survives_an_undecodable_policy_hit_id(tmp_path):
+    store, work, _ = _real_store(tmp_path)
+    _seed_a_policy_matching_memory(store, work)
+    _damage_the_only_memorys_id(store, b"\x80123456789")
+
+    result = invoke_doctor(root=store, json_output=True)
+    assert result.exit_code == 1
+    report = json.loads(result.stdout)
+    assert report["policy_hits"] == []
+    assert "invalid-row" in {f["kind"] for f in report["findings"]}
+
+
+# a policy-matching row whose id carries ESC and a newline never reaches the human
+# renderer as a PolicyHit; no raw control character escapes into the terminal
+def test_doctor_human_output_has_no_raw_control_characters_from_a_policy_hit_id(tmp_path):
+    store, work, _ = _real_store(tmp_path)
+    _seed_a_policy_matching_memory(store, work)
+    _damage_the_only_memorys_id(store, b"\x1b[31m\nABCD")
+
+    result = invoke_doctor(root=store)
+    assert result.exit_code == 1
+    assert "\x1b" not in result.stdout

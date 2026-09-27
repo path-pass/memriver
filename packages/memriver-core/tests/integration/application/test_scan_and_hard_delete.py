@@ -70,6 +70,24 @@ def test_the_scan_finds_secrets_in_history_deleted_memories_and_global_without_t
     assert _counts(world) == before                     # no deletion, no read fact
 
 
+# a memriver_id no write path could ever produce: invalid UTF-8 (a STRICT TEXT column
+# does not stop a raw write from planting it), or valid UTF-8 outside ID_RE's alphabet
+@pytest.mark.parametrize("raw_id", [b"\x80123456789", b"\x1b[31m\nABCD"])
+def test_the_scan_skips_a_row_whose_id_is_not_addressable(world, raw_id):
+    """No command can ever act on such a row by id -- `memriver delete` included -- so
+    scan_policy must never turn its content-policy hit into a PolicyHit naming it; the
+    inspector already reports the row itself as invalid-row."""
+    maintenance = world["services"].maintenance
+    doomed = world["create"]("clean")
+    world["sql"]("UPDATE memory_versions SET body = ? WHERE memory_id = ? AND version = 1",
+                 SECRET, doomed)
+    world["sql"]("UPDATE memory_versions SET memory_id = CAST(? AS TEXT) "
+                 "WHERE memory_id = ?", raw_id, doomed)
+    world["sql"]("UPDATE memories SET id = CAST(? AS TEXT) WHERE id = ?", raw_id, doomed)
+
+    assert maintenance.scan_policy() == []
+
+
 def test_check_text_names_the_rule_of_any_text_and_has_no_side_effect(world):
     maintenance = world["services"].maintenance
     world["create"]()

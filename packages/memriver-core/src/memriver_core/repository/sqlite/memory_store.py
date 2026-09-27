@@ -579,6 +579,11 @@ class SqliteMemoryStore:
         # checked after the read transaction: scanning must not hold the read lock
         hits: list[PolicyHit] = []
         for memory_id, version, description, body, current in rows:
+            # an id no write path could ever have produced (undecodable bytes, or text
+            # outside ID_RE) is not addressable by any command that would act on a
+            # PolicyHit; the inspector already reports the row itself as invalid-row
+            if not _addressable(memory_id):
+                continue
             for text in (description, body):
                 rule = check(text) if isinstance(text, str) else None
                 if rule is not None:

@@ -3,8 +3,7 @@
 mismatch, CLI commands exit 1 with that hint -- and none of them touches the file.
 
 A store below the needed schema is a fresh store with PRAGMA user_version set back to
-3: the version gate reads user_version alone, and the rebuild of real v2/v3 files is
-covered by the core's own tests.
+3: the version gate reads user_version alone.
 """
 
 from __future__ import annotations

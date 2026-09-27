@@ -34,6 +34,7 @@ _INACCESSIBLE_MESSAGE = "memriver doctor: memory store is inaccessible"
 # this is a value read back by a script, not a line printed to a terminal
 _INACCESSIBLE_JSON_ERROR = "memory store is inaccessible"
 _EXIT_CODES = {"uninitialized": 0, "empty": 0, "healthy": 0, "degraded": 1}
+_POLICY_SCAN_INCOMPLETE_NOTE = "policy scan did not complete; content policy hits may be missing"
 
 # project ids, names, location hints and bound roots come from the store,
 # which a user can hand-edit to contain a newline (forging a second finding
@@ -68,28 +69,34 @@ def _policy_hit_to_dict(hit: PolicyHit) -> dict:
             "current": hit.current}
 
 
-def _render_json(report: DiagnosticsReport, hits: list[PolicyHit], stdout: IO[str]) -> None:
+def _render_json(report: DiagnosticsReport, hits: list[PolicyHit], scan_incomplete: bool,
+                 stdout: IO[str]) -> None:
     import json
 
-    stdout.write(json.dumps({
+    payload = {
         "state": report.state,
         "initialized": report.initialized,
         "findings": [_finding_to_dict(f) for f in report.findings],
         "policy_hits": [_policy_hit_to_dict(hit) for hit in hits],
         "incomplete_changes": list(report.incomplete_changes),
         "projects": [_project_to_dict(p) for p in report.projects],
-    }, indent=2) + "\n")
+    }
+    if scan_incomplete:
+        payload["policy_scan"] = "incomplete"
+    stdout.write(json.dumps(payload, indent=2) + "\n")
 
 
-def _render_policy_hits(hits: list[PolicyHit], stdout: IO[str]) -> None:
-    if not hits:
-        return
-    stdout.write("\ncontent policy hits:\n")
-    for hit in hits:
-        where = "current" if hit.current else "history"
-        stdout.write(f"  - {hit.memory_id} v{hit.version} ({where}): {_visible(hit.rule_id)}\n")
-    stdout.write("    suggestion: inspect with memriver history ID; memriver delete ID --hard "
-                 "removes every version\n")
+def _render_policy_hits(hits: list[PolicyHit], scan_incomplete: bool, stdout: IO[str]) -> None:
+    if hits:
+        stdout.write("\ncontent policy hits:\n")
+        for hit in hits:
+            where = "current" if hit.current else "history"
+            stdout.write(f"  - {_visible(hit.memory_id)} v{hit.version} ({where}): "
+                         f"{_visible(hit.rule_id)}\n")
+        stdout.write("    suggestion: inspect with memriver history ID; memriver delete ID "
+                     "--hard removes every version\n")
+    if scan_incomplete:
+        stdout.write(f"\n{_POLICY_SCAN_INCOMPLETE_NOTE}\n")
 
 
 def _render_incomplete_changes(report: DiagnosticsReport, stdout: IO[str]) -> None:
@@ -103,7 +110,8 @@ def _render_incomplete_changes(report: DiagnosticsReport, stdout: IO[str]) -> No
                          for change_id in report.incomplete_changes))
 
 
-def _render_human(report: DiagnosticsReport, hits: list[PolicyHit], stdout: IO[str]) -> None:
+def _render_human(report: DiagnosticsReport, hits: list[PolicyHit], scan_incomplete: bool,
+                  stdout: IO[str]) -> None:
     stdout.write(_STATE_MESSAGES[report.state] + "\n")
     if not report.initialized and report.state != "uninitialized":
         stdout.write(_NOT_INITIALIZED_NOTE + "\n")
@@ -119,7 +127,7 @@ def _render_human(report: DiagnosticsReport, hits: list[PolicyHit], stdout: IO[s
             stdout.write(f"    locations: {locations}\n")
             stdout.write(f"    reason: {finding.reason}\n")
             stdout.write(f"    suggestion: {finding.suggestion}\n")
-    _render_policy_hits(hits, stdout)
+    _render_policy_hits(hits, scan_incomplete, stdout)
     _render_incomplete_changes(report, stdout)
     _render_projects_section(report, stdout)
 
@@ -145,26 +153,29 @@ def run_doctor(*, root: Path | None, json_output: bool, stale_days: int,
     from memriver_core.bootstrap import build_services
     from memriver_core.settings import SettingsError, load_settings
 
+    def _unsupported(err: StoreNeedsUpgrade) -> int:
+        # spec §9: a store below the schema this memriver needs is refused
+        # like every other command does it -- exit 1, the one hint, and
+        # nothing else: whatever diagnose() already found is not shown
+        # alongside a refusal every other entry point gives the same way
+        from .views import unsupported_store
+
+        hint = unsupported_store(err)
+        stderr.write(f"memriver doctor: {hint}\n")
+        if json_output:
+            import json
+
+            stdout.write(json.dumps({"error": hint}) + "\n")
+        return 1
+
     try:
         with quiet_core_logging():
             settings = load_settings(root_override=root)
             maintenance = build_services(settings, root=settings.root).maintenance
             report = maintenance.diagnose(stale_days=stale_days)
-            # a store that is not there is never created just to be scanned
-            hits = maintenance.scan_policy() if report.initialized else []
     except Exception as err:  # noqa: BLE001 - see below
         if isinstance(err, StoreNeedsUpgrade):
-            # spec §9: a store below the schema this memriver needs is refused
-            # like every other command does it -- exit 1, the one hint
-            from .views import unsupported_store
-
-            hint = unsupported_store(err)
-            stderr.write(f"memriver doctor: {hint}\n")
-            if json_output:
-                import json
-
-                stdout.write(json.dumps({"error": hint}) + "\n")
-            return 1
+            return _unsupported(err)
         # Everything from here to the report is "reading the store": a
         # StorageFailure, but also the settings load. Whatever the reason, exit 2
         # is the one honest answer -- exit 1 would claim findings doctor never
@@ -180,9 +191,27 @@ def run_doctor(*, root: Path | None, json_output: bool, stale_days: int,
             reason = str(err) if settings_error else _INACCESSIBLE_JSON_ERROR
             stdout.write(json.dumps({"error": reason}) + "\n")
         return 2
+    # the diagnosis above is kept whatever happens next: a policy scan is a second,
+    # independent read of the store (inspector.py's own walk never opens the
+    # database the way the serving read path does), and its own failure never
+    # erases findings diagnose() already proved. A store that is not there is
+    # never created just to be scanned.
+    hits: list[PolicyHit] = []
+    scan_incomplete = False
+    if report.initialized:
+        try:
+            with quiet_core_logging():
+                hits = maintenance.scan_policy()
+        except StoreNeedsUpgrade as err:
+            # the same schema this memriver cannot read at all: the scan's own
+            # read hit it even where diagnose()'s walk of the raw file did not
+            return _unsupported(err)
+        except Exception:  # noqa: BLE001 - the diagnosis stays; only the scan is incomplete
+            scan_incomplete = True
     if json_output:
-        _render_json(report, hits, stdout)
+        _render_json(report, hits, scan_incomplete, stdout)
     else:
-        _render_human(report, hits, stdout)
-    # a policy hit is a finding to act on, whatever the store's own state
-    return max(_EXIT_CODES[report.state], 1 if hits else 0)
+        _render_human(report, hits, scan_incomplete, stdout)
+    # a policy hit, or a scan that could not finish, is worth acting on whatever
+    # the store's own state
+    return max(_EXIT_CODES[report.state], 1 if hits else 0, 1 if scan_incomplete else 0)

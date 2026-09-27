@@ -38,8 +38,8 @@ _SESSION_HARNESSES = ("claude-code", "codex")
 
 _COULD_NOT_READ_STORE = "could not read the memory store"
 
-# spec §9: a store below the schema this memriver needs is refused until it is
-# rebuilt offline; the agent is told who acts, never to act itself
+# spec §9: a store below the schema this memriver needs is refused; nothing is
+# read or written
 _UNSUPPORTED_STORE = ("The memory store is at schema version {version}, which this "
                       "memriver does not support; no change was made.")
 
@@ -307,17 +307,17 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
         # resolved once, at build time: every tool answers for the same
         # project for the life of the server, and the header cannot drift. A
         # store below the schema this memriver needs is remembered instead:
-        # every tool refuses with it until the store is rebuilt and the
-        # server restarts.
-        needs_upgrade: StoreNeedsUpgrade | None = None
+        # every tool refuses with it, reading and writing nothing, for the
+        # life of this server.
+        unsupported: StoreNeedsUpgrade | None = None
         try:
             directory_context = services.project.open_project_context(str(project_dir))
         except StoreNeedsUpgrade as err:
-            needs_upgrade, directory_context = err, None
+            unsupported, directory_context = err, None
 
         def context_of(ctx: Context) -> ProjectContext:
-            if needs_upgrade is not None:
-                raise StoreNeedsUpgrade(needs_upgrade.version)
+            if unsupported is not None:
+                raise StoreNeedsUpgrade(unsupported.version)
             return directory_context
 
     mcp = FastMCP("memriver", instructions=instructions)
@@ -396,7 +396,7 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
             memory = memory_service.update(memory_id, content, context_of(ctx),
                                            expected_version=expected_version,
                                            description=description, changed_by="mcp",
-                                           changed_via=harness)
+                                           changed_via=source_harness)
         except Exception as err:  # noqa: BLE001
             _fail("update", err, memory_id=memory_id)
         return {"id": memory.id, "updated": memory.updated, "version": memory.version}
@@ -409,7 +409,7 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
         try:
             memory_service.delete(memory_id, context_of(ctx),
                                   expected_version=expected_version, changed_by="mcp",
-                                  changed_via=harness)
+                                  changed_via=source_harness)
         except Exception as err:  # noqa: BLE001
             _fail("delete", err, memory_id=memory_id)
         return {"deleted": memory_id}

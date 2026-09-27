@@ -8,8 +8,8 @@ Claude Code keeps its MCP server across ``/clear`` and an in-app ``/resume``
 and only the call names the current session. Every event names its session by
 the payload's ``session_id``: without a valid one, or without a store (asked
 first, through ``store_exists``), a hook does nothing -- and no hook ever
-creates the store. A store below the schema this memriver needs is left alone
-the same way: every event does nothing until it has been rebuilt offline.
+creates the store. A store below the schema this memriver needs is refused the
+same way: every event does nothing, and nothing is read or written.
 
 Three rules shape this module.
 
@@ -372,7 +372,7 @@ def _session_start(harness: Harness, payload_text: str, *, root: Path | None,
         from memriver_core import StoreNeedsUpgrade
 
         if isinstance(err, StoreNeedsUpgrade):
-            return HookResult()      # nothing until the store is rebuilt (spec §9)
+            return HookResult()      # refused; nothing is read or written (spec §9)
         return _settings_failure(err) or HookResult(stderr=STORE_UNAVAILABLE)
 
 
