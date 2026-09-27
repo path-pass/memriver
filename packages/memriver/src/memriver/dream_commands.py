@@ -146,6 +146,12 @@ def _write_dream_table(path: Path, values: dict) -> None:
         document = tomlkit.parse(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         document = tomlkit.document()
+    except (tomlkit.exceptions.ParseError, UnicodeDecodeError):
+        # the file changed since the plan was read and confirmed -- edited by hand,
+        # or by another process -- into something this second parser cannot read
+        # either: named the same one-line way as any other unusable settings.toml,
+        # never a traceback; nothing is written
+        raise SettingsError(unreadable=True) from None
     table = document.get("dream")
     if not isinstance(table, Mapping):
         table = tomlkit.table()
@@ -382,7 +388,12 @@ def run_run(*, phase: str | None, trigger: str, root: Path | None, stdout: IO[st
         stdout.write(SKIPPED)
         return 0
     # under the schedule, stdout is dream.log: the report lands there too
-    _print_report(_report_path(settings.root, run), stdout)
+    if not _print_report(_report_path(settings.root, run), stdout):
+        # the run itself is not undone -- its row and report file stand as they are --
+        # only the final read-back failed; the same fixed line as any other dream-file
+        # fault, never the exception's text
+        stderr.write(DREAM_FAILURE)
+        return 1
     return 0
 
 
@@ -396,6 +407,15 @@ def run_report(run_id: str | None, *, list_count: int | None, root: Path | None,
     settings = load_settings(root_override=root)
     dream = load_dream_settings(settings.root)       # its report_retention_days
     store_root = Path(settings.root)
+    try:
+        # the same check run and init make, through the same core entry point: a
+        # store below the schema this memriver needs is refused before the dream
+        # lock is taken, dream.db is opened, or retention deletes anything. An
+        # uninitialized store (no global project yet) is not this refusal's concern.
+        build_services(settings, root=store_root).project.global_project_id()
+    except StoreNeedsUpgrade as err:
+        stdout.write(f"memriver dream: {unsupported_store(err)}\n")
+        return 1
     try:
         # retention runs before a report, under the run lock; while a run holds the
         # lock nothing is deleted, and a "running" row is that live run

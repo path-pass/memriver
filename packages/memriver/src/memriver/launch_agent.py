@@ -66,6 +66,28 @@ def _unload(label: str, path: Path, uid: int, launchctl: Launchctl) -> None:
         raise LaunchctlFailed
 
 
+def _exists(path: Path) -> bool:
+    """Whether `path` is there, checked with `lstat` directly rather than
+    `Path.exists()`: on Python 3.14 that method swallows every `OSError` (not
+    just "nothing here") and reports False, which would read a stat fault
+    (EIO, a permission error) as "no plist" -- and a failed replacement's
+    rollback would then delete the real file instead of restoring it. Only
+    a missing path is absent here; any other OSError propagates, before
+    anything is unloaded or written.
+    """
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _previous_plist(path: Path) -> bytes | None:
+    """The plist at `path` before any change is made, or None when there truly
+    is none; see `_exists` for why this is not `Path.exists()`."""
+    return path.read_bytes() if _exists(path) else None
+
+
 def _write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     replace_atomically(path, data, 0o644, os.replace)
@@ -88,7 +110,7 @@ def _restore(path: Path, previous: bytes | None, was_loaded: bool, uid: int,
 def install(*, home: Path, plist: bytes, uid: int, launchctl: Launchctl,
             label: str = DREAM_LAUNCH_AGENT_LABEL) -> None:
     path = plist_path(home, label)
-    previous = path.read_bytes() if path.exists() else None
+    previous = _previous_plist(path)
     was_loaded = _loaded(label, uid, launchctl)     # launchd cannot say: nothing touched
     if was_loaded:
         _unload(label, path, uid, launchctl)        # still loaded: the old plist stays
@@ -107,7 +129,7 @@ def uninstall(*, home: Path, uid: int, launchctl: Launchctl,
     """True when something was removed; False when nothing was installed."""
     path = plist_path(home, label)
     loaded = _loaded(label, uid, launchctl)         # launchd cannot say: the plist stays
-    if not path.exists() and not loaded:
+    if not _exists(path) and not loaded:
         return False
     if loaded:
         _unload(label, path, uid, launchctl)        # still loaded: fail and keep the plist

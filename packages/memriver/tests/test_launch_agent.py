@@ -1,7 +1,9 @@
 # spec §10 item 17: v5 §12 item 13 (the LaunchAgent: install, replace, restore, uninstall)
 
+import errno
 import plistlib
 import stat
+from pathlib import Path
 
 import pytest
 from memriver import launch_agent
@@ -191,6 +193,40 @@ def test_a_link_planted_at_a_temporary_name_is_never_written_through(tmp_path):
     install(home=tmp_path, plist=_plist(tmp_path), uid=501, launchctl=Launchctl())
     assert other.read_bytes() == b"KEEP" and stat.S_IMODE(other.stat().st_mode) == 0o600
     assert not path.is_symlink() and plistlib.loads(path.read_bytes())["Label"]
+
+
+def _flaky_lstat(target: Path, original):
+    def lstat(self, *args, **kwargs):
+        if self == target:
+            raise OSError(errno.EIO, "Input/output error")
+        return original(self, *args, **kwargs)
+    return lstat
+
+
+def test_a_stat_fault_on_the_old_plist_refuses_before_anything_is_touched(
+        tmp_path, monkeypatch):
+    # a one-time EIO on the old plist's lstat must never be read as "no old plist":
+    # that would let a later rollback delete the real file instead of restoring it
+    launchctl = Launchctl()
+    install(home=tmp_path, plist=_plist(tmp_path), uid=501, launchctl=launchctl)
+    old, path, calls = plist_path(tmp_path).read_bytes(), plist_path(tmp_path), \
+        len(launchctl.calls)
+    monkeypatch.setattr(Path, "lstat", _flaky_lstat(path, Path.lstat))
+    with pytest.raises(OSError, match="Input/output error"):
+        install(home=tmp_path, plist=_plist(tmp_path, "05:00"), uid=501, launchctl=launchctl)
+    assert plist_path(tmp_path).read_bytes() == old
+    assert launchctl.calls[calls:] == []           # refused before print, bootout or bootstrap
+
+
+def test_uninstalls_own_stat_fault_also_refuses_before_anything_is_touched(
+        tmp_path, monkeypatch):
+    launchctl = Launchctl()
+    install(home=tmp_path, plist=_plist(tmp_path), uid=501, launchctl=launchctl)
+    path = plist_path(tmp_path)
+    monkeypatch.setattr(Path, "lstat", _flaky_lstat(path, Path.lstat))
+    with pytest.raises(OSError, match="Input/output error"):
+        uninstall(home=tmp_path, uid=501, launchctl=launchctl)
+    assert path.exists() and launchctl.loaded is True
 
 
 def test_a_restore_whose_bootstrap_cannot_run_says_so(tmp_path):

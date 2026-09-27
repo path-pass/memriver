@@ -228,6 +228,21 @@ def test_init_refuses_an_invalid_key_it_does_not_own(world):
     assert (world["store"] / "settings.toml").read_text(encoding="utf-8") == before
 
 
+def test_settings_broken_during_confirmation_is_refused_not_a_traceback(world):
+    # a real race: settings.toml changes between the plan being shown and the
+    # answer coming back, into something even the write-side parser cannot read
+    settings_file = world["store"] / "settings.toml"
+
+    def answer(prompt):
+        settings_file.write_text("[dream\n", encoding="utf-8")
+        return "y"
+
+    with pytest.raises(SettingsError, match=r"^settings\.toml could not be read$"):
+        _init(world, yes=False, stdin_is_tty=True, input_fn=answer)
+    assert settings_file.read_text(encoding="utf-8") == "[dream\n"    # not overwritten
+    assert world["launchctl"].calls == []
+
+
 def test_init_replaces_every_case_variant_of_the_keys_it_owns(world):
     # the run matches keys case-insensitively, first spelling winning: an upper-case
     # key left beside the one init writes would silently keep the old value
@@ -466,6 +481,25 @@ def test_run_without_an_executor_scans_and_prints_its_report(world):
     assert f"memriver delete {secret} --hard" in out and "ghp_" not in out
 
 
+def test_run_exits_1_when_the_finished_run_report_cannot_be_read_back(world, monkeypatch):
+    # the run itself completes -- scanned, stored, its report written -- only the
+    # final read-back that prints it fails; the row and report file are not undone
+    reports = world["store"] / DREAM_DIRECTORY / DREAM_REPORTS_DIRECTORY
+    original_read_text = Path.read_text
+
+    def flaky(self, *args, **kwargs):
+        if self.parent == reports:
+            raise OSError(errno.EIO, "Input/output error")
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", flaky)
+    code, out, err = _run(world)
+    assert (code, err) == (1, dream_commands.DREAM_FAILURE)
+    assert "could not be read" in out and "Input/output error" not in out
+    (run,) = _dream_store(world).runs(10)
+    assert run.status == "completed" and _report_file(world, run).exists()
+
+
 def test_run_with_an_executor_calls_it_and_still_completes(world):
     # every executor call fails here: per-item failures never stop a run (§6.1)
     _init(world)
@@ -586,7 +620,7 @@ def test_a_corrupt_dream_store_stops_run_with_the_fixed_line_and_no_traceback(wo
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="needs non-root permission semantics")
-def test_a_report_file_that_cannot_be_created_fails_the_run_and_exits_1(world):
+def test_a_report_file_that_cannot_be_created_exits_1_and_leaves_the_row_running(world):
     reports = world["store"] / DREAM_DIRECTORY / DREAM_REPORTS_DIRECTORY
     reports.mkdir(parents=True)
     reports.chmod(0o500)                       # the run's report file cannot be created
@@ -700,6 +734,19 @@ def test_report_applies_retention_first_unless_a_run_holds_the_lock(world):
 def test_report_on_a_corrupt_dream_store_exits_1_with_the_fixed_line(world):
     _corrupt_dream_db(world)
     assert _report(world) == (1, dream_commands.DREAM_FAILURE)
+
+
+def test_report_refuses_a_store_below_v4_before_any_retention_runs(world):
+    # a real store, not a stubbed build_services (the run/init test uses that): the
+    # schema check must run before the dream lock, dream.db or retention touch anything
+    old = _stored_run(world, "old report\n", started_at=_ago(days=60))
+    with closing(sqlite3.connect(world["store"] / "memriver.db")) as conn, conn:
+        conn.execute("PRAGMA user_version = 3")
+    hint = f"memriver dream: {unsupported_store(StoreNeedsUpgrade(3))}\n"
+    for options in ({}, {"run_id": old.run_id}, {"list_count": 10}):
+        assert _report(world, **options) == (1, hint)
+    assert _dream_store(world).run(old.run_id) is not None
+    assert _report_file(world, old).exists()
 
 
 @pytest.mark.parametrize(("argv", "handler", "expected"), [
