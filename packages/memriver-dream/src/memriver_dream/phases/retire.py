@@ -170,6 +170,10 @@ def review(ctx: Context, memory: Memory, listed_at: str, live: set[str],
                           unread_since=listed_at)]
         if apply_group(ctx, "retire", [memory.id], ops) is None:
             return False                # read or changed since the listing: nothing recorded
+        # a later candidate of this run must not see it as a live comparison or dependent
+        live.discard(memory.id)
+        by_project[memory.project_id] = [other for other in by_project.get(memory.project_id, [])
+                                         if other.id != memory.id]
         details(ctx, memory.description,
                f"{streak} uncertain reviews in a row" if by_streak else reason)
         return True

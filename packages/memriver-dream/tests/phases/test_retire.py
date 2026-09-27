@@ -180,6 +180,16 @@ def test_a_delete_is_a_soft_delete_by_dream_and_records_no_review(world):
     assert _review(world, memory_id) is None
 
 
+def test_a_memory_retired_earlier_in_the_run_is_not_shown_to_a_later_candidate(world):
+    first = _aged(world, 300, body="the staging host is stage-3")
+    second = _aged(world, 200, body="stage-3 is the staging host")
+    world.executor.replies = [_decision("delete", "duplicate"), _decision("delete", "stale")]
+    result, _ = _pass(world)
+    assert result.finished and _deleted(world, first)
+    assert second in world.executor.calls[0]["prompt"]     # it was a comparison memory
+    assert first not in world.executor.calls[1]["prompt"]
+
+
 def test_a_read_after_the_listing_makes_the_delete_a_conflict_that_records_nothing(world):
     # §10 item 11
     memory_id = _aged(world, 200)
