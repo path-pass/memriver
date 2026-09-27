@@ -5,7 +5,7 @@ time."""
 from __future__ import annotations
 
 import pytest
-from memriver_core.models.changes import Update, Usage
+from memriver_core.models.changes import Create, SoftDelete, SourceRef, Update, Usage
 from memriver_dream.phases import PassResult, retire
 from memriver_dream.protocols import ExecutorResult
 from memriver_dream.settings import DREAM_REASON_CHARS
@@ -140,7 +140,7 @@ def test_uncertain_twice_on_the_same_version_retires(world):   # §10 item 11
     assert result.finished and _deleted(world, memory_id)
     assert text.startswith(f"applying retire {memory_id} -> change ")
     assert f"  soft_delete {memory_id} v1→v2\n" in text
-    assert '  description: "cue"\n  reason: nothing contradicts it\n' in text
+    assert '  description: "cue"\n  reason: 2 uncertain reviews in a row\n' in text
 
 
 def test_the_uncertain_streak_counts_the_same_version_only(world):   # §10 item 11
@@ -265,14 +265,98 @@ def test_evidence_is_never_acted_on(world):
     assert result.finished and _deleted(world, memory_id)
 
 
-def test_the_candidate_is_sent_with_its_sources_derived_entries_and_safe_times(world):
-    memory_id = _aged(world, 200)
-    world.sql("UPDATE memories SET updated = '0000-hand-edited' WHERE id = ?", memory_id)
+def test_the_candidate_is_sent_with_its_sources_and_derived_entries(world):
+    # a malformed created or updated never reaches this point: it is never a
+    # candidate at all (see the malformed-time tests below)
+    _aged(world, 200)
     world.executor.replies = [_decision("keep")]
     _pass(world)
     prompt = world.executor.calls[0]["prompt"]
-    assert "hand-edited" not in prompt and '"updated": ""' in prompt
     assert '"sources": []' in prompt and '"derived": []' in prompt
+
+
+def test_a_malformed_created_is_never_a_candidate(world):
+    memory_id = _aged(world, 200)
+    world.sql("UPDATE memories SET created = '' WHERE id = ?", memory_id)
+    assert _candidates(world) == []
+    result, text = _pass(world)
+    assert result.finished
+    assert f"skipped {memory_id}: unknown time" in text
+    assert world.executor.calls == []
+    assert not _deleted(world, memory_id) and _review(world, memory_id) is None
+
+
+def test_a_malformed_updated_is_never_a_candidate(world):
+    memory_id = _aged(world, 200)
+    world.sql("UPDATE memories SET updated = 'zzzz' WHERE id = ?", memory_id)
+    assert _candidates(world) == []
+    result, text = _pass(world)
+    assert result.finished
+    assert f"skipped {memory_id}: unknown time" in text
+    assert world.executor.calls == []
+    assert not _deleted(world, memory_id) and _review(world, memory_id) is None
+
+
+def test_a_recent_update_keeps_an_old_created_memory_off_the_list(world):
+    memory_id = world.create(world.project.id, "the staging host is stage-3")
+    world.sql("UPDATE memories SET created = ?, updated = ?, last_read_at = NULL WHERE id = ?",
+              shift_days(world.now, -200), shift_days(world.now, -1), memory_id)
+    assert _candidates(world) == []
+
+
+def test_a_recent_last_read_at_keeps_an_old_memory_off_the_list(world):
+    memory_id = _aged(world, 200)
+    world.sql("UPDATE memories SET last_read_at = ? WHERE id = ?",
+              shift_days(world.now, -1), memory_id)
+    assert _candidates(world) == []
+
+
+def test_a_soft_deleted_citing_memory_is_not_sent_as_derived(world):
+    memory_id = _aged(world, 200)
+    change = world.services.memory.apply(
+        [Create(project_id=world.project.id, type="project", description="cites",
+                body="cites the candidate", sources=(SourceRef(memory_id, 1),))],
+        changed_by="test")
+    citer = change.steps[0].memory_id
+    world.services.memory.apply([SoftDelete(memory_id=citer, expected_version=1)],
+                                changed_by="test")
+    world.executor.replies = [_decision("keep")]
+    _pass(world)
+    assert '"derived": []' in world.executor.calls[0]["prompt"]
+
+
+def test_a_streak_retirement_names_itself_in_the_reason(world):
+    _aged(world, 200)
+    world.executor.replies = [_decision("uncertain", "unclear"), _decision("uncertain")]
+    _pass(world)
+    _, text = _pass(world, now=_later(world, 31))
+    assert "  reason: 2 uncertain reviews in a row\n" in text
+
+
+def test_a_streak_retirement_hitting_a_conflict_leaves_the_uncertain_row_unchanged(world):
+    memory_id = _aged(world, 200)
+    world.executor.replies = [_decision("uncertain", "unclear")]
+    _pass(world)
+    before = _review(world, memory_id)
+    context = world.services.project.open_project_context(str(world.work))
+
+    def read_then_uncertain(prompt, schema):
+        world.services.memory.read(memory_id, context, harness="codex")
+        return _decision("uncertain")
+
+    world.executor.replies = [read_then_uncertain]
+    result, text = _pass(world, now=_later(world, 31))
+    assert not result.finished
+    assert f"applying retire {memory_id} -> not applied: conflict read-since" in text
+    assert not _deleted(world, memory_id)
+    assert _review(world, memory_id) == before
+
+
+def test_the_delete_report_never_contains_the_body(world):
+    _aged(world, 200)
+    world.executor.replies = [_decision("delete", "stage-3 was decommissioned")]
+    _, text = _pass(world)
+    assert "the staging host is stage-3" not in text
 
 
 def test_the_prompt_asks_for_a_reason_to_retire_and_keeps_description_carried_rules(world):

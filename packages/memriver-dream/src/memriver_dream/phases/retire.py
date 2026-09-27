@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+from memriver_core.models import is_timestamp
 from memriver_core.models import now as clock
 from memriver_core.models.changes import SoftDelete
 from memriver_core.models.errors import MemoryNotFound
@@ -59,16 +60,26 @@ SCHEMA = {"type": "object", "additionalProperties": False,
 
 def candidates(ctx: Context) -> tuple[str, list[Memory]]:
     """The listing time (the soft delete's unread_since) and the candidates, oldest
-    first, at most max_candidates_per_run."""
+    first, at most max_candidates_per_run.
+
+    created and updated must be valid timestamps to prove an age at all (old or
+    hand-edited data can hold anything): a memory with either one malformed has no
+    provable age and is skipped, never retired on an unknown age. A malformed or
+    absent last_read_at simply does not count towards the age.
+    """
     listed_at = clock()
     settings = ctx.settings
     memories = usable(ctx, None)
     usage = ctx.services.memory.usage([memory.id for memory in memories])
     due = []
     for memory in memories:
+        if not (is_timestamp(memory.created) and is_timestamp(memory.updated)):
+            ctx.report.line(f"skipped {memory.id}: unknown time")
+            continue
         use = usage.get(memory.id)
         reads = 0 if use is None else use.reads
-        last_read = None if use is None else use.last_read_at
+        last_read = use.last_read_at if use is not None and is_timestamp(use.last_read_at) \
+            else None
         last = max(memory.created, memory.updated, last_read or "")
         days = settings.ttl_days * min(1 + reads, settings.ttl_read_multiplier_max)
         if last > shift_days(ctx.now, -days):
@@ -87,6 +98,11 @@ def _time(value: str | None) -> str | None:
 
 
 def _candidate_entry(ctx: Context, memory: Memory) -> dict:
+    # a citation's `current` flag only says it was recorded at the citing memory's
+    # latest version, not that the citing memory is still live: a soft-deleted
+    # memory's last version is still "current" by that flag, so it is filtered out
+    # here the same way usable() would leave it out of any other listing
+    live = {other.id for other in usable(ctx, None)}
     return {"id": memory.id, "project": memory.project_id, "type": memory.type,
             "description": memory.description, "body": memory.body,
             "created": sendable_time(memory.created), "updated": sendable_time(memory.updated),
@@ -94,7 +110,7 @@ def _candidate_entry(ctx: Context, memory: Memory) -> dict:
             "sources": sorted({source.memory_id for source in current_sources(ctx, memory)}),
             "derived": sorted({citation.memory_id
                                for citation in ctx.services.memory.citing(memory.id)
-                               if citation.current})}
+                               if citation.current and citation.memory_id in live})}
 
 
 def _other_text(memory: Memory) -> str:
@@ -129,7 +145,7 @@ def review(ctx: Context, memory: Memory, listed_at: str) -> bool:
     if problem is not None:
         report.line(f"{memory.id}: {problem} reason")
         return False
-    reason, decision, streak = shown(result["reason"]), result["decision"], 0
+    reason, decision, streak, by_streak = shown(result["reason"]), result["decision"], 0, False
     if decision == "uncertain":
         # "in a row" means judgments of the same content (D24): any new version starts over
         previous = ctx.store.review(memory.id)
@@ -137,13 +153,14 @@ def review(ctx: Context, memory: Memory, listed_at: str) -> bool:
             and previous.memory_version == memory.version
         streak = 1 + (previous.uncertain_streak if same else 0)
         if streak >= settings.uncertain_limit:
-            decision = "delete"
+            decision, by_streak = "delete", True
     if decision == "delete":
         ops = [SoftDelete(memory_id=memory.id, expected_version=memory.version,
                           unread_since=listed_at)]
         if apply_group(ctx, "retire", [memory.id], ops) is None:
             return False                # read or changed since the listing: nothing recorded
-        details(ctx, memory.description, reason)
+        details(ctx, memory.description,
+               f"{streak} uncertain reviews in a row" if by_streak else reason)
         return True
     ctx.store.put_review(ReviewRow(memory.id, memory.version, decision, streak, ctx.now,
                                    shift_days(ctx.now, settings.ttl_days), reason))
