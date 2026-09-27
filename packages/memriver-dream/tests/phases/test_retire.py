@@ -304,6 +304,13 @@ def test_a_recent_update_keeps_an_old_created_memory_off_the_list(world):
     assert _candidates(world) == []
 
 
+def test_a_recent_created_keeps_an_old_updated_memory_off_the_list(world):
+    memory_id = world.create(world.project.id, "the staging host is stage-3")
+    world.sql("UPDATE memories SET created = ?, updated = ?, last_read_at = NULL WHERE id = ?",
+              shift_days(world.now, -1), shift_days(world.now, -200), memory_id)
+    assert _candidates(world) == []
+
+
 def test_a_recent_last_read_at_keeps_an_old_memory_off_the_list(world):
     memory_id = _aged(world, 200)
     world.sql("UPDATE memories SET last_read_at = ? WHERE id = ?",
