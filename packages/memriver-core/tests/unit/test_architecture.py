@@ -385,3 +385,57 @@ def test_no_git_discovery_in_models_or_application(package, marker):
         source = SOURCES[module].read_text(encoding="utf-8")
         assert marker not in source, \
             f"{module} contains git-discovery code ({marker}); that belongs to memriver"
+
+
+# --- G0: core takes no plug-in vocabulary (spec §0.1, §2; acceptance §10 item 17) -------
+
+FORBIDDEN_FRAGMENTS = ("dream", "ttl", "run_id")
+
+
+def _forbidden_fragment(identifier: str) -> str | None:
+    lowered = identifier.lower()
+    return next((fragment for fragment in FORBIDDEN_FRAGMENTS if fragment in lowered), None)
+
+
+def _identifiers_in(source: str) -> set[str]:
+    """Every identifier this rule covers: Name ids, Attribute attrs, def/class names,
+    positional and keyword argument names, and every import name and alias (module path
+    and bound name alike)."""
+    identifiers: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Name):
+            identifiers.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            identifiers.add(node.attr)
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            identifiers.add(node.name)
+        elif isinstance(node, ast.arg | ast.keyword) and node.arg is not None:
+            identifiers.add(node.arg)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                identifiers.add(alias.name)
+                if alias.asname:
+                    identifiers.add(alias.asname)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                identifiers.add(node.module)
+            for alias in node.names:
+                identifiers.add(alias.name)
+                if alias.asname:
+                    identifiers.add(alias.asname)
+    return identifiers
+
+
+@pytest.mark.parametrize("module", sorted(SOURCES))
+def test_no_dream_ttl_or_run_id_identifier(module):
+    """G0: core never names a plug-in or takes its vocabulary (merge, extract, TTL, run)
+    into its interfaces or identifiers. Data files (gitleaks.toml) are out of scope --
+    `SOURCES` only ever holds `.py` files."""
+    path = SOURCES[module]
+    hit = _forbidden_fragment(path.stem)
+    assert hit is None, f"{path} carries the forbidden fragment {hit!r} in its file name"
+    source = path.read_text(encoding="utf-8")
+    for identifier in _identifiers_in(source):
+        hit = _forbidden_fragment(identifier)
+        assert hit is None, \
+            f"{module} names {identifier!r}, carrying the forbidden fragment {hit!r}"
