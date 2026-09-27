@@ -10,8 +10,11 @@ import sqlite3
 from dataclasses import replace
 from pathlib import Path
 
+import memriver_dream.report as report_module
 import pytest
 from memriver_core import StorageFailure
+from memriver_core.models.changes import Update
+from memriver_dream.changes import apply_group
 from memriver_dream.lock import run_lock
 from memriver_dream.phases import (
     PassResult,
@@ -21,7 +24,7 @@ from memriver_dream.phases import (
     retire,
     summarize,
 )
-from memriver_dream.report import INTERRUPTED, Report
+from memriver_dream.report import INTERRUPTED, WITHHELD, Report
 from memriver_dream.run import prune_reports
 from memriver_dream.store import DreamStore, ReviewRow, RunRow, SummaryRow, shift_days
 
@@ -117,6 +120,23 @@ def test_a_held_lock_makes_a_skipped_run_that_runs_nothing(world, calls):
     assert text.splitlines()[-2] == "status: skipped"
 
 
+def test_a_lock_conflict_report_failure_is_marked_failed_too(world, calls, monkeypatch):
+    # the skipped row already exists once inserted: a report failure from there on
+    # follows the same "row exists -> best-effort failed, re-raise" contract as an
+    # ordinary run, rather than leaving the row permanently `skipped`
+    def broken_header(self, **fields):
+        raise OSError("injected")
+
+    monkeypatch.setattr(Report, "header", broken_header)
+    with run_lock(world.root) as held:
+        assert held
+        with pytest.raises(OSError, match="^injected$"):
+            world.run()
+    (row,) = _store(world).runs(10)
+    assert row.status == "failed" and row.finished_at is not None
+    assert calls == []
+
+
 def test_a_run_left_running_by_a_crash_is_marked_failed_and_its_line_unknown(world, calls):
     # §10 item 12: the dangling "applying" line is marked after a crash
     store = _store(world)
@@ -133,10 +153,25 @@ def test_a_run_left_running_by_a_crash_is_marked_failed_and_its_line_unknown(wor
                                                 finished_at=world.now)
     assert (world.reports / crashed.report_file).read_text().endswith(
         "applying merge aaaaaaaaaa bbbbbbbbbb (creates a memory) -> outcome unknown — see "
-        "memriver history aaaaaaaaaa bbbbbbbbbb; a created memory, if any, is not listed — "
-        "see memriver list\n"
+        "memriver history aaaaaaaaaa; see memriver history bbbbbbbbbb; a created memory, "
+        "if any, is not listed — see memriver list\n"
         f"\n{INTERRUPTED}\nstatus: failed\n")
     assert "run crashed001 was interrupted; marked failed\n" in world.report_text(row)
+
+
+def test_a_crashed_runs_unreadable_report_still_lets_its_row_close(world, calls):
+    # a directory (or any other unreadable path) at the old report's location must
+    # not stop the stale `running` row from being closed on the next run
+    store = _store(world)
+    world.reports.mkdir(parents=True)
+    crashed = RunRow("crashed002", shift_days(world.now, -1), None, "schedule", "running",
+                     "crashed002.txt")
+    store.start_run(crashed)
+    (world.reports / crashed.report_file).mkdir()
+    row = world.run()
+    assert row.status == "completed"
+    assert store.run(crashed.run_id) == replace(crashed, status="failed",
+                                                finished_at=world.now)
 
 
 def test_a_scope_digest_is_stored_only_when_its_pass_finished(world, calls, monkeypatch):
@@ -324,3 +359,47 @@ def test_the_report_names_a_policy_hit_but_never_its_text(world, calls):   # §1
             f"{memory_id} --hard\n") in text
     assert world.secret not in text and "ghp_" not in text and "plain body" not in text
     assert text.index("== Maintenance ==") < text.index("== Needs you ==")
+
+
+def test_a_project_name_that_hits_the_policy_is_withheld_in_its_section_title(world):
+    other = world.root.parent / "secret-project"
+    other.mkdir()
+    secret_project = world.services.project.init_project(
+        world.secret, world.services.project.plan_root(str(other)))
+    row = world.run()
+    text = world.report_text(row)
+    assert f"== Project layer: {WITHHELD} ({secret_project.id}) ==" in text
+    assert world.secret not in text and "ghp_" not in text
+
+
+def test_an_uncaught_apply_group_failure_still_marks_its_line_unknown_end_to_end(
+        world, monkeypatch):
+    # a failure inside apply_group that is neither BatchConflict nor ContentRejected
+    # (here, a transient report I/O error after core already committed) is not a
+    # per-item failure a phase can swallow: it propagates through run_dream's own
+    # failure handling, which still closes the dangling line as "outcome unknown"
+    # and marks the run failed
+    memory_id = world.create(world.project.id, "old body")
+    real_append = report_module._append
+
+    def flaky(path, text):
+        if text.startswith(" -> change"):
+            raise OSError("injected")
+        real_append(path, text)
+
+    monkeypatch.setattr(report_module, "_append", flaky)
+
+    def broken(ctx, project_id, scope):
+        apply_group(ctx, "rewrite", [memory_id],
+                    [Update(memory_id=memory_id, expected_version=1, body="new body")])
+        return PassResult(finished=True)   # unreachable: apply_group raises above
+
+    monkeypatch.setattr(consolidate, "run", broken)
+    with pytest.raises(OSError, match="^injected$"):
+        world.run()
+    (row,) = _store(world).runs(10)
+    assert row.status == "failed"
+    text = world.report_text(row)
+    assert (f"applying rewrite {memory_id} -> outcome unknown — see memriver history "
+            f"{memory_id}\n") in text
+    assert [version.version for version in world.services.memory.versions(memory_id)] == [1, 2]

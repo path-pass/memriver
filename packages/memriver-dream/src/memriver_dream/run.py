@@ -153,14 +153,27 @@ def prune_reports(store: DreamStore, reports: Path, *, now: str, days: int) -> l
 
 def _skipped(store: DreamStore, report: Report, run: RunRow,
              executor_name: str | None) -> RunRow:
-    """Another run holds the lock: record a skipped run and say so; nothing else runs."""
+    """Another run holds the lock: record a skipped run and say so; nothing else runs.
+
+    The row exists as soon as it is inserted below, so a report failure from here
+    on follows the same contract as the main path: best-effort marked failed and
+    re-raised, never left `skipped` with an error swallowed.
+    """
     finished = clock()
     row = replace(run, status="skipped", finished_at=finished)
     store.start_run(row)
-    report.header(run_id=row.run_id, started_at=row.started_at, trigger=row.trigger,
-                  executor=executor_name)
-    report.line("skipped: another run holds the lock")
-    report.footer(status="skipped", finished_at=finished)
+    try:
+        report.header(run_id=row.run_id, started_at=row.started_at, trigger=row.trigger,
+                      executor=executor_name)
+        report.line("skipped: another run holds the lock")
+        report.footer(status="skipped", finished_at=finished)
+    except BaseException:
+        failed_at = clock()
+        with contextlib.suppress(Exception):
+            report.footer(status="failed", finished_at=failed_at)
+        with contextlib.suppress(Exception):
+            store.finish_run(row.run_id, status="failed", finished_at=failed_at)
+        raise
     return row
 
 

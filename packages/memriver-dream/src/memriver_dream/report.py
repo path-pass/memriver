@@ -34,11 +34,15 @@ def _append(path: Path, text: str) -> None:
 
 
 def _unknown(line: str) -> str:
-    """The completion of an applying line whose outcome is not known (R9, §6.1)."""
+    """The completion of an applying line whose outcome is not known (R9, §6.1).
+
+    `memriver history` takes one id, so several originals get one command each,
+    not one command with several ids.
+    """
     ids = [token for token in line.split()[2:] if ID_RE.fullmatch(token)]
     text = " -> outcome unknown"
     if ids:
-        text += f" — see memriver history {' '.join(ids)}"
+        text += " — " + "; ".join(f"see memriver history {memory_id}" for memory_id in ids)
     if line.endswith(_CREATES):
         text += "; a created memory, if any, is not listed — see memriver list"
     return text
@@ -71,8 +75,9 @@ class Report:
     def applying(self, kind: str, items: Sequence[str], *, creates: bool = False) -> None:
         """The first part of a change line, "applying <kind> <ids>", left open until
         applied() or not_applied(); `items` are the ids of the existing memories the
-        change touches."""
-        text = " ".join(["applying", kind, *items]) + (_CREATES if creates else "")
+        change touches. `kind` and `items` are code-built, but still single-lined:
+        a stray newline must never be able to split the report's line structure."""
+        text = single_line(" ".join(["applying", kind, *items])) + (_CREATES if creates else "")
         self._write(text)
         self._pending = text
 
@@ -80,7 +85,7 @@ class Report:
         self._complete(f" -> change {change_id}; undo: memriver undo {change_id}")
 
     def not_applied(self, reason: str) -> None:
-        self._complete(f" -> not applied: {reason}")
+        self._complete(f" -> not applied: {single_line(reason)}")
 
     def needs_you(self, text: str) -> None:
         """Collected and written under "Needs you" by footer()."""
@@ -92,15 +97,20 @@ class Report:
                     + f"\nstatus: {status}\nfinished: {finished_at}\n")
 
     def _complete(self, outcome: str) -> None:
-        self._pending = None
+        # core already committed by the time this runs: a failed append here must
+        # keep `_pending` set, so the next write (a failure footer, or the next
+        # run's mark_interrupted) still completes the line as "outcome unknown"
+        # rather than losing all trace that the change happened
         _append(self.path, outcome + "\n")
+        self._pending = None
 
     def _write(self, text: str) -> None:
-        if self._pending is not None:
+        pending = self._pending
+        if pending is not None:
             # anything written after an applying line that got no outcome closes it
-            text = _unknown(self._pending) + "\n" + text
-            self._pending = None
+            text = _unknown(pending) + "\n" + text
         _append(self.path, text)
+        self._pending = None
 
 
 def mark_interrupted(path: Path) -> None:
@@ -111,6 +121,11 @@ def mark_interrupted(path: Path) -> None:
         text = path.read_text(encoding="utf-8", errors="replace")
     except FileNotFoundError:
         text = ""
+    except OSError:
+        # unreadable for some other reason (permissions, a directory at the
+        # path): nothing can be read or safely appended here, so there is
+        # nothing to mark -- the caller still closes the stale run's row
+        return
     tail = ""
     if text and not text.endswith("\n"):
         last = text.rpartition("\n")[2]

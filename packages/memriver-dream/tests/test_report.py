@@ -6,6 +6,8 @@ from __future__ import annotations
 import os
 import stat
 
+import memriver_dream.report as report_module
+import pytest
 from memriver_dream.report import INTERRUPTED, WITHHELD, Report, mark_interrupted
 
 T0 = "2026-09-27T04:00:00.000000Z"
@@ -104,6 +106,50 @@ def test_a_footer_after_an_unfinished_applying_line_marks_it_unknown(tmp_path):
         f"\nstatus: failed\nfinished: {T1}\n")
 
 
+def test_a_failed_completion_append_keeps_the_line_open_for_the_next_write(
+        tmp_path, monkeypatch):
+    # a completion append can fail after core already committed the change; the
+    # pending line must survive so the very next write (here, the failure
+    # footer) still closes it as "outcome unknown" instead of losing it
+    report = _report(tmp_path)
+    report.applying("rewrite", ["aaaaaaaaaa"])
+
+    def broken(path, text):
+        raise OSError("injected")
+
+    monkeypatch.setattr(report_module, "_append", broken)
+    with pytest.raises(OSError, match="^injected$"):
+        report.applied("cccccccccc")
+    assert report._pending == "applying rewrite aaaaaaaaaa"
+    monkeypatch.undo()
+    report.footer(status="failed", finished_at=T1)
+    assert report.path.read_text() == (
+        "applying rewrite aaaaaaaaaa -> outcome unknown — see memriver history aaaaaaaaaa\n"
+        f"\nstatus: failed\nfinished: {T1}\n")
+
+
+def test_a_not_applied_reason_is_single_lined(tmp_path):
+    report = _report(tmp_path)
+    report.applying("supersede", ["aaaaaaaaaa"])
+    report.not_applied("multi\nline reason")
+    assert report.path.read_text() == (
+        "applying supersede aaaaaaaaaa -> not applied: multi line reason\n")
+
+
+def test_an_applying_kind_with_a_newline_is_single_lined_too(tmp_path):
+    report = _report(tmp_path)
+    report.applying("super\nsede", ["aaaaaaaaaa"])
+    report.not_applied("ok")
+    assert report.path.read_text() == "applying super sede aaaaaaaaaa -> not applied: ok\n"
+
+
+def test_mark_interrupted_on_an_unreadable_report_marks_nothing_and_does_not_raise(tmp_path):
+    directory = tmp_path / "run0000001.txt"
+    directory.mkdir()
+    mark_interrupted(directory)      # must not raise: there is nothing safe to read or write
+    assert directory.is_dir() and list(directory.iterdir()) == []
+
+
 def test_mark_interrupted_completes_a_dangling_line_and_closes_the_report(tmp_path):
     # §10 item 12; §6.1 wording
     path = tmp_path / "run0000001.txt"
@@ -115,8 +161,8 @@ def test_mark_interrupted_completes_a_dangling_line_and_closes_the_report(tmp_pa
     assert path.read_text() == (
         f"memriver dream run run0000001\n{done}\n"
         "applying merge bbbbbbbbbb dddddddddd (creates a memory) -> outcome unknown — "
-        "see memriver history bbbbbbbbbb dddddddddd; a created memory, if any, is not "
-        "listed — see memriver list\n"
+        "see memriver history bbbbbbbbbb; see memriver history dddddddddd; a created "
+        "memory, if any, is not listed — see memriver list\n"
         f"\n{INTERRUPTED}\nstatus: failed\n")
 
 
