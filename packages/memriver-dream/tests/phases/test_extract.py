@@ -63,6 +63,24 @@ def _globals(world) -> set[str]:
     return {memory.id for memory in world.services.memory.memories(world.global_id)}
 
 
+@pytest.mark.parametrize("case", ["new", "supplement"])
+def test_bad_text_is_invalid_even_with_a_rule_violation_too(world, case):
+    # §10 item 10: text is checked before a rule refusal, so malformed output from the
+    # model is never hidden behind a `refused` outcome that would let the pass finish
+    a = world.create(world.project.id, "pytest in demo")
+    b = world.create(world.project.id, "pytest in demo's CI")
+    judgment = {
+        "new": _judgment("new", type="", description="d", body="x" + chr(0xD800),
+                         source_ids=(a, b)),                            # no type -- refused
+        "supplement": _judgment("supplement", id=a, description="d",
+                                body="x" + chr(0xD800), source_ids=(b,)),  # wrong owner -- refused
+    }[case]
+    world.executor.replies = [_answer(judgment)]
+    result, text = _pass(world)
+    assert not result.finished
+    assert f"invalid {case}: text\n" in text
+
+
 def test_a_principle_from_two_projects_becomes_a_global_entry_citing_both(world):
     # §10 item 10 (new)
     second = _second(world)
@@ -114,6 +132,19 @@ def test_a_global_source_counts_the_projects_its_cited_versions_trace_to(world):
     assert set(_current(world, created).sources) == {SourceRef(deeper, 1), SourceRef(b, 1)}
 
 
+def test_an_extraction_refusal_survives_a_crash_before_the_footer_is_written(world):
+    # the full entry (kind, target, source ids and reason) is written in the section
+    # line at judgment time, not only collected for the footer
+    a1 = world.create(world.project.id, "pytest in demo")
+    a2 = world.create(world.project.id, "demo's CI runs pytest")
+    world.executor.replies = [_answer(_new(a1, a2, type="feedback"))]
+    ctx = world.context()
+    extract.run(ctx)
+    text = ctx.report.path.read_text()          # read before footer() -- a kill-equivalent
+    assert (f"extraction refused: new from {a1} {a2} (traces to 1 project(s)): "
+            "seen in two projects\n") in text
+
+
 @pytest.mark.parametrize("case", [
     "one project plus global", "a global entry citing nothing", "two memories of one project"])
 def test_fewer_than_two_projects_is_refused_and_goes_to_needs_you(world, case):
@@ -130,7 +161,8 @@ def test_fewer_than_two_projects_is_refused_and_goes_to_needs_you(world, case):
     result, text = _pass(world)
     assert result == PassResult(finished=True, digest=input_digest(
         [(a1, 1), (a2, 1), (via, 1), (bare, 1)]))
-    assert "refused new: traces to 1 project(s)\n" in text
+    assert (f"extraction refused: new from {' '.join(sources)} (traces to 1 project(s)): "
+            "seen in two projects\n") in text
     needs = text.split("== Needs you ==\n")[1]
     assert (f"extraction refused: new from {' '.join(sources)} (traces to 1 project(s)): "
             "seen in two projects\n") in needs
@@ -166,7 +198,7 @@ def test_add_sources_cites_the_new_memories_and_keeps_the_text(world):   # §10 
     current = _current(world, target)
     assert (current.version, current.body) == (2, "Python projects prefer pytest.")
     assert set(current.sources) == {SourceRef(a, 1), SourceRef(b, 1)}
-    assert '  description: "principle"\n' in text
+    assert 'description: "principle"\n' in text
 
 
 @pytest.mark.parametrize(("kind", "case", "outcome", "field"), [
@@ -215,7 +247,10 @@ def test_an_extraction_that_fails_validation_changes_nothing(world, kind, case, 
     result, text = _pass(world, excluded={held})
     assert result == PassResult(finished=outcome == "refused",
                                 digest=input_digest([(a, 1), (b, 1), (target, 1)]))
-    assert f"{outcome} {kind}: {field}\n" in text
+    if outcome == "refused":
+        assert f"extraction refused: {kind}" in text and f"({field}):" in text
+    else:
+        assert f"{outcome} {kind}: {field}\n" in text
     assert ("extraction refused:" in text) is (outcome == "refused")
     assert _globals(world) == {target} and len(world.services.memory.versions(target)) == 1
 

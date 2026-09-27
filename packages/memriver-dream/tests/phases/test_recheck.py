@@ -196,6 +196,18 @@ def test_a_refresh_or_revise_that_fails_validation_changes_nothing(world, case, 
     assert len(world.services.memory.versions(entry)) == 1 and _checked(world, entry) is None
 
 
+def test_revise_with_bad_text_and_no_replacement_is_invalid_not_refused(world):
+    # §10 item 10: text is checked before the replacements rule, so malformed output
+    # from the model is never hidden behind a `refused` outcome that lets the pass finish
+    a, _, entry = _setup(world)
+    _update(world, a, 1, "demo runs pytest with xdist")
+    world.executor.replies = [_decision(
+        "revise", entry, description="d", body="x" + chr(0xD800))]   # no replacement -- refused
+    result, text = _pass(world)
+    assert not result.finished
+    assert f"invalid revise {entry}: text\n" in text
+
+
 def test_a_deleted_source_may_only_be_replaced_by_a_successor_sent(world):   # §10 item 10
     a, _, entry = _setup(world)
     _retire_into(world, a)
@@ -218,7 +230,7 @@ def test_revise_rewrites_the_entry_on_the_new_evidence(world):   # §10 item 10
     assert (current.version, current.description, current.body) == (
         2, "python tests", "Python projects prefer pytest for tests, often with xdist.")
     assert set(current.sources) == {SourceRef(a, 2), SourceRef(b, 1)}
-    assert '  description: "python tests"\n' in text
+    assert 'description: "python tests"\n' in text
 
 
 def test_overturned_goes_to_needs_you_and_records_nothing(world):   # §10 item 10

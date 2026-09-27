@@ -34,6 +34,7 @@ from .consolidate import (
     ids_problem,
     reason_problem,
     shown,
+    split_no_change,
     text_problem,
     usable,
 )
@@ -133,10 +134,10 @@ def _plan(raw: dict, global_id: str, sent: dict[str, Memory],
     if kind == "new":
         if problem := ids_problem(new, sent, 1, "source_ids"):
             return problem
-        if raw["type"] not in TYPES:
-            return Problem(REFUSED, "type")
         if problem := text_problem(raw):
             return problem
+        if raw["type"] not in TYPES:
+            return Problem(REFUSED, "type")
         refs = tuple(SourceRef(memory_id, sent[memory_id].version) for memory_id in new)
         create = Create(project_id=global_id, type=raw["type"],
                         description=raw["description"].strip(), body=raw["body"].strip(),
@@ -146,6 +147,10 @@ def _plan(raw: dict, global_id: str, sent: dict[str, Memory],
     if target is None:
         return Problem(INVALID, "id")
     if problem := ids_problem(new, sent, 1, "source_ids"):
+        return problem
+    # add_sources never uses text at all; checking it here (before it is otherwise
+    # ready to send) would refuse it on fields it never fills
+    if kind == "supplement" and (problem := text_problem(raw)):
         return problem
     if target.project_id != global_id:
         return Problem(REFUSED, "id")           # only a global entry grows
@@ -157,8 +162,6 @@ def _plan(raw: dict, global_id: str, sent: dict[str, Memory],
     if kind == "add_sources":
         update = Update(memory_id=target.id, expected_version=target.version, sources=refs)
         return [target.id], refs, [update], target.description
-    if problem := text_problem(raw):
-        return problem
     update = Update(memory_id=target.id, expected_version=target.version,
                     description=raw["description"].strip(), body=raw["body"].strip(),
                     sources=refs)
@@ -168,12 +171,18 @@ def _plan(raw: dict, global_id: str, sent: dict[str, Memory],
 def _refuse(ctx: Context, raw: dict, why: str, reason: str) -> bool:
     """A well-formed judgment a rule refuses: reported, and the pass may still finish
     -- the same input would be refused again. `_plan` never returns REFUSED before
-    `source_ids` passed `ids_problem`, so every id joined below was sent."""
+    `source_ids` passed `ids_problem`, so every id joined below was sent.
+
+    The full entry -- kind, target id (if any), the validated source ids and the
+    refusal reason -- is written in the section line at judgment time, not only
+    collected for the footer: a run killed before the footer is ever written must
+    not lose it. The footer's own Needs-you entry, below, is the summary."""
     kind = raw["kind"]
     target = "" if kind == "new" else f" {raw['id']}"
-    ctx.report.line(f"refused {kind}: {why}")
-    ctx.report.needs_you(f"extraction refused: {kind}{target} from "
-                         f"{' '.join(raw['source_ids'])} ({why}): {reason}")
+    entry = (f"extraction refused: {kind}{target} from "
+            f"{' '.join(raw['source_ids'])} ({why}): {reason}")
+    ctx.report.line(entry)
+    ctx.report.needs_you(entry)
     return True
 
 
@@ -237,19 +246,7 @@ def run(ctx: Context) -> PassResult:
     # one read of every memory's project, shared by every judgment's C4 trace this run
     owner = {memory.id: memory.project_id
              for memory in ctx.services.memory.memories(include_deleted=True)}
-    finished = True
-    judgments = []
-    for raw in result["judgments"]:
-        if raw["kind"] != "no_change":
-            judgments.append(raw)
-            continue
-        # no_change is dropped, not judged, but its reason is checked exactly like
-        # every other kind's (§6.9): a malformed or policy-hit reason must not let
-        # the pass finish and the scope's digest get stored unnoticed
-        problem = reason_problem(ctx, raw["reason"])
-        if problem is not None:
-            ctx.report.line(f"{problem} no_change: reason")
-            finished = False
+    judgments, finished = split_no_change(ctx, result["judgments"])
     if not judgments and finished:
         ctx.report.line("no change")
     for raw in judgments:

@@ -135,6 +135,10 @@ def _judge(ctx: Context, raw: dict, memory: Memory, sources: tuple[SourceRef, ..
     # one source twice, is refused
     if not all(item["by"] in allowed.get(item["source"], ()) for item in replacements):
         return Problem(INVALID, "replacements").report(ctx, decision, subject)
+    # refresh never uses text at all; checking it here (before it is otherwise ready
+    # to send) would refuse it on fields it never fills
+    if decision != "refresh" and (problem := text_problem(raw)):
+        return problem.report(ctx, decision, subject)
     if not replacements or len(set(replaced)) != len(replaced):
         return Problem(REFUSED, "replacements").report(ctx, decision, subject)
     cited = {source.memory_id: source.version for source in sources}
@@ -147,8 +151,6 @@ def _judge(ctx: Context, raw: dict, memory: Memory, sources: tuple[SourceRef, ..
         update = Update(memory_id=memory.id, expected_version=memory.version, sources=refs)
         description = memory.description
     else:
-        if problem := text_problem(raw):
-            return problem.report(ctx, decision, subject)
         update = Update(memory_id=memory.id, expected_version=memory.version,
                         description=raw["description"].strip(), body=raw["body"].strip(),
                         sources=refs)

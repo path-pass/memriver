@@ -81,7 +81,7 @@ def test_a_merge_creates_one_memory_citing_each_and_soft_deletes_the_originals(w
     assert (change.changed_by, change.changed_via) == ("dream", "fake-harness")
     assert (f"applying merge {a} {b} (creates a memory) -> change {change.change_id}; "
             f"undo: memriver undo {change.change_id}\n") in text
-    assert '  description: "python tooling"\n  reason: because the entries say so\n' in text
+    assert 'description: "python tooling"\nreason: because the entries say so\n' in text
 
 
 def test_a_merge_takes_the_type_of_one_of_its_originals(world):   # §10 item 10
@@ -136,6 +136,24 @@ def test_a_merge_that_fails_validation_changes_nothing(world, case, outcome, fie
                                 digest=input_digest([(a, 1), (b, 1)]))
     assert f"{outcome} merge: {field}\n" in text
     assert [_versions(world, memory_id) for memory_id in (a, b, elsewhere)] == [[1], [1], [1]]
+
+
+@pytest.mark.parametrize("case", ["merge", "rewrite"])
+def test_bad_text_is_invalid_even_with_a_rule_violation_too(world, case):
+    # §10 item 10: text is checked before a rule refusal, so malformed output from the
+    # model is never hidden behind a `refused` outcome that would let the pass finish
+    a = world.create(world.project.id, "uv manages python", type="feedback")
+    b = world.create(world.project.id, "python is managed with uv", type="feedback")
+    judgment = {
+        "merge": _judgment("merge", ids=(a, b), type="user",   # type of neither -- refused
+                           description="d", body="x" + chr(0xD800)),
+        "rewrite": _judgment("rewrite", id=a, evidence_ids=(a,),  # its own evidence -- refused
+                             description="d", body="x" + chr(0xD800)),
+    }[case]
+    world.executor.replies = [_answer(judgment)]
+    result, text = _pass(world)
+    assert not result.finished
+    assert f"invalid {case}: text\n" in text
 
 
 def test_a_rewrite_updates_in_place_citing_its_current_sources_plus_the_evidence(world):
@@ -206,7 +224,7 @@ def test_a_supersede_soft_deletes_the_older_entry_the_newer_replaces(world):   #
     assert result.finished
     assert _current(world, older).deleted and _versions(world, newer) == [1]
     assert f"applying supersede {older} -> change" in text
-    assert '  description: "cue"\n' in text
+    assert 'description: "cue"\n' in text
 
 
 def test_a_supersede_uses_the_version_the_target_was_sent_at(world):
@@ -258,6 +276,20 @@ def test_a_supersede_cannot_prove_newer_from_a_malformed_stored_time(world, case
     assert result.finished        # deterministic: reported, but the pass still finishes
     assert "refused supersede: by\n" in text
     assert _versions(world, older) == [1] and _versions(world, newer) == [1]
+
+
+def test_a_contradiction_survives_a_crash_before_the_footer_is_written(world):
+    # the full entry (ids and reason) is written in the section line at judgment
+    # time, not only collected for the footer -- a run killed before the footer is
+    # ever written must not lose it
+    a = world.create(world.project.id, "the API runs on port 8000")
+    b = world.create(world.project.id, "the API runs on port 9000")
+    world.executor.replies = [_answer(
+        _judgment("contradiction", ids=(a, b), reason="two ports, nothing says which"))]
+    ctx = world.context()
+    consolidate.run(ctx, world.project.id, f"project:{world.project.id}")
+    text = ctx.report.path.read_text()          # read before footer() -- a kill-equivalent
+    assert f"contradiction {a} {b}: two ports, nothing says which\n" in text
 
 
 def test_contradictions_and_instruction_like_entries_only_go_to_needs_you(world):

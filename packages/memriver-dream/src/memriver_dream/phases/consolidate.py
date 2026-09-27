@@ -189,6 +189,25 @@ def details(ctx: Context, description: str, reason: str) -> None:
     ctx.report.line(f"  reason: {reason}")
 
 
+def split_no_change(ctx: Context, judgments: list[dict]) -> tuple[list[dict], bool]:
+    """`judgments` without its no_change entries, and whether the pass may still
+    finish. no_change is dropped, not judged, but its reason is checked exactly like
+    every other kind's (§6.9): a malformed or policy-hit reason must not let the pass
+    finish and the scope's digest get stored unnoticed. Shared by consolidate and
+    extract."""
+    finished = True
+    kept = []
+    for raw in judgments:
+        if raw["kind"] != "no_change":
+            kept.append(raw)
+            continue
+        problem = reason_problem(ctx, raw["reason"])
+        if problem is not None:
+            ctx.report.line(f"{problem} no_change: reason")
+            finished = False
+    return kept, finished
+
+
 # --- the project layer -------------------------------------------------------------
 
 def _merge(raw: dict, project_id: str, sent: dict[str, Memory],
@@ -197,10 +216,10 @@ def _merge(raw: dict, project_id: str, sent: dict[str, Memory],
     ids = raw["ids"]
     if problem := ids_problem(ids, sent, 2, "ids"):
         return problem
-    if raw["type"] not in {sent[memory_id].type for memory_id in ids}:
-        return Problem(REFUSED, "type")
     if problem := text_problem(raw):
         return problem
+    if raw["type"] not in {sent[memory_id].type for memory_id in ids}:
+        return Problem(REFUSED, "type")
     create = Create(project_id=project_id, type=raw["type"],
                     description=raw["description"].strip(), body=raw["body"].strip(),
                     sources=tuple(SourceRef(memory_id, sent[memory_id].version)
@@ -218,10 +237,10 @@ def _rewrite(raw: dict, project_id: str, sent: dict[str, Memory],
         return Problem(INVALID, "id")
     if problem := ids_problem(evidence, sent, 1, "evidence_ids"):
         return problem
-    if target in evidence:                      # never its own evidence
-        return Problem(REFUSED, "evidence_ids")
     if problem := text_problem(raw):
         return problem
+    if target in evidence:                      # never its own evidence
+        return Problem(REFUSED, "evidence_ids")
     # the current set, plus the evidence at the versions sent (a newer version of an
     # already cited memory replaces its old entry)
     cited = {source.memory_id: source.version for source in sources[target]} \
@@ -269,8 +288,13 @@ def _judge(ctx: Context, raw: dict, project_id: str, sent: dict[str, Memory],
         if refusal := ids_problem(ids, sent, 2 if kind == "contradiction" else 1, "ids"):
             return refusal.report(ctx, kind)
         label = kind.replace("_", "-")
-        report.line(f"{label} {' '.join(ids)}: reported under Needs you")
-        report.needs_you(f"{label} {' '.join(ids)}: {reason}")
+        # the full entry, in the section line, at the moment it is judged: the scope
+        # digest is stored once this pass finishes, and a run killed before the
+        # footer is ever written must not lose it -- the footer's own Needs-you
+        # entry, below, is the summary collected there
+        entry_line = f"{label} {' '.join(ids)}: {reason}"
+        report.line(entry_line)
+        report.needs_you(entry_line)
         return True
     plan = _PLANS[kind](raw, project_id, sent, sources)
     if isinstance(plan, Problem):
@@ -304,19 +328,7 @@ def run(ctx: Context, project_id: str, scope: str) -> PassResult:
     if isinstance(result, str):
         ctx.report.line(f"not processed: {result}")
         return PassResult(finished=False, digest=digest)
-    finished = True
-    judgments = []
-    for raw in result["judgments"]:
-        if raw["kind"] != "no_change":
-            judgments.append(raw)
-            continue
-        # no_change is dropped, not judged, but its reason is checked exactly like
-        # every other kind's (§6.9): a malformed or policy-hit reason must not let
-        # the pass finish and the scope's digest get stored unnoticed
-        problem = reason_problem(ctx, raw["reason"])
-        if problem is not None:
-            ctx.report.line(f"{problem} no_change: reason")
-            finished = False
+    judgments, finished = split_no_change(ctx, result["judgments"])
     if not judgments and finished:
         ctx.report.line("no change")
     for raw in judgments:
