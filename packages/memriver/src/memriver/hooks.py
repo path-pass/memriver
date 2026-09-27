@@ -20,9 +20,10 @@ Any other SessionStart failure costs the user one fixed, path-free stderr
 line, never a message the agent can read as instructions; UserPromptSubmit,
 Stop and SessionEnd fail silently, with nothing on stdout or stderr. The one
 exception is an unusable settings.toml (or MEMRIVER_* value) on the events that
-load it: the user has to fix it, so every such event reports the same stderr
+load it: the user has to fix it, so every such event writes the same stderr
 line (naming the file and the field, never a value) and exits 1 -- a failing,
-non-blocking hook, whose stderr the harness shows.
+non-blocking hook. Whether that line reaches the user depends on the harness
+(see the README's Settings section); ``memriver doctor`` always shows it.
 
 *Per-harness envelopes stay separate.* Every event keeps one encoder per
 harness even where both currently build the same object: the schemas are owned

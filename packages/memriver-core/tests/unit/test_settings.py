@@ -290,6 +290,56 @@ def test_a_root_that_cannot_be_searched_is_an_error_not_a_missing_file(tmp_path)
     assert str(error) == "settings.toml could not be read"
 
 
+def test_a_path_that_becomes_a_directory_after_the_precheck_is_an_error(tmp_path, monkeypatch):
+    # settings_file()'s stat-based check passes (a real file); the file is then
+    # replaced with a directory before the TOML source actually reads it. The
+    # source's own is_file() check must not silently treat that as "no file" and
+    # fall back to defaults -- a race is still a SettingsError.
+    from memriver_core import settings as settings_module
+    root = _root(tmp_path, "max_body_chars = 42\n")
+    original = settings_module.settings_file
+
+    def _replace_with_directory(root_arg):
+        path = original(root_arg)
+        path.unlink()
+        path.mkdir()
+        return path
+
+    monkeypatch.setattr(settings_module, "settings_file", _replace_with_directory)
+    error = _raised(root)
+    assert str(error) == "settings.toml could not be read"
+
+
+def test_a_path_that_disappears_after_the_precheck_is_an_error(tmp_path, monkeypatch):
+    from memriver_core import settings as settings_module
+    root = _root(tmp_path, "max_body_chars = 42\n")
+    original = settings_module.settings_file
+
+    def _remove_after_check(root_arg):
+        path = original(root_arg)
+        path.unlink()
+        return path
+
+    monkeypatch.setattr(settings_module, "settings_file", _remove_after_check)
+    error = _raised(root)
+    assert str(error) == "settings.toml could not be read"
+
+
+def test_a_source_whose_is_file_check_returns_false_is_an_error(tmp_path, monkeypatch):
+    # whatever the underlying reason a source decides not to read the file it
+    # was given, that must never look like an empty, valid config
+    root = _root(tmp_path, "max_body_chars = 42\n")
+    monkeypatch.setattr(Path, "is_file", lambda self: False)
+    error = _raised(root)
+    assert str(error) == "settings.toml could not be read"
+
+
+def test_an_empty_settings_file_is_fine(tmp_path):
+    # success is never judged by an empty parsed dict -- an empty file is a
+    # legitimate, if pointless, settings.toml
+    assert load_settings(root_override=_root(tmp_path, "")).max_body_chars == 8000
+
+
 def test_a_symlink_to_a_settings_file_is_read(tmp_path):
     root = _root(tmp_path)
     (tmp_path / "real.toml").write_text("max_body_chars = 42\n", encoding="utf-8")

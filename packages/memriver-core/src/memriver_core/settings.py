@@ -181,6 +181,26 @@ def reject_boolean(value: object) -> object:
     return value
 
 
+class _StrictTomlSource(TomlConfigSettingsSource):
+    """TomlConfigSettingsSource, for a path settings_file() already confirmed is
+    a regular file.
+
+    The base class's own _read_files() re-checks is_file() and, when that is
+    False, silently skips the file and returns {} -- so a file that stops being
+    a regular one between settings_file()'s check and this source's own read
+    (replaced by a directory, removed, or otherwise no longer readable) would
+    quietly fall back to defaults instead of raising. This overrides that one
+    check to raise instead: success is never judged by whether the parsed dict
+    is empty (an empty file, or one holding only keys core does not own, is a
+    legitimate settings.toml), only by whether the file was actually read.
+    """
+
+    def _read_files(self, files: Path, deep_merge: bool = False) -> dict[str, object]:
+        if not files.is_file():
+            raise OSError("settings file is no longer a readable file")
+        return super()._read_files(files, deep_merge=deep_merge)
+
+
 class Settings(BaseSettings):
     """Behaviour knobs, read from MEMRIVER_* env vars and <root>/settings.toml.
 
@@ -222,7 +242,7 @@ class Settings(BaseSettings):
             return sources
         # the top level only: the table header () reads every top-level key, and
         # extra="ignore" drops the ones that are not fields
-        return (*sources, TomlConfigSettingsSource(settings_cls, toml_file=path))
+        return (*sources, _StrictTomlSource(settings_cls, toml_file=path))
 
     @field_validator("max_body_chars", "search_limit_default", "search_limit_max",
                      "index_budget_lines", mode="before")
