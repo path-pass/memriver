@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import ast
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import memriver
@@ -141,3 +143,17 @@ def test_agent_paths_never_reach_the_maintenance_service(module):
     names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
     assert "maintenance" not in attributes, f"{module} reaches services.maintenance"
     assert "MaintenanceService" not in names | attributes, f"{module} names MaintenanceService"
+
+
+# spec §2 / §10 item 17: the umbrella composes memriver_dream for `memriver dream`
+# only; every session start, prompt and tool call imports these modules, so none of
+# them may load memriver_dream, directly or through anything they import
+HOT_PATH_MODULES = ("memriver.cli", "memriver.hooks", "memriver.server", "memriver.install")
+
+
+def test_the_hot_paths_never_load_memriver_dream():
+    probe = (f"import sys\nfor name in {HOT_PATH_MODULES!r}:\n    __import__(name)\n"
+             "print(sorted(m for m in sys.modules if m.split('.')[0] == 'memriver_dream'))")
+    result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
+                            check=True)
+    assert result.stdout.strip() == "[]"

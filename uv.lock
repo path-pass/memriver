@@ -657,6 +657,7 @@ source = { editable = "packages/memriver" }
 dependencies = [
     { name = "fastmcp" },
     { name = "memriver-core" },
+    { name = "memriver-dream" },
     { name = "pydantic" },
     { name = "tomlkit" },
 ]
@@ -665,6 +666,7 @@ dependencies = [
 requires-dist = [
     { name = "fastmcp", specifier = ">=3.4.7,<4" },
     { name = "memriver-core", editable = "packages/memriver-core" },
+    { name = "memriver-dream", editable = "packages/memriver-dream" },
     { name = "pydantic", specifier = ">=2" },
     { name = "tomlkit" },
 ]
