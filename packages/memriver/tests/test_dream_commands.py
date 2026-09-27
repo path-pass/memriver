@@ -494,6 +494,15 @@ def test_run_without_an_executor_scans_and_prints_its_report(world):
     assert f"memriver delete {secret} --hard" in out and "ghp_" not in out
 
 
+def test_a_scheduled_run_prints_one_line_not_its_report(world):
+    # under the schedule stdout is dream.log, which retention never prunes
+    _plant(world, "deploy with " + SECRET, description="deploy notes")
+    code, out, err = _run(world, trigger="schedule")
+    (run,) = _dream_store(world).runs(10)
+    assert (code, err) == (0, "")
+    assert out == f"run {run.run_id} completed; memriver dream report {run.run_id}\n"
+
+
 def test_run_exits_1_when_the_finished_run_report_cannot_be_read_back(world, monkeypatch):
     # the run itself completes -- scanned, stored, its report written -- only the
     # final read-back that prints it fails; the row and report file are not undone

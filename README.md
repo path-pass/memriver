@@ -447,7 +447,8 @@ finishing is shown as interrupted, and the next run marks each of its changes
 whose outcome is unknown with the `memriver history` command that settles it.
 A report never holds a memory body, a model's full input or output, or a
 secret; a description or model reason that fails the content policy appears
-as `(withheld)`. `memriver dream run` prints its report too. It exits 0 when
+as `(withheld)`. `memriver dream run` prints its report too (a scheduled
+run prints one line instead). It exits 0 when
 the run completed (failures of single items included), was skipped, or only
 scanned because no `[dream]` table exists; and 1 on a store failure, an
 invalid `[dream]` table, `--phase` with no executor configured, a store below
@@ -489,7 +490,9 @@ What an executor run can and cannot do:
 `~/Library/LaunchAgents/io.github.path-pass.memriver.dream.plist`, that runs
 `memriver dream run` daily at `--at` (default 04:00) with `HOME`, a `PATH`
 holding the memriver and executor directories, and `MEMRIVER_ROOT` set to the
-store's absolute path; its output goes to `<root>/dream/dream.log`. It runs
+store's absolute path; its output goes to `<root>/dream/dream.log`, one line
+per run naming the run and its status (read the report with `memriver dream
+report`), so the log never keeps report text past the retention. It runs
 only while you are logged in, and needs no sudo. The schedule needs a
 persistent memriver: `uvx` runs memriver from uv's cache, which uv may delete
 at any time, so `init` refuses there -- install it with `uv tool install
@@ -689,7 +692,7 @@ memriver's own checkout).
     dream.db             # runs, TTL reviews, finished passes, source re-checks, summary progress
     reports/             # one report file per run, kept report_retention_days
     .lock                # one run at a time
-    dream.log            # the scheduled runs' output
+    dream.log            # one line per scheduled run: its id and status
 ```
 
 Every id is 10 random lowercase characters memriver generates (Crockford base32:

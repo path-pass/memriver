@@ -387,7 +387,11 @@ def run_run(*, phase: str | None, trigger: str, root: Path | None, stdout: IO[st
     if run.status == "skipped":
         stdout.write(SKIPPED)
         return 0
-    # under the schedule, stdout is dream.log: the report lands there too
+    if trigger == "schedule":
+        # stdout is dream.log, which nothing prunes: one line pointing at the report,
+        # so the report text stays under report_retention_days (and a hard delete)
+        stdout.write(f"run {run.run_id} {run.status}; memriver dream report {run.run_id}\n")
+        return 0
     if not _print_report(_report_path(settings.root, run), stdout):
         # the run itself is not undone -- its row and report file stand as they are --
         # only the final read-back failed; the same fixed line as any other dream-file
