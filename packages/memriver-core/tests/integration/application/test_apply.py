@@ -412,3 +412,33 @@ def test_delete_global_soft_deletes_a_global_memory_through_apply_only(world):
     project_memory = world["create"]()
     with pytest.raises(MemoryNotFound):
         world["memory"].delete_global(project_memory, expected_version=1)
+
+
+def test_delete_global_checks_eligibility_inside_the_delete_transaction(world, monkeypatch):
+    """A role swap landing between the facade call and the store opening its write
+    transaction must still be caught: the eligibility check and the delete share one
+    transaction, so `expected_version` is never asked to catch a project's role change."""
+    global_id = world["create"]("a principle", project_id=world["global"])
+    before = _counts(world)
+    real_write = world["memory"]._memory_store._database.write
+
+    def swap_then_write(*args, **kwargs):
+        _make_global(world, world["mine"])   # the swap happens just before the transaction opens
+        return real_write(*args, **kwargs)
+
+    monkeypatch.setattr(world["memory"]._memory_store._database, "write", swap_then_write)
+    with pytest.raises(MemoryNotFound):
+        world["memory"].delete_global(global_id, expected_version=1)
+    assert _counts(world) == before
+
+
+# --- an unaddressable id is a missing one, not storage damage (agent write entry) ----
+
+def test_update_or_delete_with_an_unaddressable_id_is_not_found(world):
+    surrogate = "\udc80" * 10        # a lone surrogate: legal in a Python str, not in UTF-8
+    before = _counts(world)
+    with pytest.raises(MemoryNotFound):
+        world["memory"].update(surrogate, "x", world["context"], expected_version=1)
+    with pytest.raises(MemoryNotFound):
+        world["memory"].delete(surrogate, world["context"], expected_version=1)
+    assert _counts(world) == before

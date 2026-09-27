@@ -223,6 +223,9 @@ class OtherMemoryStore:
     def write(self, op, *, restriction, changed_by, changed_via, check):
         raise self.backend.error
 
+    def delete_global(self, op, *, changed_by, changed_via, check):
+        raise self.backend.error
+
     def read(self, memory_id, read_write_set):
         raise self.backend.error
 

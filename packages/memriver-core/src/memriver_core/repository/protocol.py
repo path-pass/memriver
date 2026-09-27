@@ -14,7 +14,7 @@ from memriver_core.models import (
     SessionKey,
     UnbindPlan,
 )
-from memriver_core.models.changes import Change, Op
+from memriver_core.models.changes import Change, Op, SoftDelete
 
 
 class MemoryStore(Protocol):
@@ -51,6 +51,12 @@ class MemoryStore(Protocol):
         that transaction; a result equal to the current state writes nothing
         and returns the memory as checked (after every one of those checks
         passed).
+    - `delete_global`: soft-deletes `op.memory_id` through the same kernel as
+      `apply`, but only after confirming, inside that write transaction, that
+      it is right now a live memory of the global project; a role change
+      between a caller's own check and this call is therefore still caught.
+      Anything else -- absent, malformed, already deleted, or an ordinary
+      project's memory -- is `MemoryNotFound(op.memory_id)`.
     - `read`: malformed, absent, soft-deleted, orphaned or another project's
       id raises `MemoryNotFound(memory_id)`; a row that fails validation
       raises `StorageFailure`.
@@ -66,6 +72,8 @@ class MemoryStore(Protocol):
 
     def apply(self, ops: Sequence[Op], *, changed_by: str, changed_via: str | None,
               check: Callable[[str, str], str | None]) -> Change: ...
+    def delete_global(self, op: SoftDelete, *, changed_by: str, changed_via: str | None,
+                      check: Callable[[str, str], str | None]) -> Change: ...
     def write(self, op: Op, *, restriction: ReadWriteSet, changed_by: str,
               changed_via: str | None, check: Callable[[str, str], str | None]) -> Memory: ...
     def read(self, memory_id: str, read_write_set: ReadWriteSet) -> Memory: ...

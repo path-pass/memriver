@@ -19,13 +19,13 @@ from memriver_core.models.changes import Change, Create, Op, SoftDelete, Update
 from memriver_core.models.errors import (
     ContentRejected,
     IdCollision,
-    MemoryNotFound,
     ProjectUnavailable,
     StorageFailure,
 )
 
 if TYPE_CHECKING:
     from memriver_core.content_policy.protocol import ContentPolicy
+    from memriver_core.models import ReadWriteSet
     from memriver_core.repository.protocol import MemoryStore, ProjectStore
 
 # 'harness' is persisted verbatim into the stored memory, so without this it
@@ -88,19 +88,11 @@ class MemoryService:
         policy = self._policy()
         policy.check(harness, self._metadata_max_chars)
         # checked here first so an agent reads the policy's own words; the
-        # kernel checks the resulting state again inside its transaction.
-        # description is only checked when non-empty: it is optional, and
-        # the policy refuses ""
-        policy.check(content, self._max_body_chars)
-        if description.strip():
-            policy.check(description, self._metadata_max_chars)
+        # kernel checks the resulting state again inside its transaction
+        self._check_text(description, content)
         create = Create(read_write_set.project_id, type, description, content, sync=sync)
-        try:
-            memory = self._memory_store.write(create, restriction=read_write_set,
-                                              changed_by=changed_by, changed_via=harness,
-                                              check=self._check_state)
-        except IdCollision as err:
-            raise StorageFailure from err
+        memory = self._write(create, restriction=read_write_set, changed_by=changed_by,
+                             changed_via=harness)
         self._mark_saved(context)
         return memory
 
@@ -120,14 +112,10 @@ class MemoryService:
         are checked in the write transaction, and the memory as checked is returned with
         no version or change."""
         self._refuse_pending(context)
-        policy = self._policy()
-        policy.check(content, self._max_body_chars)
-        if description is not None and description.strip():
-            policy.check(description, self._metadata_max_chars)
+        self._check_text(description, content)
         edit = Update(memory_id, expected_version, description=description, body=content)
-        memory = self._memory_store.write(edit, restriction=context.read_write_set,
-                                          changed_by=changed_by, changed_via=changed_via,
-                                          check=self._check_state)
+        memory = self._write(edit, restriction=context.read_write_set, changed_by=changed_by,
+                             changed_via=changed_via)
         self._mark_saved(context)
         return memory
 
@@ -135,19 +123,34 @@ class MemoryService:
                changed_by: str = "mcp", changed_via: str | None = None) -> int:
         """The agent soft delete; the new version. Never marks the session saved."""
         self._refuse_pending(context)
-        memory = self._memory_store.write(SoftDelete(memory_id, expected_version),
-                                          restriction=context.read_write_set,
-                                          changed_by=changed_by, changed_via=changed_via,
-                                          check=self._check_state)
+        memory = self._write(SoftDelete(memory_id, expected_version),
+                             restriction=context.read_write_set, changed_by=changed_by,
+                             changed_via=changed_via)
         return memory.version
+
+    def _write(self, op: Op, *, restriction: ReadWriteSet, changed_by: str,
+              changed_via: str | None) -> Memory:
+        """The one call to the store's agent entry point, for every wrapper above: a
+        first-occurrence id collision is StorageFailure, same as every other write."""
+        try:
+            return self._memory_store.write(op, restriction=restriction, changed_by=changed_by,
+                                            changed_via=changed_via, check=self._check_state)
+        except IdCollision as err:
+            raise StorageFailure from err
+
+    def _check_text(self, description: str | None, body: str) -> None:
+        """Body against the body budget; description, when given and non-empty, against
+        metadata's -- the one copy, raised with the policy's own wording. `description`
+        is None only from `update`, meaning "keep the current value" (nothing new to check)."""
+        policy = self._policy()
+        policy.check(body, self._max_body_chars)
+        if description is not None and description.strip():
+            policy.check(description, self._metadata_max_chars)
 
     def _check_state(self, description: str, body: str) -> str | None:
         """The content policy on one resulting state (the kernel's `check`): a rule id or None."""
-        policy = self._policy()
         try:
-            policy.check(body, self._max_body_chars)
-            if description.strip():
-                policy.check(description, self._metadata_max_chars)
+            self._check_text(description, body)
         except ContentRejected as err:
             return err.rule_id or "rejected"
         return None
@@ -168,14 +171,18 @@ class MemoryService:
 
     def delete_global(self, memory_id: str, *, expected_version: int,
                       changed_by: str = "human") -> int:
-        """Soft-delete a live global memory by id through `apply`; the new version.
+        """Soft-delete a live global memory by id; the new version.
 
-        `MemoryNotFound` when the id is not a live global memory.
+        `MemoryNotFound` when the id is not, right now, a live global memory --
+        checked inside the same write transaction as the delete, so a
+        project's role cannot change between the check and the write.
         """
-        memory = self._memory_store.read_any(memory_id, include_deleted=False)
-        if memory.project_id != self._project_store.global_project_id():
-            raise MemoryNotFound(memory_id)
-        change = self.apply([SoftDelete(memory_id, expected_version)], changed_by=changed_by)
+        try:
+            change = self._memory_store.delete_global(
+                SoftDelete(memory_id, expected_version), changed_by=changed_by, changed_via=None,
+                check=self._check_state)
+        except IdCollision as err:
+            raise StorageFailure from err
         return change.steps[0].after_version
 
     # --- collections ---

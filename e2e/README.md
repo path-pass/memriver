@@ -23,7 +23,7 @@ Status:
 ## The store under test
 
 The store is one SQLite file, `<root>/memriver.db` (mode `0600`, `PRAGMA
-user_version = 2`, foreign keys on). The two tables the stages seed and read:
+user_version = 4`, foreign keys on). The two tables the stages seed and read:
 
 - `projects(id, name, root, is_global)` -- exactly one row has `is_global = 1`
   (name `global`, `root` NULL); every other row is a registered project.
@@ -58,7 +58,7 @@ Each container starts from a fresh `HOME=/root`; the store is memriver's default
    file is written and prints `memory store: ready (global project <id>)`.
    Asserted: exit 0, **empty stderr** (install failures go to stderr), that
    line present, `<root>/memriver.db` exists with mode `0600` and
-   `user_version = 2`, its one `is_global = 1` row is `(<that id>, "global",
+   `user_version = 4`, its one `is_global = 1` row is `(<that id>, "global",
    NULL)`, and no old file-store name exists.
 3. The harness config entries. For Claude Code (stage 1): the MCP server is
    `uvx memriver serve --harness claude-code`, the five hooks
@@ -78,19 +78,20 @@ Each container starts from a fresh `HOME=/root`; the store is memriver's default
 
 Global is read-only to agents through the service (`GlobalReadOnly`), and
 `MemoryService.record` only writes the session's own project, so a global
-memory cannot be seeded through the service. `seed_global_memory "<text>"`
-seeds it the way an operator would: one `INSERT` into `<root>/memriver.db`'s
-`memories` table, over a connection with `PRAGMA foreign_keys = ON`. The id and
-timestamps come from core's own model -- `Memory.new(body=text,
-description=text, type="project", project_id=<global id>, trust="user",
-source={"harness": "e2e", "method": "manual"})`, where the global id is the one
-`projects` row with `is_global = 1` -- and the row is written column by column
-(`source` split into `source_harness` / `source_method`, `sync` as 0/1,
-`version = 1`, `deleted_at = NULL`). The text doubles as the description, i.e.
-the index cue (60-character budget), so the injected index line reads `-
-[project, global] <id>: <text> (<date>)`. Stage 1 runs `memriver doctor --json`
+memory cannot be seeded through the agent-facing service. `seed_global_memory
+"<text>"` seeds it the way the management path does: one `Create` through
+`MemoryService.apply` (`memriver_core.bootstrap.build_services` composed over
+the already-installed store), landing in the one `projects` row with
+`is_global = 1`. `Create(<global id>, "project", text, text, trust="user")`
+with `changed_by="manual"`, `changed_via="e2e"` gives the row the same shape
+the old hand-written INSERT did (`source_method`/`source_harness` = `manual`/
+`e2e`, so `memriver show` still reports `source: e2e/manual`), `version = 1`
+and `deleted_at = NULL`, plus the change/version/step rows the kernel now
+always writes alongside it. The text doubles as the description, i.e. the
+index cue (60-character budget), so the injected index line reads `- [project,
+global] <id>: <text> (<date>)`. Stage 1 runs `memriver doctor --json`
 afterwards and requires `state: healthy` with no findings, which confirms the
-hand-inserted row is valid store data.
+seeded row is valid store data.
 
 ## Stage 1 -- clean-machine install + exact hook command (no credentials)
 

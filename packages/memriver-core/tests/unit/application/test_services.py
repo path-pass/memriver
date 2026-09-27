@@ -128,7 +128,7 @@ class FakeMemoryStore:
     def __init__(self, project_store: FakeProjectStore) -> None:
         self.project_store = project_store
         self.calls: list[tuple] = []
-        self.failures: list[Exception] = []     # raised, in order, by apply
+        self.failures: list[Exception] = []     # raised, in order, by write
         self.attempts = 0
         self.stored: dict[str, Memory] = {}
 
