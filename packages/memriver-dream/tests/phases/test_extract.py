@@ -97,15 +97,16 @@ def test_every_project_and_global_are_sent_with_their_owner(world):
 
 def test_a_global_source_counts_the_projects_its_cited_versions_trace_to(world):
     # §10 item 10: C4 tracing through a global source -- the cited version is followed,
-    # not the source's current one, and recursively through global entries
+    # not the source's current one, and recursively through global entries. `via` is
+    # updated to cite nothing at its current version, so tracing only succeeds by
+    # following the version `deeper` actually cites (v1), never the current one (v2).
     second = _second(world)
     a = world.create(world.project.id, "pytest in demo")
     b = world.create(second, "pytest in second")
     via = _global(world, "pytest is the runner in demo", (a, 1))
     deeper = _global(world, "pytest is the runner", (via, 1))
     world.services.memory.apply(
-        [Update(memory_id=a, expected_version=1, body="pytest in demo, with xdist")],
-        changed_by="test")
+        [Update(memory_id=via, expected_version=1, sources=())], changed_by="test")
     world.executor.replies = [_answer(_new(deeper, b))]
     result, _ = _pass(world)
     assert result.finished
@@ -232,6 +233,30 @@ def test_a_supplement_that_stays_in_one_project_is_refused(world):   # §10 item
     assert len(world.services.memory.versions(target)) == 1
 
 
+def test_new_validates_ids_before_the_type_refusal_so_no_id_leaks(world):
+    # an id the model invented is malformed output, not a rule refusal, even when
+    # another field (an empty type) would also refuse -- ids_problem must run first so
+    # a refusal's Needs-you line only ever joins ids that were actually sent
+    a = world.create(world.project.id, "pytest in demo")
+    world.executor.replies = [_answer(_new(a, world.secret, type=""))]
+    result, text = _pass(world)
+    assert not result.finished
+    assert "invalid new: source_ids\n" in text
+    assert "ghp_" not in text and "refused" not in text
+    assert _globals(world) == set()
+
+
+def test_supplement_validates_ids_before_the_ownership_refusal_so_no_id_leaks(world):
+    a = world.create(world.project.id, "pytest in demo")
+    world.executor.replies = [_answer(_judgment(
+        "supplement", id=a, description="d", body="b", source_ids=(world.secret,)))]
+    result, text = _pass(world)
+    assert not result.finished
+    assert "invalid supplement: source_ids\n" in text
+    assert "ghp_" not in text and "refused" not in text
+    assert _globals(world) == set()
+
+
 def test_a_refused_extraction_stores_its_digest_and_the_next_run_skips(world):   # §10 item 9
     a1 = world.create(world.project.id, "pytest in demo")
     a2 = world.create(world.project.id, "demo's CI runs pytest")
@@ -262,6 +287,23 @@ def test_a_reason_the_policy_refuses_is_neither_acted_on_nor_reported(world):
     assert not result.finished
     assert "rejected new: reason\n" in text and "ghp_" not in text
     assert _globals(world) == set()
+
+
+@pytest.mark.parametrize("case", ["unstorable", "policy hit"])
+def test_a_no_change_with_a_bad_reason_does_not_finish_or_store_the_digest(world, case):
+    # no_change is dropped before it reaches _judge, but its reason must be checked
+    # exactly like every other kind's -- never a free pass to a stored digest
+    world.create(world.project.id, "pytest in demo")
+    reason = "x" + chr(0xD800) if case == "unstorable" else "key " + world.secret
+    outcome = "invalid" if case == "unstorable" else "rejected"
+    world.executor.replies = [_answer(_judgment("no_change", reason=reason))]
+    row = world.run(phases={"extract"})
+    text = world.report_text(row)
+    assert f"{outcome} no_change: reason\n" in text
+    assert "no change\n" not in text
+    assert "ghp_" not in text
+    store = DreamStore(world.root / "dream" / "dream.db")
+    assert store.scope_digest(EXTRACTION_SCOPE) is None
 
 
 def test_another_projects_change_reruns_its_own_pass_and_extraction_only(world):
@@ -347,6 +389,37 @@ def test_a_global_source_gone_while_tracing_is_input_changed_not_a_refusal(world
     assert result == PassResult(finished=False, digest=input_digest([(a, 1), (b, 1), (via, 1)]))
     assert "new: input changed; not processed\n" in text and "refused" not in text
     assert _globals(world) == {via}
+
+
+def test_traced_projects_reads_a_repeated_global_memorys_history_only_once(world,
+                                                                            monkeypatch):
+    # within one trace, the same global memory's version history is fetched once,
+    # even when it is reached at more than one of its own versions
+    second = _second(world)
+    a = world.create(world.project.id, "pytest in demo")
+    b = world.create(second, "pytest in second")
+    g = _global(world, "g body", (a, 1))
+    via1 = _global(world, "via1", (g, 1))          # cites g while g is still at v1
+    world.services.memory.apply(
+        [Update(memory_id=g, expected_version=1, sources=(SourceRef(b, 1),))],
+        changed_by="test")
+    via2 = _global(world, "via2", (g, 2))          # cites g's new current version
+    root = _global(world, "root", (via1, 1), (via2, 1))
+    counts = {"g": 0}
+    versions = world.services.memory.versions
+
+    def counting(memory_id):
+        if memory_id == g:
+            counts["g"] += 1
+        return versions(memory_id)
+
+    monkeypatch.setattr(world.services.memory, "versions", counting)
+    world.executor.replies = [_answer(_new(root, b))]
+    result, _ = _pass(world)
+    assert result.finished
+    # one read to build g's own input entry, one more the trace shares between both
+    # of g's citing versions -- never a separate read per version reached
+    assert counts["g"] == 2
 
 
 def test_the_prompt_states_the_extraction_rules():   # spec §6.5

@@ -85,17 +85,19 @@ SCHEMA = {"type": "object", "additionalProperties": False, "required": ["judgmen
           "properties": {"judgments": {"type": "array", "items": _JUDGMENT}}}
 
 
-def traced_projects(ctx: Context, global_id: str,
-                    refs: Iterable[SourceRef]) -> set[str] | None:
+def traced_projects(ctx: Context, global_id: str, refs: Iterable[SourceRef],
+                    owner: dict[str, str]) -> set[str] | None:
     """The distinct ordinary projects `refs` trace to (C4), through every cited
     version -- a global memory's sources as recorded on the version cited, deleted
-    memories and old versions included. None when a memory on the way was
-    hard-deleted during the run: the input changed, and a vanished memory is never
-    counted as one without sources."""
-    owner = {memory.id: memory.project_id
-             for memory in ctx.services.memory.memories(include_deleted=True)}
+    memories and old versions included. `owner` maps every memory id to its project
+    id, built once per run. None when a memory on the way was hard-deleted during the
+    run: the input changed, and a vanished memory is never counted as one without
+    sources."""
     found: set[str] = set()
     seen: set[SourceRef] = set()
+    # a global memory's whole version→sources history, read at most once per id for
+    # this trace: the same memory is often reached through more than one path
+    history: dict[str, dict[int, tuple[SourceRef, ...]]] = {}
     stack = list(refs)
     while stack:
         ref = stack.pop()
@@ -107,11 +109,14 @@ def traced_projects(ctx: Context, global_id: str,
         if owner[ref.memory_id] != global_id:
             found.add(owner[ref.memory_id])
             continue
-        try:
-            cited = {version.version: version.sources
-                     for version in ctx.services.memory.versions(ref.memory_id)}
-        except MemoryNotFound:
-            return None
+        cited = history.get(ref.memory_id)
+        if cited is None:
+            try:
+                cited = {version.version: version.sources
+                         for version in ctx.services.memory.versions(ref.memory_id)}
+            except MemoryNotFound:
+                return None
+            history[ref.memory_id] = cited
         stack.extend(cited.get(ref.version, ()))
     return found
 
@@ -121,13 +126,15 @@ def _plan(raw: dict, global_id: str, sent: dict[str, Memory],
           ) -> tuple[list[str], tuple[SourceRef, ...], list[Op], str] | Problem:
     """(items for the report, the resulting source set, ops, description), or why it
     fails: INVALID for malformed output (an id not sent, unstorable text), REFUSED for
-    a counted rule."""
+    a counted rule. Every id a judgment uses is checked against `sent` before any
+    REFUSED outcome, so a rule refusal never carries an id the model invented -- the
+    Needs-you line it feeds only ever names ids that were sent."""
     kind, new = raw["kind"], raw["source_ids"]
     if kind == "new":
-        if raw["type"] not in TYPES:
-            return Problem(REFUSED, "type")
         if problem := ids_problem(new, sent, 1, "source_ids"):
             return problem
+        if raw["type"] not in TYPES:
+            return Problem(REFUSED, "type")
         if problem := text_problem(raw):
             return problem
         refs = tuple(SourceRef(memory_id, sent[memory_id].version) for memory_id in new)
@@ -138,10 +145,10 @@ def _plan(raw: dict, global_id: str, sent: dict[str, Memory],
     target = sent.get(raw["id"])
     if target is None:
         return Problem(INVALID, "id")
-    if target.project_id != global_id:
-        return Problem(REFUSED, "id")           # only a global entry grows
     if problem := ids_problem(new, sent, 1, "source_ids"):
         return problem
+    if target.project_id != global_id:
+        return Problem(REFUSED, "id")           # only a global entry grows
     cited = {source.memory_id: source.version for source in sources[target.id]}
     grown = cited | {memory_id: sent[memory_id].version for memory_id in new}
     if target.id in new or grown == cited:
@@ -160,7 +167,8 @@ def _plan(raw: dict, global_id: str, sent: dict[str, Memory],
 
 def _refuse(ctx: Context, raw: dict, why: str, reason: str) -> bool:
     """A well-formed judgment a rule refuses: reported, and the pass may still finish
-    -- the same input would be refused again."""
+    -- the same input would be refused again. `_plan` never returns REFUSED before
+    `source_ids` passed `ids_problem`, so every id joined below was sent."""
     kind = raw["kind"]
     target = "" if kind == "new" else f" {raw['id']}"
     ctx.report.line(f"refused {kind}: {why}")
@@ -170,7 +178,7 @@ def _refuse(ctx: Context, raw: dict, why: str, reason: str) -> bool:
 
 
 def _judge(ctx: Context, raw: dict, global_id: str, sent: dict[str, Memory],
-           sources: dict[str, tuple[SourceRef, ...]]) -> bool:
+           sources: dict[str, tuple[SourceRef, ...]], owner: dict[str, str]) -> bool:
     """One judgment validated and carried out; False when it keeps the pass from
     finishing (§6.9): malformed output, a reason the policy hits, or an apply that did
     not happen. A rule refusal, C4 included, is reported and does not."""
@@ -186,7 +194,7 @@ def _judge(ctx: Context, raw: dict, global_id: str, sent: dict[str, Memory],
             return plan.report(ctx, kind)
         return _refuse(ctx, raw, plan.field, reason)
     items, refs, ops, description = plan
-    projects = traced_projects(ctx, global_id, refs)
+    projects = traced_projects(ctx, global_id, refs, owner)
     if projects is None:
         report.line(f"{kind}: {INPUT_CHANGED}")
         return False
@@ -226,10 +234,24 @@ def run(ctx: Context) -> PassResult:
     if isinstance(result, str):
         ctx.report.line(f"not processed: {result}")
         return PassResult(finished=False, digest=digest)
-    judgments = [raw for raw in result["judgments"] if raw["kind"] != "no_change"]
-    if not judgments:
-        ctx.report.line("no change")
+    # one read of every memory's project, shared by every judgment's C4 trace this run
+    owner = {memory.id: memory.project_id
+             for memory in ctx.services.memory.memories(include_deleted=True)}
     finished = True
+    judgments = []
+    for raw in result["judgments"]:
+        if raw["kind"] != "no_change":
+            judgments.append(raw)
+            continue
+        # no_change is dropped, not judged, but its reason is checked exactly like
+        # every other kind's (§6.9): a malformed or policy-hit reason must not let
+        # the pass finish and the scope's digest get stored unnoticed
+        problem = reason_problem(ctx, raw["reason"])
+        if problem is not None:
+            ctx.report.line(f"{problem} no_change: reason")
+            finished = False
+    if not judgments and finished:
+        ctx.report.line("no change")
     for raw in judgments:
-        finished = _judge(ctx, raw, global_id, sent, sources) and finished
+        finished = _judge(ctx, raw, global_id, sent, sources, owner) and finished
     return PassResult(finished=finished, digest=digest)
