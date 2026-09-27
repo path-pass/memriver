@@ -1,15 +1,235 @@
-"""Global layer, extraction (spec §6.5): not implemented yet; the run reports it and moves on."""
+"""Global layer, extraction (spec §6.5): shared principles from the ordinary projects
+into global.
+
+Input: every project's and global's current memories the policy scan did not
+exclude; the pass is skipped when their digest equals the extraction scope's. Code
+admits a new or grown global entry only when its sources trace to at least two
+distinct ordinary projects (C4): a project memory counts its own project; a global
+memory counts, through its cited versions and recursively, the projects they trace
+to, and never a project of its own. Fewer than two is refused and goes to
+"Needs you".
+"""
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
-from . import PassResult
+from memriver_core.models.changes import Create, SourceRef, Update
+from memriver_core.models.errors import MemoryNotFound
+
+from ..changes import apply_group
+from ..store import input_digest
+from . import EXTRACTION_SCOPE, PassResult
+from .consolidate import (
+    INPUT_CHANGED,
+    INVALID,
+    REFUSED,
+    TYPES,
+    Problem,
+    ask,
+    current_sources,
+    details,
+    entry,
+    ids_problem,
+    reason_problem,
+    shown,
+    text_problem,
+    usable,
+)
 
 if TYPE_CHECKING:
+    from memriver_core.models import Memory
+    from memriver_core.models.changes import Op
+
     from ..run import Context
+
+SYSTEM_PROMPT = (
+    "You extract shared principles from the long-term memories a coding agent keeps for "
+    "several projects into the global memory every project reads. The memories given are "
+    "the only evidence. Each entry names its project, or \"global\" for an entry already "
+    "in the global memory, and the ids of the memories it cites as sources. Answer with "
+    "judgments of these kinds. "
+    "new: a principle that the memories of at least two projects show -- give a global "
+    "memory that states it and name those memories in source_ids; a global entry among "
+    "them counts the projects its own sources come from, never a project of its own. "
+    "supplement: an existing global entry (id) is right but incomplete, and memories not "
+    "yet among its sources add to it -- give its new description and body and name the new "
+    "memories in source_ids; its current sources are kept for you. "
+    "add_sources: memories not yet among an existing global entry's sources (id) show the "
+    "same principle -- name them in source_ids; its text stays. "
+    "no_change: nothing to extract. "
+    "Write principles, not concrete commands: \"Python projects prefer pytest for tests\", "
+    "never \"pytest -q\". Keep the condition under which a principle holds, and word it so "
+    "that it reads right in any project; never make a project-local requirement global "
+    "without its condition, and never extract what is about one project itself -- its "
+    "code, hosts, ports or names. Prefer supplementing or adding sources to an existing "
+    "entry over a new one, and never reword an entry without new evidence. When in doubt, "
+    "answer no_change. Each judgment has a one-sentence reason that names ids and says "
+    "why, without copying memory text. Fill only the fields its kind uses; leave the "
+    "others empty (\"\" or []).")
+PROMPT = "Memories of every project and of global:\n<memories>\n{entries}\n</memories>"
+
+_JUDGMENT = {
+    "type": "object", "additionalProperties": False,
+    "required": ["kind", "id", "type", "description", "body", "source_ids", "reason"],
+    "properties": {
+        "kind": {"type": "string", "enum": ["new", "supplement", "add_sources", "no_change"]},
+        "id": {"type": "string"},                     # supplement, add_sources
+        "type": {"type": "string", "enum": [*TYPES, ""]},       # new
+        "description": {"type": "string"},            # new, supplement
+        "body": {"type": "string"},                   # new, supplement
+        "source_ids": {"type": "array", "items": {"type": "string"}},
+        "reason": {"type": "string"}}}
+SCHEMA = {"type": "object", "additionalProperties": False, "required": ["judgments"],
+          "properties": {"judgments": {"type": "array", "items": _JUDGMENT}}}
+
+
+def traced_projects(ctx: Context, global_id: str,
+                    refs: Iterable[SourceRef]) -> set[str] | None:
+    """The distinct ordinary projects `refs` trace to (C4), through every cited
+    version -- a global memory's sources as recorded on the version cited, deleted
+    memories and old versions included. None when a memory on the way was
+    hard-deleted during the run: the input changed, and a vanished memory is never
+    counted as one without sources."""
+    owner = {memory.id: memory.project_id
+             for memory in ctx.services.memory.memories(include_deleted=True)}
+    found: set[str] = set()
+    seen: set[SourceRef] = set()
+    stack = list(refs)
+    while stack:
+        ref = stack.pop()
+        if ref in seen:
+            continue
+        if ref.memory_id not in owner:
+            return None
+        seen.add(ref)
+        if owner[ref.memory_id] != global_id:
+            found.add(owner[ref.memory_id])
+            continue
+        try:
+            cited = {version.version: version.sources
+                     for version in ctx.services.memory.versions(ref.memory_id)}
+        except MemoryNotFound:
+            return None
+        stack.extend(cited.get(ref.version, ()))
+    return found
+
+
+def _plan(raw: dict, global_id: str, sent: dict[str, Memory],
+          sources: dict[str, tuple[SourceRef, ...]]
+          ) -> tuple[list[str], tuple[SourceRef, ...], list[Op], str] | Problem:
+    """(items for the report, the resulting source set, ops, description), or why it
+    fails: INVALID for malformed output (an id not sent, unstorable text), REFUSED for
+    a counted rule."""
+    kind, new = raw["kind"], raw["source_ids"]
+    if kind == "new":
+        if raw["type"] not in TYPES:
+            return Problem(REFUSED, "type")
+        if problem := ids_problem(new, sent, 1, "source_ids"):
+            return problem
+        if problem := text_problem(raw):
+            return problem
+        refs = tuple(SourceRef(memory_id, sent[memory_id].version) for memory_id in new)
+        create = Create(project_id=global_id, type=raw["type"],
+                        description=raw["description"].strip(), body=raw["body"].strip(),
+                        sources=refs)
+        return [], refs, [create], create.description
+    target = sent.get(raw["id"])
+    if target is None:
+        return Problem(INVALID, "id")
+    if target.project_id != global_id:
+        return Problem(REFUSED, "id")           # only a global entry grows
+    if problem := ids_problem(new, sent, 1, "source_ids"):
+        return problem
+    cited = {source.memory_id: source.version for source in sources[target.id]}
+    grown = cited | {memory_id: sent[memory_id].version for memory_id in new}
+    if target.id in new or grown == cited:
+        return Problem(REFUSED, "source_ids")   # no new evidence: nothing to cite, no rewording
+    refs = tuple(SourceRef(memory_id, version) for memory_id, version in sorted(grown.items()))
+    if kind == "add_sources":
+        update = Update(memory_id=target.id, expected_version=target.version, sources=refs)
+        return [target.id], refs, [update], target.description
+    if problem := text_problem(raw):
+        return problem
+    update = Update(memory_id=target.id, expected_version=target.version,
+                    description=raw["description"].strip(), body=raw["body"].strip(),
+                    sources=refs)
+    return [target.id], refs, [update], update.description
+
+
+def _refuse(ctx: Context, raw: dict, why: str, reason: str) -> bool:
+    """A well-formed judgment a rule refuses: reported, and the pass may still finish
+    -- the same input would be refused again."""
+    kind = raw["kind"]
+    target = "" if kind == "new" else f" {raw['id']}"
+    ctx.report.line(f"refused {kind}: {why}")
+    ctx.report.needs_you(f"extraction refused: {kind}{target} from "
+                         f"{' '.join(raw['source_ids'])} ({why}): {reason}")
+    return True
+
+
+def _judge(ctx: Context, raw: dict, global_id: str, sent: dict[str, Memory],
+           sources: dict[str, tuple[SourceRef, ...]]) -> bool:
+    """One judgment validated and carried out; False when it keeps the pass from
+    finishing (§6.9): malformed output, a reason the policy hits, or an apply that did
+    not happen. A rule refusal, C4 included, is reported and does not."""
+    report, kind = ctx.report, raw["kind"]
+    problem = reason_problem(ctx, raw["reason"])
+    if problem is not None:
+        report.line(f"{problem} {kind}: reason")
+        return False
+    reason = shown(raw["reason"])
+    plan = _plan(raw, global_id, sent, sources)
+    if isinstance(plan, Problem):
+        if plan.outcome == INVALID:
+            return plan.report(ctx, kind)
+        return _refuse(ctx, raw, plan.field, reason)
+    items, refs, ops, description = plan
+    projects = traced_projects(ctx, global_id, refs)
+    if projects is None:
+        report.line(f"{kind}: {INPUT_CHANGED}")
+        return False
+    count = len(projects)
+    if count < 2:
+        return _refuse(ctx, raw, f"traces to {count} project(s)", reason)
+    if apply_group(ctx, kind, items, ops) is None:
+        return False
+    details(ctx, description, reason)
+    return True
 
 
 def run(ctx: Context) -> PassResult:
-    ctx.report.line("not implemented yet")
-    return PassResult(finished=False)
+    global_id = ctx.services.project.global_project_id()
+    if global_id is None:
+        ctx.report.line("no global project")
+        return PassResult(finished=True)
+    memories = usable(ctx, None)
+    if not memories:
+        ctx.report.line("no memories")
+        return PassResult(finished=True)
+    digest = input_digest((memory.id, memory.version) for memory in memories)
+    if digest == ctx.store.scope_digest(EXTRACTION_SCOPE):
+        ctx.report.line("unchanged input; skipped")
+        return PassResult(finished=True)
+    sent = {memory.id: memory for memory in memories}
+    try:
+        sources = {memory.id: current_sources(ctx, memory) for memory in memories}
+    except MemoryNotFound:
+        ctx.report.line(INPUT_CHANGED)
+        return PassResult(finished=False)
+    prompt = PROMPT.format(entries="\n".join(
+        entry(memory, sources[memory.id],
+              project="global" if memory.project_id == global_id else memory.project_id)
+        for memory in memories))
+    result = ask(ctx, SYSTEM_PROMPT, prompt, SCHEMA)
+    if isinstance(result, str):
+        ctx.report.line(f"not processed: {result}")
+        return PassResult(finished=False, digest=digest)
+    judgments = [raw for raw in result["judgments"] if raw["kind"] != "no_change"]
+    if not judgments:
+        ctx.report.line("no change")
+    finished = True
+    for raw in judgments:
+        finished = _judge(ctx, raw, global_id, sent, sources) and finished
+    return PassResult(finished=finished, digest=digest)
