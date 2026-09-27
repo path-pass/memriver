@@ -223,7 +223,8 @@ class SessionStore(Protocol):
       unknown key.
     - `search`: `project_id=None` is every row (the human CLI); otherwise
       that project's registered rows. A case-insensitive substring of a
-      prompt text, `entry_cwd` or `branch`; newest `last_active_at` first.
+      prompt text, the published summary, `entry_cwd` or `branch`; newest
+      `last_active_at` first.
     - `record_call`: maps a harness's tool-call id to `key`'s session
       (replacing an earlier mapping of the same id), then drops every
       mapping recorded more than `retention_s` seconds before `at`, in the
@@ -233,6 +234,13 @@ class SessionStore(Protocol):
     - `session_for_call`: the session a call id was mapped to, or None --
       also for an impossible call id and for a stored row whose session id
       is invalid. Read-only.
+    - `bound`: registered rows whose project exists and is not global, newest
+      `last_active_at` first; bad rows skipped. Read-only.
+    - `publish_summary`: sets `summary = text`, `summary_at = at` on a bound
+      row whose `last_active_at` still equals `expected_last_active_at`,
+      leaving `last_active_at` alone; anything else -- an unknown, unbound,
+      pending or moved session, or no store -- is `SessionMoved` and nothing
+      is written. The other writes keep a published summary as it is.
     """
 
     def store_exists(self) -> bool: ...
@@ -252,3 +260,6 @@ class SessionStore(Protocol):
     def record_call(self, key: SessionKey, call_id: str, at: str, *,
                     retention_s: int) -> None: ...
     def session_for_call(self, harness: str, call_id: str) -> SessionKey | None: ...
+    def bound(self) -> list[Session]: ...
+    def publish_summary(self, key: SessionKey, text: str, *, expected_last_active_at: str,
+                        at: str) -> None: ...

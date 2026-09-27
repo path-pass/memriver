@@ -506,7 +506,9 @@ def test_sessions_json_matches_the_session_search_item_shape(world):
     item = items[0]
     assert set(item) == {"harness", "session_id", "project", "branch", "entry_cwd",
                          "first_recorded", "last_active_at", "last_end_event_at",
-                         "first_prompt", "recent_prompts", "resume_command"}
+                         "first_prompt", "recent_prompts", "resume_command",
+                         "summary", "summary_at"}
+    assert (item["summary"], item["summary_at"]) == (None, None)
     assert item["resume_command"] == "codex resume sess-3"
     assert item["project"] == world["project"].id
     assert item["first_prompt"]["text"] == "task one"
@@ -569,3 +571,16 @@ def test_sessions_neutralises_an_invisible_character_in_a_prompt(world):
     assert code == 0
     assert zero_width_space not in out
     assert "task one" in out
+
+
+def test_sessions_show_a_published_summary_as_one_line(world):
+    key = SessionKey("codex", "sess-summary")
+    _start(world, key, world["work"])
+    session_service = world["services"].session
+    stored = next(s for s in session_service.list_sessions() if s.key == key)
+    session_service.publish_summary(key, "Fixed the build.\nThen the docs.",
+                                    expected_last_active_at=stored.last_active_at)
+    code, out = _sessions("", root=world["store"], home=world["home"], json_output=False)
+    assert code == 0 and "  summary: Fixed the build. Then the docs." in out
+    code, out = _sessions("", root=world["store"], home=world["home"], json_output=True)
+    assert json.loads(out)[0]["summary"] == "Fixed the build.\nThen the docs."

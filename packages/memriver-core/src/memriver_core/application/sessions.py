@@ -65,7 +65,8 @@ class SessionService:
                  session_prompt_chars: int, session_recent_prompts: int,
                  session_prompt_scan_max_bytes: int, stop_nudge_min_prompts: int,
                  stop_nudge_interval_prompts: int, session_search_limit_default: int,
-                 session_search_limit_max: int, tool_call_retention_s: int) -> None:
+                 session_search_limit_max: int, tool_call_retention_s: int,
+                 summary_max_chars: int) -> None:
         self._session_store = session_store
         self._project_store = project_store
         # the directory questions a session registration asks (spec §5.1),
@@ -87,6 +88,7 @@ class SessionService:
         self._session_search_limit_default = session_search_limit_default
         self._session_search_limit_max = session_search_limit_max
         self._tool_call_retention_s = tool_call_retention_s
+        self._summary_max_chars = summary_max_chars
 
     def _policy(self) -> ContentPolicy:
         if self._content_policy is None:
@@ -254,6 +256,24 @@ class SessionService:
             self._project_store.read(project_id)
         return self._session_store.search(project_id, query,
                                           sys.maxsize if limit is None else limit)
+
+    def bound_sessions(self) -> list[Session]:
+        """Sessions bound to a project (the ones a summary is published for), newest first."""
+        return self._session_store.bound()
+
+    def publish_summary(self, key: SessionKey, text: str, *,
+                        expected_last_active_at: str) -> None:
+        """Publish a session's summary (spec §4.3).
+
+        The text passes the content policy and the summary length limit first
+        (`ContentRejected`); the session must still be bound and still have
+        `expected_last_active_at`, else `SessionMoved`. Nothing is written on
+        any refusal.
+        """
+        self._policy().check(text, self._summary_max_chars)
+        self._session_store.publish_summary(key, text,
+                                            expected_last_active_at=expected_last_active_at,
+                                            at=now())
 
     def pending_candidate(self, context: ProjectContext) -> Project | None:
         """The project a pending session would be confirmed to, if it has one."""

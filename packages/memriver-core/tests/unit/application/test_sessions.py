@@ -117,7 +117,7 @@ class World:
             session_prompt_chars=512, session_recent_prompts=5,
             session_prompt_scan_max_bytes=65536, stop_nudge_min_prompts=5,
             stop_nudge_interval_prompts=5, session_search_limit_default=10,
-            session_search_limit_max=50, tool_call_retention_s=3600)
+            session_search_limit_max=50, tool_call_retention_s=3600, summary_max_chars=1_200)
         memory = MemoryService(
             self.memory_store, project_store, lambda: self.policy,
             refuse_pending=session.refuse_pending, mark_saved=session.mark_saved,

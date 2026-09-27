@@ -9,7 +9,7 @@ from contextlib import closing
 
 import pytest
 from memriver_core.models import PromptEntry, Session, SessionKey
-from memriver_core.models.errors import ProjectUnavailable, StorageFailure
+from memriver_core.models.errors import ProjectUnavailable, SessionMoved, StorageFailure
 from memriver_core.repository.sqlite import SqliteSessionStore
 from memriver_core.repository.sqlite.database import DATABASE_FILENAME, Database
 
@@ -580,3 +580,77 @@ def test_a_call_row_naming_an_invalid_session_is_ignored(session_store, initiali
     session_store.record_call(KEY, "call-1", _hour(10), retention_s=HOUR)
     _raw(initialized, "UPDATE tool_calls SET session_id = 'a b'")
     assert session_store.session_for_call("claude-code", "call-1") is None
+
+
+# --- the published summary (spec §3.5, §4.3) ----------------------------------
+
+# every column a session row has: today's, plus the published summary and nothing
+# about how it is produced (acceptance item 8)
+SESSION_TABLE_COLUMNS = {
+    "harness", "session_id", "status", "origin", "project_id", "candidate_id",
+    "candidate_root", "entry_cwd", "branch", "transcript_path", "started_at",
+    "last_active_at", "ended_at", "prompt_count", "last_write_prompt_count",
+    "last_nudge_prompt_count", "first_prompt", "recent_prompts", "summary", "summary_at"}
+
+
+def test_the_sessions_table_holds_the_published_summary_and_nothing_about_its_production(
+        initialized):
+    assert {row[1] for row in _raw(initialized, "PRAGMA table_info(sessions)")} == \
+        SESSION_TABLE_COLUMNS
+
+
+def test_a_published_summary_round_trips_and_later_writes_keep_it(session_store):
+    session_store.register(_session())
+    session_store.publish_summary(KEY, "Fixed the login page.", expected_last_active_at=_at(0),
+                                  at=_at(5))
+    stored = session_store.get(KEY)
+    assert (stored.summary, stored.summary_at, stored.last_active_at) == \
+        ("Fixed the login page.", _at(5), _at(0))
+    session_store.touch(KEY, _at(9))
+    session_store.add_prompt(KEY, _prompt(10), seed=_session(), keep_recent=5)
+    assert (session_store.get(KEY).summary, session_store.get(KEY).summary_at) == \
+        ("Fixed the login page.", _at(5))
+
+
+def test_publishing_for_a_moved_unbound_pending_global_or_unknown_session_writes_nothing(
+        session_store, initialized):
+    _raw(initialized, "INSERT INTO projects (id, name, is_global) VALUES ('gggggggggg', 'g', 1)")
+    unbound, pending = SessionKey("codex", "unbound"), SessionKey("codex", "pending")
+    on_global = SessionKey("codex", "on-global")
+    session_store.register(_session())
+    session_store.register(_session(unbound, project_id=None))
+    session_store.register(_pending(pending))
+    session_store.register(_session(on_global, project_id="gggggggggg"))
+    session_store.touch(KEY, _at(3))                              # activity after it was read
+    for key in (KEY, unbound, pending, on_global, SessionKey("codex", "never-seen")):
+        with pytest.raises(SessionMoved):
+            session_store.publish_summary(key, "a summary", expected_last_active_at=_at(0),
+                                          at=_at(5))
+    assert _raw(initialized, "SELECT count(*) FROM sessions WHERE summary IS NOT NULL") == [(0,)]
+
+
+def test_bound_lists_sessions_with_a_writable_project_newest_first(session_store, initialized):
+    _raw(initialized, "INSERT INTO projects (id, name, is_global) VALUES ('gggggggggg', 'g', 1)")
+    session_store.register(_session(last_active_at=_at(1)))
+    session_store.register(_session(SessionKey("codex", "s-2"), project_id=OTHER,
+                                    last_active_at=_at(2)))
+    session_store.register(_session(SessionKey("codex", "s-3"), project_id=None))
+    session_store.register(_pending(SessionKey("codex", "s-4")))
+    session_store.register(_session(SessionKey("codex", "s-5"), project_id="gggggggggg"))
+    assert [s.key.session_id for s in session_store.bound()] == ["s-2", "session-1"]
+
+
+def test_a_summary_memriver_could_not_have_written_is_damage(session_store, initialized):
+    session_store.register(_session())
+    _raw(initialized, "UPDATE sessions SET summary = '  ', summary_at = ? "
+         "WHERE session_id = 'session-1'", (_at(5),))
+    with pytest.raises(StorageFailure):
+        session_store.get(KEY)
+    assert session_store.search(None, "", 10) == []               # skipped, not a crash
+
+
+def test_search_matches_the_summary(session_store):
+    session_store.register(_session())
+    session_store.publish_summary(KEY, "Rotated the staging certificates.",
+                                  expected_last_active_at=_at(0), at=_at(5))
+    assert [s.key for s in session_store.search(PROJECT, "CERTIFICATES", 10)] == [KEY]

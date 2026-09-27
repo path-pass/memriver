@@ -16,7 +16,13 @@ from .changes import (
     Update,
     Usage,
 )
-from .errors import BatchConflict, PlanChanged, StoreNeedsUpgrade, UndoRefused
+from .errors import (
+    BatchConflict,
+    PlanChanged,
+    SessionMoved,
+    StoreNeedsUpgrade,
+    UndoRefused,
+)
 from .helpers import (
     ID_ALPHABET,
     ID_LENGTH,
@@ -90,6 +96,7 @@ __all__ = [
     "RootState",
     "Session",
     "SessionKey",
+    "SessionMoved",
     "SessionOrigin",
     "SessionStatus",
     "SoftDelete",

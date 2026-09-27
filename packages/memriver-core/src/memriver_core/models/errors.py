@@ -204,3 +204,13 @@ class PlanChanged(MemoryError):
     def __init__(self, plan: HardDeletePlan) -> None:
         super().__init__(f"plan changed: {plan.target}")
         self.plan = plan
+
+
+class SessionMoved(MemoryError):
+    """The session is unknown, not bound to a project, or active since it was read.
+
+    Nothing was written; the caller reads the session again. Deliberately fieldless.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("session moved")

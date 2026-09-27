@@ -134,3 +134,11 @@ def test_plan_changed_carries_the_new_plan():
     assert PlanChanged(plan).plan is plan
     assert memriver_core.PlanChanged is PlanChanged is models.PlanChanged
     assert "PlanChanged" in memriver_core.__all__ and "PlanChanged" in models.__all__
+
+
+def test_session_moved_takes_no_arguments_and_is_public():
+    from memriver_core import models
+    from memriver_core.models.errors import SessionMoved
+    assert str(SessionMoved()) == "session moved"
+    assert memriver_core.SessionMoved is SessionMoved is models.SessionMoved
+    assert "SessionMoved" in memriver_core.__all__ and "SessionMoved" in models.__all__

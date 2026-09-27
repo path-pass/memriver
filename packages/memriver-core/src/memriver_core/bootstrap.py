@@ -44,6 +44,7 @@ from .settings import (
     SESSION_RECENT_PROMPTS,
     SESSION_SEARCH_LIMIT_DEFAULT,
     SESSION_SEARCH_LIMIT_MAX,
+    SESSION_SUMMARY_MAX_CHARS,
     STOP_NUDGE_INTERVAL_PROMPTS,
     STOP_NUDGE_MIN_PROMPTS,
     TOOL_CALL_RETENTION_S,
@@ -103,6 +104,7 @@ def build_services(settings: Settings, *, root: Path | None = None,
         session_search_limit_default=SESSION_SEARCH_LIMIT_DEFAULT,
         session_search_limit_max=SESSION_SEARCH_LIMIT_MAX,
         tool_call_retention_s=TOOL_CALL_RETENTION_S,
+        summary_max_chars=SESSION_SUMMARY_MAX_CHARS,
     )
     memory = MemoryService(
         memory_store, project_store,
