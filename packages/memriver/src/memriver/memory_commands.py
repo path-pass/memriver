@@ -97,7 +97,8 @@ def _origin(version: MemoryVersion) -> str:
 
 
 def _sources(version: MemoryVersion) -> str:
-    return ", ".join(f"{source.memory_id} v{source.version}" for source in version.sources)
+    return ", ".join(f"{visible(source.memory_id)} v{source.version}"
+                     for source in version.sources)
 
 
 def _version_line(version: MemoryVersion) -> str:
@@ -388,11 +389,11 @@ def _plan_text(services, plan: HardDeletePlan, global_id: str | None) -> str:
               f"{'memory' if count == 1 else 'memories'} with every version, source and read:")]
     for item in plan.items:
         deleted = "  (deleted)" if item.deleted else ""
-        lines.append(f"  {item.memory_id}  {_where(item.project_id, global_id)}  "
-                     f"v{item.version}{deleted}  {_item_cue(services, item.memory_id)}")
-        lines.extend(f"    because {citation.citing_id} v{citation.citing_version}"
+        lines.append(f"  {visible(item.memory_id)}  {visible(_where(item.project_id, global_id))}"
+                     f"  v{item.version}{deleted}  {_item_cue(services, item.memory_id)}")
+        lines.extend(f"    because {visible(citation.citing_id)} v{citation.citing_version}"
                      f"{'' if citation.citing_current else ' (history)'} cites "
-                     f"{citation.cited_id} v{citation.cited_version}"
+                     f"{visible(citation.cited_id)} v{citation.cited_version}"
                      for citation in item.citations)
     lines.append("  changes that touched them stay in the log but can no longer be undone")
     return "\n".join(lines) + "\n"

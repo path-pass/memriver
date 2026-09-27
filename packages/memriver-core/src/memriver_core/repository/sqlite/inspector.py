@@ -327,10 +327,17 @@ class SqliteStoreInspector:
                                      f"memories/{shaped}" if shaped else "memories",
                                      project_id=_shaped_id(project_of.get(memory_id)),
                                      memory_id=shaped))
-        return tuple(row[0] for row in conn.execute(
-            "SELECT c.change_id FROM changes c LEFT JOIN change_steps s "
-            "ON s.change_id = c.change_id GROUP BY c.change_id "
-            "HAVING count(s.change_id) < c.step_count ORDER BY c.change_id"))
+        incomplete: list[str] = []
+        for (change_id,) in conn.execute(
+                "SELECT c.change_id FROM changes c LEFT JOIN change_steps s "
+                "ON s.change_id = c.change_id GROUP BY c.change_id "
+                "HAVING count(s.change_id) < c.step_count ORDER BY c.change_id"):
+            shaped = _shaped_id(change_id)
+            if shaped is None:
+                findings.append(_finding("invalid-row", "changes"))
+                continue
+            incomplete.append(shaped)
+        return tuple(incomplete)
 
     def _projects(self, conn: sqlite3.Connection,
                   findings: list[StoreFinding]) -> tuple[list[InspectedProject], bool]:

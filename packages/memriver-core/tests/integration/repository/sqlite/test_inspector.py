@@ -540,6 +540,18 @@ def test_a_change_with_fewer_steps_than_recorded_is_listed_not_a_finding(world):
     assert (report.findings, report.incomplete_changes) == ((), ("cccccccccc",))
 
 
+def test_a_change_with_an_undecodable_id_is_invalid_row_not_incomplete(world):
+    """An id no write path could ever have produced must never reach `incomplete_changes`:
+    a caller (doctor's `visible`, its `--json` rendering) treats every entry there as an
+    addressable id, never as bytes."""
+    _sql(world["store"], "INSERT INTO changes (change_id, at, changed_by, step_count) "
+         "VALUES (CAST(X'80808080808080808080' AS TEXT), "
+         "'2026-09-27T00:00:00.000000Z', 'human', 2)")
+    report = _inspect(world)
+    assert report.incomplete_changes == ()
+    assert [(f.kind, f.location_hint) for f in report.findings] == [("invalid-row", "changes")]
+
+
 def test_a_huge_current_version_with_one_stored_row_is_a_gap_not_a_crash(world):
     """The version-gap check must size itself by the stored rows, never by the
     memory's own (possibly corrupt) current version number."""

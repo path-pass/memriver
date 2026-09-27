@@ -617,6 +617,32 @@ def test_a_change_a_hard_delete_cut_is_listed_as_incomplete_but_not_a_finding(tm
     assert report["incomplete_changes"] == [pair.change_id]
 
 
+# an id no write path could ever have produced must never reach visible() (a TypeError
+# on bytes) or json.dumps (bytes are not serializable) -- it is an invalid-row finding
+def test_a_change_with_an_undecodable_id_is_an_invalid_row_not_a_crash(tmp_path):
+    store, work = tmp_path / "mem", tmp_path / "work"
+    work.mkdir()
+    services = build_services(Settings(root=store), root=store)
+    services.project.ensure_global()
+    project = services.project.init_project("demo", services.project.plan_root(str(work)))
+    services.memory.apply([Create(project.id, "project", "cue", "body")], changed_by="human")
+    with closing(sqlite3.connect(store / "memriver.db")) as conn, conn:
+        conn.execute("INSERT INTO changes (change_id, at, changed_by, step_count) "
+                     "VALUES (CAST(X'80808080808080808080' AS TEXT), "
+                     "'2026-09-27T00:00:00.000000Z', 'human', 2)")
+
+    text = invoke_doctor(root=store)
+    assert text.exit_code == 1
+    assert "invalid-row:\n" in text.stdout
+    assert "locations: changes\n" in text.stdout
+    assert "incomplete changes" not in text.stdout
+
+    report = json.loads(invoke_doctor(root=store, json_output=True).stdout)
+    assert report["incomplete_changes"] == []
+    assert any(f["kind"] == "invalid-row" and f["location_hints"] == ["changes"]
+              for f in report["findings"])
+
+
 # --- a policy scan failure never erases the diagnosis ----------------------------
 
 # when the file or schema cannot be read safely the policy scan fails; the
