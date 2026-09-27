@@ -245,7 +245,7 @@ def test_a_supersede_that_fails_validation_changes_nothing(world, case, outcome,
     ("target time unverifiable", "0000-hand-edited"),   # sorts before every valid year
     ("by time unverifiable", "zzzz-hand-edited")])       # sorts after every valid year
 def test_a_supersede_cannot_prove_newer_from_a_malformed_stored_time(world, case, malformed):
-    # I2: entry() sends a malformed updated as "" (sendable_time); a raw string
+    # entry() sends a malformed updated as "" (sendable_time); a raw string
     # compare on the unsent field must never call that "newer" and delete on it -- the
     # "by time" value is chosen to sort as falsely newer under a plain string compare
     older = _dated(world, "deploys go through Jenkins", shift_days(world.now, -10))
@@ -303,7 +303,7 @@ def test_no_change_finishes_the_pass_and_changes_nothing(world, answer):   # §1
 
 @pytest.mark.parametrize("case", ["unstorable", "policy hit"])
 def test_a_no_change_with_a_bad_reason_does_not_finish_the_pass(world, case):
-    # N1: no_change is dropped before it reaches _judge, but its reason must be
+    # no_change is dropped before it reaches _judge, but its reason must be
     # checked exactly like every other kind's -- never a free pass to "finished"
     a = world.create(world.project.id, "a fact")
     reason = "x" + chr(0xD800) if case == "unstorable" else "key " + world.secret
