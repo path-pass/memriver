@@ -139,8 +139,8 @@ def test_uncertain_twice_on_the_same_version_retires(world):   # §10 item 11
     result, text = _pass(world, now=later)
     assert result.finished and _deleted(world, memory_id)
     assert text.startswith(f"applying retire {memory_id} -> change ")
-    assert f"  soft_delete {memory_id} v1→v2\n" in text
-    assert '  description: "cue"\n  reason: 2 uncertain reviews in a row\n' in text
+    assert f"soft_delete {memory_id} v1→v2\n" in text
+    assert 'description: "cue"\nreason: 2 uncertain reviews in a row\n' in text
 
 
 def test_the_uncertain_streak_counts_the_same_version_only(world):   # §10 item 11
@@ -176,7 +176,7 @@ def test_a_delete_is_a_soft_delete_by_dream_and_records_no_review(world):
     change = max(world.services.memory.versions(memory_id), key=lambda v: v.version).change
     assert (change.changed_by, change.changed_via) == ("dream", "fake-harness")
     assert f"undo: memriver undo {change.change_id}\n" in text
-    assert "  reason: stage-3 was decommissioned\n" in text
+    assert "reason: stage-3 was decommissioned\n" in text
     assert _review(world, memory_id) is None
 
 
@@ -337,7 +337,7 @@ def test_a_streak_retirement_names_itself_in_the_reason(world):
     world.executor.replies = [_decision("uncertain", "unclear"), _decision("uncertain")]
     _pass(world)
     _, text = _pass(world, now=_later(world, 31))
-    assert "  reason: 2 uncertain reviews in a row\n" in text
+    assert "reason: 2 uncertain reviews in a row\n" in text
 
 
 def test_a_streak_retirement_hitting_a_conflict_leaves_the_uncertain_row_unchanged(world):
@@ -405,10 +405,31 @@ def test_a_huge_ttl_is_clamped_never_an_overflow(world):
     assert _candidates(world, settings=huge) == []
     (memory,) = world.services.memory.memories(world.project.id)
     world.executor.replies = [_decision("keep")]
-    assert retire.review(world.context(settings=huge), memory, world.now)
+    ctx = world.context(settings=huge)
+    live, by_project = retire._grouped(ctx)
+    assert retire.review(ctx, memory, world.now, live, by_project)
     row = _review(world, memory_id)
     assert row.next_review_at == shift_days(world.now, 1_000_000_000)
     assert len(row.next_review_at) == len(world.now)          # still the fixed-width form
+
+
+def test_the_live_set_and_project_grouping_are_computed_once_per_run(world, monkeypatch):
+    # the whole-store scan usable() runs must not grow with the number of candidates
+    _aged(world, 200)
+    _aged(world, 200, body="a second stale fact")
+    world.executor.replies = [_decision("keep"), _decision("keep")]
+    whole_store_scans = []
+    real_memories = world.services.memory.memories
+
+    def counted(project_id=None, **kwargs):
+        if project_id is None:
+            whole_store_scans.append(1)
+        return real_memories(project_id, **kwargs)
+
+    monkeypatch.setattr(world.services.memory, "memories", counted)
+    result, _ = _pass(world)
+    assert result.finished
+    assert len(whole_store_scans) == 2   # candidates() once, the grouping once -- never per candidate
 
 
 def test_no_candidate_is_said_so(world):

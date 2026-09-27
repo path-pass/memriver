@@ -97,12 +97,21 @@ def _time(value: str | None) -> str | None:
     return None if value is None else sendable_time(value)
 
 
-def _candidate_entry(ctx: Context, memory: Memory) -> dict:
+def _grouped(ctx: Context) -> tuple[set[str], dict[str, list[Memory]]]:
+    """Every usable memory's id, and the usable memories of every project grouped by
+    project id -- computed once per run, not rescanned for every candidate."""
+    memories = usable(ctx, None)
+    by_project: dict[str, list[Memory]] = {}
+    for memory in memories:
+        by_project.setdefault(memory.project_id, []).append(memory)
+    return {memory.id for memory in memories}, by_project
+
+
+def _candidate_entry(ctx: Context, memory: Memory, live: set[str]) -> dict:
     # a citation's `current` flag only says it was recorded at the citing memory's
     # latest version, not that the citing memory is still live: a soft-deleted
-    # memory's last version is still "current" by that flag, so it is filtered out
-    # here the same way usable() would leave it out of any other listing
-    live = {other.id for other in usable(ctx, None)}
+    # memory's last version is still "current" by that flag, so `live` (every usable
+    # memory's id) filters it out the same way usable() would leave it out
     return {"id": memory.id, "project": memory.project_id, "type": memory.type,
             "description": memory.description, "body": memory.body,
             "created": sendable_time(memory.created), "updated": sendable_time(memory.updated),
@@ -119,13 +128,15 @@ def _other_text(memory: Memory) -> str:
                       ensure_ascii=False)
 
 
-def review(ctx: Context, memory: Memory, listed_at: str) -> bool:
+def review(ctx: Context, memory: Memory, listed_at: str, live: set[str],
+          by_project: dict[str, list[Memory]]) -> bool:
     """One candidate judged and its judgment recorded or carried out; False when
-    nothing could be recorded (the next run asks again)."""
+    nothing could be recorded (the next run asks again). `live` and `by_project` come
+    from `_grouped`, computed once per run."""
     report, settings = ctx.report, ctx.settings
-    others = [other for other in usable(ctx, memory.project_id) if other.id != memory.id]
+    others = [other for other in by_project.get(memory.project_id, ()) if other.id != memory.id]
     try:
-        candidate = json.dumps(_candidate_entry(ctx, memory), ensure_ascii=False)
+        candidate = json.dumps(_candidate_entry(ctx, memory, live), ensure_ascii=False)
     except MemoryNotFound:
         # hard-deleted since the listing (a human may, during a run): nothing to judge
         report.line(f"{memory.id}: {INPUT_CHANGED}")
@@ -174,7 +185,8 @@ def run(ctx: Context) -> PassResult:
     listed_at, due = candidates(ctx)
     if not due:
         ctx.report.line("no candidate")
+    live, by_project = _grouped(ctx)
     finished = True
     for memory in due:
-        finished = review(ctx, memory, listed_at) and finished
+        finished = review(ctx, memory, listed_at, live, by_project) and finished
     return PassResult(finished=finished)
