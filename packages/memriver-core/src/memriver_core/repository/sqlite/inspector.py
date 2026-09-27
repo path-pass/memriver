@@ -315,7 +315,8 @@ class SqliteStoreInspector:
             shaped = _shaped_id(memory_id)
             findings.append(_finding("dangling-source",
                                      f"memories/{shaped}" if shaped else "memories",
-                                     project_id=project_of.get(memory_id), memory_id=shaped))
+                                     project_id=_shaped_id(project_of.get(memory_id)),
+                                     memory_id=shaped))
         edges: dict[object, set[object]] = {}
         for citing, cited in conn.execute("SELECT DISTINCT memory_id, source_id "
                                           "FROM memory_sources"):
@@ -324,7 +325,8 @@ class SqliteStoreInspector:
             shaped = _shaped_id(memory_id)
             findings.append(_finding("source-cycle",
                                      f"memories/{shaped}" if shaped else "memories",
-                                     project_id=project_of.get(memory_id), memory_id=shaped))
+                                     project_id=_shaped_id(project_of.get(memory_id)),
+                                     memory_id=shaped))
         return tuple(row[0] for row in conn.execute(
             "SELECT c.change_id FROM changes c LEFT JOIN change_steps s "
             "ON s.change_id = c.change_id GROUP BY c.change_id "

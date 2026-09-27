@@ -501,6 +501,16 @@ def test_a_source_citing_a_version_that_is_not_stored_is_a_finding(world):
     assert report.findings[0].project_id == world["project"]
 
 
+def test_a_source_finding_never_carries_a_damaged_project_id(world):
+    memory = _plant(world["store"], _memory(world["project"]))
+    _sql(world["store"], "INSERT INTO memory_sources (memory_id, version, source_id, "
+         "source_version) VALUES (?, 1, 'zzzzzzzzzz', 1)", memory.id)
+    _sql(world["store"], "UPDATE memories SET project_id = CAST(X'80' AS TEXT) WHERE id = ?",
+         memory.id)
+    findings = [f for f in _inspect(world).findings if f.kind == "dangling-source"]
+    assert [(f.memory_id, f.project_id) for f in findings] == [(memory.id, None)]
+
+
 def test_a_source_row_whose_own_citing_version_is_not_stored_is_also_a_finding(world):
     """The cited side (spec §4.4) is not the only side a source row must resolve on:
     the citing (memory_id, version) itself must be a stored version too."""
