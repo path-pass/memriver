@@ -146,9 +146,9 @@ def _write_dream_table(path: Path, values: dict) -> None:
         document = tomlkit.parse(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         document = tomlkit.document()
-    except (tomlkit.exceptions.ParseError, UnicodeDecodeError):
+    except (tomlkit.exceptions.ParseError, UnicodeDecodeError, OSError):
         # the file changed since the plan was read and confirmed -- edited by hand,
-        # or by another process -- into something this second parser cannot read
+        # or by another process -- into something this second read cannot use
         # either: named the same one-line way as any other unusable settings.toml,
         # never a traceback; nothing is written
         raise SettingsError(unreadable=True) from None
@@ -411,8 +411,9 @@ def run_report(run_id: str | None, *, list_count: int | None, root: Path | None,
         # the same check run and init make, through the same core entry point: a
         # store below the schema this memriver needs is refused before the dream
         # lock is taken, dream.db is opened, or retention deletes anything. An
-        # uninitialized store (no global project yet) is not this refusal's concern.
-        build_services(settings, root=store_root).project.global_project_id()
+        # uninitialized or unreadable store is not this refusal's concern: the
+        # reports come from dream.db alone.
+        _store_ready(settings)
     except StoreNeedsUpgrade as err:
         stdout.write(f"memriver dream: {unsupported_store(err)}\n")
         return 1

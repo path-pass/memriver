@@ -243,6 +243,19 @@ def test_settings_broken_during_confirmation_is_refused_not_a_traceback(world):
     assert world["launchctl"].calls == []
 
 
+def test_settings_made_unreadable_during_confirmation_is_refused_not_a_traceback(world):
+    settings_file = world["store"] / "settings.toml"
+
+    def answer(prompt):
+        settings_file.unlink(missing_ok=True)
+        settings_file.mkdir()                   # a directory where the file was
+        return "y"
+
+    with pytest.raises(SettingsError, match=r"^settings\.toml could not be read$"):
+        _init(world, yes=False, stdin_is_tty=True, input_fn=answer)
+    assert world["launchctl"].calls == []
+
+
 def test_init_replaces_every_case_variant_of_the_keys_it_owns(world):
     # the run matches keys case-insensitively, first spelling winning: an upper-case
     # key left beside the one init writes would silently keep the old value
@@ -747,6 +760,13 @@ def test_report_refuses_a_store_below_v4_before_any_retention_runs(world):
         assert _report(world, **options) == (1, hint)
     assert _dream_store(world).run(old.run_id) is not None
     assert _report_file(world, old).exists()
+
+
+def test_report_still_shows_dream_reports_when_the_core_store_cannot_be_read(world):
+    old = _stored_run(world, "old report\n", started_at=_ago(days=1))
+    (world["store"] / "memriver.db").write_bytes(b"not a database")
+    code, out = _report(world, run_id=old.run_id)
+    assert code == 0 and "old report" in out
 
 
 @pytest.mark.parametrize(("argv", "handler", "expected"), [
