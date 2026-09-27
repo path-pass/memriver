@@ -217,7 +217,7 @@ class SessionMoved(MemoryError):
 
 
 UPGRADE_REASONS = frozenset({
-    "upgrade-running", "counts", "invariant", "foreign-keys", "schema",
+    "upgrade-running", "in-use", "counts", "invariant", "foreign-keys", "schema",
 })
 
 
@@ -225,8 +225,9 @@ class UpgradeRefused(MemoryError):
     """The store was not rebuilt as schema v4; the live file is exactly as it was.
 
     Fields only: `reason` is one of UPGRADE_REASONS -- another upgrade holds the
-    upgrade lock ("upgrade-running"), or the new file failed one verification
-    check (the other four). The CLI owns every sentence.
+    upgrade lock ("upgrade-running"), the store looks still in use (WAL mode or
+    a live sidecar, "in-use"), or the new file failed one verification check
+    (the other four). The CLI owns every sentence.
     """
 
     def __init__(self, reason: str) -> None:

@@ -147,7 +147,7 @@ def test_session_moved_takes_no_arguments_and_is_public():
 def test_upgrade_refused_carries_one_known_reason_and_is_public():
     from memriver_core.models.errors import UPGRADE_REASONS, UpgradeRefused
     assert UPGRADE_REASONS == {
-        "upgrade-running", "counts", "invariant", "foreign-keys", "schema"}
+        "upgrade-running", "in-use", "counts", "invariant", "foreign-keys", "schema"}
     refused = UpgradeRefused("upgrade-running")
     assert refused.reason == "upgrade-running"
     assert isinstance(refused, MemoryError)

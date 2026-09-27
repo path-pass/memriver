@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import os
 import sqlite3
@@ -194,7 +195,7 @@ T0, T1, T2 = ("2026-09-20T10:00:00.000000Z", "2026-09-21T11:30:00.000000Z",
 READ_1, READ_2 = "2026-09-23T08:00:00.000000Z", "2026-09-24T08:00:00.000000Z"
 # kept exactly: spacing, a zero-width space (as an escape) and text today's
 # content policy refuses -- the import neither normalizes nor checks
-KEPT_DESCRIPTION = "café  notes  "
+KEPT_DESCRIPTION = "caf\u00e9  notes  "
 KEPT_BODY = "line one\n  line two\u200b\naws key AKIA" + "A" * 16
 
 PROJECTS = [(GLOBAL, "global", None, 1), (PROJECT, "app", "/work/app", 0)]
@@ -423,6 +424,18 @@ def test_below_v4_the_services_refuse_until_upgraded(tmp_path):
         == {KEPT, GLOBAL_KEPT}
 
 
+@pytest.mark.parametrize("version", [1, 2, 3])
+def test_the_upgraded_store_is_healthy(tmp_path, version):
+    # the rebuilt store passes every inspector check the doctor runs: no
+    # finding survives the migration
+    root = tmp_path / "store"
+    _make_store(root, version)
+    bootstrap.upgrade_store(root)
+    report = _services(root, tmp_path).maintenance.diagnose()
+    assert report.state == "healthy"
+    assert report.findings == ()
+
+
 # --- publishing: backup, one replace, idempotence ----------------------------
 
 def test_the_backup_is_a_byte_copy_of_the_old_file_and_every_file_stays_private(tmp_path):
@@ -443,6 +456,67 @@ def test_a_killed_upgrades_leftover_new_file_is_discarded(tmp_path):
     (root / "memriver.db.upgrade-journal").write_bytes(b"a stale journal")
     assert bootstrap.upgrade_store(root).imported == 2
     assert not (root / "memriver.db.upgrade-journal").exists()
+
+
+def test_a_killed_upgrades_wal_and_shm_leftovers_are_discarded(tmp_path):
+    # N1: a work file's own -wal/-shm sidecars, from an earlier killed
+    # attempt, are cleared with the rest of it -- never a live one
+    root = tmp_path / "store"
+    _make_store(root, 3)
+    (root / "memriver.db.upgrade").write_bytes(b"half a file")
+    (root / "memriver.db.upgrade-journal").write_bytes(b"a stale journal")
+    (root / "memriver.db.upgrade-wal").write_bytes(b"a stale wal")
+    (root / "memriver.db.upgrade-shm").write_bytes(b"a stale shm")
+    assert bootstrap.upgrade_store(root).imported == 2
+    assert not (root / "memriver.db.upgrade-journal").exists()
+    assert not (root / "memriver.db.upgrade-wal").exists()
+    assert not (root / "memriver.db.upgrade-shm").exists()
+
+
+def test_a_backup_hard_linked_to_live_is_replaced_without_touching_live(tmp_path, monkeypatch):
+    # I1: the backup name may alias the live file (a hard link); the backup
+    # is never opened for writing, only published by renaming a temp file
+    # over it, so a failure at the live replace leaves live untouched
+    root = tmp_path / "store"
+    path = _make_store(root, 3)
+    before = path.read_bytes()
+    os.link(path, root / "memriver.db.v3-backup")
+    real_replace = upgrade_module.os.replace
+
+    def fail_live_replace(source, target):
+        if os.fspath(target) == os.fspath(path):
+            raise OSError("injected at the live replace")
+        return real_replace(source, target)
+    monkeypatch.setattr(upgrade_module.os, "replace", fail_live_replace)
+    with pytest.raises(StorageFailure):
+        bootstrap.upgrade_store(root)
+    assert path.read_bytes() == before
+
+
+def test_a_preexisting_wide_permission_backup_is_replaced_private(tmp_path):
+    # I1: an existing backup's mode is never inherited -- the published one
+    # is always the private temp file's own 0600
+    root = tmp_path / "store"
+    _make_store(root, 3)
+    backup = root / "memriver.db.v3-backup"
+    backup.touch(mode=0o644)
+    os.chmod(backup, 0o644)
+    bootstrap.upgrade_store(root)
+    assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+
+
+def test_a_backup_fifo_does_not_hang(tmp_path):
+    # I1: a FIFO at the backup name is never opened for writing -- publish
+    # replaces its directory entry instead of blocking on it
+    root = tmp_path / "store"
+    _make_store(root, 3)
+    os.mkfifo(root / "memriver.db.v3-backup")
+    code = textwrap.dedent(f"""
+        from pathlib import Path
+        from memriver_core import bootstrap
+        bootstrap.upgrade_store(Path({str(root)!r}))
+    """)
+    subprocess.run([sys.executable, "-c", code], check=True, timeout=10)
 
 
 def test_an_upgrade_of_a_v4_store_does_nothing(tmp_path):
@@ -474,6 +548,94 @@ def test_an_unknown_schema_version_is_refused_and_left_alone(tmp_path):
     with pytest.raises(StorageFailure):
         bootstrap.upgrade_store(root)
     _assert_untouched(path, before, 7)
+
+
+def test_a_failed_source_open_with_an_unstatable_live_path_is_a_failure(tmp_path, monkeypatch):
+    # N2: Path.exists() on 3.14 swallows any OSError, not just
+    # FileNotFoundError -- an unrelated stat failure must never read as "no
+    # store", which would silently skip a store that is actually there
+    root = tmp_path / "store"
+    path = _make_store(root, 3)
+    monkeypatch.setattr(upgrade_module, "_connect",
+                        lambda *a, **k: (_ for _ in ()).throw(sqlite3.OperationalError("boom")))
+    real_lstat = os.lstat
+
+    def failing_lstat(target, *args, **kwargs):
+        if os.fspath(target) == os.fspath(path):
+            raise OSError(errno.EIO, "stat failed")
+        return real_lstat(target, *args, **kwargs)
+    monkeypatch.setattr(upgrade_module.os, "lstat", failing_lstat)
+    with pytest.raises(StorageFailure):
+        bootstrap.upgrade_store(root)
+
+
+# --- a store still in use (WAL, a live sidecar) is never rebuilt -------------
+
+def _wal_crash(path: Path) -> None:
+    """A write committed under WAL mode, crashed before a checkpoint: a live
+    -wal sidecar holding data the main file alone does not yet have."""
+    code = textwrap.dedent(f"""
+        import os, sqlite3
+        conn = sqlite3.connect({str(path)!r})
+        conn.execute('PRAGMA journal_mode=WAL')
+        conn.execute('PRAGMA wal_autocheckpoint=0')
+        conn.execute("UPDATE memories SET body = 'committed in wal' WHERE id = {KEPT!r}")
+        conn.commit()
+        os._exit(0)
+    """)
+    subprocess.run([sys.executable, "-c", code], check=True, timeout=10)
+
+
+def test_a_wal_mode_source_with_a_live_reader_is_refused_untouched(tmp_path):
+    # I2: a store still in use (WAL, a live reader) is never rebuilt or read
+    # into a backup -- the upgrade is refused before anything is built
+    root = tmp_path / "store"
+    path = _make_store(root, 3)
+    _wal_crash(path)
+    wal = path.with_name(f"{path.name}-wal")
+    assert wal.exists()
+    # a reader kept open, so closing the version-probe connection does not
+    # itself checkpoint the WAL file away before the check runs
+    keeper = sqlite3.connect(path)
+    try:
+        keeper.execute("PRAGMA query_only = ON")
+        keeper.execute("BEGIN")
+        keeper.execute("SELECT count(*) FROM memories").fetchone()
+        before, wal_before = path.read_bytes(), wal.read_bytes()
+        with pytest.raises(UpgradeRefused) as refused:
+            bootstrap.upgrade_store(root)
+        # checked with the reader still open: closing it is its own last-
+        # connection checkpoint, no part of what upgrade_store did
+        assert refused.value.reason == "in-use"
+        assert path.read_bytes() == before
+        assert wal.read_bytes() == wal_before
+    finally:
+        keeper.close()
+    assert not (root / "memriver.db.upgrade").exists()
+    assert not (root / "memriver.db.v3-backup").exists()
+
+
+def test_a_journal_appearing_just_before_the_replace_is_refused(tmp_path, monkeypatch):
+    # I2: the sidecars are checked again right before the publish, so a
+    # journal that appears during the build still stops the replace
+    root = tmp_path / "store"
+    path = _make_store(root, 3)
+    before = path.read_bytes()
+    journal = path.with_name(f"{path.name}-journal")
+    real_copy_backup = upgrade_module._copy_backup
+
+    def copy_then_plant_journal(live, backup):
+        real_copy_backup(live, backup)
+        journal.touch()
+    monkeypatch.setattr(upgrade_module, "_copy_backup", copy_then_plant_journal)
+    with pytest.raises(UpgradeRefused) as refused:
+        bootstrap.upgrade_store(root)
+    assert refused.value.reason == "in-use"
+    assert path.read_bytes() == before
+    assert not (root / "memriver.db.upgrade").exists()
+    monkeypatch.undo()
+    journal.unlink()
+    assert bootstrap.upgrade_store(root).from_version == 3
 
 
 # --- failures before the replace (§10 item 13) -------------------------------

@@ -7,6 +7,13 @@ removes the new file and leaves the live file as it was, so the live path
 always holds a working store. A v1 or v2 file is read in v3 shape by the
 import statements themselves (a column or table it lacks reads as NULL or as
 no rows); nothing ever alters it.
+
+A store still in WAL mode, or with a live `-wal`/`-journal` sidecar, is
+refused outright ("in-use"): someone else may be using it, or holds committed
+data a plain copy of the main file would silently drop. The backup is never
+written through the backup path itself -- a fresh temp file is copied into
+and renamed over that name, so an existing hard link, wide-permission file or
+FIFO there is replaced, never opened, written into or blocked on.
 """
 
 from __future__ import annotations
@@ -60,10 +67,11 @@ def rebuild_store(root: Path, *, busy_timeout_ms: int, upgrade_lock: Path,
                   work_filename: str, backup_filename: str) -> UpgradeResult:
     """Rebuild the store at `root` as schema v4; see the module docstring.
 
-    `UpgradeRefused` when another upgrade holds `upgrade_lock`, or when the
-    new file fails verification; `StorageFailure` for a schema
-    version this code does not know or any backend failure. Either way the
-    live file is exactly as it was.
+    `UpgradeRefused` when another upgrade holds `upgrade_lock`, the store
+    looks still in use (WAL mode or a live sidecar), or the new file fails
+    verification; `StorageFailure` for a schema version this code does not
+    know or any backend failure. Either way the live file is exactly as it
+    was.
     """
     root = Path(root)
     live = root / DATABASE_FILENAME
@@ -79,12 +87,20 @@ def rebuild_store(root: Path, *, busy_timeout_ms: int, upgrade_lock: Path,
                 return UpgradeResult(version, 0, 0, 0, None)
             if version not in _UPGRADABLE:
                 raise StorageFailure
+            # a store still in WAL mode, or with a live sidecar, may be in use
+            # right now, or hold committed data this rebuild has not seen
+            _refuse_if_in_use(live)
             _discard(work)       # a killed upgrade's leftover: nobody else builds under the lock
             try:
                 imported, dropped_deleted, reads_kept = _build(work, live, version,
                                                                busy_timeout_ms)
                 _copy_backup(live, backup)
+                _fsync_dir(root)
+                # unchanged since the version was read, checked once more
+                # right before the one file the live path ever points through
+                _refuse_if_in_use(live)
                 os.replace(work, live)       # the one publish: the live path is never empty
+                _fsync_dir(root)
             except BaseException:
                 _discard(work)
                 raise
@@ -133,7 +149,7 @@ def _stored_version(live: Path, busy_timeout_ms: int) -> int | None:
     try:
         conn = _connect(live, "rw", busy_timeout_ms)
     except sqlite3.OperationalError:
-        if not live.exists():
+        if not _live_exists(live):
             return None
         raise
     with contextlib.closing(conn):
@@ -143,6 +159,51 @@ def _stored_version(live: Path, busy_timeout_ms: int) -> int | None:
         empty = _scalar(conn, "SELECT count(*) FROM sqlite_master") == 0
         conn.execute("ROLLBACK")
     return None if version == 0 and empty else version
+
+
+def _live_exists(live: Path) -> bool:
+    """Whether the live path exists, checked like `Database.exists()`.
+
+    `Path.exists()` on Python 3.14 swallows any `OSError` (not just
+    `FileNotFoundError`) and reports False, so a path that failed to stat for
+    some other reason (EIO, a permission error) would read as "no store"
+    instead of the failure it is.
+    """
+    try:
+        os.lstat(live)
+    except FileNotFoundError:
+        return False
+    except OSError as err:
+        raise StorageFailure from err
+    return True
+
+
+def _refuse_if_in_use(live: Path) -> None:
+    """`UpgradeRefused("in-use")` for a store still in WAL mode or with a live
+    sidecar: someone else may hold committed data this rebuild has not seen,
+    or may be using the file right now.
+
+    Checked once before anything is built and again right before the live
+    file is replaced; nothing here alters or removes what it finds, live
+    sidecars included -- only the caller decides what happens next.
+    """
+    if live.with_name(f"{live.name}-wal").exists():
+        raise UpgradeRefused("in-use")
+    if live.with_name(f"{live.name}-journal").exists():
+        raise UpgradeRefused("in-use")
+    if _wal_mode_header(live):
+        raise UpgradeRefused("in-use")
+
+
+def _wal_mode_header(path: Path) -> bool:
+    """Whether the file's header says WAL journal mode (bytes 18/19 == 2).
+
+    Read directly, no connection: a static property of the file, true
+    whether or not a WAL sidecar happens to exist right now.
+    """
+    with open(path, "rb") as header_file:
+        header = header_file.read(20)
+    return len(header) == 20 and (header[18] == 2 or header[19] == 2)
 
 
 def _imports(version: int) -> list[str]:
@@ -251,15 +312,44 @@ def _build(work: Path, live: Path, version: int, busy_timeout_ms: int) -> tuple[
 
 
 def _copy_backup(live: Path, backup: Path) -> None:
-    """A byte copy of the old file, private like the store; the live file stays in place."""
-    fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    with open(fd, "wb") as target, open(live, "rb") as source:
-        shutil.copyfileobj(source, target)
-        target.flush()
-        os.fsync(target.fileno())
+    """A byte copy of the old file, published by renaming a private temp file
+    over the backup name; the live file stays in place.
+
+    Never opens the backup path itself for writing: if `backup` already
+    exists as a hard link to `live`, a wide-permission leftover, or a FIFO,
+    writing into or blocking on that inode would damage or hang the upgrade
+    before anything is verified safe to publish. The rename is the only
+    operation that touches the backup name, and it replaces whatever was
+    there without reading through it.
+    """
+    temp = backup.with_name(f"{backup.name}.tmp")
+    with contextlib.suppress(FileNotFoundError):
+        os.unlink(temp)     # a previous crash's leftover: never the live file
+    try:
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with open(fd, "wb") as target, open(live, "rb") as source:
+            shutil.copyfileobj(source, target)
+            target.flush()
+            os.fsync(target.fileno())
+        os.replace(temp, backup)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(temp)
+        raise
+
+
+def _fsync_dir(root: Path) -> None:
+    """The directory entry a rename just changed, made durable."""
+    fd = os.open(root, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _discard(work: Path) -> None:
-    for path in (work, work.with_name(f"{work.name}-journal")):
+    """Every trace of a killed upgrade's own work file -- never a live sidecar."""
+    for suffix in ("", "-journal", "-wal", "-shm"):
+        path = work.with_name(f"{work.name}{suffix}") if suffix else work
         with contextlib.suppress(FileNotFoundError):
             os.unlink(path)
