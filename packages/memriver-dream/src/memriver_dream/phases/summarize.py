@@ -222,19 +222,40 @@ class _Attempt:
             if not _passes(self.ctx, text):
                 raise _Stop("rejected")
             result = {**result, "summary": text}      # publish the stripped text, not raw
+        elif result["summary"].strip():
+            # "empty" with text is a contradiction the schema alone does not rule out:
+            # never a final answer
+            raise _Stop("schema")
         return result
 
 
+_PROGRESS_KEYS = frozenset({"fingerprint", "prompt_version", "room", "next_chunk", "partials"})
+
+
+def _valid_progress(progress: object) -> bool:
+    """Whether stored `progress` has the shape an attempt can consume: exactly these
+    keys, sane types and ranges, and a non-empty `partials` list of non-empty strings
+    each storable as text. Corrupted or hand-edited data fails this and is discarded
+    -- as if there were no checkpoint -- rather than raised on or read as done."""
+    if not isinstance(progress, dict) or set(progress) != _PROGRESS_KEYS:
+        return False
+    fingerprint, prompt_version = progress["fingerprint"], progress["prompt_version"]
+    room, next_chunk, partials = progress["room"], progress["next_chunk"], progress["partials"]
+    return (isinstance(fingerprint, str) and bool(fingerprint)
+            and isinstance(prompt_version, str) and bool(prompt_version)
+            and type(room) is int and room >= 1
+            and type(next_chunk) is int and next_chunk >= 1
+            and isinstance(partials, list) and bool(partials)
+            and all(isinstance(p, str) and p and storable(p) for p in partials))
+
+
 def _resumable(ctx: Context, progress: dict, fingerprint: str) -> bool:
-    """Whether a stored checkpoint may be resumed: same filtered input, same prompt
-    version, and every partial still passing today's policy."""
-    partials = progress.get("partials")
-    return (progress.get("fingerprint"), progress.get("prompt_version")) \
-        == (fingerprint, PROMPT_VERSION) \
-        and isinstance(progress.get("room"), int) \
-        and isinstance(progress.get("next_chunk"), int) \
-        and isinstance(partials, list) \
-        and all(isinstance(p, str) and _passes(ctx, p) for p in partials)
+    """Whether a valid stored checkpoint may be resumed: same filtered input, same
+    prompt version, and every partial still passing today's policy."""
+    return (_valid_progress(progress)
+            and (progress["fingerprint"], progress["prompt_version"])
+                == (fingerprint, PROMPT_VERSION)
+            and all(_passes(ctx, p) for p in progress["partials"]))
 
 
 def _summarize(ctx: Context, row: SummaryRow, lines: list[str],
@@ -282,8 +303,13 @@ def summarize_session(ctx: Context, session: Session, row: SummaryRow | None) ->
     """One session's attempt; its outcome, final (FINAL) or not."""
     key = session.key
     observed = session.last_active_at          # the activity this attempt can cover
-    row = replace(row or SummaryRow(key.harness, key.session_id, None, None, None, None,
-                                    None, None, None), attempted_at=ctx.now)
+    row = row or SummaryRow(key.harness, key.session_id, None, None, None, None,
+                            None, None, None)
+    if row.progress is not None and not _valid_progress(row.progress):
+        # corrupted or hand-edited data: dropped before it is ever written back or
+        # read as a checkpoint, so recording attempted_at below cannot fail on it
+        row = replace(row, progress=None)
+    row = replace(row, attempted_at=ctx.now)
     ctx.store.put_summary(row)
     try:
         transcript = ctx.transcripts.read(session)

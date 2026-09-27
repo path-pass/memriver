@@ -5,7 +5,10 @@ partial."""
 
 from __future__ import annotations
 
+import json
 import re
+import sqlite3
+from contextlib import closing
 
 from memriver_core.models import SessionKey
 from memriver_core.settings import SESSION_SUMMARY_MAX_CHARS
@@ -42,6 +45,19 @@ def _core(world, key: SessionKey):
 
 def _row(world, key: SessionKey):
     return DreamStore(world.root / "dream" / "dream.db").summary(key.harness, key.session_id)
+
+
+def _plant_progress(world, key: SessionKey, raw: str) -> None:
+    """Overwrite the stored checkpoint with `raw` JSON text directly, as corrupted or
+    hand-edited data would arrive; DreamStore's own writer never produces anything
+    invalid, so this bypasses it on purpose."""
+    path = world.root / "dream" / "dream.db"
+    DreamStore(path)                    # ensure dream.db and its schema exist
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.execute(
+            "INSERT INTO session_summaries (harness, session_id, progress) VALUES (?, ?, ?) "
+            "ON CONFLICT(harness, session_id) DO UPDATE SET progress = excluded.progress",
+            (key.harness, key.session_id, raw))
 
 
 def _touch(world, key: SessionKey) -> str:
@@ -247,12 +263,39 @@ def test_a_summary_the_policy_rejects_is_never_published_or_reported_and_is_retr
     assert "ghp_" not in (world.reports / "test.txt").read_text()
 
 
-def test_a_final_summary_over_the_limit_is_invalid_output_and_is_retried(world):
+def test_a_final_summary_over_the_limit_is_a_schema_failure_and_is_retried(world):
     key = _session(world)
     world.transcripts.by_session["s1"] = _transcript("work")
     world.executor.replies = [{"status": "ok", "summary": "x" * (SESSION_SUMMARY_MAX_CHARS + 1)}]
     assert _phase(world) == ["codex s1: schema"]
     assert _core(world, key).summary is None and _row(world, key).completed_through is None
+
+
+def test_a_final_status_empty_with_a_non_empty_summary_is_a_schema_failure(world):
+    # a "status": "empty" answer must carry an empty summary; anything else is a
+    # contradiction the schema alone does not catch, and is never final
+    key = _session(world)
+    world.transcripts.by_session["s1"] = _transcript("work")
+    world.executor.replies = [{"status": "empty", "summary": "Did the work"},
+                              {"status": "ok", "summary": "Did the work"}]
+    assert _phase(world) == ["codex s1: schema"]
+    assert _core(world, key).summary is None and _row(world, key).completed_through is None
+    assert _phase(world) == ["codex s1: ok"]
+
+
+def test_new_activity_then_a_non_final_outcome_keeps_the_last_ok_snapshot(world):
+    key = _session(world)
+    world.transcripts.by_session["s1"] = _transcript("work")
+    world.executor.replies = [{"status": "ok", "summary": "Did the work"}]
+    assert _phase(world) == ["codex s1: ok"]
+    ok_row = _row(world, key)
+    _touch(world, key)
+    world.transcripts.by_session["s1"] = _transcript("more work")
+    world.executor.replies = [ExecutorResult(error="quota")]
+    assert _phase(world) == ["codex s1: quota"]
+    row = _row(world, key)
+    assert (row.input_digest, row.records, row.complete, row.completed_through) == (
+        ok_row.input_digest, ok_row.records, ok_row.complete, ok_row.completed_through)
 
 
 def test_a_session_over_one_runs_calls_keeps_a_checkpoint_and_finishes_without_new_activity(
@@ -325,6 +368,52 @@ def _checkpointed(world) -> SessionKey:
 
 def _refuse(text: str):
     return lambda candidate: "rule-x" if text in candidate else None
+
+
+def test_a_corrupted_checkpoint_is_discarded_and_does_not_abort_the_run(world):
+    # a non-object (or otherwise malformed) stored checkpoint must not raise: it is
+    # dropped before it is ever written back or read, and the run completes
+    key = _session(world)
+    _plant_progress(world, key, json.dumps([]))
+    world.transcripts.by_session["s1"] = _transcript("work")
+    world.executor.replies = [{"status": "ok", "summary": "Did the work"}]
+    row = world.run(phases={"summarize"})
+    assert row.status == "completed"
+    assert "codex s1: ok" in world.report_text(row)
+    assert _core(world, key).summary == "Did the work"
+
+
+def test_a_checkpoint_with_empty_partials_is_discarded_not_read_as_done(world):
+    # next_chunk at the chunk count with an empty partials list would otherwise let
+    # an attempt skip straight to a final "empty" without making a single call
+    key = _checkpointed(world)
+    row = _row(world, key)
+    tampered = {**row.progress, "next_chunk": 18, "partials": []}
+    _plant_progress(world, key, json.dumps(tampered))
+    assert _phase(world, budget_tokens=ROOM_100) == ["codex s1: partial"]
+    assert len(world.executor.calls) == 12 + 12            # started over, not skipped to empty
+
+
+def test_a_checkpointed_partial_that_is_not_utf8_storable_is_discarded(world):
+    # a JSON-escaped lone surrogate is valid JSON text (and valid ASCII in the db),
+    # but decodes to a string no UTF-8 column takes; it must not blow up the
+    # attempted_at write-back that happens before the checkpoint is even read
+    key = _checkpointed(world)
+    row = _row(world, key)
+    tampered = {**row.progress, "partials": [row.progress["partials"][0] + "\ud800"]}
+    _plant_progress(world, key, json.dumps(tampered))
+    assert _phase(world, budget_tokens=ROOM_100) == ["codex s1: partial"]
+    assert len(world.executor.calls) == 12 + 12            # started over, the checkpoint is gone
+
+
+def test_a_legitimate_nothing_kept_checkpoint_is_still_resumed(world):
+    # the positive control: NOTHING_KEPT is a real sentinel a valid checkpoint may
+    # hold, and must not be treated as corrupt
+    key = _checkpointed(world)
+    row = _row(world, key)
+    _plant_progress(world, key, json.dumps({**row.progress, "partials": [NOTHING_KEPT]}))
+    assert _phase(world, budget_tokens=ROOM_100) == ["codex s1: ok"]
+    assert len(world.executor.calls) == 12 + 7             # resumed, not started over
 
 
 def test_a_checkpoint_for_other_input_is_discarded_and_the_session_starts_over(world):
