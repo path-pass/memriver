@@ -81,7 +81,7 @@ def test_a_merge_creates_one_memory_citing_each_and_soft_deletes_the_originals(w
     assert (change.changed_by, change.changed_via) == ("dream", "fake-harness")
     assert (f"applying merge {a} {b} (creates a memory) -> change {change.change_id}; "
             f"undo: memriver undo {change.change_id}\n") in text
-    assert 'description: "python tooling"\nreason: because the entries say so\n' in text
+    assert '  description: "python tooling"\n  reason: because the entries say so\n' in text
 
 
 def test_a_merge_takes_the_type_of_one_of_its_originals(world):   # §10 item 10
@@ -224,7 +224,7 @@ def test_a_supersede_soft_deletes_the_older_entry_the_newer_replaces(world):   #
     assert result.finished
     assert _current(world, older).deleted and _versions(world, newer) == [1]
     assert f"applying supersede {older} -> change" in text
-    assert 'description: "cue"\n' in text
+    assert '  description: "cue"\n' in text
 
 
 def test_a_supersede_uses_the_version_the_target_was_sent_at(world):

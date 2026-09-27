@@ -139,8 +139,8 @@ def test_uncertain_twice_on_the_same_version_retires(world):   # §10 item 11
     result, text = _pass(world, now=later)
     assert result.finished and _deleted(world, memory_id)
     assert text.startswith(f"applying retire {memory_id} -> change ")
-    assert f"soft_delete {memory_id} v1→v2\n" in text
-    assert 'description: "cue"\nreason: 2 uncertain reviews in a row\n' in text
+    assert f"  soft_delete {memory_id} v1→v2\n" in text
+    assert '  description: "cue"\n  reason: 2 uncertain reviews in a row\n' in text
 
 
 def test_the_uncertain_streak_counts_the_same_version_only(world):   # §10 item 11
@@ -176,7 +176,7 @@ def test_a_delete_is_a_soft_delete_by_dream_and_records_no_review(world):
     change = max(world.services.memory.versions(memory_id), key=lambda v: v.version).change
     assert (change.changed_by, change.changed_via) == ("dream", "fake-harness")
     assert f"undo: memriver undo {change.change_id}\n" in text
-    assert "reason: stage-3 was decommissioned\n" in text
+    assert "  reason: stage-3 was decommissioned\n" in text
     assert _review(world, memory_id) is None
 
 
@@ -337,7 +337,7 @@ def test_a_streak_retirement_names_itself_in_the_reason(world):
     world.executor.replies = [_decision("uncertain", "unclear"), _decision("uncertain")]
     _pass(world)
     _, text = _pass(world, now=_later(world, 31))
-    assert "reason: 2 uncertain reviews in a row\n" in text
+    assert "  reason: 2 uncertain reviews in a row\n" in text
 
 
 def test_a_streak_retirement_hitting_a_conflict_leaves_the_uncertain_row_unchanged(world):

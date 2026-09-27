@@ -110,6 +110,18 @@ def test_line_and_needs_you_strip_control_characters(tmp_path):
     assert "overturned red entry\n" in text
 
 
+def test_line_keeps_its_leading_indentation_but_still_strips_control_characters(tmp_path):
+    # the leading two spaces are part of the format apply_group's step and detail
+    # lines promise ("  update aaaaaaaaaa v1→v2", "  reason: ..."); only the rest of
+    # the line goes through single_line, so a control character is still stripped
+    report = _report(tmp_path)
+    report.line("  reason: \x1bred\x00 herring")
+    report.footer(status="completed", finished_at=T1)
+    text = report.path.read_text()
+    assert "\x1b" not in text and "\x00" not in text
+    assert "  reason: red herring\n" in text
+
+
 def test_a_footer_after_an_unfinished_applying_line_marks_it_unknown(tmp_path):
     report = _report(tmp_path)
     report.applying("supersede", ["aaaaaaaaaa"])

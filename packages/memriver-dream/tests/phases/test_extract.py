@@ -198,7 +198,7 @@ def test_add_sources_cites_the_new_memories_and_keeps_the_text(world):   # §10 
     current = _current(world, target)
     assert (current.version, current.body) == (2, "Python projects prefer pytest.")
     assert set(current.sources) == {SourceRef(a, 1), SourceRef(b, 1)}
-    assert 'description: "principle"\n' in text
+    assert '  description: "principle"\n' in text
 
 
 @pytest.mark.parametrize(("kind", "case", "outcome", "field"), [

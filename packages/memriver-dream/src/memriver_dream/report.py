@@ -33,6 +33,15 @@ def _append(path: Path, text: str) -> None:
         file.write(text)
 
 
+def _line_safe(text: str) -> str:
+    """`text` control-character-stripped and single-lined, keeping its leading spaces:
+    the two-space indentation apply_group's step and detail lines promise (e.g.
+    "  update aaaaaaaaaa v1→v2", "  reason: ...") is part of the report's format, not
+    something to collapse away along with an embedded newline or control character."""
+    lead = text[: len(text) - len(text.lstrip(" "))]
+    return lead + single_line(text[len(lead):])
+
+
 def _unknown(line: str) -> str:
     """The completion of an applying line whose outcome is not known (R9, §6.1).
 
@@ -65,7 +74,7 @@ class Report:
 
     def line(self, text: str) -> None:
         """One line of the report's own wording; model text must go through safe()."""
-        self._write(single_line(text) + "\n")
+        self._write(_line_safe(text) + "\n")
 
     def safe(self, text: str) -> str:
         """`text` on one line, or WITHHELD when the content policy hits it -- checked
@@ -89,7 +98,7 @@ class Report:
 
     def needs_you(self, text: str) -> None:
         """Collected and written under "Needs you" by footer()."""
-        self._needs_you.append(single_line(text))
+        self._needs_you.append(_line_safe(text))
 
     def footer(self, *, status: str, finished_at: str) -> None:
         needs = "".join(f"{item}\n" for item in self._needs_you)
