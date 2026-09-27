@@ -96,7 +96,7 @@ class MemoryVersion:
     body: str
     deleted: bool
     sources: tuple[SourceRef, ...]
-    change: Change | None            # None = imported by the migration (steps omitted: ())
+    change: Change | None            # None = an imported version (steps omitted: ())
 
 
 @dataclass(frozen=True)

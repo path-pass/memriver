@@ -5,7 +5,7 @@ Two kinds of error live here, and they differ in who owns the words:
 - **Storage-boundary errors** -- `MemoryNotFound`, `ProjectNotFound`,
   `IdCollision`, `StorageFailure`, `VersionConflict`, `BindingRefused`,
   `ProjectUnavailable`, `BatchConflict`, `StoreNeedsUpgrade`, `UndoRefused`,
-  `PlanChanged`, `SessionMoved`, `UpgradeRefused` -- carry structured *fields*
+  `PlanChanged`, `SessionMoved` -- carry structured *fields*
   only. Their `str()` is a developer-facing line for logs and must never
   reach a client: a transport composes client copy from the operation plus
   these fields, so a second backend cannot change a byte of what a client
@@ -174,12 +174,11 @@ class BatchConflict(MemoryError):
 class StoreNeedsUpgrade(MemoryError):
     """The store's schema is older than this version reads; nothing was read or written.
 
-    Fields only: `version` is the store's schema version. Only the offline
-    rebuild (`memriver upgrade`) changes such a file.
+    Fields only: `version` is the store's schema version.
     """
 
     def __init__(self, version: int) -> None:
-        super().__init__(f"store needs upgrade: schema {version}")
+        super().__init__(f"store schema {version} is not supported")
         self.version = version
 
 
@@ -220,24 +219,3 @@ class SessionMoved(MemoryError):
 
     def __init__(self) -> None:
         super().__init__("session moved")
-
-
-UPGRADE_REASONS = frozenset({
-    "upgrade-running", "in-use", "counts", "invariant", "foreign-keys", "schema",
-})
-
-
-class UpgradeRefused(MemoryError):
-    """The store was not rebuilt as schema v4; the live file is exactly as it was.
-
-    Fields only: `reason` is one of UPGRADE_REASONS -- another upgrade holds the
-    upgrade lock ("upgrade-running"), the store looks still in use (WAL mode or
-    a live sidecar, "in-use"), or the new file failed one verification check
-    (the other four). The CLI owns every sentence.
-    """
-
-    def __init__(self, reason: str) -> None:
-        if reason not in UPGRADE_REASONS:
-            raise ValueError(f"unknown upgrade reason: {reason!r}")
-        super().__init__(f"upgrade refused: {reason}")
-        self.reason = reason

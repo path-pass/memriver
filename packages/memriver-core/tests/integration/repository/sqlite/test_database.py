@@ -81,7 +81,7 @@ def test_a_session_summary_needs_its_time_and_the_reverse(tmp_path):
 
 
 @pytest.mark.parametrize("version", [1, 2, 3])
-def test_a_store_below_v4_needs_an_upgrade_and_is_left_untouched(tmp_path, version):
+def test_a_store_below_v4_is_refused_and_left_untouched(tmp_path, version):
     root = tmp_path / "store"
     root.mkdir()
     with closing(sqlite3.connect(root / "memriver.db")) as conn:

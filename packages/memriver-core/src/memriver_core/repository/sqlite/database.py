@@ -1,7 +1,7 @@
 """The one SQLite database behind both stores: connecting, schema, rows.
 
 One connection per operation, closed at its end: a long-lived MCP server never
-holds a handle across a file replaced by migration or restore. Reads never
+holds a handle across a file replaced by restore. Reads never
 create anything; the first write creates the directory, the file and the
 schema, deciding "fresh or not" only after it holds the write lock, so two
 first writers cannot both create the schema.
@@ -76,8 +76,8 @@ _TOOL_CALLS_TABLE = """CREATE TABLE tool_calls (
 ) STRICT"""
 _TOOL_CALLS_INDEX = "CREATE INDEX tool_calls_by_recorded_at ON tool_calls(recorded_at)"
 
-# schema v4, copied from spec §3: the one definition a fresh store and the
-# offline rebuild both run (create_schema), so the two are identical
+# schema v4, copied from spec §3: the one definition a fresh store runs
+# (create_schema)
 _SCHEMA = (
     """CREATE TABLE projects (
       id        TEXT PRIMARY KEY NOT NULL CHECK (length(id) = 10),
@@ -122,7 +122,7 @@ _SCHEMA = (
       description  TEXT NOT NULL,
       body         TEXT NOT NULL,
       deleted      INTEGER NOT NULL CHECK (deleted IN (0, 1)),
-      change_id    TEXT REFERENCES changes(change_id),   -- NULL only for versions imported by the migration
+      change_id    TEXT REFERENCES changes(change_id),   -- NULL for an imported version
       PRIMARY KEY (memory_id, version)
     ) STRICT""",
     # the deferred key has no delete action: a cited version goes only together
@@ -253,7 +253,7 @@ def create_schema(conn: sqlite3.Connection) -> None:
     """Every v4 table and index, on `conn`: no transaction control, no user_version.
 
     The caller owns the transaction and the version stamp -- `Database.write`
-    for a fresh store, the offline rebuild for a new file.
+    for a fresh store.
     """
     for statement in _SCHEMA:
         conn.execute(statement)
@@ -389,6 +389,6 @@ class Database:
         if version == 0 and conn.execute("SELECT count(*) FROM sqlite_master").fetchone()[0] == 0:
             return "fresh"
         if 1 <= version < SCHEMA_VERSION:
-            # an older store is rebuilt offline (memriver upgrade), never in place
+            # an older store is refused, never read or written in place
             raise StoreNeedsUpgrade(version)
         return "unknown"

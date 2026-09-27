@@ -132,8 +132,8 @@ def test_injects_the_session_constants(tmp_path):
 
 def test_bootstrap_exports_the_services_builder_the_empty_index_and_the_purge():
     assert set(bootstrap.__all__) == {"EMPTY_INDEX", "PurgePlan", "PurgeRefusal", "PurgeResult",
-                                      "Services", "UpgradeResult", "build_services",
-                                      "plan_purge", "purge", "upgrade_store"}
+                                      "Services", "build_services",
+                                      "plan_purge", "purge"}
     # the single-facade builder is gone: every caller builds the four services
     for gone in ("build_service", "build_diagnostics_service", "store_lock", "replace_file"):
         assert not hasattr(bootstrap, gone)

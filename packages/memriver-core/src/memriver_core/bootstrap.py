@@ -31,7 +31,6 @@ from .repository.sqlite import (
     SqliteSessionStore,
     SqliteStoreInspector,
 )
-from .repository.sqlite.upgrade import UpgradeResult, rebuild_store
 from .repository.worktree import current_branch, main_tree_path
 from .settings import (
     BUSY_TIMEOUT_MS,
@@ -49,15 +48,12 @@ from .settings import (
     STOP_NUDGE_INTERVAL_PROMPTS,
     STOP_NUDGE_MIN_PROMPTS,
     TOOL_CALL_RETENTION_S,
-    UPGRADE_BACKUP_FILENAME,
-    UPGRADE_LOCK_FILENAME,
-    UPGRADE_WORK_FILENAME,
     Settings,
 )
 
 __all__ = [
-    "EMPTY_INDEX", "PurgePlan", "PurgeRefusal", "PurgeResult", "Services", "UpgradeResult",
-    "build_services", "plan_purge", "purge", "upgrade_store",
+    "EMPTY_INDEX", "PurgePlan", "PurgeRefusal", "PurgeResult", "Services",
+    "build_services", "plan_purge", "purge",
 ]
 
 
@@ -134,17 +130,3 @@ def build_services(settings: Settings, *, root: Path | None = None,
             SqliteStoreInspector(store_root, busy_timeout_ms=BUSY_TIMEOUT_MS),
             memory_store=memory_store, content_policy_factory=content_policy),
     )
-
-
-def upgrade_store(root: Path) -> UpgradeResult:
-    """Rebuild the store at `root` as schema v4, offline (spec §9); nothing to do at v4.
-
-    Holds `<root>/.upgrade.lock` only: a plug-in's run lock is the caller's to
-    take (the umbrella's `memriver upgrade`), since core knows no plug-in.
-    UpgradeRefused or StorageFailure leave the live file exactly as it was.
-    """
-    root = Path(root)
-    return rebuild_store(root, busy_timeout_ms=BUSY_TIMEOUT_MS,
-                         upgrade_lock=root / UPGRADE_LOCK_FILENAME,
-                         work_filename=UPGRADE_WORK_FILENAME,
-                         backup_filename=UPGRADE_BACKUP_FILENAME)

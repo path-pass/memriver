@@ -159,19 +159,14 @@ CODEX_TRUST_NOTE = (
     "this run changed either of those definitions."
 )
 
-# Spec 11: a previous-release MCP server refuses the v2 store the upgraded
-# database moves to on first open, so a session already running against it
-# has to be restarted; one that was already running when the upgrade landed
-# gets a one-time confirmation prompt for its project (U11) instead of a
-# fallback to a directory guess. Fixed text, shown whenever this run touches
-# a session-routed harness -- a property of which harness is installed, not
-# of what this particular run happened to change.
+# A running session's MCP server process is the one started before this
+# install ran, so it keeps the old memriver until the session is restarted
+# (or its MCP connection reconnected). Fixed text, shown whenever this run
+# touches a session-routed harness -- a property of which harness is
+# installed, not of what this particular run happened to change.
 RESTART_SESSIONS_NOTE = (
-    "Restart any running Claude Code/Codex session: its memriver MCP server "
-    "from before this install refuses the upgraded memory store. A session "
-    "that was already running when the store upgraded is asked once, the "
-    "next time it resumes, whether to register to the project its directory "
-    "suggests."
+    "Restart any running Claude Code/Codex session, or reconnect it with "
+    "/mcp, so it picks up the new memriver this install just wrote."
 )
 
 MISSING_UVX_NOTE = (
