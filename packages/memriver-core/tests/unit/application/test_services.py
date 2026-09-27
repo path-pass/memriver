@@ -16,6 +16,7 @@ from memriver_core.models import (
     RootPlan,
     UnbindPlan,
 )
+from memriver_core.models.changes import Create, SoftDelete, Update
 from memriver_core.models.errors import (
     ContentRejected,
     GlobalReadOnly,
@@ -122,33 +123,42 @@ class FakeProjectStore:
 
 
 class FakeMemoryStore:
+    """Records what the facade asks; a create lands in the project store's memories."""
+
     def __init__(self, project_store: FakeProjectStore) -> None:
         self.project_store = project_store
         self.calls: list[tuple] = []
-        self.failures: list[Exception] = []     # raised, in order, by record
-        self.attempted_ids: list[str] = []
+        self.failures: list[Exception] = []     # raised, in order, by apply
+        self.attempts = 0
+        self.stored: dict[str, Memory] = {}
 
-    def record(self, memory, read_write_set):
-        self.attempted_ids.append(memory.id)
+    def write(self, op, *, restriction, changed_by, changed_via, check):
+        self.attempts += 1
         if self.failures:
             raise self.failures.pop(0)
-        self.calls.append(("record", memory.project_id, read_write_set))
-        self.project_store.memories.append(memory)
+        self.calls.append((type(op).__name__, op, restriction, changed_by, changed_via))
+        if isinstance(op, Update):
+            raise GlobalReadOnly()
+        if isinstance(op, Create):
+            memory = Memory.new(body=op.body, type=op.type, project_id=op.project_id,
+                                source={"harness": changed_via or "unknown",
+                                        "method": changed_by},
+                                sync=op.sync, description=op.description)
+            self.stored[memory.id] = memory
+            self.project_store.memories.append(memory)
+            return memory
+        return Memory(id=op.memory_id, project_id=P, type="user", source={}, trust="agent",
+                      sync=True, created="c", updated="u", description="", body="b",
+                      version=op.expected_version + 1, deleted_at="u")
 
     def read(self, memory_id, read_write_set):
         self.calls.append(("read", memory_id, read_write_set))
         raise MemoryNotFound(memory_id)
 
-    def update(self, memory_id, read_write_set, *, expected_version, body, description):
-        self.calls.append(("update", memory_id, expected_version, body, description))
-        raise GlobalReadOnly()
-
-    def delete(self, memory_id, read_write_set, *, expected_version, hard):
-        self.calls.append(("delete", memory_id, expected_version, hard))
-        return expected_version + 1
-
     def read_any(self, memory_id, *, include_deleted):
         self.calls.append(("read_any", memory_id, include_deleted))
+        if memory_id in self.stored:
+            return self.stored[memory_id]
         raise MemoryNotFound(memory_id)
 
 
@@ -239,15 +249,18 @@ def test_open_project_context_turns_an_unreadable_global_into_an_unavailable_pro
 
 # --- record -----------------------------------------------------------------
 
-def test_record_targets_the_read_write_set_project_with_a_generated_id():
+def test_record_builds_one_create_restricted_to_the_read_write_set():
     services, memory_store, *_ = _services()
     memory = services.memory.record(content="uv manages python", type="project", sync=False,
-                            harness="claude-code", description="cue", context=CONTEXT)
+                                    harness="claude-code", description="cue", context=CONTEXT)
     assert ID_RE.fullmatch(memory.id)
     assert (memory.project_id, memory.sync, memory.description) == (P, False, "cue")
-    assert memory.source == {"harness": "claude-code", "method": "agent"}
+    assert memory.source == {"harness": "claude-code", "method": "mcp"}
     assert memory.trust == "agent"
-    assert memory_store.calls == [("record", P, READ_WRITE_SET)]
+    [(name, op, restriction, changed_by, changed_via)] = memory_store.calls
+    assert (name, op.project_id, op.trust, restriction, changed_by, changed_via) == \
+        ("Create", P, "agent", READ_WRITE_SET, "mcp", "claude-code")
+    assert memory is memory_store.stored[memory.id]      # the store's answer, not a re-read
 
 
 def test_record_without_a_project_is_refused_before_any_check():
@@ -306,16 +319,11 @@ def test_the_content_policy_is_built_only_when_a_write_needs_it():
 
 # --- read / update / delete ---------------------------------------------------
 
-def test_read_update_delete_delegate_with_the_read_write_set():
+def test_read_delegates_with_the_read_write_set():
     services, memory_store, *_ = _services()
     with pytest.raises(MemoryNotFound):
         services.memory.read("X", CONTEXT)
-    with pytest.raises(GlobalReadOnly):
-        services.memory.update("X", "new body", CONTEXT, expected_version=1, description=None)
-    assert services.memory.delete("X", CONTEXT, expected_version=1) == 2
-    assert memory_store.calls == [("read", "X", READ_WRITE_SET),
-                                  ("update", "X", 1, "new body", None),
-                                  ("delete", "X", 1, False)]
+    assert memory_store.calls == [("read", "X", READ_WRITE_SET)]
 
 
 def test_update_runs_the_content_policy_first():
@@ -327,13 +335,15 @@ def test_update_runs_the_content_policy_first():
     assert memory_store.calls == []
 
 
-def test_update_and_delete_pass_the_expected_version_through():
-    services, memory_store, _, _ = _services()
+def test_update_and_delete_are_one_restricted_op_each_with_the_expected_version():
+    services, memory_store, *_ = _services()
     with pytest.raises(GlobalReadOnly):
         services.memory.update("m", "body", CONTEXT, expected_version=3)
-    assert services.memory.delete("m", CONTEXT, expected_version=3, hard=True) == 4
-    assert memory_store.calls[-2:] == [("update", "m", 3, "body", None),
-                                       ("delete", "m", 3, True)]
+    assert services.memory.delete("m", CONTEXT, expected_version=3) == 4
+    (_, update, *update_rest), (_, delete, *delete_rest) = memory_store.calls
+    assert update == Update("m", 3, description=None, body="body")
+    assert delete == SoftDelete("m", 3)
+    assert update_rest == delete_rest == [READ_WRITE_SET, "mcp", None]
 
 
 # --- projects -----------------------------------------------------------------
@@ -383,7 +393,7 @@ def test_record_surfaces_a_collision_as_storage_failure_after_one_call():
     memory_store.failures = [IdCollision("x")]
     with pytest.raises(StorageFailure) as exc_info:
         _record(services)
-    assert len(memory_store.attempted_ids) == 1
+    assert memory_store.attempts == 1
     assert isinstance(exc_info.value.__cause__, IdCollision)
 
 
@@ -392,7 +402,7 @@ def test_a_non_collision_failure_is_final_on_the_first_call_too():
     memory_store.failures = [StorageFailure()]
     with pytest.raises(StorageFailure):
         _record(services)
-    assert len(memory_store.attempted_ids) == 1
+    assert memory_store.attempts == 1
 
 
 def test_ensure_global_surfaces_a_collision_the_same_way():

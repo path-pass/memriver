@@ -20,8 +20,8 @@ from memriver_core.models import (
     ProjectContext,
     ReadWriteSet,
     new_id,
-    now,
 )
+from memriver_core.models.changes import Create, SoftDelete, Update
 from memriver_core.models.errors import (
     GlobalReadOnly,
     IdCollision,
@@ -130,22 +130,33 @@ def _m(project_id: str, body: str = "内容", description: str = "") -> Memory:
                       description=description)
 
 
-def _record(world, body="内容", description="") -> Memory:
-    memory = _m(world["mine"], body=body, description=description)
-    world["memory_store"].record(memory, world["read_write_set"])
-    return memory
+def _accept(description: str, body: str) -> str | None:
+    return None     # the content policy is the service's; this contract is the store's
 
 
-def _update(world, memory, body="x", description=None, version=None):
-    return world["memory_store"].update(
-        memory.id, world["read_write_set"], body=body, description=description,
-        expected_version=memory.version if version is None else version)
+def _write(world, op, read_write_set=None) -> Memory:
+    """One agent op; the memory as the store wrote it."""
+    return world["memory_store"].write(op, restriction=read_write_set or world["read_write_set"],
+                                       changed_by="mcp", changed_via="test", check=_accept)
 
 
-def _delete(world, memory, *, hard=False, version=None, read_write_set=None):
-    return world["memory_store"].delete(
-        memory.id, read_write_set or world["read_write_set"], hard=hard,
-        expected_version=memory.version if version is None else version)
+def _create_op(project_id: str, body: str = "内容", description: str = "") -> Create:
+    return Create(project_id, "project", description, body)
+
+
+def _record(world, body="内容", description="", *, project=None, read_write_set=None) -> Memory:
+    return _write(world, _create_op(project or world["mine"], body, description),
+                  read_write_set)
+
+
+def _update(world, memory, body="x", description=None, version=None) -> Memory:
+    return _write(world, Update(memory.id, memory.version if version is None else version,
+                                description=description, body=body))
+
+
+def _delete(world, memory, *, version=None, read_write_set=None) -> int:
+    return _write(world, SoftDelete(memory.id, memory.version if version is None else version),
+                  read_write_set).version
 
 
 # --- ProjectStore: create / read / global ---------------------------------
@@ -212,50 +223,52 @@ def test_record_then_read_returns_the_same_memory(world):
 
 def test_record_into_global_is_refused(world):
     with pytest.raises(GlobalReadOnly):
-        world["memory_store"].record(_m(world["global"]), world["read_write_set"])
+        _write(world, _create_op(world["global"]))
 
 
 def test_record_into_another_project_is_refused(world):
     with pytest.raises(ProjectUnavailable):
-        world["memory_store"].record(_m(world["other"]), world["read_write_set"])
+        _write(world, _create_op(world["other"]))
 
 
 def test_record_without_a_project_in_the_read_write_set_is_refused(world):
     with pytest.raises(ProjectUnavailable):
-        world["memory_store"].record(_m(world["mine"]), world["no_project"])
+        _write(world, _create_op(world["mine"]), world["no_project"])
 
 
 def test_record_into_a_missing_project_is_refused_even_with_a_matching_read_write_set(world):
     missing = new_id()
     read_write_set = ReadWriteSet(project_id=missing, global_project_id=world["global"])
     with pytest.raises(ProjectUnavailable):
-        world["memory_store"].record(_m(missing), read_write_set)
+        _write(world, _create_op(missing), read_write_set)
 
 
 def test_record_into_a_removed_store_is_refused_and_never_recreates_it(root, world):
     # a still-running server after `uninstall --purge-data`
     shutil.rmtree(root)
     with pytest.raises(ProjectUnavailable):
-        world["memory_store"].record(_m(world["mine"]), world["read_write_set"])
+        _write(world, _create_op(world["mine"]))
     assert not root.exists()
 
 
-def test_record_never_replaces_an_existing_id_even_a_deleted_one(world):
+def test_record_never_replaces_an_existing_id_even_a_deleted_one(world, monkeypatch):
+    import memriver_core.models.memory as memory_module
+
     memory = _record(world, body="first")
-    clash = Memory(**{**memory.__dict__, "body": "second"})
+    monkeypatch.setattr(memory_module, "new_id", lambda: memory.id)
     with pytest.raises(IdCollision):
-        world["memory_store"].record(clash, world["read_write_set"])
+        _write(world, _create_op(world["mine"], "second"))
     _delete(world, memory)
     with pytest.raises(IdCollision):
-        world["memory_store"].record(clash, world["read_write_set"])
+        _write(world, _create_op(world["mine"], "second"))
+    assert world["memory_store"].read_any(memory.id, include_deleted=True).body == "first"
 
 
 def test_recording_a_memory_the_read_path_would_reject_is_a_value_error_and_writes_nothing(world):
-    bad = Memory(**{**_m(world["mine"]).__dict__, "type": "note"})
     with pytest.raises(ValueError):
-        world["memory_store"].record(bad, world["read_write_set"])
-    with pytest.raises(MemoryNotFound):
-        world["memory_store"].read(bad.id, world["read_write_set"])
+        _write(world, Create(world["mine"], "note", "", "内容"))
+    assert world["project_store"].search(world["mine"], world["read_write_set"], query=None,
+                                         limit=None) == []
 
 
 # --- MemoryStore: read / update / delete ------------------------------------
@@ -268,8 +281,7 @@ def test_one_id_means_the_same_memory_in_every_read_write_set_that_may_read_it(b
 
 
 def test_a_foreign_id_reads_exactly_like_a_missing_one(world):
-    foreign = _m(world["other"])
-    world["memory_store"].record(foreign, world["other_read_write_set"])
+    foreign = _record(world, project=world["other"], read_write_set=world["other_read_write_set"])
     for memory_id in (foreign.id, new_id(), "not-an-id"):
         with pytest.raises(MemoryNotFound) as excinfo:
             world["memory_store"].read(memory_id, world["read_write_set"])
@@ -347,18 +359,18 @@ def test_update_replaces_content_advances_updated_and_version_and_keeps_the_rest
     assert world["memory_store"].read(memory.id, world["read_write_set"]) == updated
 
 
-def test_update_with_an_unchanged_body_still_advances_updated_and_version(world):
-    memory = _record(world, body="same")
-    updated = _update(world, memory, body="same")
-    assert updated.updated > memory.updated and updated.version == memory.version + 1
-
-
 def test_update_description_empty_string_clears_it(world):
     memory = _record(world, description="cue")
     assert _update(world, memory, body="b", description="").description == ""
 
 
-@pytest.mark.parametrize("action", ["update", "soft-delete", "hard-delete"])
+def test_an_update_to_the_current_text_writes_nothing_and_returns_the_memory_as_checked(world):
+    memory = _record(world, body="same")
+    assert _update(world, memory, body=" same ") == memory
+    assert world["memory_store"].read(memory.id, world["read_write_set"]) == memory
+
+
+@pytest.mark.parametrize("action", ["update", "soft-delete"])
 def test_a_stale_version_is_a_conflict_and_changes_nothing(world, action):
     memory = _record(world, body="v1")
     current = _update(world, memory, body="v2")                  # now at version 2
@@ -366,7 +378,7 @@ def test_a_stale_version_is_a_conflict_and_changes_nothing(world, action):
         if action == "update":
             _update(world, memory, body="lost", version=1)
         else:
-            _delete(world, memory, hard=action == "hard-delete", version=1)
+            _delete(world, memory, version=1)
     assert excinfo.value.memory_id == memory.id
     assert world["memory_store"].read(memory.id, world["read_write_set"]) == current
 
@@ -380,8 +392,10 @@ def test_two_writers_with_the_same_version_exactly_one_wins(backend, root, home,
     def write(memory_store, body):
         barrier.wait()
         try:
-            results.append(memory_store.update(memory.id, world["read_write_set"], body=body,
-                                               description=None, expected_version=1))
+            results.append(memory_store.write(Update(memory.id, 1, body=body),
+                                              restriction=world["read_write_set"],
+                                              changed_by="mcp", changed_via="test",
+                                              check=_accept))
         except VersionConflict as err:
             results.append(err)
 
@@ -393,7 +407,7 @@ def test_two_writers_with_the_same_version_exactly_one_wins(backend, root, home,
         thread.join()
     assert sorted(type(r).__name__ for r in results) == ["Memory", "VersionConflict"]
     winner = next(r for r in results if isinstance(r, Memory))
-    assert world["memory_store"].read(memory.id, world["read_write_set"]).body == winner.body
+    assert world["memory_store"].read(memory.id, world["read_write_set"]) == winner
 
 
 @pytest.mark.parametrize("action", ["update", "delete"])
@@ -406,13 +420,6 @@ def test_global_memories_are_read_only(backend, root, world, action):
         else:
             _delete(world, fact)
     assert world["memory_store"].read(fact.id, world["read_write_set"]) == fact
-
-
-def test_hard_delete_of_global_is_refused_too(backend, root, world):
-    fact = _m(world["global"])
-    backend.plant(root, fact)
-    with pytest.raises(GlobalReadOnly):
-        _delete(world, fact, hard=True)
 
 
 def _swap_global_role(root: Path, old_global: str, new_global: str) -> None:
@@ -429,14 +436,12 @@ def _swap_global_role(root: Path, old_global: str, new_global: str) -> None:
 
 def test_record_is_refused_once_the_target_project_becomes_global(root, world):
     _swap_global_role(root, world["global"], world["mine"])
-    memory = _m(world["mine"])
     with pytest.raises(GlobalReadOnly):
-        world["memory_store"].record(memory, world["read_write_set"])
-    with pytest.raises(MemoryNotFound):
-        world["memory_store"].read_any(memory.id, include_deleted=True)
+        _write(world, _create_op(world["mine"]))
+    assert world["project_store"].search(world["mine"], None, query=None, limit=None) == []
 
 
-@pytest.mark.parametrize("action", ["update", "soft-delete", "hard-delete"])
+@pytest.mark.parametrize("action", ["update", "soft-delete"])
 def test_update_or_delete_is_refused_once_the_target_project_becomes_global(root, world, action):
     memory = _record(world)
     _swap_global_role(root, world["global"], world["mine"])
@@ -444,14 +449,13 @@ def test_update_or_delete_is_refused_once_the_target_project_becomes_global(root
         if action == "update":
             _update(world, memory)
         else:
-            _delete(world, memory, hard=action == "hard-delete")
+            _delete(world, memory)
     assert world["memory_store"].read_any(memory.id, include_deleted=True) == memory
 
 
 @pytest.mark.parametrize("action", ["update", "delete"])
 def test_a_foreign_memory_cannot_be_changed_and_is_not_revealed(world, action):
-    foreign = _m(world["other"])
-    world["memory_store"].record(foreign, world["other_read_write_set"])
+    foreign = _record(world, project=world["other"], read_write_set=world["other_read_write_set"])
     with pytest.raises(MemoryNotFound):
         if action == "update":
             _update(world, foreign)
@@ -485,21 +489,9 @@ def test_read_any_sees_a_soft_deleted_memory_only_when_asked(world):
 def test_read_any_reads_every_project_including_global(backend, root, world):
     fact = _m(world["global"])
     backend.plant(root, fact)
-    foreign = _m(world["other"])
-    world["memory_store"].record(foreign, world["other_read_write_set"])
+    foreign = _record(world, project=world["other"], read_write_set=world["other_read_write_set"])
     assert world["memory_store"].read_any(fact.id, include_deleted=False) == fact
     assert world["memory_store"].read_any(foreign.id, include_deleted=False) == foreign
-
-
-def test_hard_delete_removes_an_active_and_a_soft_deleted_row(world):
-    active = _record(world, body="a")
-    assert _delete(world, active, hard=True) == 0
-    soft = _record(world, body="b")
-    _delete(world, soft)
-    assert _delete(world, soft, hard=True, version=soft.version + 1) == 0
-    for memory in (active, soft):
-        with pytest.raises(MemoryNotFound):
-            world["memory_store"].read_any(memory.id, include_deleted=True)
 
 
 def test_an_invalid_row_is_damage_on_a_direct_read_and_skipped_by_search(backend, root, world):
@@ -555,8 +547,7 @@ def test_an_undecodable_row_of_another_project_answers_exactly_like_an_absent_id
         conn.execute("UPDATE memories SET body = CAST(X'80' AS TEXT) WHERE id = ?", (foreign.id,))
     for call in (lambda: world["memory_store"].read(foreign.id, world["read_write_set"]),
                  lambda: _update(world, foreign),
-                 lambda: _delete(world, foreign),
-                 lambda: _delete(world, foreign, hard=True)):
+                 lambda: _delete(world, foreign)):
         with pytest.raises(MemoryNotFound):
             call()
     with pytest.raises(StorageFailure):                    # only the management read sees it
@@ -584,41 +575,11 @@ def test_an_undecodable_row_in_the_same_project_is_skipped_by_search_and_index_n
         world["memory_store"].read(bad.id, world["read_write_set"])
 
 
-def test_a_soft_delete_leaves_updated_unchanged(world):
+def test_a_soft_delete_moves_updated_like_every_state_change(world):
     memory = _record(world)
     _delete(world, memory)
-    assert world["memory_store"].read_any(memory.id, include_deleted=True).updated == memory.updated
-
-
-def test_hard_delete_of_another_projects_memory_is_not_found_active_or_soft_deleted(world):
-    active = _m(world["other"], body="a")
-    soft = _m(world["other"], body="b")
-    for memory in (active, soft):
-        world["memory_store"].record(memory, world["other_read_write_set"])
-    world["memory_store"].delete(soft.id, world["other_read_write_set"],
-                                 expected_version=soft.version, hard=False)
-    for memory, version in ((active, active.version), (soft, soft.version + 1)):
-        with pytest.raises(MemoryNotFound):
-            _delete(world, memory, hard=True, version=version)
-        assert world["memory_store"].read_any(memory.id, include_deleted=True).id == memory.id
-
-
-def test_hard_delete_of_a_soft_deleted_global_memory_is_refused(backend, root, world):
-    fact = Memory(**{**_m(world["global"]).__dict__, "version": 2, "deleted_at": now()})
-    backend.plant(root, fact)
-    with pytest.raises(GlobalReadOnly):
-        _delete(world, fact, hard=True)
-    assert world["memory_store"].read_any(fact.id, include_deleted=True) == fact
-
-
-def test_hard_delete_of_a_soft_deleted_row_with_a_stale_version_is_a_conflict(world):
-    memory = _record(world)
-    _delete(world, memory)                                 # now at version 2, deleted
-    with pytest.raises(VersionConflict) as excinfo:
-        _delete(world, memory, hard=True, version=memory.version)
-    assert excinfo.value.memory_id == memory.id
-    assert world["memory_store"].read_any(memory.id, include_deleted=True).version == \
-        memory.version + 1
+    seen = world["memory_store"].read_any(memory.id, include_deleted=True)
+    assert seen.updated > memory.updated and seen.deleted_at == seen.updated
 
 
 # --- ProjectStore: search ---------------------------------------------------
@@ -643,7 +604,8 @@ def test_search_is_one_project_only(backend, root, world):
 
 
 def test_search_of_an_unauthorized_or_missing_project_is_empty(backend, root, world):
-    world["memory_store"].record(_m(world["other"], body="secret"), world["other_read_write_set"])
+    _record(world, body="secret", project=world["other"],
+            read_write_set=world["other_read_write_set"])
     orphan_project = new_id()
     backend.plant(root, _m(orphan_project, body="secret"))
     hand_built = ReadWriteSet(project_id=orphan_project, global_project_id=world["global"])
@@ -654,8 +616,8 @@ def test_search_of_an_unauthorized_or_missing_project_is_empty(backend, root, wo
 
 
 def test_the_management_view_searches_any_project(world):
-    foreign = _m(world["other"], body="theirs")
-    world["memory_store"].record(foreign, world["other_read_write_set"])
+    foreign = _record(world, body="theirs", project=world["other"],
+                      read_write_set=world["other_read_write_set"])
     assert world["project_store"].search(world["other"], None, query="theirs",
                                          limit=None) == [foreign]
 
@@ -709,16 +671,12 @@ def test_every_write_method_reads_back_what_it_wrote(stores, tmp_path):
 
     global_id = project_store.ensure_global()
     read_write_set = ReadWriteSet(project_id=project.id, global_project_id=global_id)
-    memory = _m(project.id, body="first")
-    memory_store.record(memory, read_write_set)                                     # record
+    world = {"memory_store": memory_store, "mine": project.id, "read_write_set": read_write_set}
+    memory = _record(world, body="first")                                           # create
     assert memory_store.read(memory.id, read_write_set) == memory
-
-    updated = memory_store.update(memory.id, read_write_set, body="second",
-                                  description=None, expected_version=memory.version)  # update
+    updated = _update(world, memory, body="second")                                  # update
     assert memory_store.read(memory.id, read_write_set) == updated
-
-    version = memory_store.delete(memory.id, read_write_set,                        # soft delete
-                                  expected_version=updated.version, hard=False)
+    version = _delete(world, updated)                                                # soft delete
     seen = memory_store.read_any(memory.id, include_deleted=True)
     assert seen.deleted_at is not None and seen.version == version
 
@@ -728,10 +686,11 @@ def test_every_write_method_reads_back_what_it_wrote(stores, tmp_path):
 def test_concurrent_records_from_two_instances_all_land(backend, root, home, world):
     other_memory_store, _ = backend.make(root, home)
     memory_stores = [world["memory_store"], other_memory_store]
-    memories = [_m(world["mine"], body=f"fact {i}") for i in range(20)]
 
     def write(i: int) -> None:
-        memory_stores[i % 2].record(memories[i], world["read_write_set"])
+        memory_stores[i % 2].write(_create_op(world["mine"], f"fact {i}"),
+                                   restriction=world["read_write_set"], changed_by="mcp",
+                                   changed_via="test", check=_accept)
 
     threads = [threading.Thread(target=write, args=(i,)) for i in range(20)]
     for thread in threads:
@@ -740,7 +699,7 @@ def test_concurrent_records_from_two_instances_all_land(backend, root, home, wor
         thread.join()
     hits = world["project_store"].search(world["mine"], world["read_write_set"], query=None,
                                          limit=None)
-    assert {m.id for m in hits} == {m.id for m in memories}
+    assert sorted(m.body for m in hits) == sorted(f"fact {i}" for i in range(20))
 
 
 def test_a_missing_store_answers_absence_and_is_never_created_by_reads_or_updates(tmp_path, home):
@@ -748,10 +707,9 @@ def test_a_missing_store_answers_absence_and_is_never_created_by_reads_or_update
     read_write_set = ReadWriteSet(project_id=new_id(), global_project_id=None)
     with pytest.raises(MemoryNotFound):
         memory_store.read(new_id(), read_write_set)
-    with pytest.raises(MemoryNotFound):
-        memory_store.update(new_id(), read_write_set, body="x", description=None,
-                            expected_version=1)
-    with pytest.raises(MemoryNotFound):
-        memory_store.delete(new_id(), read_write_set, expected_version=1, hard=False)
+    for op in (Update(new_id(), 1, body="x"), SoftDelete(new_id(), 1)):
+        with pytest.raises(MemoryNotFound):
+            memory_store.write(op, restriction=read_write_set, changed_by="mcp",
+                               changed_via=None, check=_accept)
     assert project_store.search(new_id(), None, query=None, limit=None) == []
     assert not (tmp_path / "none").exists()

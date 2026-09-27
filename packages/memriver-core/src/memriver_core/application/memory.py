@@ -11,13 +11,15 @@ is injected.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
 from memriver_core.models import Memory, Project, ProjectContext, now, single_line
+from memriver_core.models.changes import Change, Create, Op, SoftDelete, Update
 from memriver_core.models.errors import (
     ContentRejected,
     IdCollision,
+    MemoryNotFound,
     ProjectUnavailable,
     StorageFailure,
 )
@@ -70,8 +72,9 @@ class MemoryService:
 
     # --- single memories ---
 
-    def record(self, *, content: str, type: str, sync: bool, harness: str,
-               description: str, context: ProjectContext) -> Memory:
+    def record(self, *, content: str, type: str, sync: bool, harness: str, description: str,
+               context: ProjectContext, changed_by: str = "mcp") -> Memory:
+        """The agent write: one Create in the context's project; `harness` is `changed_via`."""
         self._refuse_pending(context)
         read_write_set = context.read_write_set
         if read_write_set.project_id is None:
@@ -80,19 +83,22 @@ class MemoryService:
             raise ProjectUnavailable()
         if not _HARNESS_RE.fullmatch(harness):
             raise ContentRejected("invalid harness identifier "
-                                  "(allowed: letters, digits, ., _, -, max 64 chars)")
+                                  "(allowed: letters, digits, ., _, -, max 64 chars)",
+                                  rule_id="invalid-harness")
         policy = self._policy()
         policy.check(harness, self._metadata_max_chars)
+        # checked here first so an agent reads the policy's own words; the
+        # kernel checks the resulting state again inside its transaction.
+        # description is only checked when non-empty: it is optional, and
+        # the policy refuses ""
         policy.check(content, self._max_body_chars)
-        # description is persisted verbatim too, and only checked when
-        # non-empty since it is optional and the policy refuses ""
         if description.strip():
             policy.check(description, self._metadata_max_chars)
-        memory = Memory.new(body=content, type=type, project_id=read_write_set.project_id,
-                            sync=sync, description=description,
-                            source={"harness": harness, "method": "agent"})
+        create = Create(read_write_set.project_id, type, description, content, sync=sync)
         try:
-            self._memory_store.record(memory, read_write_set)
+            memory = self._memory_store.write(create, restriction=read_write_set,
+                                              changed_by=changed_by, changed_via=harness,
+                                              check=self._check_state)
         except IdCollision as err:
             raise StorageFailure from err
         self._mark_saved(context)
@@ -107,23 +113,70 @@ class MemoryService:
         return memory
 
     def update(self, memory_id: str, content: str, context: ProjectContext, *,
-               expected_version: int, description: str | None = None) -> Memory:
+               expected_version: int, description: str | None = None,
+               changed_by: str = "mcp", changed_via: str | None = None) -> Memory:
+        """The agent edit; the memory as this call wrote it. Text equal to the current
+        text is a checked no-op: the restriction, existence, deleted state and version
+        are checked in the write transaction, and the memory as checked is returned with
+        no version or change."""
         self._refuse_pending(context)
         policy = self._policy()
         policy.check(content, self._max_body_chars)
         if description is not None and description.strip():
             policy.check(description, self._metadata_max_chars)
-        memory = self._memory_store.update(memory_id, context.read_write_set,
-                                           expected_version=expected_version, body=content,
-                                           description=description)
+        edit = Update(memory_id, expected_version, description=description, body=content)
+        memory = self._memory_store.write(edit, restriction=context.read_write_set,
+                                          changed_by=changed_by, changed_via=changed_via,
+                                          check=self._check_state)
         self._mark_saved(context)
         return memory
 
     def delete(self, memory_id: str, context: ProjectContext, *, expected_version: int,
-               hard: bool = False) -> int:
+               changed_by: str = "mcp", changed_via: str | None = None) -> int:
+        """The agent soft delete; the new version. Never marks the session saved."""
         self._refuse_pending(context)
-        return self._memory_store.delete(memory_id, context.read_write_set,
-                                         expected_version=expected_version, hard=hard)
+        memory = self._memory_store.write(SoftDelete(memory_id, expected_version),
+                                          restriction=context.read_write_set,
+                                          changed_by=changed_by, changed_via=changed_via,
+                                          check=self._check_state)
+        return memory.version
+
+    def _check_state(self, description: str, body: str) -> str | None:
+        """The content policy on one resulting state (the kernel's `check`): a rule id or None."""
+        policy = self._policy()
+        try:
+            policy.check(body, self._max_body_chars)
+            if description.strip():
+                policy.check(description, self._metadata_max_chars)
+        except ContentRejected as err:
+            return err.rule_id or "rejected"
+        return None
+
+    def apply(self, ops: Sequence[Op], *, changed_by: str,
+              changed_via: str | None = None) -> Change:
+        """The management write path (spec §4.1): every op, or none, as one change.
+
+        Never reachable from MCP and never marks a session saved. `changed_by`
+        and `changed_via` come from the calling entry point, never from a
+        model's output.
+        """
+        try:
+            return self._memory_store.apply(ops, changed_by=changed_by, changed_via=changed_via,
+                                            check=self._check_state)
+        except IdCollision as err:
+            raise StorageFailure from err
+
+    def delete_global(self, memory_id: str, *, expected_version: int,
+                      changed_by: str = "human") -> int:
+        """Soft-delete a live global memory by id through `apply`; the new version.
+
+        `MemoryNotFound` when the id is not a live global memory.
+        """
+        memory = self._memory_store.read_any(memory_id, include_deleted=False)
+        if memory.project_id != self._project_store.global_project_id():
+            raise MemoryNotFound(memory_id)
+        change = self.apply([SoftDelete(memory_id, expected_version)], changed_by=changed_by)
+        return change.steps[0].after_version
 
     # --- collections ---
 

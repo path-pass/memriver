@@ -138,7 +138,7 @@ def test_export_writes_a_private_snapshot_and_never_reads_it_back(world, tmp_pat
     fields = dict(line.split(": ", 1) for line in header.decode("utf-8").strip().splitlines())
     assert json.loads(fields["version"]) == 1 and "deleted_at" not in fields
     assert json.loads(fields["source_harness"]) == "t"
-    assert json.loads(fields["source_method"]) == "agent"
+    assert json.loads(fields["source_method"]) == "mcp"
     assert "source" not in fields
     # byte-for-byte (spec section 10.4): no trailing newline appended after the body
     assert body == world["memory"].body.encode("utf-8")
@@ -261,22 +261,20 @@ def test_export_refuses_an_existing_directory(world, tmp_path):
     assert code == 2 and "already exists" in out
 
 
-def _delete(world, *, version, hard=False, answer="y", cwd=None):
+def _delete(world, *, version, answer="y", cwd=None):
     out = io.StringIO()
-    code = run_delete(world["memory"].id, version=version, hard=hard, yes=False,
+    code = run_delete(world["memory"].id, version=version, yes=False,
                       root=world["store"], stdin_is_tty=True, input_fn=lambda _: answer,
                       stdout=out, cwd=cwd or world["work"], home=world["home"])
     return code, out.getvalue()
 
 
-def test_delete_is_soft_by_default_and_hard_purges_a_soft_deleted_memory(world):
+def test_delete_is_soft_and_the_memory_stays_readable_to_the_management_view(world):
     code, out = _delete(world, version=1)
     assert code == 0 and out.endswith(f"deleted {world['memory'].id}\n")
-    code, out = _delete(world, version=2, hard=True)
-    assert code == 0 and out.endswith(f"purged {world['memory'].id}\n")
     code, out = _out(run_show, world["memory"].id, root=world["store"], deleted=True,
                      home=world["home"])
-    assert code == 2
+    assert code == 0 and "deleted:" in out
 
 
 def test_delete_needs_the_current_version(world):
@@ -286,7 +284,7 @@ def test_delete_needs_the_current_version(world):
 
 def test_delete_from_outside_the_project_names_the_owning_project(world, tmp_path):
     out = io.StringIO()
-    code = run_delete(world["memory"].id, version=1, hard=False, yes=False, root=world["store"],
+    code = run_delete(world["memory"].id, version=1, yes=False, root=world["store"],
                       stdin_is_tty=True, input_fn=_never_called, stdout=out, cwd=tmp_path,
                       home=world["home"])
     assert code == 2
@@ -330,7 +328,7 @@ def _plant_global_memory(world) -> str:
 def test_delete_refuses_a_global_memory_without_a_plan_line_or_prompt(world):
     memory_id = _plant_global_memory(world)
     out = io.StringIO()
-    code = run_delete(memory_id, version=1, hard=False, yes=False, root=world["store"],
+    code = run_delete(memory_id, version=1, yes=False, root=world["store"],
                       stdin_is_tty=True, input_fn=_never_called, stdout=out,
                       cwd=world["work"], home=world["home"])
     assert code == 2
@@ -339,7 +337,7 @@ def test_delete_refuses_a_global_memory_without_a_plan_line_or_prompt(world):
 
 def test_delete_without_yes_over_a_non_tty_is_refused(world):
     out = io.StringIO()
-    code = run_delete(world["memory"].id, version=1, hard=False, yes=False, root=world["store"],
+    code = run_delete(world["memory"].id, version=1, yes=False, root=world["store"],
                       stdin_is_tty=False, input_fn=_never_called, stdout=out,
                       cwd=world["work"], home=world["home"])
     assert code == 2
@@ -348,7 +346,7 @@ def test_delete_without_yes_over_a_non_tty_is_refused(world):
 
 def test_delete_with_yes_skips_the_prompt(world):
     out = io.StringIO()
-    code = run_delete(world["memory"].id, version=1, hard=False, yes=True, root=world["store"],
+    code = run_delete(world["memory"].id, version=1, yes=True, root=world["store"],
                       stdin_is_tty=False, input_fn=_never_called, stdout=out,
                       cwd=world["work"], home=world["home"])
     assert code == 0
@@ -360,7 +358,7 @@ def test_delete_prompt_eof_is_treated_as_declined(world):
         raise EOFError
 
     out = io.StringIO()
-    code = run_delete(world["memory"].id, version=1, hard=False, yes=False, root=world["store"],
+    code = run_delete(world["memory"].id, version=1, yes=False, root=world["store"],
                       stdin_is_tty=True, input_fn=_eof, stdout=out, cwd=world["work"],
                       home=world["home"])
     assert code == 1

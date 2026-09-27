@@ -215,8 +215,6 @@ def _add_view_commands(commands) -> None:
     delete.add_argument("memory_id")
     delete.add_argument("--version", type=_positive_int, required=True,
                         help="the version memriver show printed")
-    delete.add_argument("--hard", action="store_true",
-                        help="remove the row itself, even one already deleted")
     delete.add_argument("--yes", action="store_true", help="confirm without prompting")
     delete.set_defaults(handler=_view_delete)
 
@@ -409,7 +407,7 @@ def _view_sessions(args: argparse.Namespace) -> int:
 def _view_delete(args: argparse.Namespace) -> int:
     from .views import run_delete
 
-    return run_delete(args.memory_id, version=args.version, hard=args.hard, yes=args.yes,
+    return run_delete(args.memory_id, version=args.version, yes=args.yes,
                       root=args.root, stdin_is_tty=sys.stdin.isatty(), input_fn=input,
                       stdout=sys.stdout, cwd=Path.cwd(), home=Path.home())
 

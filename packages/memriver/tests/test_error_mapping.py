@@ -212,15 +212,6 @@ class OtherBackend:
         raise self.error
 
     # MemoryStore
-    def record(self, memory, read_write_set):
-        raise self.error
-
-    def update(self, memory_id, read_write_set, *, expected_version, body, description):
-        raise self.error
-
-    def delete(self, memory_id, read_write_set, *, expected_version, hard):
-        raise self.error
-
     def read_any(self, memory_id, *, include_deleted):
         raise self.error
 
@@ -229,16 +220,10 @@ class OtherMemoryStore:
     def __init__(self, backend: OtherBackend) -> None:
         self.backend = backend
 
-    def record(self, memory, read_write_set):
+    def write(self, op, *, restriction, changed_by, changed_via, check):
         raise self.backend.error
 
     def read(self, memory_id, read_write_set):
-        raise self.backend.error
-
-    def update(self, memory_id, read_write_set, *, expected_version, body, description):
-        raise self.backend.error
-
-    def delete(self, memory_id, read_write_set, *, expected_version, hard):
         raise self.backend.error
 
     def read_any(self, memory_id, *, include_deleted):

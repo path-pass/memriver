@@ -203,7 +203,7 @@ async def test_write_then_read_returns_the_eleven_agent_fields(server, world):
     assert "deleted_at" not in read
     assert (read["body"], read["description"], read["sync"], read["trust"]) == \
         ("本项目用 uv", "包管理", False, "agent")
-    assert read["source"] == {"harness": "unknown", "method": "agent"}
+    assert read["source"] == {"harness": "unknown", "method": "mcp"}
 
 
 async def test_index_shows_the_header_then_project_then_global_entries(server, world):
@@ -260,6 +260,20 @@ async def test_no_tool_offers_a_scope_or_name_argument(server):
             assert "name" not in tool.inputSchema.get("properties", {})
         with pytest.raises(ToolError):
             await c.call_tool("memory_write", {"content": "x", "type": "user", "name": "n"})
+
+
+# spec §2 / acceptance item 3: management stays off MCP, and nothing a model sends
+# chooses a project, sources, a role or who made the change
+MANAGEMENT_PARAMETERS = {"project", "project_id", "sources", "role", "trust", "changed_by",
+                         "changed_via", "to_version", "change_id", "hard", "ops"}
+
+
+async def test_no_tool_offers_a_management_operation_or_parameter(server):
+    async with Client(server) as c:
+        tools = await c.list_tools()
+    assert not {"apply", "history", "restore", "undo"} & {t.name for t in tools}
+    for tool in tools:
+        assert not MANAGEMENT_PARAMETERS & set(tool.inputSchema.get("properties", {}))
 
 
 async def test_a_foreign_id_and_an_unknown_id_answer_identically(server, world):
@@ -522,7 +536,7 @@ async def test_stored_user_text_about_deletion_is_returned_verbatim(server):
     assert (await _call(server, "memory_read", memory_id=written["id"]))["body"] == text
 
 
-async def test_no_tool_reaches_the_management_reads_or_hard_delete(world, monkeypatch):
+async def test_no_tool_reaches_the_management_paths(world, monkeypatch):
     from memriver import server as server_module
 
     real_build = server_module.build_services
@@ -530,17 +544,9 @@ async def test_no_tool_reaches_the_management_reads_or_hard_delete(world, monkey
 
     def spying_build(settings, *, root):
         services = real_build(settings, root=root)
-        memory_service = services.memory
-        for name in ("show", "list_memories", "search_all"):
-            monkeypatch.setattr(memory_service, name,
+        for name in ("show", "list_memories", "search_all", "apply", "delete_global"):
+            monkeypatch.setattr(services.memory, name,
                                 lambda *a, _n=name, **k: seen.append(_n))
-        real_delete = memory_service.delete
-
-        def delete(*args, **kwargs):
-            seen.append(f"hard={kwargs.get('hard', False)}")
-            return real_delete(*args, **kwargs)
-
-        monkeypatch.setattr(memory_service, "delete", delete)
         return services
 
     monkeypatch.setattr(server_module, "build_services", spying_build)
@@ -553,7 +559,7 @@ async def test_no_tool_reaches_the_management_reads_or_hard_delete(world, monkey
                             ("memory_delete", {"memory_id": written["id"],
                                                "expected_version": 2})):
         await _call(server, tool, **arguments)
-    assert seen == ["hard=False"]
+    assert seen == []
 
 
 def _hold_the_write_lock(db_path: Path, hold_seconds: float, ready: threading.Event) -> None:
@@ -712,7 +718,7 @@ async def test_a_session_answers_for_its_project_wherever_the_server_starts(
     written = await _call(first, "memory_write", meta=meta, content="fact", type="project")
     assert written["project_id"] == world["project"]
     read = await _call(first, "memory_read", meta=meta, memory_id=written["id"])
-    assert read["source"] == {"harness": harness, "method": "agent"}
+    assert read["source"] == {"harness": harness, "method": "mcp"}
     # a new server process for the same session answers the same
     second = build_server(root=world["store"], project_dir=world["dir"].parent / "other",
                           harness=harness)
@@ -902,7 +908,7 @@ async def test_directory_mode_answers_for_its_start_directory(world, monkeypatch
     written = await _call(server, "memory_write", content="fact", type="project")
     assert written["project_id"] == world["project"]
     read = await _call(server, "memory_read", memory_id=written["id"])
-    assert read["source"] == {"harness": harness or "unknown", "method": "agent"}
+    assert read["source"] == {"harness": harness or "unknown", "method": "mcp"}
     assert await _error(server, "session_search") == NOT_AVAILABLE
     assert await _error(server, "session_confirm") == NOT_AVAILABLE
     assert await _error(server, "session_register") == NOT_AVAILABLE

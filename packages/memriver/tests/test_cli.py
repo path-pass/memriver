@@ -148,9 +148,9 @@ def test_project_subcommands_parse(argv, handler, expected):
      "_view_sessions", {"query": "login bug", "project": "aaaaaaaaaa", "limit": 3,
                         "json": True}),
     (["delete", "mmmmmmmmmm", "--version", "2"], "_view_delete",
-     {"memory_id": "mmmmmmmmmm", "version": 2, "hard": False, "yes": False}),
-    (["delete", "mmmmmmmmmm", "--version", "2", "--hard", "--yes"], "_view_delete",
-     {"memory_id": "mmmmmmmmmm", "version": 2, "hard": True, "yes": True}),
+     {"memory_id": "mmmmmmmmmm", "version": 2, "yes": False}),
+    (["delete", "mmmmmmmmmm", "--version", "2", "--yes"], "_view_delete",
+     {"memory_id": "mmmmmmmmmm", "version": 2, "yes": True}),
 ])
 def test_view_subcommands_parse(argv, handler, expected, monkeypatch):
     args = capture_dispatch(argv, monkeypatch)

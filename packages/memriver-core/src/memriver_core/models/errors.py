@@ -56,7 +56,21 @@ class IdCollision(MemoryError):
         self.identifier = identifier
 
 
-class ContentRejected(MemoryError): ...      # from ContentPolicy; the message is the rule
+class ContentRejected(MemoryError):
+    """From the content policy; the message is the rule, the fields name it.
+
+    `rule_id` is the policy's id for what matched -- a vendored rule id, or
+    "empty", "too-large", "invalid-harness" -- never the matched text.
+    `memory_id` names the memory whose resulting state was refused (None for
+    a memory being created, or a text checked outside any memory). Raised
+    without a message, the message is composed from the rule id alone.
+    """
+
+    def __init__(self, message: str = "", *, rule_id: str = "",
+                 memory_id: str | None = None) -> None:
+        super().__init__(message or f"content rejected ({rule_id}); no change was made")
+        self.rule_id = rule_id
+        self.memory_id = memory_id
 
 
 class ProjectUnavailable(MemoryError):
@@ -122,3 +136,37 @@ class BindingRefused(MemoryError):
         super().__init__(f"binding refused: {reason}")
         self.reason = reason
         self.project_id = project_id
+
+
+BATCH_CONFLICT_REASONS = frozenset({
+    "version", "deleted", "same-state", "source", "cycle", "read-since", "missing",
+})
+
+
+class BatchConflict(MemoryError):
+    """One operation of an `apply` failed its check inside the transaction; nothing was written.
+
+    Fields only: `index` is the operation's position in the batch,
+    `memory_id` the memory it names (None for a create), `reason` one of
+    BATCH_CONFLICT_REASONS.
+    """
+
+    def __init__(self, index: int, memory_id: str | None, reason: str) -> None:
+        if reason not in BATCH_CONFLICT_REASONS:
+            raise ValueError(f"unknown batch conflict reason: {reason!r}")
+        super().__init__(f"batch conflict: {reason} at operation {index}")
+        self.index = index
+        self.memory_id = memory_id
+        self.reason = reason
+
+
+class StoreNeedsUpgrade(MemoryError):
+    """The store's schema is older than this version reads; nothing was read or written.
+
+    Fields only: `version` is the store's schema version. Only the offline
+    rebuild (`memriver upgrade`) changes such a file.
+    """
+
+    def __init__(self, version: int) -> None:
+        super().__init__(f"store needs upgrade: schema {version}")
+        self.version = version

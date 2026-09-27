@@ -42,11 +42,11 @@ class SecretScanner:
         (the application layer) supplies the configured budget.
         """
         if not _CONTROL_CHARS_RE.sub("", text).strip():
-            raise ContentRejected("content is empty; nothing to store")
+            raise ContentRejected("content is empty; nothing to store", rule_id="empty")
         if len(text) > max_chars:
             raise ContentRejected(
                 f"content too large ({len(text)} > {max_chars} chars); "
-                "store a summary or pointer instead")
+                "store a summary or pointer instead", rule_id="too-large")
         lowered = text.lower()
         for rule_id, pat, entropy, group, keywords in _RULES:
             # gitleaks' own prefilter: a rule declaring keywords cannot match a
@@ -56,14 +56,14 @@ class SecretScanner:
                 continue
             if entropy is None:
                 if pat.search(text) is not None:
-                    raise ContentRejected(_rejection(rule_id))
+                    raise ContentRejected(_rejection(rule_id), rule_id=rule_id)
                 continue
             # entropy-gated: a rule can have several candidates in one body,
             # and a low-entropy first one must not shadow a high-entropy
             # later one from the same rule
             for match in pat.finditer(text):
                 if _shannon_entropy(_secret_of(match, group)) >= entropy:
-                    raise ContentRejected(_rejection(rule_id))
+                    raise ContentRejected(_rejection(rule_id), rule_id=rule_id)
 
 
 def _secret_of(match: re.Match[str], group: int) -> str:

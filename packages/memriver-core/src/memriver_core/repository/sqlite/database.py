@@ -32,13 +32,12 @@ from memriver_core.models import (
     is_timestamp,
     single_line,
 )
-from memriver_core.models.errors import StorageFailure
+from memriver_core.models.errors import StorageFailure, StoreNeedsUpgrade
 
 DATABASE_FILENAME = "memriver.db"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
-# shared between a fresh v2 create (_SCHEMA) and the v1 -> v2 upgrade
-# (_UPGRADE_STATEMENTS): copied verbatim from spec §3.1
+# spec §3.5: the session rows of v2, plus the published summary
 _SESSIONS_TABLE = """CREATE TABLE sessions (
   harness            TEXT NOT NULL CHECK (harness IN ('claude-code','codex')),
   session_id         TEXT NOT NULL CHECK (length(session_id) BETWEEN 1 AND 128),
@@ -58,8 +57,11 @@ _SESSIONS_TABLE = """CREATE TABLE sessions (
   last_nudge_prompt_count INTEGER NOT NULL DEFAULT 0 CHECK (last_nudge_prompt_count >= 0),
   first_prompt       TEXT,                             -- JSON PromptEntry or NULL
   recent_prompts     TEXT NOT NULL DEFAULT '[]',       -- JSON array of PromptEntry, newest last, at most 5
+  summary            TEXT,                             -- the published summary, or NULL
+  summary_at         TEXT,                             -- when it was published
   PRIMARY KEY (harness, session_id),
-  CHECK (status = 'registered' OR (project_id IS NULL AND origin = 'first-seen'))
+  CHECK (status = 'registered' OR (project_id IS NULL AND origin = 'first-seen')),
+  CHECK ((summary IS NULL) = (summary_at IS NULL))
 ) STRICT"""
 _SESSIONS_INDEX = "CREATE INDEX sessions_by_project ON sessions(project_id, last_active_at DESC)"
 # Claude Code's tool_use_id -> the session that made the call, recorded by its
@@ -74,6 +76,8 @@ _TOOL_CALLS_TABLE = """CREATE TABLE tool_calls (
 ) STRICT"""
 _TOOL_CALLS_INDEX = "CREATE INDEX tool_calls_by_recorded_at ON tool_calls(recorded_at)"
 
+# schema v4, copied from spec §3: the one definition a fresh store and the
+# offline rebuild both run (create_schema), so the two are identical
 _SCHEMA = (
     """CREATE TABLE projects (
       id        TEXT PRIMARY KEY NOT NULL CHECK (length(id) = 10),
@@ -86,31 +90,74 @@ _SCHEMA = (
     """CREATE TABLE memories (
       id             TEXT PRIMARY KEY NOT NULL CHECK (length(id) = 10),
       project_id     TEXT NOT NULL REFERENCES projects(id),
+      source_harness TEXT NOT NULL,          -- set at creation, never changed afterwards
+      source_method  TEXT NOT NULL,          -- set at creation, never changed afterwards
+      created        TEXT NOT NULL,
+      version        INTEGER NOT NULL CHECK (version >= 1),   -- the current version
       type           TEXT NOT NULL CHECK (type IN ('user','feedback','project','reference')),
-      source_harness TEXT NOT NULL,
-      source_method  TEXT NOT NULL,
       trust          TEXT NOT NULL CHECK (trust IN ('user','agent','untrusted-derived')),
       sync           INTEGER NOT NULL CHECK (sync IN (0, 1)),
       description    TEXT NOT NULL,
       body           TEXT NOT NULL,
-      created        TEXT NOT NULL,
-      updated        TEXT NOT NULL,
-      version        INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
-      deleted_at     TEXT,
+      updated        TEXT NOT NULL,          -- time of the last content or state change
+      deleted_at     TEXT,                   -- set while the current state is deleted
       last_read_at   TEXT
     ) STRICT""",
     ("CREATE INDEX memories_active_by_project "
      "ON memories(project_id, updated DESC) WHERE deleted_at IS NULL"),
-    _SESSIONS_TABLE,
-    _SESSIONS_INDEX,
-    _TOOL_CALLS_TABLE,
-    _TOOL_CALLS_INDEX,
-)
-
-# the v1 -> v2 upgrade (spec §3.2): a module-level tuple so a test can
-# monkeypatch it to fail part-way and prove the whole transaction rolls back
-_UPGRADE_STATEMENTS = (
-    "ALTER TABLE memories ADD COLUMN last_read_at TEXT",   # NULL = never read since v2
+    """CREATE TABLE changes (
+      change_id    TEXT PRIMARY KEY NOT NULL CHECK (length(change_id) = 10),
+      at           TEXT NOT NULL,
+      changed_by   TEXT NOT NULL CHECK (length(changed_by) BETWEEN 1 AND 32),
+      changed_via  TEXT CHECK (changed_via IS NULL OR length(changed_via) BETWEEN 1 AND 64),
+      step_count   INTEGER NOT NULL CHECK (step_count >= 1),   -- immutable
+      undoes       TEXT REFERENCES changes(change_id)          -- set when this change is an undo
+    ) STRICT""",
+    """CREATE TABLE memory_versions (
+      memory_id    TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+      version      INTEGER NOT NULL CHECK (version >= 1),
+      type         TEXT NOT NULL,
+      trust        TEXT NOT NULL,
+      sync         INTEGER NOT NULL CHECK (sync IN (0, 1)),
+      description  TEXT NOT NULL,
+      body         TEXT NOT NULL,
+      deleted      INTEGER NOT NULL CHECK (deleted IN (0, 1)),
+      change_id    TEXT REFERENCES changes(change_id),   -- NULL only for versions imported by the migration
+      PRIMARY KEY (memory_id, version)
+    ) STRICT""",
+    # the deferred key has no delete action: a cited version goes only together
+    # with every version citing it, in one transaction (the cascade hard delete)
+    """CREATE TABLE memory_sources (
+      memory_id       TEXT NOT NULL,
+      version         INTEGER NOT NULL,
+      source_id       TEXT NOT NULL,
+      source_version  INTEGER NOT NULL,
+      PRIMARY KEY (memory_id, version, source_id),
+      FOREIGN KEY (memory_id, version) REFERENCES memory_versions(memory_id, version)
+        ON DELETE CASCADE,
+      FOREIGN KEY (source_id, source_version) REFERENCES memory_versions(memory_id, version)
+        DEFERRABLE INITIALLY DEFERRED
+    ) STRICT""",
+    "CREATE INDEX memory_sources_by_source ON memory_sources(source_id, source_version)",
+    """CREATE TABLE change_steps (
+      change_id      TEXT NOT NULL REFERENCES changes(change_id),
+      step           INTEGER NOT NULL CHECK (step >= 1),
+      memory_id      TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+      op             TEXT NOT NULL CHECK (op IN ('create','update','soft_delete','restore')),
+      before_version INTEGER,                                  -- NULL for create
+      after_version  INTEGER NOT NULL,
+      PRIMARY KEY (change_id, step),
+      UNIQUE (change_id, memory_id)
+    ) STRICT""",
+    "CREATE INDEX change_steps_by_memory ON change_steps(memory_id)",
+    """CREATE TABLE memory_reads (
+      memory_id      TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+      memory_version INTEGER NOT NULL CHECK (memory_version >= 1),
+      read_at        TEXT NOT NULL,
+      harness        TEXT NOT NULL CHECK (length(harness) BETWEEN 1 AND 64),
+      session_id     TEXT CHECK (session_id IS NULL OR length(session_id) BETWEEN 1 AND 128)
+    ) STRICT""",
+    "CREATE INDEX memory_reads_by_memory ON memory_reads(memory_id, read_at)",
     _SESSIONS_TABLE,
     _SESSIONS_INDEX,
     _TOOL_CALLS_TABLE,
@@ -202,51 +249,14 @@ def project_from_row(row: Sequence[object]) -> tuple[Project, bool]:
     return Project(id=project_id, name=name, root=root), bool(is_global)
 
 
-def upgrade_if_needed(path: Path, *, busy_timeout_ms: int) -> None:
-    """Upgrade an on-disk v1 database to v2 in place; a missing file is a no-op.
+def create_schema(conn: sqlite3.Connection) -> None:
+    """Every v4 table and index, on `conn`: no transaction control, no user_version.
 
-    The only upgrade code (spec §3.2): every opener -- `Database.read()`,
-    `Database.write()` and the doctor's inspector, which opens its own
-    connection -- calls this before its own connection. It opens mode=rw
-    (never creates) and runs the whole upgrade in one `BEGIN IMMEDIATE`
-    transaction, re-checking `user_version` inside it: a peer that already
-    upgraded leaves the re-check at 2 and this does nothing. A failure
-    part-way rolls back to an intact v1, since SQLite's DDL is transactional.
-
-    `user_version` is read once outside any transaction first: almost every
-    open finds v2 already, and only a database actually at v1 may take the
-    write lock -- otherwise every read would queue behind a concurrent
-    writer's `BEGIN IMMEDIATE` for a schema that never changes.
+    The caller owns the transaction and the version stamp -- `Database.write`
+    for a fresh store, the offline rebuild for a new file.
     """
-    try:
-        conn = sqlite3.connect(f"{Path(os.path.abspath(path)).as_uri()}?mode=rw", uri=True,
-                               isolation_level=None, timeout=busy_timeout_ms / 1000)
-    except sqlite3.OperationalError:
-        if not Path(path).exists():
-            return                          # nothing to upgrade
-        raise StorageFailure from None
-    except _BACKEND_ERRORS as err:
-        raise StorageFailure from err
-    conn.text_factory = _lenient_text
-    try:
-        try:
-            conn.execute("PRAGMA foreign_keys = ON")
-            if conn.execute("PRAGMA user_version").fetchone()[0] != 1:
-                return                       # no lock taken: nothing to upgrade
-            conn.execute("BEGIN IMMEDIATE")
-            if conn.execute("PRAGMA user_version").fetchone()[0] == 1:
-                for statement in _UPGRADE_STATEMENTS:
-                    conn.execute(statement)
-                conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-            conn.execute("COMMIT")
-        except BaseException:
-            if conn.in_transaction:
-                conn.execute("ROLLBACK")
-            raise
-    except _BACKEND_ERRORS as err:
-        raise StorageFailure from err
-    finally:
-        conn.close()
+    for statement in _SCHEMA:
+        conn.execute(statement)
 
 
 class Database:
@@ -281,7 +291,6 @@ class Database:
         if not self.exists():
             yield None
             return
-        upgrade_if_needed(self.path, busy_timeout_ms=self._busy_timeout_ms)
         try:
             conn = self._connect(read_only=True)
         except _BACKEND_ERRORS as err:
@@ -314,12 +323,10 @@ class Database:
         connect -- raises StorageFailure instead of the file, or its
         directory, springing into being (nothing here creates a store).
         """
-        if self.exists():
-            upgrade_if_needed(self.path, busy_timeout_ms=self._busy_timeout_ms)
-        elif create:
+        if not self.exists():
+            if not create:
+                raise StorageFailure
             self._create_file()
-        else:
-            raise StorageFailure
         try:
             conn = self._connect(read_only=False)
         except _BACKEND_ERRORS as err:
@@ -333,8 +340,7 @@ class Database:
                 if state == "unknown":
                     raise StorageFailure
                 if state == "fresh":
-                    for statement in _SCHEMA:
-                        conn.execute(statement)
+                    create_schema(conn)
                     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                 yield conn
                 conn.execute("COMMIT")
@@ -382,4 +388,7 @@ class Database:
             return "current"
         if version == 0 and conn.execute("SELECT count(*) FROM sqlite_master").fetchone()[0] == 0:
             return "fresh"
+        if 1 <= version < SCHEMA_VERSION:
+            # an older store is rebuilt offline (memriver upgrade), never in place
+            raise StoreNeedsUpgrade(version)
         return "unknown"

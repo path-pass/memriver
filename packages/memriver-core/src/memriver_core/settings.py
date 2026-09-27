@@ -38,6 +38,7 @@ __all__ = [
     "SESSION_RECENT_PROMPTS",
     "SESSION_SEARCH_LIMIT_DEFAULT",
     "SESSION_SEARCH_LIMIT_MAX",
+    "SESSION_SUMMARY_MAX_CHARS",
     "SETTINGS_FILENAME",
     "STOP_NUDGE_INTERVAL_PROMPTS",
     "STOP_NUDGE_MIN_PROMPTS",
@@ -81,6 +82,7 @@ GIT_QUERY_TIMEOUT_S = 2                 # one git call mapping a worktree
 SESSION_SEARCH_LIMIT_DEFAULT = 10
 SESSION_SEARCH_LIMIT_MAX = 50
 TOOL_CALL_RETENTION_S = 3600            # how long a Claude Code call -> session mapping is kept
+SESSION_SUMMARY_MAX_CHARS = 1_200       # one published session summary
 
 # the settings file load_settings is building from, or None: a direct
 # Settings(...) construction reads no file. A ContextVar rather than a class

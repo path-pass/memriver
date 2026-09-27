@@ -342,14 +342,14 @@ def run_export(directory: Path, *, root: Path | None, stdout: IO[str], home: Pat
     return 0
 
 
-def run_delete(memory_id: str, *, version: int, hard: bool, yes: bool, root: Path | None,
+def run_delete(memory_id: str, *, version: int, yes: bool, root: Path | None,
                stdin_is_tty: bool, input_fn: Callable[[str], str], stdout: IO[str], cwd: Path,
                home: Path) -> int:
     try:
         services = _services(root, home)
         project_context = services.project.open_project_context(str(cwd))
         read_write_set = project_context.read_write_set
-        memory = services.memory.show(memory_id, include_deleted=hard)
+        memory = services.memory.show(memory_id, include_deleted=False)
     except MemoryNotFound:
         stdout.write(f"no such memory: {visible(memory_id[:255])}\n")
         return 2
@@ -368,9 +368,7 @@ def run_delete(memory_id: str, *, version: int, hard: bool, yes: bool, root: Pat
                      "directory's project; run memriver delete from that project's directory\n")
         return 2
     plan = (f"memriver delete: {memory.id} [{memory.type}] in project {memory.project_id}: "
-            f"{_cue(memory)}  ({'hard' if hard else 'soft'})")
-    if hard and memory.deleted_at is not None:
-        plan += " (already deleted)"
+            f"{_cue(memory)}  (soft)")
     stdout.write(plan + "\n")
     if not yes:
         if not stdin_is_tty:
@@ -386,7 +384,7 @@ def run_delete(memory_id: str, *, version: int, hard: bool, yes: bool, root: Pat
             return 1
     try:
         services.memory.delete(memory_id, project_context, expected_version=version,
-                               hard=hard)
+                               changed_by="human")
     except MemoryNotFound:
         stdout.write(f"no such memory: {visible(memory_id[:255])}\n")
         return 2
@@ -400,5 +398,5 @@ def run_delete(memory_id: str, *, version: int, hard: bool, yes: bool, root: Pat
     except StorageFailure:
         stdout.write("refused: the memory store could not be written\n")
         return 2
-    stdout.write(f"{'purged' if hard else 'deleted'} {memory_id}\n")
+    stdout.write(f"deleted {memory_id}\n")
     return 0

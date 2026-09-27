@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from typing import Protocol
 
 from memriver_core.models import (
@@ -13,31 +14,46 @@ from memriver_core.models import (
     SessionKey,
     UnbindPlan,
 )
+from memriver_core.models.changes import Change, Op
 
 
 class MemoryStore(Protocol):
-    """Single-memory actions: record, read, update, delete one memory.
+    """Memory state, its permanent history and the change log.
 
     Binding semantics (every backend):
 
-    - Authorization is decided on the stored row inside the operation's own
-      transaction; `read_write_set.readable()`/`writable()` are the only inputs.
-    - `record`: a global target raises `GlobalReadOnly`; a target outside
-      `writable()`, or a project that does not exist, raises
-      `ProjectUnavailable`; a taken id (deleted rows included) raises
-      `IdCollision`; nothing is written.
+    - `apply` (management) and `write` (agent): every op is checked and
+      written in one write transaction, as one change (`step_count =
+      len(ops)`) with one step and one new version per op; any refusal writes
+      nothing. `check(description, body)` is the content policy on each
+      resulting state, deleted ones included: a rule id refuses it with
+      `ContentRejected(rule_id=..., memory_id=...)` (memory_id None for a
+      create). A created memory's `source_harness` is `changed_via` or
+      "unknown", its `source_method` is `changed_by`. Every new version moves
+      `updated`; a soft delete sets `deleted_at = updated`. A new version
+      carries the current source set unless the op replaces it. The same
+      memory twice is a `ValueError`; a taken id is `IdCollision`. Nothing
+      here creates a store.
+      - `apply` is the management path (spec §4.1):
+        `BatchConflict(index, memory_id, reason)` for a missing target
+        ("missing"), another version ("version"), an update or soft delete of
+        a deleted memory ("deleted"), a result equal to the current state
+        ("same-state"), a read at or after `unread_since` ("read-since"); a
+        create in an unknown project is `ProjectNotFound`; global is an
+        ordinary target.
+      - `write` is the agent path: one op under a `ReadWriteSet`, decided on
+        the stored rows inside the transaction: a create outside `writable()`
+        or into a missing project → `ProjectUnavailable`, into global →
+        `GlobalReadOnly`; an absent, deleted, orphaned, unreadable or not
+        writable target → `MemoryNotFound`, a global one → `GlobalReadOnly`,
+        another version → `VersionConflict`; a removed store answers the same
+        and is never recreated. It returns the resulting memory as read in
+        that transaction; a result equal to the current state writes nothing
+        and returns the memory as checked (after every one of those checks
+        passed).
     - `read`: malformed, absent, soft-deleted, orphaned or another project's
       id raises `MemoryNotFound(memory_id)`; a row that fails validation
       raises `StorageFailure`.
-    - `update` / `delete(hard=False)`: absent, deleted, orphaned or outside
-      `read_write_set.readable()` → `MemoryNotFound`; a row that fails
-      validation → `StorageFailure`; global → `GlobalReadOnly`; not writable →
-      `MemoryNotFound`; a version other than `expected_version` →
-      `VersionConflict`. An update never revives a deleted row. A soft delete
-      sets `deleted_at` and moves the version on; it returns the new version.
-    - `delete(hard=True)`: the same checks, but a soft-deleted row of a
-      writable project is accepted at its current version; the row is removed
-      and 0 is returned.
     - `read_any`: the management read (human CLI only): any project, no
       read/write set; deleted rows only with `include_deleted`.
     - `touch_read`: best effort, after a successful `memory_read` (spec §3.3):
@@ -48,12 +64,11 @@ class MemoryStore(Protocol):
     - Errors carry fields, never words (see `models.errors`).
     """
 
-    def record(self, memory: Memory, read_write_set: ReadWriteSet) -> None: ...
+    def apply(self, ops: Sequence[Op], *, changed_by: str, changed_via: str | None,
+              check: Callable[[str, str], str | None]) -> Change: ...
+    def write(self, op: Op, *, restriction: ReadWriteSet, changed_by: str,
+              changed_via: str | None, check: Callable[[str, str], str | None]) -> Memory: ...
     def read(self, memory_id: str, read_write_set: ReadWriteSet) -> Memory: ...
-    def update(self, memory_id: str, read_write_set: ReadWriteSet, *, expected_version: int,
-               body: str, description: str | None) -> Memory: ...
-    def delete(self, memory_id: str, read_write_set: ReadWriteSet, *, expected_version: int,
-               hard: bool) -> int: ...
     def read_any(self, memory_id: str, *, include_deleted: bool) -> Memory: ...
     def touch_read(self, memory_id: str, at: str) -> None: ...
 
