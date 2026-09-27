@@ -496,7 +496,19 @@ def test_a_source_citing_a_version_that_is_not_stored_is_a_finding(world):
     memory = _plant(world["store"], _memory(world["project"]))
     _sql(world["store"], "INSERT INTO memory_sources (memory_id, version, source_id, "
          "source_version) VALUES (?, 1, 'zzzzzzzzzz', 1)", memory.id)
-    assert _kinds(_inspect(world)) == [("dangling-source", memory.id)]
+    report = _inspect(world)
+    assert _kinds(report) == [("dangling-source", memory.id)]
+    assert report.findings[0].project_id == world["project"]
+
+
+def test_a_source_row_whose_own_citing_version_is_not_stored_is_also_a_finding(world):
+    """The cited side (spec §4.4) is not the only side a source row must resolve on:
+    the citing (memory_id, version) itself must be a stored version too."""
+    citer = _plant(world["store"], _memory(world["project"], "citer"))
+    cited = _plant(world["store"], _memory(world["project"], "cited"))
+    _sql(world["store"], "INSERT INTO memory_sources (memory_id, version, source_id, "
+         "source_version) VALUES (?, 9, ?, 1)", citer.id, cited.id)
+    assert _kinds(_inspect(world)) == [("dangling-source", citer.id)]
 
 
 def test_a_source_cycle_is_a_finding_for_every_memory_on_it(world):
@@ -505,8 +517,10 @@ def test_a_source_cycle_is_a_finding_for_every_memory_on_it(world):
     for citing, cited in ((first, second), (second, first)):
         _sql(world["store"], "INSERT INTO memory_sources (memory_id, version, source_id, "
              "source_version) VALUES (?, 1, ?, 1)", citing.id, cited.id)
-    assert sorted(_kinds(_inspect(world))) == sorted([("source-cycle", first.id),
-                                                      ("source-cycle", second.id)])
+    report = _inspect(world)
+    assert sorted(_kinds(report)) == sorted([("source-cycle", first.id),
+                                             ("source-cycle", second.id)])
+    assert {f.project_id for f in report.findings} == {world["project"]}
 
 
 def test_a_change_with_fewer_steps_than_recorded_is_listed_not_a_finding(world):
@@ -514,3 +528,41 @@ def test_a_change_with_fewer_steps_than_recorded_is_listed_not_a_finding(world):
          "VALUES ('cccccccccc', '2026-09-27T00:00:00.000000Z', 'human', 2)")
     report = _inspect(world)
     assert (report.findings, report.incomplete_changes) == ((), ("cccccccccc",))
+
+
+def test_a_huge_current_version_with_one_stored_row_is_a_gap_not_a_crash(world):
+    """The version-gap check must size itself by the stored rows, never by the
+    memory's own (possibly corrupt) current version number."""
+    memory = _plant(world["store"], _memory(world["project"]))
+    _sql(world["store"], "UPDATE memories SET version = ? WHERE id = ?",
+         2**63 - 1, memory.id)
+    assert _kinds(_inspect(world)) == [("version-gap", memory.id)]
+
+
+@pytest.mark.parametrize("corrupt", ["body", "trust"])
+def test_a_bad_older_version_under_a_healthy_current_one_is_invalid_row(world, corrupt):
+    memory = _memory(world["project"])
+    memory.version = 2
+    _plant(world["store"], memory)
+    if corrupt == "body":
+        _sql(world["store"], "UPDATE memory_versions SET body = CAST(X'80' AS TEXT) "
+             "WHERE memory_id = ? AND version = 1", memory.id)
+    else:
+        _sql(world["store"], "UPDATE memory_versions SET trust = 'invalid-trust' "
+             "WHERE memory_id = ? AND version = 1", memory.id)
+    assert _kinds(_inspect(world)) == [("invalid-row", memory.id)]
+
+
+def test_a_version_naming_a_change_whose_row_is_gone_is_unrecorded_version(world):
+    """`changes` itself, not only the matching step, must exist for a non-migrated
+    version (simulated with foreign keys off, as the other corruption tests do)."""
+    memory = _plant(world["store"], _memory(world["project"]))
+    _sql(world["store"], "INSERT INTO changes (change_id, at, changed_by, step_count) "
+         "VALUES ('cccccccccc', '2026-09-27T00:00:00.000000Z', 'human', 1)")
+    _sql(world["store"], "INSERT INTO change_steps (change_id, step, memory_id, op, "
+         "before_version, after_version) VALUES ('cccccccccc', 1, ?, 'update', 1, 1)",
+         memory.id)
+    _sql(world["store"], "UPDATE memory_versions SET change_id = 'cccccccccc' "
+         "WHERE memory_id = ?", memory.id)
+    _sql(world["store"], "DELETE FROM changes WHERE change_id = 'cccccccccc'")
+    assert _kinds(_inspect(world)) == [("unrecorded-version", memory.id)]

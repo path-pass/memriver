@@ -35,6 +35,7 @@ from .database import (
     memory_from_row,
     project_from_row,
 )
+from .memory_store import _decode_history_state
 from .session_store import SESSION_COLUMNS, session_from_row
 
 # the names the file store of earlier versions used at the store root
@@ -253,39 +254,68 @@ class SqliteStoreInspector:
                  memories: list[Memory]) -> tuple[str, ...]:
         """History findings for every valid memory; the ids of incomplete changes.
 
-        Invalid and orphaned rows are already findings of their own and are
-        not compared again.
+        Invalid and orphaned `memories` rows are already findings of their
+        own and are not compared again; every `memory_versions` row is still
+        decoded and checked, including history under a healthy current row.
         """
+        # every memory's project, raw: used to attribute a source finding to
+        # the citing memory's project even when that memory is not (or not
+        # yet) one of the valid `memories` passed in
+        project_of = dict(conn.execute("SELECT id, project_id FROM memories"))
         versions: dict[str, list[tuple]] = {}
         for row in conn.execute("SELECT memory_id, version, type, trust, sync, description, "
                                 "body, deleted, change_id FROM memory_versions "
                                 "ORDER BY memory_id, version"):
             versions.setdefault(row[0], []).append(row[1:])
+        change_ids = {row[0] for row in conn.execute("SELECT change_id FROM changes")}
         steps = set(conn.execute("SELECT change_id, memory_id, after_version FROM change_steps"))
         for memory in memories:
             rows = versions.get(memory.id, [])
             where = f"memories/{memory.id}"
-            if [row[0] for row in rows] != list(range(1, memory.version + 1)):
+            # a gap is judged from the actual stored rows -- never by
+            # materializing a list sized by the memory's own (possibly
+            # corrupt, arbitrarily large) current version number
+            gap = not rows or rows[-1][0] != memory.version
+            if not gap:
+                for position, row in enumerate(rows, start=1):
+                    if row[0] != position:
+                        gap = True
+                        break
+            if gap:
                 findings.append(_finding("version-gap", where, project_id=memory.project_id,
                                          memory_id=memory.id))
                 continue
-            if rows[-1][1:7] != (memory.type, memory.trust, int(memory.sync),
-                                 memory.description, memory.body,
-                                 int(memory.deleted_at is not None)):
+            try:
+                # every stored version -- not only the latest -- must still
+                # decode like a version `versions()`/`Restore` would accept
+                decoded = [_decode_history_state(row[1], row[2], row[3], row[4], row[5], row[6])
+                          for row in rows]
+            except StorageFailure:
+                findings.append(_finding("invalid-row", where, project_id=memory.project_id,
+                                         memory_id=memory.id))
+                continue
+            if decoded[-1] != (memory.type, memory.trust, memory.sync, memory.description,
+                               memory.body, memory.deleted_at is not None):
                 findings.append(_finding("version-mismatch", where,
                                          project_id=memory.project_id, memory_id=memory.id))
-            if any(row[7] is not None and (row[7], memory.id, row[0]) not in steps
-                   for row in rows):
+            # a non-migrated version (change_id set) needs both its change row
+            # and its step; either missing is unrecorded-version
+            if any(row[7] is not None and (row[7] not in change_ids or
+                                           (row[7], memory.id, row[0]) not in steps)
+                  for row in rows):
                 findings.append(_finding("unrecorded-version", where,
                                          project_id=memory.project_id, memory_id=memory.id))
         for (memory_id,) in conn.execute(
-                "SELECT DISTINCT s.memory_id FROM memory_sources s LEFT JOIN memory_versions v "
-                "ON v.memory_id = s.source_id AND v.version = s.source_version "
-                "WHERE v.memory_id IS NULL"):
+                "SELECT DISTINCT s.memory_id FROM memory_sources s "
+                "LEFT JOIN memory_versions vc "
+                "ON vc.memory_id = s.memory_id AND vc.version = s.version "
+                "LEFT JOIN memory_versions vs "
+                "ON vs.memory_id = s.source_id AND vs.version = s.source_version "
+                "WHERE vc.memory_id IS NULL OR vs.memory_id IS NULL"):
             shaped = _shaped_id(memory_id)
             findings.append(_finding("dangling-source",
                                      f"memories/{shaped}" if shaped else "memories",
-                                     memory_id=shaped))
+                                     project_id=project_of.get(memory_id), memory_id=shaped))
         edges: dict[object, set[object]] = {}
         for citing, cited in conn.execute("SELECT DISTINCT memory_id, source_id "
                                           "FROM memory_sources"):
@@ -294,7 +324,7 @@ class SqliteStoreInspector:
             shaped = _shaped_id(memory_id)
             findings.append(_finding("source-cycle",
                                      f"memories/{shaped}" if shaped else "memories",
-                                     memory_id=shaped))
+                                     project_id=project_of.get(memory_id), memory_id=shaped))
         return tuple(row[0] for row in conn.execute(
             "SELECT c.change_id FROM changes c LEFT JOIN change_steps s "
             "ON s.change_id = c.change_id GROUP BY c.change_id "
