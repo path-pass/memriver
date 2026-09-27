@@ -617,11 +617,11 @@ def test_a_change_a_hard_delete_cut_is_listed_as_incomplete_but_not_a_finding(tm
     assert report["incomplete_changes"] == [pair.change_id]
 
 
-# --- fix round 1: a policy scan failure never erases the diagnosis --------------
+# --- a policy scan failure never erases the diagnosis ----------------------------
 
-# a diagnosis that already shows the file or schema cannot be read safely is not
-# queried again for a policy scan; the finding itself is kept, not replaced by the
-# generic "inaccessible" fallback
+# when the file or schema cannot be read safely the policy scan fails; the
+# diagnosis's finding is kept, the scan is reported incomplete, and the generic
+# "inaccessible" fallback never replaces it
 def test_doctor_keeps_the_diagnosis_when_the_schema_is_unrecognized(tmp_path):
     store = tmp_path / "mem"
     build_services(Settings(root=store), root=store).project.ensure_global()
