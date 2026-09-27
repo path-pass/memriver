@@ -384,6 +384,19 @@ def test_a_corrupted_checkpoint_is_discarded_and_does_not_abort_the_run(world):
     assert _core(world, key).summary == "Did the work"
 
 
+def test_a_checkpoint_that_is_not_even_valid_json_text_is_discarded(world):
+    # truncated or hand-edited JSON text must not raise before _valid_progress ever
+    # gets a chance to discard it: the run completes and summarizes from the start
+    key = _session(world)
+    _plant_progress(world, key, "{")
+    world.transcripts.by_session["s1"] = _transcript("work")
+    world.executor.replies = [{"status": "ok", "summary": "Did the work"}]
+    row = world.run(phases={"summarize"})
+    assert row.status == "completed"
+    assert "codex s1: ok" in world.report_text(row)
+    assert _core(world, key).summary == "Did the work"
+
+
 def test_a_checkpoint_with_empty_partials_is_discarded_not_read_as_done(world):
     # next_chunk at the chunk count with an empty partials list would otherwise let
     # an attempt skip straight to a final "empty" without making a single call

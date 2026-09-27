@@ -21,6 +21,7 @@ from dataclasses import astuple, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from memriver_core.models import is_timestamp
 from memriver_core.settings import BUSY_TIMEOUT_MS
 
 from .settings import PROMPT_VERSION
@@ -111,12 +112,21 @@ class SummaryRow:
     progress: dict | None             # the checkpoint of an unfinished long session
 
 
-def input_digest(pairs: Iterable[tuple[str, int]], *extra: str) -> str:
-    """SHA-256 hex over PROMPT_VERSION, the sorted (memory_id, version) pairs and
-    `extra`: the skip key of a scope pass (§6.9) and of a source re-check (§6.6)."""
-    material = [PROMPT_VERSION, sorted([memory_id, version] for memory_id, version in pairs),
-                list(extra)]
+def input_digest(pairs: Iterable[tuple[str, int]]) -> str:
+    """SHA-256 hex over PROMPT_VERSION and the sorted (memory_id, version) pairs: the
+    skip key of a scope pass (§6.9) and of a source re-check (§6.6)."""
+    material = [PROMPT_VERSION, sorted([memory_id, version] for memory_id, version in pairs)]
     return hashlib.sha256(json.dumps(material, separators=(",", ":")).encode()).hexdigest()
+
+
+def _parsed_progress(raw: str) -> object:
+    """`raw` decoded, or the raw text itself when it is not even valid JSON (truncated
+    or hand-edited data): a non-dict sentinel summarize's `_valid_progress` discards,
+    rather than a `JSONDecodeError` that would fail the run before it gets the chance."""
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return raw
 
 
 def shift_days(stamp: str, days: float) -> str:
@@ -207,7 +217,16 @@ class DreamStore:
     def review(self, memory_id: str) -> ReviewRow | None:
         rows = self._rows(f"SELECT {_REVIEW_COLUMNS} FROM ttl_reviews WHERE memory_id = ?",
                           memory_id)
-        return ReviewRow(*rows[0]) if rows else None
+        if not rows:
+            return None
+        row = ReviewRow(*rows[0])
+        # hand-edited or otherwise corrupt data (the CHECK constraint lets a stored
+        # TEXT streak like 'x' through): treated as no review at all, never as a
+        # raw-string time compare or an int arithmetic error reaching the run
+        if not (is_timestamp(row.decided_at) and is_timestamp(row.next_review_at)
+                and isinstance(row.uncertain_streak, int) and row.uncertain_streak >= 0):
+            return None
+        return row
 
     def put_review(self, row: ReviewRow) -> None:
         self._execute(f"INSERT OR REPLACE INTO ttl_reviews ({_REVIEW_COLUMNS}) "
@@ -237,7 +256,7 @@ class DreamStore:
             return None
         *head, complete, outcome, progress = rows[0]
         return SummaryRow(*head, None if complete is None else bool(complete), outcome,
-                          None if progress is None else json.loads(progress))
+                          None if progress is None else _parsed_progress(progress))
 
     def put_summary(self, row: SummaryRow) -> None:
         self._execute(

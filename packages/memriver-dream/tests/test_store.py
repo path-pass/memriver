@@ -120,6 +120,33 @@ def test_a_review_is_replaced_by_the_next(tmp_path):
         store.put_review(replace(first, decision="delete"))
 
 
+def test_a_review_with_an_unverifiable_time_is_treated_as_absent(tmp_path):
+    # a hand-edited or otherwise malformed next_review_at ("9999") must never be
+    # compared as a raw string -- it never proves the review is not due yet
+    store = _store(tmp_path)
+    with closing(sqlite3.connect(store.path)) as conn, conn:
+        conn.execute(
+            "INSERT INTO ttl_reviews (memory_id, memory_version, decision, "
+            "uncertain_streak, decided_at, next_review_at, reason) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("aaaaaaaaaa", 1, "keep", 0, T0, "9999", "hand-edited"))
+    assert store.review("aaaaaaaaaa") is None
+
+
+def test_a_review_with_a_non_integer_streak_is_treated_as_absent(tmp_path):
+    # the CHECK constraint (>= 0) lets a stored TEXT value like 'x' through (SQLite
+    # compares TEXT as greater than any INTEGER); `1 + uncertain_streak` must never
+    # be attempted on it
+    store = _store(tmp_path)
+    with closing(sqlite3.connect(store.path)) as conn, conn:
+        conn.execute(
+            "INSERT INTO ttl_reviews (memory_id, memory_version, decision, "
+            "uncertain_streak, decided_at, next_review_at, reason) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("bbbbbbbbbb", 1, "uncertain", "x", T0, shift_days(T0, 30), "hand-edited"))
+    assert store.review("bbbbbbbbbb") is None
+
+
 def test_scope_passes_and_source_checks_keep_the_last_digest(tmp_path):
     store = _store(tmp_path)
     assert store.scope_digest("project:aaaaaaaaaa") is None
@@ -145,14 +172,12 @@ def test_a_summary_row_round_trips_its_checkpoint_and_flags(tmp_path):
     assert store.summary("codex", "s1") is None
 
 
-def test_the_input_digest_is_order_free_and_moves_with_versions_extra_and_prompt(
-        monkeypatch):
+def test_the_input_digest_is_order_free_and_moves_with_versions_and_prompt(monkeypatch):
     pairs = [("aaaaaaaaaa", 1), ("bbbbbbbbbb", 2)]
     base = input_digest(pairs)
     assert base == input_digest(reversed(pairs))
     assert len(base) == 64 and int(base, 16) >= 0
     assert base != input_digest([("aaaaaaaaaa", 1), ("bbbbbbbbbb", 3)])
-    assert base != input_digest(pairs, "extra")
     monkeypatch.setattr(store_module, "PROMPT_VERSION", "dream-next")
     assert base != input_digest(pairs)
 
