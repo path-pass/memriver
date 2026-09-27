@@ -75,7 +75,8 @@ class MemoryService:
         self._search_limit_max = search_limit_max
         self._index_budget_lines = index_budget_lines
         self._index_cue_chars = index_cue_chars
-        self._memory_reads_retention_days = memory_reads_retention_days  # unset keeps every read fact
+        # unset keeps every read fact
+        self._memory_reads_retention_days = memory_reads_retention_days
 
     def _policy(self) -> ContentPolicy:
         if self._content_policy is None:

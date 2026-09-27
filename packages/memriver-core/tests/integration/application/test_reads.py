@@ -6,7 +6,7 @@ import pytest
 from memriver_core.bootstrap import build_services
 from memriver_core.models import SessionKey
 from memriver_core.models.changes import SourceRef, Update
-from memriver_core.models.errors import MemoryNotFound
+from memriver_core.models.errors import MemoryNotFound, StorageFailure
 from memriver_core.settings import Settings
 
 
@@ -41,9 +41,12 @@ def test_a_read_never_creates_a_version_or_a_change(world):
 
 def test_recording_a_read_is_best_effort(world):
     memory_id = world["create"]()
-    # a harness longer than the column allows fails the insert; the read still answers
+    # a harness longer than the column allows fails the insert; the read still answers,
+    # and the high-water mark still advances even though the read fact itself is dropped
     assert world["memory"].read(memory_id, world["context"], harness="h" * 65).id == memory_id
     assert _reads(world, memory_id) == []
+    assert world["sql"]("SELECT last_read_at IS NOT NULL FROM memories WHERE id = ?",
+                        memory_id) == [(1,)]
 
 
 def test_usage_counts_reads_and_reports_the_stored_high_water_mark(world):
@@ -115,6 +118,14 @@ def test_an_imported_version_has_no_change(world):
 def test_versions_of_an_unknown_id_is_not_found(world):
     with pytest.raises(MemoryNotFound):
         world["memory"].versions("zzzzzzzzzz")
+
+
+def test_a_damaged_history_row_is_a_storage_failure_never_bytes(world):
+    memory_id = world["create"]()
+    world["sql"]("UPDATE memory_versions SET body = CAST(X'80' AS TEXT) WHERE memory_id = ?",
+                memory_id)
+    with pytest.raises(StorageFailure):
+        world["memory"].versions(memory_id)
 
 
 def test_memories_lists_current_states_across_projects_and_global(world):

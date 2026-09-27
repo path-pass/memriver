@@ -11,7 +11,7 @@ from contextlib import closing
 
 import pytest
 from memriver_core.models.changes import Create, SoftDelete, SourceRef, Update
-from memriver_core.models.errors import BatchConflict, ContentRejected
+from memriver_core.models.errors import BatchConflict, ContentRejected, StorageFailure
 
 SECRET = "aws key AKIAIOSFODNN7EXAMPLE ok"          # from the secret-scanner tests
 
@@ -235,4 +235,16 @@ def test_a_policy_violation_is_refused_identically_through_restore_and_apply(wor
         memory.apply([Update(memory_id, 2, body=SECRET)], changed_by="human")
     assert (by_restore.value.rule_id, by_restore.value.memory_id) == \
         (by_apply.value.rule_id, memory_id)
+    assert world["sql"]("SELECT version FROM memories WHERE id = ?", memory_id) == [(2,)]
+
+
+def test_restoring_a_damaged_history_row_is_a_storage_failure_and_writes_nothing(world):
+    memory, memory_id = world["memory"], world["create"]("clean")
+    memory.apply([Update(memory_id, 1, body="second")], changed_by="human")   # v2
+    world["sql"]("UPDATE memory_versions SET body = CAST(X'80' AS TEXT) "
+                "WHERE memory_id = ? AND version = 1", memory_id)
+    before = _counts(world)
+    with pytest.raises(StorageFailure):
+        memory.restore(memory_id, 1, expected_version=2, changed_by="human")
+    assert _counts(world) == before
     assert world["sql"]("SELECT version FROM memories WHERE id = ?", memory_id) == [(2,)]

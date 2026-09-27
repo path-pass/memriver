@@ -14,11 +14,14 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import get_args
 
 from memriver_core.models import (
     ID_RE,
     Memory,
+    MemoryType,
     ReadWriteSet,
+    Trust,
     is_timestamp,
     new_id,
     now,
@@ -288,13 +291,14 @@ def _restore(batch: _Batch, index: int, op: Restore) -> Step:
         "WHERE memory_id = ? AND version = ?", (current.id, op.to_version)).fetchone()
     if row is None:
         raise BatchConflict(index, current.id, "missing")
+    type_, trust, sync, description, body, deleted = _decode_history_state(*row)
     sources = _sources_of(batch.conn, current.id, op.to_version)
     # restored references go back as they were; each cited version must still exist
     for ref in sources:
         if batch.conn.execute("SELECT 1 FROM memory_versions WHERE memory_id = ? AND version = ?",
                               (ref.memory_id, ref.version)).fetchone() is None:
             raise BatchConflict(index, current.id, "source")
-    after = _State(row[0], row[1], bool(row[2]), row[3], row[4], bool(row[5]), sources)
+    after = _State(type_, trust, sync, description, body, deleted, sources)
     return _write_version(batch, index, "restore", current, _state_of(batch.conn, current),
                           after)
 
@@ -387,6 +391,29 @@ def _sources_of(conn: sqlite3.Connection, memory_id: str,
                      (memory_id, version)))
 
 
+def _decode_history_state(type_: object, trust: object, sync: object, description: object,
+                          body: object, deleted: object) -> tuple[str, str, bool, str, str, bool]:
+    """A `memory_versions` row's state, validated like `memory_from_row`.
+
+    `memory_versions` has no CHECK on `type`/`trust`, and the connection's lenient
+    text factory hands back undecodable TEXT as bytes rather than raising -- so a
+    damaged history row must be caught here, not decoded into a `MemoryVersion` (or
+    a `Restore`'s recorded state) that carries bytes or an unknown type/trust.
+    `StorageFailure` for a row memriver could not have written: damage is reported
+    as damage, never silently skipped or handed out.
+    """
+    texts = (type_, trust, description, body)
+    if not all(isinstance(value, str) for value in texts):
+        raise StorageFailure
+    if type_ not in get_args(MemoryType) or trust not in get_args(Trust):
+        raise StorageFailure
+    if type(sync) is not int or sync not in (0, 1):
+        raise StorageFailure
+    if type(deleted) is not int or deleted not in (0, 1):
+        raise StorageFailure
+    return type_, trust, bool(sync), description, body, bool(deleted)
+
+
 def _write_version(batch: _Batch, index: int, op_name: OpName, current: Memory,
                    before: _State, after: _State) -> Step:
     """The next version of `current` in state `after`: the row, the version and its sources."""
@@ -465,6 +492,14 @@ class SqliteMemoryStore:
 
         An unchanged result writes nothing and returns the memory as checked.
         """
+        # Restore and an explicit source set are management-only: admitting a
+        # newly cited source (`_pre_batch`) looks a memory up by id alone, with
+        # no `restriction` check, so an agent op that reached it could probe
+        # another project's memories through "source"/"cycle" conflicts
+        if isinstance(op, Restore):
+            raise ValueError("restore is not an agent operation")  # noqa: TRY004
+        if isinstance(op, (Create, Update)) and op.sources not in (None, ()):
+            raise ValueError("citing sources is not an agent operation")
         # a malformed target id answers exactly like a missing one, never as
         # storage damage: SQLite never sees it
         if not isinstance(op, Create) and not _addressable(op.memory_id):
@@ -513,13 +548,21 @@ class SqliteMemoryStore:
                 conn.execute(
                     "UPDATE memories SET last_read_at = max(coalesce(last_read_at, ''), ?) "
                     "WHERE id = ? AND deleted_at IS NULL", (at, memory_id))
-                # the version the reader was handed, not the row's current one:
-                # another writer may have moved the row since the read
-                conn.execute(
-                    "INSERT INTO memory_reads (memory_id, memory_version, read_at, harness, "
-                    "session_id) SELECT id, ?, ?, ?, ? FROM memories "
-                    "WHERE id = ? AND deleted_at IS NULL",
-                    (memory_version, at, harness, session_id, memory_id))
+                # the high-water mark above must land even when the read fact below
+                # cannot (an oversized harness or session id fails its CHECK): its own
+                # savepoint, so only the insert -- never last_read_at -- rolls back
+                conn.execute("SAVEPOINT touch_read")
+                try:
+                    # the version the reader was handed, not the row's current one:
+                    # another writer may have moved the row since the read
+                    conn.execute(
+                        "INSERT INTO memory_reads (memory_id, memory_version, read_at, harness, "
+                        "session_id) SELECT id, ?, ?, ?, ? FROM memories "
+                        "WHERE id = ? AND deleted_at IS NULL",
+                        (memory_version, at, harness, session_id, memory_id))
+                except sqlite3.IntegrityError:
+                    conn.execute("ROLLBACK TO touch_read")
+                conn.execute("RELEASE touch_read")
         except StorageFailure:
             pass   # best effort (spec §3.3): a missing store, or any failure, never fails the read
 
@@ -593,13 +636,17 @@ class SqliteMemoryStore:
                 "c.change_id, c.at, c.changed_by, c.changed_via, c.step_count, c.undoes "
                 "FROM memory_versions v LEFT JOIN changes c ON c.change_id = v.change_id "
                 "WHERE v.memory_id = ? ORDER BY v.version", (memory_id,)).fetchall()
-            return [MemoryVersion(memory_id, version, type_, trust, bool(sync), description,
-                                  body, bool(deleted), _sources_of(conn, memory_id, version),
-                                  None if change_id is None else
-                                  Change(change_id, at, changed_by, changed_via, step_count,
-                                         undoes, ()))
-                    for (version, type_, trust, sync, description, body, deleted, change_id,
-                         at, changed_by, changed_via, step_count, undoes) in rows]
+            found = []
+            for (version, type_, trust, sync, description, body, deleted, change_id,
+                 at, changed_by, changed_via, step_count, undoes) in rows:
+                type_, trust, sync, description, body, deleted = _decode_history_state(
+                    type_, trust, sync, description, body, deleted)
+                change = None if change_id is None else Change(
+                    change_id, at, changed_by, changed_via, step_count, undoes, ())
+                found.append(MemoryVersion(memory_id, version, type_, trust, sync, description,
+                                           body, deleted, _sources_of(conn, memory_id, version),
+                                           change))
+            return found
 
     def citing(self, memory_id: str) -> list[Citation]:
         with self._database.read() as conn:

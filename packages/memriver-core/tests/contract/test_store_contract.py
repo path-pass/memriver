@@ -21,7 +21,7 @@ from memriver_core.models import (
     ReadWriteSet,
     new_id,
 )
-from memriver_core.models.changes import Create, SoftDelete, Update
+from memriver_core.models.changes import Create, Restore, SoftDelete, SourceRef, Update
 from memriver_core.models.errors import (
     GlobalReadOnly,
     IdCollision,
@@ -269,6 +269,26 @@ def test_recording_a_memory_the_read_path_would_reject_is_a_value_error_and_writ
         _write(world, Create(world["mine"], "note", "", "内容"))
     assert world["project_store"].search(world["mine"], world["read_write_set"], query=None,
                                          limit=None) == []
+
+
+def test_restore_is_not_an_agent_operation(world):
+    memory = _record(world, body="first")
+    with pytest.raises(ValueError):
+        _write(world, Restore(memory.id, memory.version, memory.version))
+    assert world["memory_store"].read(memory.id, world["read_write_set"]) == memory
+
+
+def test_citing_sources_is_not_an_agent_operation(world):
+    source = _record(world, body="source")
+    with pytest.raises(ValueError):
+        _write(world, Create(world["mine"], "project", "", "x",
+                             sources=(SourceRef(source.id, source.version),)))
+    assert world["project_store"].search(world["mine"], world["read_write_set"], query=None,
+                                         limit=None) == [source]
+    with pytest.raises(ValueError):
+        _write(world, Update(source.id, source.version,
+                             sources=(SourceRef(source.id, source.version),)))
+    assert world["memory_store"].read(source.id, world["read_write_set"]) == source
 
 
 # --- MemoryStore: read / update / delete ------------------------------------
