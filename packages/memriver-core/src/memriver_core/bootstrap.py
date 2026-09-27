@@ -116,6 +116,7 @@ def build_services(settings: Settings, *, root: Path | None = None,
         search_limit_max=settings.search_limit_max,
         index_budget_lines=settings.index_budget_lines,
         index_cue_chars=INDEX_CUE_CHARS,
+        memory_reads_retention_days=settings.memory_reads_retention_days,
     )
     return Services(
         memory=memory,

@@ -14,7 +14,14 @@ from memriver_core.models import (
     SessionKey,
     UnbindPlan,
 )
-from memriver_core.models.changes import Change, Op, SoftDelete
+from memriver_core.models.changes import (
+    Change,
+    Citation,
+    MemoryVersion,
+    Op,
+    SoftDelete,
+    Usage,
+)
 
 
 class MemoryStore(Protocol):
@@ -63,10 +70,27 @@ class MemoryStore(Protocol):
     - `read_any`: the management read (human CLI only): any project, no
       read/write set; deleted rows only with `include_deleted`.
     - `touch_read`: best effort, after a successful `memory_read` (spec §3.3):
-      moves `last_read_at` to `max(stored, at)`, never backwards; `version`
-      and `updated` are untouched. An unknown id, a malformed `at`, and a
-      store that is absent or fails, are all no-ops -- nothing here creates a
-      store, and a failure never fails the read that asked for it.
+      moves `last_read_at` to `max(stored, at)`, never backwards, and records
+      one `memory_reads` row (the version handed out, the harness, the session
+      id); `version` and `updated` are untouched. An unknown or deleted id, a
+      malformed `at`, and a store that is absent or fails, are all no-ops --
+      nothing here creates a store, and a failure never fails the read.
+    - `apply` also takes `Restore` and explicit `sources` (spec §3.3): a
+      reference in the current set is carried; any other must be the source's
+      current, non-deleted version before the batch (else `BatchConflict(...,
+      "source")`); a restored set needs every cited version to exist; a cycle
+      through the source rows of any version is `BatchConflict(..., "cycle")`;
+      a state with sources gets the lowest trust and the conjunction of sync of
+      its previous state (updates) and every cited version; a restore takes the
+      restored version's recorded trust and sync.
+    - `versions`: every version of any memory, deleted ones included, with its
+      sources and change (`steps=()`; None for an imported version);
+      `MemoryNotFound` for an unknown id. `memories`: current states, one
+      project or all (`None`), deleted only with `include_deleted`; bad rows
+      are skipped. `citing`: every version of another memory citing any
+      version of this one. `usage`: reads count and `last_read_at` per known
+      id. `prune_reads(retention_days)`: drops older read facts, returns the
+      count; never creates a store.
     - Errors carry fields, never words (see `models.errors`).
     """
 
@@ -78,7 +102,14 @@ class MemoryStore(Protocol):
               changed_via: str | None, check: Callable[[str, str], str | None]) -> Memory: ...
     def read(self, memory_id: str, read_write_set: ReadWriteSet) -> Memory: ...
     def read_any(self, memory_id: str, *, include_deleted: bool) -> Memory: ...
-    def touch_read(self, memory_id: str, at: str) -> None: ...
+    def touch_read(self, memory_id: str, at: str, *, memory_version: int, harness: str,
+                   session_id: str | None) -> None: ...
+    def prune_reads(self, retention_days: int) -> int: ...
+    def usage(self, memory_ids: Sequence[str]) -> dict[str, Usage]: ...
+    def memories(self, project_id: str | None = None, *,
+                 include_deleted: bool = False) -> list[Memory]: ...
+    def versions(self, memory_id: str) -> list[MemoryVersion]: ...
+    def citing(self, memory_id: str) -> list[Citation]: ...
 
 
 class ProjectStore(Protocol):

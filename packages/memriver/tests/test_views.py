@@ -425,7 +425,7 @@ def test_show_reports_never_read_then_the_timestamp_once_read(world):
     code, out = _out(run_show, memory.id, root=world["store"], deleted=False, home=world["home"])
     assert code == 0 and "last_read_at: never" in out
 
-    world["services"].memory.read(memory.id, world["project_context"])
+    world["services"].memory.read(memory.id, world["project_context"], harness="cli")
     reread = world["services"].memory.show(memory.id)
     code, out = _out(run_show, memory.id, root=world["store"], deleted=False, home=world["home"])
     assert code == 0
@@ -434,7 +434,7 @@ def test_show_reports_never_read_then_the_timestamp_once_read(world):
 
 
 def test_export_header_includes_last_read_at(world):
-    world["services"].memory.read(world["memory"].id, world["project_context"])
+    world["services"].memory.read(world["memory"].id, world["project_context"], harness="cli")
     target = world["work"].parent / "snap"
     code, _ = _out(run_export, target, root=world["store"], home=world["home"],
                    cwd=world["work"].parent)

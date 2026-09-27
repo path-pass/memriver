@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from memriver_core.models import (
@@ -25,13 +26,17 @@ from memriver_core.models import (
 )
 from memriver_core.models.changes import (
     Change,
+    Citation,
     Create,
+    MemoryVersion,
     Op,
     OpName,
+    Restore,
     SoftDelete,
     SourceRef,
     Step,
     Update,
+    Usage,
 )
 from memriver_core.models.errors import (
     BatchConflict,
@@ -59,6 +64,8 @@ _SELECT_JOINED = ("SELECT " + _JOINED_COLUMNS
 # must answer exactly like an absent id, never as damage
 _ACTIVE_ONLY = " AND m.deleted_at IS NULL"
 _PLACEHOLDERS = ", ".join("?" for _ in MEMORY_COLUMNS.split(","))
+_SELECT_ALL = ("SELECT " + _JOINED_COLUMNS
+              + " FROM memories m JOIN projects p ON p.id = m.project_id")
 
 
 def _addressable(memory_id: object) -> bool:
@@ -111,6 +118,16 @@ def _writable(conn: sqlite3.Connection, memory_id: str,
     return memory
 
 
+_TRUST_ORDER = ("untrusted-derived", "agent", "user")         # lowest first
+
+# does a walk along source rows of any version, from (memory_id, version), reach the id?
+_REACHES = """WITH RECURSIVE reach(id) AS (
+  SELECT source_id FROM memory_sources WHERE memory_id = ? AND version = ?
+  UNION
+  SELECT s.source_id FROM memory_sources s JOIN reach r ON s.memory_id = r.id)
+SELECT 1 FROM reach WHERE id = ? LIMIT 1"""
+
+
 @dataclass(frozen=True)
 class _State:
     """Everything one version records."""
@@ -132,6 +149,11 @@ class _Batch:
     restriction: ReadWriteSet | None        # None: the management path
     check: Check
     change_id: str
+    # (version, deleted) before this change of every memory it has written so
+    # far, None for one it created: what a newly cited source is admitted against
+    before: dict[str, tuple[int, bool] | None] = field(default_factory=dict)
+    # (index, memory_id, version) of every new version with sources: the cycle check
+    cited: list[tuple[int, str, int]] = field(default_factory=list)
 
 
 def apply_ops(conn: sqlite3.Connection, ops: Sequence[Op], *,
@@ -166,6 +188,7 @@ def apply_ops(conn: sqlite3.Connection, ops: Sequence[Op], *,
     batch = _Batch(conn, restriction, check, change_id)
     steps = tuple(_apply_one(batch, index, op, changed_by=changed_by, changed_via=changed_via)
                   for index, op in enumerate(ops))
+    _refuse_cycles(batch)
     conn.executemany("INSERT INTO change_steps (change_id, step, memory_id, op, before_version, "
                      "after_version) VALUES (?, ?, ?, ?, ?, ?)",
                      [(change_id, s.step, s.memory_id, s.op, s.before_version, s.after_version)
@@ -181,16 +204,19 @@ def _apply_one(batch: _Batch, index: int, op: Op, *, changed_by: str,
         return _update(batch, index, op)
     if isinstance(op, SoftDelete):
         return _soft_delete(batch, index, op)
-    raise TypeError(f"{type(op).__name__} is not applied by this store")
+    return _restore(batch, index, op)
 
 
 def _create(batch: _Batch, index: int, op: Create, *, changed_by: str,
             changed_via: str | None) -> Step:
     _authorize_create(batch, op.project_id)
     sources = _admit(batch, index, None, (), op.sources)
+    # with sources, trust and sync come from them alone (spec §3.3)
+    trust, sync = _derived(batch, index, None, "user", True, sources) if sources \
+        else (op.trust, op.sync)
     memory = Memory.new(body=op.body, type=op.type, project_id=op.project_id,
                         source={"harness": changed_via or "unknown", "method": changed_by},
-                        trust=op.trust, sync=op.sync, description=op.description)
+                        trust=trust, sync=sync, description=op.description)
     row = memory_to_row(memory)
     # a row the read path would reject is never committed
     memory_from_row(row)
@@ -201,9 +227,10 @@ def _create(batch: _Batch, index: int, op: Create, *, changed_by: str,
     if batch.conn.execute("SELECT 1 FROM memories WHERE id = ?", (memory.id,)).fetchone():
         raise IdCollision(memory.id)
     batch.conn.execute(f"INSERT INTO memories ({MEMORY_COLUMNS}) VALUES ({_PLACEHOLDERS})", row)
-    _insert_version(batch, memory.id, 1, _State(memory.type, memory.trust, memory.sync,
-                                                memory.description, memory.body, False,
-                                                sources))
+    batch.before[memory.id] = None
+    _insert_version(batch, index, memory.id, 1,
+                    _State(memory.type, memory.trust, memory.sync, memory.description,
+                           memory.body, False, sources))
     return Step(index + 1, memory.id, "create", None, 1)
 
 
@@ -230,11 +257,13 @@ def _authorize_create(batch: _Batch, project_id: str) -> None:
 def _update(batch: _Batch, index: int, op: Update) -> Step:
     current = _target(batch, index, op)
     before = _state_of(batch.conn, current)
+    sources = _admit(batch, index, current.id, before.sources, op.sources)
+    trust, sync = _derived(batch, index, current.id, before.trust, before.sync, sources) \
+        if sources else (before.trust, before.sync)
     after = replace(
-        before,
+        before, trust=trust, sync=sync, sources=sources,
         description=before.description if op.description is None else op.description.strip(),
-        body=before.body if op.body is None else op.body.strip(),
-        sources=_admit(batch, index, current.id, before.sources, op.sources))
+        body=before.body if op.body is None else op.body.strip())
     return _write_version(batch, index, "update", current, before, after)
 
 
@@ -251,7 +280,26 @@ def _soft_delete(batch: _Batch, index: int, op: SoftDelete) -> Step:
                           replace(before, deleted=True))
 
 
-def _target(batch: _Batch, index: int, op: Update | SoftDelete, *,
+def _restore(batch: _Batch, index: int, op: Restore) -> Step:
+    """`to_version`'s recorded state -- its own trust and sync included -- as the next version."""
+    current = _target(batch, index, op, allow_deleted=True)
+    row = batch.conn.execute(
+        "SELECT type, trust, sync, description, body, deleted FROM memory_versions "
+        "WHERE memory_id = ? AND version = ?", (current.id, op.to_version)).fetchone()
+    if row is None:
+        raise BatchConflict(index, current.id, "missing")
+    sources = _sources_of(batch.conn, current.id, op.to_version)
+    # restored references go back as they were; each cited version must still exist
+    for ref in sources:
+        if batch.conn.execute("SELECT 1 FROM memory_versions WHERE memory_id = ? AND version = ?",
+                              (ref.memory_id, ref.version)).fetchone() is None:
+            raise BatchConflict(index, current.id, "source")
+    after = _State(row[0], row[1], bool(row[2]), row[3], row[4], bool(row[5]), sources)
+    return _write_version(batch, index, "restore", current, _state_of(batch.conn, current),
+                          after)
+
+
+def _target(batch: _Batch, index: int, op: Update | SoftDelete | Restore, *,
             allow_deleted: bool = False) -> Memory:
     """The memory `op` names, located and authorized inside the transaction."""
     if batch.restriction is not None:
@@ -274,10 +322,55 @@ def _target(batch: _Batch, index: int, op: Update | SoftDelete, *,
 def _admit(batch: _Batch, index: int, memory_id: str | None,
            current: tuple[SourceRef, ...],
            requested: tuple[SourceRef, ...] | None) -> tuple[SourceRef, ...]:
-    """The resulting source set: the current one, carried as it is."""
-    if requested is None or tuple(requested) == current:
+    """The resulting source set of a create (`current` empty) or an update (spec §3.3).
+
+    None keeps the current set. Otherwise a reference already in the current
+    set is carried -- its version exists, whatever the source did since --
+    and any other is newly cited: it must be the source's current,
+    non-deleted version as it stood before this change.
+    """
+    if requested is None:
         return current
-    raise ValueError("citing sources is not supported by this store")
+    refs = tuple(sorted(requested, key=lambda ref: ref.memory_id))
+    cited = [ref.memory_id for ref in refs]
+    if len(set(cited)) != len(cited):
+        raise ValueError("a source set cites a memory at most once")
+    for ref in refs:
+        if ref.memory_id == memory_id:
+            raise BatchConflict(index, memory_id, "cycle")
+        if ref not in current and _pre_batch(batch, ref.memory_id) != (ref.version, False):
+            raise BatchConflict(index, memory_id, "source")
+    return refs
+
+
+def _pre_batch(batch: _Batch, memory_id: str) -> tuple[int, bool] | None:
+    """(version, deleted) of a memory before this change; None when it did not exist."""
+    if memory_id in batch.before:
+        return batch.before[memory_id]
+    row = batch.conn.execute("SELECT version, deleted_at IS NOT NULL FROM memories WHERE id = ?",
+                             (memory_id,)).fetchone()
+    return None if row is None else (row[0], bool(row[1]))
+
+
+def _derived(batch: _Batch, index: int, memory_id: str | None, trust: str, sync: bool,
+             sources: tuple[SourceRef, ...]) -> tuple[str, bool]:
+    """The lowest of `trust` and every cited version's trust; sync only if all sync."""
+    for ref in sources:
+        row = batch.conn.execute("SELECT trust, sync FROM memory_versions "
+                                 "WHERE memory_id = ? AND version = ?",
+                                 (ref.memory_id, ref.version)).fetchone()
+        if row is None:
+            raise BatchConflict(index, memory_id, "source")
+        trust = min(trust, row[0], key=_TRUST_ORDER.index)
+        sync = sync and bool(row[1])
+    return trust, sync
+
+
+def _refuse_cycles(batch: _Batch) -> None:
+    """No walk along the source rows of any version leads a memory back to itself."""
+    for index, memory_id, version in batch.cited:
+        if batch.conn.execute(_REACHES, (memory_id, version, memory_id)).fetchone():
+            raise BatchConflict(index, memory_id, "cycle")
 
 
 def _state_of(conn: sqlite3.Connection, memory: Memory) -> _State:
@@ -310,16 +403,18 @@ def _write_version(batch: _Batch, index: int, op_name: OpName, current: Memory,
                      deleted_at=updated if after.deleted else None)
     # validate the row as it will stand, before writing it
     memory_from_row(memory_to_row(memory))
+    batch.before.setdefault(current.id, (current.version, before.deleted))
     batch.conn.execute(
         "UPDATE memories SET type = ?, trust = ?, sync = ?, description = ?, body = ?, "
         "updated = ?, version = ?, deleted_at = ? WHERE id = ?",
         (memory.type, memory.trust, int(memory.sync), memory.description, memory.body,
          memory.updated, memory.version, memory.deleted_at, memory.id))
-    _insert_version(batch, memory.id, memory.version, after)
+    _insert_version(batch, index, memory.id, memory.version, after)
     return Step(index + 1, memory.id, op_name, current.version, memory.version)
 
 
-def _insert_version(batch: _Batch, memory_id: str, version: int, state: _State) -> None:
+def _insert_version(batch: _Batch, index: int, memory_id: str, version: int,
+                    state: _State) -> None:
     batch.conn.execute(
         "INSERT INTO memory_versions (memory_id, version, type, trust, sync, description, "
         "body, deleted, change_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -329,6 +424,8 @@ def _insert_version(batch: _Batch, memory_id: str, version: int, state: _State) 
         "INSERT INTO memory_sources (memory_id, version, source_id, source_version) "
         "VALUES (?, ?, ?, ?)",
         [(memory_id, version, ref.memory_id, ref.version) for ref in state.sources])
+    if state.sources:
+        batch.cited.append((index, memory_id, version))
 
 
 class SqliteMemoryStore:
@@ -407,7 +504,8 @@ class SqliteMemoryStore:
             raise MemoryNotFound(memory_id)
         return memory
 
-    def touch_read(self, memory_id: str, at: str) -> None:
+    def touch_read(self, memory_id: str, at: str, *, memory_version: int, harness: str,
+                   session_id: str | None) -> None:
         if not _addressable(memory_id) or not is_timestamp(at):
             return
         try:
@@ -415,6 +513,13 @@ class SqliteMemoryStore:
                 conn.execute(
                     "UPDATE memories SET last_read_at = max(coalesce(last_read_at, ''), ?) "
                     "WHERE id = ? AND deleted_at IS NULL", (at, memory_id))
+                # the version the reader was handed, not the row's current one:
+                # another writer may have moved the row since the read
+                conn.execute(
+                    "INSERT INTO memory_reads (memory_id, memory_version, read_at, harness, "
+                    "session_id) SELECT id, ?, ?, ?, ? FROM memories "
+                    "WHERE id = ? AND deleted_at IS NULL",
+                    (memory_version, at, harness, session_id, memory_id))
         except StorageFailure:
             pass   # best effort (spec §3.3): a missing store, or any failure, never fails the read
 
@@ -426,3 +531,84 @@ class SqliteMemoryStore:
         if memory is None:
             raise MemoryNotFound(memory_id)
         return memory
+
+    def prune_reads(self, retention_days: int) -> int:
+        """Delete read facts older than `retention_days`; how many went."""
+        try:
+            cutoff = datetime.now(UTC) - timedelta(days=retention_days)
+        except OverflowError:
+            return 0            # further back than any representable time: nothing is older
+        # isoformat, not strftime: %Y is not zero-padded below year 1000 on every
+        # platform, and read_at is compared as fixed-width text
+        cutoff_text = cutoff.replace(tzinfo=None).isoformat(timespec="microseconds") + "Z"
+        if not self._database.exists():
+            return 0
+        with self._database.write(create=False) as conn:
+            return conn.execute("DELETE FROM memory_reads WHERE read_at < ?",
+                                (cutoff_text,)).rowcount
+
+    def usage(self, memory_ids: Sequence[str]) -> dict[str, Usage]:
+        ids = sorted(set(memory_ids))
+        if not ids:
+            return {}
+        with self._database.read() as conn:
+            if conn is None:
+                return {}
+            rows = conn.execute(
+                "SELECT m.id, m.last_read_at, "
+                "(SELECT count(*) FROM memory_reads r WHERE r.memory_id = m.id) "
+                f"FROM memories m WHERE m.id IN ({', '.join('?' for _ in ids)})",
+                ids).fetchall()
+        return {memory_id: Usage(reads, last_read_at) for memory_id, last_read_at, reads in rows}
+
+    def memories(self, project_id: str | None = None, *,
+                 include_deleted: bool = False) -> list[Memory]:
+        clauses, params = [], []
+        if project_id is not None:
+            clauses.append("m.project_id = ?")
+            params.append(project_id)
+        if not include_deleted:
+            clauses.append("m.deleted_at IS NULL")
+        query = _SELECT_ALL + (" WHERE " + " AND ".join(clauses) if clauses else "")
+        found: list[Memory] = []
+        with self._database.read() as conn:
+            if conn is None:
+                return []
+            for row in conn.execute(query + " ORDER BY m.updated DESC, m.id DESC", params):
+                try:
+                    found.append(memory_from_row(row))
+                except ValueError:
+                    continue                # a bad row is a doctor finding, skipped here
+        return found
+
+    def versions(self, memory_id: str) -> list[MemoryVersion]:
+        if not _addressable(memory_id):
+            raise MemoryNotFound(memory_id)
+        with self._database.read() as conn:
+            if conn is None or conn.execute("SELECT 1 FROM memories WHERE id = ?",
+                                            (memory_id,)).fetchone() is None:
+                raise MemoryNotFound(memory_id)
+            rows = conn.execute(
+                "SELECT v.version, v.type, v.trust, v.sync, v.description, v.body, v.deleted, "
+                "c.change_id, c.at, c.changed_by, c.changed_via, c.step_count, c.undoes "
+                "FROM memory_versions v LEFT JOIN changes c ON c.change_id = v.change_id "
+                "WHERE v.memory_id = ? ORDER BY v.version", (memory_id,)).fetchall()
+            return [MemoryVersion(memory_id, version, type_, trust, bool(sync), description,
+                                  body, bool(deleted), _sources_of(conn, memory_id, version),
+                                  None if change_id is None else
+                                  Change(change_id, at, changed_by, changed_via, step_count,
+                                         undoes, ()))
+                    for (version, type_, trust, sync, description, body, deleted, change_id,
+                         at, changed_by, changed_via, step_count, undoes) in rows]
+
+    def citing(self, memory_id: str) -> list[Citation]:
+        with self._database.read() as conn:
+            if conn is None:
+                return []
+            rows = conn.execute(
+                "SELECT s.memory_id, s.version, s.source_version, s.version = m.version "
+                "FROM memory_sources s JOIN memories m ON m.id = s.memory_id "
+                "WHERE s.source_id = ? ORDER BY s.memory_id, s.version",
+                (memory_id,)).fetchall()
+        return [Citation(citing_id, version, source_version, bool(current))
+                for citing_id, version, source_version, current in rows]

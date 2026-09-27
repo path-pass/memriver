@@ -15,7 +15,17 @@ from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
 from memriver_core.models import Memory, Project, ProjectContext, now, single_line
-from memriver_core.models.changes import Change, Create, Op, SoftDelete, Update
+from memriver_core.models.changes import (
+    Change,
+    Citation,
+    Create,
+    MemoryVersion,
+    Op,
+    Restore,
+    SoftDelete,
+    Update,
+    Usage,
+)
 from memriver_core.models.errors import (
     ContentRejected,
     IdCollision,
@@ -45,7 +55,8 @@ class MemoryService:
                  refuse_pending: Callable[[ProjectContext], None],
                  mark_saved: Callable[[ProjectContext], None], max_body_chars: int,
                  metadata_max_chars: int, search_limit_default: int, search_limit_max: int,
-                 index_budget_lines: int, index_cue_chars: int) -> None:
+                 index_budget_lines: int, index_cue_chars: int,
+                 memory_reads_retention_days: int | None = None) -> None:
         self._memory_store = memory_store
         self._project_store = project_store
         # built on first use: a read-only caller (the Stop hook, doctor, the
@@ -64,6 +75,7 @@ class MemoryService:
         self._search_limit_max = search_limit_max
         self._index_budget_lines = index_budget_lines
         self._index_cue_chars = index_cue_chars
+        self._memory_reads_retention_days = memory_reads_retention_days  # unset keeps every read fact
 
     def _policy(self) -> ContentPolicy:
         if self._content_policy is None:
@@ -96,10 +108,13 @@ class MemoryService:
         self._mark_saved(context)
         return memory
 
-    def read(self, memory_id: str, context: ProjectContext) -> Memory:
+    def read(self, memory_id: str, context: ProjectContext, *, harness: str) -> Memory:
+        """The agent read; records who read which version (best effort, never fails the read)."""
         memory = self._memory_store.read(memory_id, context.read_write_set)
+        session_id = None if context.session_key is None else context.session_key.session_id
         try:
-            self._memory_store.touch_read(memory.id, now())
+            self._memory_store.touch_read(memory.id, now(), memory_version=memory.version,
+                                          harness=harness, session_id=session_id)
         except StorageFailure:
             pass                            # best effort (spec §3.3): never fails the read
         return memory
@@ -185,6 +200,12 @@ class MemoryService:
             raise StorageFailure from err
         return change.steps[0].after_version
 
+    def restore(self, memory_id: str, to_version: int, *, expected_version: int,
+                changed_by: str, changed_via: str | None = None) -> Change:
+        """Make `to_version`'s recorded state the new current version (spec §4.1)."""
+        return self.apply([Restore(memory_id, expected_version, to_version)],
+                          changed_by=changed_by, changed_via=changed_via)
+
     # --- collections ---
 
     def normalize_search_limit(self, limit: int | None) -> int:
@@ -245,6 +266,26 @@ class MemoryService:
 
     def show(self, memory_id: str, *, include_deleted: bool = False) -> Memory:
         return self._memory_store.read_any(memory_id, include_deleted=include_deleted)
+
+    def memories(self, project_id: str | None = None, *,
+                 include_deleted: bool = False) -> list[Memory]:
+        """Current states of one project, or of every project and global (None)."""
+        return self._memory_store.memories(project_id, include_deleted=include_deleted)
+
+    def versions(self, memory_id: str) -> list[MemoryVersion]:
+        return self._memory_store.versions(memory_id)
+
+    def citing(self, memory_id: str) -> list[Citation]:
+        return self._memory_store.citing(memory_id)
+
+    def usage(self, memory_ids: Sequence[str]) -> dict[str, Usage]:
+        return self._memory_store.usage(memory_ids)
+
+    def prune_reads(self) -> int:
+        """Drop read facts older than the configured retention; 0 when none is set."""
+        if self._memory_reads_retention_days is None:
+            return 0
+        return self._memory_store.prune_reads(self._memory_reads_retention_days)
 
     def list_memories(self, project_id: str | None = None) -> list[tuple[Project, list[Memory]]]:
         """Every project (or one) with its active memories, for the human views.

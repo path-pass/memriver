@@ -891,7 +891,7 @@ def test_only_read_records_last_read_at(world):
     world.services.memory.index(context)
     world.services.memory.search("uv", context)
     assert world.services.memory.show(memory.id).last_read_at is None
-    world.services.memory.read(memory.id, context)
+    world.services.memory.read(memory.id, context, harness="claude-code")
     assert world.services.memory.show(memory.id).last_read_at is not None
 
 
@@ -899,7 +899,7 @@ def test_a_failed_last_read_at_never_fails_the_read(world):
     context = world.start()
     memory = world.write(context)
     world.memory_store = Broken(world.memory_store, "touch_read")
-    assert world.build().memory.read(memory.id, context) == memory
+    assert world.build().memory.read(memory.id, context, harness="claude-code") == memory
 
 
 def test_a_pending_session_can_neither_write_update_nor_delete(world):
@@ -916,7 +916,8 @@ def test_a_pending_session_can_neither_write_update_nor_delete(world):
         with pytest.raises(ProjectUnavailable) as caught:
             attempt()
         assert caught.value.reason == "pending"
-    assert world.services.memory.read(memory.id, registered).version == memory.version
+    assert world.services.memory.read(memory.id, registered,
+                                      harness="claude-code").version == memory.version
 
 
 def test_a_pending_session_without_a_candidate_is_refused_with_its_own_reason(world):

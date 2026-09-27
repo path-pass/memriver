@@ -322,7 +322,7 @@ def test_the_content_policy_is_built_only_when_a_write_needs_it():
 def test_read_delegates_with_the_read_write_set():
     services, memory_store, *_ = _services()
     with pytest.raises(MemoryNotFound):
-        services.memory.read("X", CONTEXT)
+        services.memory.read("X", CONTEXT, harness="h")
     assert memory_store.calls == [("read", "X", READ_WRITE_SET)]
 
 

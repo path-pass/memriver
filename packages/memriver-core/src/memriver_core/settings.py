@@ -228,6 +228,9 @@ class Settings(BaseSettings):
     search_limit_max: int = Field(DEFAULT_SEARCH_LIMIT_MAX, gt=0)
     search_limit_default: int = Field(DEFAULT_SEARCH_LIMIT, gt=0)
     index_budget_lines: int = Field(DEFAULT_BUDGET_LINES, gt=0)
+    # unset keeps every memory_reads row; a number of days lets prune_reads drop
+    # older rows
+    memory_reads_retention_days: int | None = Field(None, gt=0)
 
     @classmethod
     def settings_customise_sources(
@@ -247,7 +250,7 @@ class Settings(BaseSettings):
         return (*sources, _StrictTomlSource(settings_cls, toml_file=path))
 
     @field_validator("max_body_chars", "search_limit_default", "search_limit_max",
-                     "index_budget_lines", mode="before")
+                     "index_budget_lines", "memory_reads_retention_days", mode="before")
     @classmethod
     def _no_booleans(cls, value: object) -> object:
         return reject_boolean(value)
