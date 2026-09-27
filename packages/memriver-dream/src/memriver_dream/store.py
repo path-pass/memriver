@@ -6,7 +6,8 @@ is the policy-checked partial summaries of an unfinished long session
 (`session_summaries.progress`). The file is 0600 in a 0700 directory. One connection
 per operation, closed at its end; every write is one short BEGIN IMMEDIATE
 transaction under core's busy timeout, in SQLite's default journal mode, as core's
-own store.
+own store. The file is stamped with `PRAGMA user_version`; a version this build does
+not know is refused.
 """
 
 from __future__ import annotations
@@ -25,6 +26,8 @@ from memriver_core.models import is_timestamp
 from memriver_core.settings import BUSY_TIMEOUT_MS
 
 from .settings import PROMPT_VERSION
+
+DREAM_SCHEMA_VERSION = 1
 
 # spec §5, verbatim but for IF NOT EXISTS: every open makes sure the tables are there
 _SCHEMA = (
@@ -153,8 +156,13 @@ class DreamStore:
         # O_NOFOLLOW: a symlink planted at the path is refused, never followed
         os.close(os.open(self.path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600))
         with self._write() as conn:
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            if version not in (0, DREAM_SCHEMA_VERSION):
+                raise sqlite3.DatabaseError(f"dream.db schema {version} is not supported")
             for statement in _SCHEMA:
                 conn.execute(statement)
+            if version == 0:
+                conn.execute(f"PRAGMA user_version = {DREAM_SCHEMA_VERSION}")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:

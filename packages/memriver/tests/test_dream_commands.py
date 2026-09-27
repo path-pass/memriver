@@ -713,6 +713,14 @@ def test_report_prints_the_latest_or_a_named_report_file_and_lists_the_runs(worl
     assert code == 2 and "no such run: zzzzzzzzzz" in out
 
 
+def test_report_against_a_store_stamped_with_an_unknown_version_exits_1(world):
+    (world["store"] / DREAM_DIRECTORY).mkdir(exist_ok=True)
+    with closing(sqlite3.connect(
+            world["store"] / DREAM_DIRECTORY / DREAM_DB_FILENAME)) as conn, conn:
+        conn.execute("PRAGMA user_version = 2")
+    assert _report(world) == (1, dream_commands.DREAM_FAILURE)
+
+
 def test_report_with_no_runs_says_so(world):
     assert _report(world) == (0, "(no dream runs yet)\n")
     assert _report(world, list_count=10) == (0, "(no dream runs yet)\n")
