@@ -57,11 +57,10 @@ class Launchctl:
         self.calls.append(list(args))
         if args[0] == "print":                       # print gui/<uid>/<label>
             return 0 if args[1].rpartition("/")[2] in self.loaded else 113
-        label = Path(args[2]).stem                   # bootout|bootstrap gui/<uid> <plist>
-        if args[0] == "bootstrap":
-            self.loaded.add(label)
-        else:
-            self.loaded.discard(label)
+        if args[0] == "bootstrap":                   # bootstrap gui/<uid> <plist>
+            self.loaded.add(Path(args[2]).stem)
+        else:                                        # bootout gui/<uid>/<label>
+            self.loaded.discard(args[1].rpartition("/")[2])
         return 0
 
 

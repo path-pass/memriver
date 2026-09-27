@@ -75,10 +75,18 @@ def test_install_loads_the_agent_and_a_second_install_replaces_it(tmp_path):
     install(home=tmp_path, plist=_plist(tmp_path, "05:00"), uid=501, launchctl=launchctl)
     assert launchctl.calls[2:] == [
         ["print", "gui/501/io.github.path-pass.memriver.dream"],
-        ["bootout", "gui/501", str(path)],
+        ["bootout", "gui/501/io.github.path-pass.memriver.dream"],
         ["print", "gui/501/io.github.path-pass.memriver.dream"],
         ["bootstrap", "gui/501", str(path)]]
     assert plistlib.loads(path.read_bytes())["StartCalendarInterval"]["Hour"] == 5
+
+
+def test_uninstall_boots_out_a_loaded_job_whose_plist_is_already_gone(tmp_path):
+    # the job is named by its service target, so a deleted plist does not strand it
+    launchctl = Launchctl(loaded=True)
+    assert uninstall(home=tmp_path, uid=501, launchctl=launchctl) is True
+    assert ["bootout", "gui/501/io.github.path-pass.memriver.dream"] in launchctl.calls
+    assert launchctl.loaded is False
 
 
 def test_a_job_that_will_not_unload_keeps_the_old_plist_and_fails(tmp_path):

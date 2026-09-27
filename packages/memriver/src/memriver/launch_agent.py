@@ -59,9 +59,10 @@ def _loaded(label: str, uid: int, launchctl: Launchctl) -> bool:
     return code == 0
 
 
-def _unload(label: str, path: Path, uid: int, launchctl: Launchctl) -> None:
-    """Boot a loaded job out; LaunchctlFailed when launchd still has it afterwards."""
-    launchctl(["bootout", f"gui/{uid}", str(path)])
+def _unload(label: str, uid: int, launchctl: Launchctl) -> None:
+    """Boot a loaded job out; LaunchctlFailed when launchd still has it afterwards. The
+    service target names the job by label, so it works with the plist already gone."""
+    launchctl(["bootout", f"gui/{uid}/{label}"])
     if _loaded(label, uid, launchctl):
         raise LaunchctlFailed
 
@@ -113,7 +114,7 @@ def install(*, home: Path, plist: bytes, uid: int, launchctl: Launchctl,
     previous = _previous_plist(path)
     was_loaded = _loaded(label, uid, launchctl)     # launchd cannot say: nothing touched
     if was_loaded:
-        _unload(label, path, uid, launchctl)        # still loaded: the old plist stays
+        _unload(label, uid, launchctl)        # still loaded: the old plist stays
     try:
         _write(path, plist)
         if launchctl(["bootstrap", f"gui/{uid}", str(path)]) != 0:
@@ -132,6 +133,6 @@ def uninstall(*, home: Path, uid: int, launchctl: Launchctl,
     if not _exists(path) and not loaded:
         return False
     if loaded:
-        _unload(label, path, uid, launchctl)        # still loaded: fail and keep the plist
+        _unload(label, uid, launchctl)        # still loaded: fail and keep the plist
     path.unlink(missing_ok=True)
     return True
