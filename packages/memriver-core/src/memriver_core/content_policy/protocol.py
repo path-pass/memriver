@@ -4,7 +4,7 @@ from typing import Protocol
 
 
 class ContentPolicy(Protocol):
-    """Content-acceptance port consumed by the application facade.
+    """Content-acceptance port consumed by the memory and maintenance services.
 
     Binding semantics: ``check`` raises the stable core
     ``ContentRejected`` error without echoing rejected content. The Protocol

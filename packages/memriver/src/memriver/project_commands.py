@@ -32,10 +32,10 @@ BINDING_CHANGED = "refused: the binding changed while waiting; nothing was chang
 
 
 def _project_service(store: Path, home: Path):
-    """The core project facade over this store, with its settings.toml and MEMRIVER_* values.
+    """The core project service over this store, with its settings.toml and MEMRIVER_* values.
 
     An unusable setting raises SettingsError, which cli.main names in one stderr
-    line; any other failure building the facade is a store failure.
+    line; any other failure building the service is a store failure.
     """
     from memriver_core.bootstrap import build_services
     from memriver_core.settings import SettingsError, load_settings

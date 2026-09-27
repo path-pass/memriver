@@ -14,7 +14,7 @@ from .application.memory import EMPTY_INDEX, MemoryService
 from .application.projects import ProjectService
 from .application.sessions import SessionService
 
-# The store purge is the one data operation outside the facade (the user's
+# The store purge is the one data operation outside the four services (the user's
 # choice): it destroys the whole storage directory rather than records.
 from .repository.directories import (
     PurgePlan,

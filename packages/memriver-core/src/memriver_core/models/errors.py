@@ -4,15 +4,20 @@ Two kinds of error live here, and they differ in who owns the words:
 
 - **Storage-boundary errors** -- `MemoryNotFound`, `ProjectNotFound`,
   `IdCollision`, `StorageFailure`, `VersionConflict`, `BindingRefused`,
-  `ProjectUnavailable` -- carry structured *fields* only. Their `str()` is a
-  developer-facing line for logs and must never reach a client: a transport
-  composes client copy from the operation plus these fields, so a second
-  backend cannot change a byte of what a client sees, nor leak SQL, driver or
-  path detail through a message it happened to author.
+  `ProjectUnavailable`, `BatchConflict`, `StoreNeedsUpgrade`, `UndoRefused`,
+  `PlanChanged`, `SessionMoved`, `UpgradeRefused` -- carry structured *fields*
+  only. Their `str()` is a developer-facing line for logs and must never
+  reach a client: a transport composes client copy from the operation plus
+  these fields, so a second backend cannot change a byte of what a client
+  sees, nor leak SQL, driver or path detail through a message it happened to
+  author.
 - **Application/policy errors** -- `ContentRejected`, `GlobalReadOnly` --
   carry a message authored inside the core, where the wording *is* the rule
   being explained and is written to be client-safe (it never echoes the
-  rejected value). Transports may forward these verbatim.
+  rejected value). Transports may forward these verbatim. `ContentRejected`
+  may be raised with no message at all (the default composes one from
+  `rule_id` alone), so a caller must never assume `str()` is populated by
+  another caller's choice.
 """
 
 from __future__ import annotations
@@ -51,9 +56,10 @@ class ProjectNotFound(MemoryError):
 class IdCollision(MemoryError):
     """A freshly generated id is already taken; nothing was written.
 
-    Raised by a store's atomic create and caught by the application facade,
-    which converts it to StorageFailure on this, its first occurrence: it
-    never reaches a transport, so it is not part of the public facade.
+    Raised by a store's atomic create and caught by the memory and project
+    services, which convert it to StorageFailure on this, its first
+    occurrence: it never reaches a transport, so it is not part of the
+    public facade.
     """
 
     def __init__(self, identifier: str) -> None:

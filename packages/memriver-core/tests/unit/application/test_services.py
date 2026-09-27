@@ -123,7 +123,7 @@ class FakeProjectStore:
 
 
 class FakeMemoryStore:
-    """Records what the facade asks; a create lands in the project store's memories."""
+    """Records what the memory service asks; a create lands in the project store's memories."""
 
     def __init__(self, project_store: FakeProjectStore) -> None:
         self.project_store = project_store

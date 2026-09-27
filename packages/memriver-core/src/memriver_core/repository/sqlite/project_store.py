@@ -145,7 +145,7 @@ class SqliteProjectStore:
                 return _project(row)[0].id
             project_id = new_id()
             if conn.execute("SELECT 1 FROM projects WHERE id = ?", (project_id,)).fetchone():
-                raise IdCollision(project_id)       # the facade reports StorageFailure
+                raise IdCollision(project_id)       # the project service reports StorageFailure
             conn.execute("INSERT INTO projects (id, name, root, is_global) VALUES (?, ?, NULL, 1)",
                          (project_id, GLOBAL_PROJECT_NAME))
             return project_id

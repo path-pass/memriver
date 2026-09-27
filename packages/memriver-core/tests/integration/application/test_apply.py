@@ -415,7 +415,7 @@ def test_delete_global_soft_deletes_a_global_memory_through_apply_only(world):
 
 
 def test_delete_global_checks_eligibility_inside_the_delete_transaction(world, monkeypatch):
-    """A role swap landing between the facade call and the store opening its write
+    """A role swap landing between the service call and the store opening its write
     transaction must still be caught: the eligibility check and the delete share one
     transaction, so `expected_version` is never asked to catch a project's role change."""
     global_id = world["create"]("a principle", project_id=world["global"])
