@@ -58,6 +58,14 @@ class MemoryStore(Protocol):
         that transaction; a result equal to the current state writes nothing
         and returns the memory as checked (after every one of those checks
         passed).
+    - `change`: a change with the steps still stored, or None. `undo`: in one
+      transaction, `UndoRefused("not-found")` for an unknown change,
+      `("hard-deleted")` when fewer steps are stored than `step_count`,
+      `("changed", ids)` when any touched memory's current version is not its
+      step's `after_version`; otherwise the inverse of every step (create →
+      SoftDelete, update/soft_delete/restore → Restore to `before_version`) is
+      applied as one new change with `undoes = change_id`, by the rules of
+      `apply` (a `ContentRejected` refuses it).
     - `delete_global`: soft-deletes `op.memory_id` through the same kernel as
       `apply`, but only after confirming, inside that write transaction, that
       it is right now a live memory of the global project; a role change
@@ -96,6 +104,9 @@ class MemoryStore(Protocol):
 
     def apply(self, ops: Sequence[Op], *, changed_by: str, changed_via: str | None,
               check: Callable[[str, str], str | None]) -> Change: ...
+    def change(self, change_id: str) -> Change | None: ...
+    def undo(self, change_id: str, *, changed_by: str, changed_via: str | None,
+             check: Callable[[str, str], str | None]) -> Change: ...
     def delete_global(self, op: SoftDelete, *, changed_by: str, changed_via: str | None,
                       check: Callable[[str, str], str | None]) -> Change: ...
     def write(self, op: Op, *, restriction: ReadWriteSet, changed_by: str,

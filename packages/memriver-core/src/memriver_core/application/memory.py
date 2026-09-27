@@ -207,6 +207,21 @@ class MemoryService:
         return self.apply([Restore(memory_id, expected_version, to_version)],
                           changed_by=changed_by, changed_via=changed_via)
 
+    def change(self, change_id: str) -> Change | None:
+        return self._memory_store.change(change_id)
+
+    def undo(self, change_id: str, *, changed_by: str,
+             changed_via: str | None = None) -> Change:
+        """Undo a change while none of its memories changed since (spec §4.1); no time limit.
+
+        An undo is an ordinary change, so it can be undone by the same rule.
+        """
+        try:
+            return self._memory_store.undo(change_id, changed_by=changed_by,
+                                           changed_via=changed_via, check=self._check_state)
+        except IdCollision as err:
+            raise StorageFailure from err
+
     # --- collections ---
 
     def normalize_search_limit(self, limit: int | None) -> int:

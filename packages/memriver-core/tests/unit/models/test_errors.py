@@ -111,3 +111,16 @@ def test_the_new_errors_are_public(name):
     from memriver_core import models
     assert getattr(memriver_core, name) is getattr(errors, name) is getattr(models, name)
     assert name in memriver_core.__all__ and name in models.__all__
+
+
+def test_undo_refused_carries_a_known_reason_and_the_memories():
+    from memriver_core import models
+    from memriver_core.models.errors import UNDO_REFUSED_REASONS, UndoRefused
+    assert UNDO_REFUSED_REASONS == {"not-found", "hard-deleted", "changed"}
+    refused = UndoRefused("changed", ("aaaaaaaaaa", "bbbbbbbbbb"))
+    assert (refused.reason, refused.memory_ids) == ("changed", ("aaaaaaaaaa", "bbbbbbbbbb"))
+    assert UndoRefused("not-found").memory_ids == ()
+    with pytest.raises(ValueError):
+        UndoRefused("expired")
+    assert memriver_core.UndoRefused is UndoRefused is models.UndoRefused
+    assert "UndoRefused" in memriver_core.__all__ and "UndoRefused" in models.__all__

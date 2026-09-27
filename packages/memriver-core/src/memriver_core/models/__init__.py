@@ -16,7 +16,7 @@ from .changes import (
     Update,
     Usage,
 )
-from .errors import BatchConflict, StoreNeedsUpgrade
+from .errors import BatchConflict, StoreNeedsUpgrade, UndoRefused
 from .helpers import (
     ID_ALPHABET,
     ID_LENGTH,
@@ -99,6 +99,7 @@ __all__ = [
     "StoreReport",
     "Trust",
     "UnbindPlan",
+    "UndoRefused",
     "Update",
     "Usage",
     "is_call_id",

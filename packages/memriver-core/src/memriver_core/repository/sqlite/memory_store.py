@@ -50,6 +50,7 @@ from memriver_core.models.errors import (
     ProjectNotFound,
     ProjectUnavailable,
     StorageFailure,
+    UndoRefused,
     VersionConflict,
 )
 
@@ -440,6 +441,18 @@ def _write_version(batch: _Batch, index: int, op_name: OpName, current: Memory,
     return Step(index + 1, memory.id, op_name, current.version, memory.version)
 
 
+def _change(conn: sqlite3.Connection, change_id: str) -> Change | None:
+    """A change with the steps still stored (a hard delete removes its members' steps)."""
+    row = conn.execute("SELECT change_id, at, changed_by, changed_via, step_count, undoes "
+                       "FROM changes WHERE change_id = ?", (change_id,)).fetchone()
+    if row is None:
+        return None
+    steps = tuple(Step(*step) for step in conn.execute(
+        "SELECT step, memory_id, op, before_version, after_version FROM change_steps "
+        "WHERE change_id = ? ORDER BY step", (change_id,)))
+    return Change(*row, steps)
+
+
 def _insert_version(batch: _Batch, index: int, memory_id: str, version: int,
                     state: _State) -> None:
     batch.conn.execute(
@@ -465,6 +478,34 @@ class SqliteMemoryStore:
         with self._database.write(create=False) as conn:
             return apply_ops(conn, ops, restriction=None, changed_by=changed_by,
                              changed_via=changed_via, check=check)
+
+    def change(self, change_id: str) -> Change | None:
+        with self._database.read() as conn:
+            return None if conn is None else _change(conn, change_id)
+
+    def undo(self, change_id: str, *, changed_by: str, changed_via: str | None,
+             check: Check) -> Change:
+        """The inverse of a change as one new change (spec §4.1), in one transaction."""
+        with self._database.write(create=False) as conn:
+            change = _change(conn, change_id)
+            if change is None:
+                raise UndoRefused("not-found")
+            if len(change.steps) < change.step_count:
+                raise UndoRefused("hard-deleted")
+            ids = [step.memory_id for step in change.steps]
+            current = dict(conn.execute(
+                f"SELECT id, version FROM memories WHERE id IN ({', '.join('?' for _ in ids)})",
+                ids).fetchall())
+            # versions only: text changed back is still a change, a read is not
+            moved = tuple(sorted(step.memory_id for step in change.steps
+                                 if current.get(step.memory_id) != step.after_version))
+            if moved:
+                raise UndoRefused("changed", moved)
+            inverse = [SoftDelete(step.memory_id, step.after_version) if step.op == "create"
+                       else Restore(step.memory_id, step.after_version, step.before_version)
+                       for step in change.steps]
+            return apply_ops(conn, inverse, restriction=None, changed_by=changed_by,
+                             changed_via=changed_via, check=check, undoes=change_id)
 
     def delete_global(self, op: SoftDelete, *, changed_by: str, changed_via: str | None,
                       check: Check) -> Change:

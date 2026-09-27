@@ -170,3 +170,21 @@ class StoreNeedsUpgrade(MemoryError):
     def __init__(self, version: int) -> None:
         super().__init__(f"store needs upgrade: schema {version}")
         self.version = version
+
+
+UNDO_REFUSED_REASONS = frozenset({"not-found", "hard-deleted", "changed"})
+
+
+class UndoRefused(MemoryError):
+    """A change cannot be undone; nothing was written.
+
+    Fields only: `reason` is one of UNDO_REFUSED_REASONS; `memory_ids` names
+    the memories that changed since, for "changed".
+    """
+
+    def __init__(self, reason: str, memory_ids: tuple[str, ...] = ()) -> None:
+        if reason not in UNDO_REFUSED_REASONS:
+            raise ValueError(f"unknown undo refusal: {reason!r}")
+        super().__init__(f"undo refused: {reason}")
+        self.reason = reason
+        self.memory_ids = memory_ids

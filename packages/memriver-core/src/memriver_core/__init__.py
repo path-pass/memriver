@@ -15,6 +15,7 @@ from .models.errors import (
     ProjectUnavailable,
     StorageFailure,
     StoreNeedsUpgrade,
+    UndoRefused,
     VersionConflict,
 )
 
@@ -31,6 +32,7 @@ __all__ = [
     "ProjectUnavailable",
     "StorageFailure",
     "StoreNeedsUpgrade",
+    "UndoRefused",
     "VersionConflict",
     "__version__",
 ]
