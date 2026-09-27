@@ -230,7 +230,7 @@ def test_revise_rewrites_the_entry_on_the_new_evidence(world):   # §10 item 10
     assert (current.version, current.description, current.body) == (
         2, "python tests", "Python projects prefer pytest for tests, often with xdist.")
     assert set(current.sources) == {SourceRef(a, 2), SourceRef(b, 1)}
-    assert 'description: "python tests"\n' in text
+    assert '  description: "python tests"\n' in text
 
 
 def test_overturned_goes_to_needs_you_and_records_nothing(world):   # §10 item 10
@@ -239,11 +239,23 @@ def test_overturned_goes_to_needs_you_and_records_nothing(world):   # §10 item 
     world.executor.replies = [_decision("overturned", entry, reason="demo left pytest")]
     result, text = _pass(world)
     assert result == PassResult(finished=True)
-    assert f"overturned global entry {entry}: demo left pytest\n" in (
+    assert f"overturned global entry {entry} from {a}: demo left pytest\n" in (
         text.split("== Needs you ==\n")[1])
     assert len(world.services.memory.versions(entry)) == 1 and _checked(world, entry) is None
     _pass(world)
     assert len(world.executor.calls) == 2              # asked again: nothing was stored
+
+
+def test_an_overturned_entry_survives_a_crash_before_the_footer_is_written(world):
+    # the full entry (entry id, the changed source ids and the reason) is written in
+    # the section line at judgment time, not only collected for the footer
+    a, _, entry = _setup(world)
+    _update(world, a, 1, "demo dropped pytest for unittest")
+    world.executor.replies = [_decision("overturned", entry, reason="demo left pytest")]
+    ctx = world.context()
+    recheck.run(ctx)
+    text = ctx.report.path.read_text()          # read before footer() -- a kill-equivalent
+    assert f"overturned global entry {entry} from {a}: demo left pytest\n" in text
 
 
 def test_a_keep_followed_by_a_successors_new_version_rechecks(world):   # §10 item 16

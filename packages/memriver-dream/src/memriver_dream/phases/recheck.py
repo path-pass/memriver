@@ -15,6 +15,7 @@ This runs every run, gated by `source_checks` alone, never by the extraction ski
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from memriver_core.models.changes import SourceRef, Update
@@ -109,10 +110,11 @@ def _state(memory: Memory) -> dict:
 
 
 def _judge(ctx: Context, raw: dict, memory: Memory, sources: tuple[SourceRef, ...],
-           allowed: dict[str, set[str]], everything: dict[str, Memory], digest: str) -> bool:
+           changed_ids: Sequence[str], allowed: dict[str, set[str]],
+           everything: dict[str, Memory], digest: str) -> bool:
     """The decision validated and carried out; False when it did not finish (a refused
     decision is reported and counts as finished). `allowed` maps each changed source to
-    the ids it may be replaced by."""
+    the ids it may be replaced by; `changed_ids` are the changed sources sent, sorted."""
     report, decision, subject = ctx.report, raw["decision"], f" {memory.id}"
     if raw["id"] != memory.id:
         return Problem(INVALID, "id").report(ctx, decision, subject)
@@ -126,8 +128,12 @@ def _judge(ctx: Context, raw: dict, memory: Memory, sources: tuple[SourceRef, ..
         report.line(f"keep {memory.id}: {reason}")
         return True
     if decision == "overturned":
-        report.line(f"overturned {memory.id}: reported under Needs you")
-        report.needs_you(f"overturned global entry {memory.id}: {reason}")
+        # the full entry, in the section line, at the moment it is judged: a run
+        # killed before the footer is ever written must not lose it -- the footer's
+        # own Needs-you entry, below, is the summary collected there
+        entry = f"overturned global entry {memory.id} from {' '.join(changed_ids)}: {reason}"
+        report.line(entry)
+        report.needs_you(entry)
         return True
     replacements = raw["replacements"]
     replaced = [item["source"] for item in replacements]
@@ -211,6 +217,7 @@ def _recheck(ctx: Context, memory: Memory, everything: dict[str, Memory]) -> boo
             report.line(f"{memory.id}: skipped (policy: {' '.join(held)})")
             return False
         pairs, allowed, lines = _material(ctx, memory, changed, everything)
+        changed_ids = sorted({ref.memory_id for ref in changed})
     except MemoryNotFound:
         # hard-deleted since the listing (a human may, during a run): nothing is
         # stored, and the entry, if it is still there, is re-checked next run
@@ -226,7 +233,7 @@ def _recheck(ctx: Context, memory: Memory, everything: dict[str, Memory]) -> boo
     if isinstance(result, str):
         report.line(f"{memory.id}: not processed: {result}")
         return False
-    return _judge(ctx, result, memory, sources, allowed, everything, digest)
+    return _judge(ctx, result, memory, sources, changed_ids, allowed, everything, digest)
 
 
 def run(ctx: Context) -> PassResult:
