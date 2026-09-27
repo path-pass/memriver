@@ -16,7 +16,7 @@ from .changes import (
     Update,
     Usage,
 )
-from .errors import BatchConflict, StoreNeedsUpgrade, UndoRefused
+from .errors import BatchConflict, PlanChanged, StoreNeedsUpgrade, UndoRefused
 from .helpers import (
     ID_ALPHABET,
     ID_LENGTH,
@@ -74,6 +74,7 @@ __all__ = [
     "MemoryVersion",
     "Op",
     "OpName",
+    "PlanChanged",
     "PlanCitation",
     "PolicyHit",
     "Project",

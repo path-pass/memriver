@@ -25,6 +25,13 @@ def _plant(store: Path, memory: Memory) -> Memory:
              memory.source["method"], memory.trust, int(memory.sync), memory.description,
              memory.body, memory.created, memory.updated, memory.version, memory.deleted_at,
              memory.last_read_at))
+        # imported history (no change): versions 1..current, each in the row's state
+        conn.executemany(
+            "INSERT INTO memory_versions (memory_id, version, type, trust, sync, description, "
+            "body, deleted, change_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+            [(memory.id, version, memory.type, memory.trust, int(memory.sync),
+              memory.description, memory.body, int(memory.deleted_at is not None))
+             for version in range(1, memory.version + 1)])
     return memory
 
 
@@ -448,3 +455,62 @@ def test_directory_checks_run_after_the_read_transaction(world, monkeypatch):
     # the report is still the snapshot read before the peer's commit
     assert {p.id: p.active_memories for p in report.projects}[world["project"]] == 0
     assert report.entries == ()
+
+
+def _inspect(world):
+    return SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+
+
+def _kinds(report) -> list[tuple]:
+    return [(f.kind, f.memory_id) for f in report.findings]
+
+
+def test_a_gap_in_the_versions_is_a_finding(world):
+    memory = _memory(world["project"])
+    memory.version = 3
+    _plant(world["store"], memory)
+    _sql(world["store"], "DELETE FROM memory_versions WHERE memory_id = ? AND version = 2",
+         memory.id)
+    assert _kinds(_inspect(world)) == [("version-gap", memory.id)]
+
+
+def test_a_row_that_differs_from_its_latest_version_is_a_finding(world):
+    memory = _plant(world["store"], _memory(world["project"]))
+    _sql(world["store"], "UPDATE memories SET body = 'edited by hand' WHERE id = ?", memory.id)
+    assert _kinds(_inspect(world)) == [("version-mismatch", memory.id)]
+
+
+def test_a_version_naming_a_change_without_its_step_is_a_finding(world):
+    memory = _plant(world["store"], _memory(world["project"]))
+    _sql(world["store"], "INSERT INTO changes (change_id, at, changed_by, step_count) "
+         "VALUES ('cccccccccc', '2026-09-27T00:00:00.000000Z', 'human', 1)")
+    _sql(world["store"], "INSERT INTO change_steps (change_id, step, memory_id, op, "
+         "before_version, after_version) VALUES ('cccccccccc', 1, ?, 'update', 1, 2)",
+         memory.id)
+    _sql(world["store"], "UPDATE memory_versions SET change_id = 'cccccccccc' "
+         "WHERE memory_id = ?", memory.id)
+    assert _kinds(_inspect(world)) == [("unrecorded-version", memory.id)]
+
+
+def test_a_source_citing_a_version_that_is_not_stored_is_a_finding(world):
+    memory = _plant(world["store"], _memory(world["project"]))
+    _sql(world["store"], "INSERT INTO memory_sources (memory_id, version, source_id, "
+         "source_version) VALUES (?, 1, 'zzzzzzzzzz', 1)", memory.id)
+    assert _kinds(_inspect(world)) == [("dangling-source", memory.id)]
+
+
+def test_a_source_cycle_is_a_finding_for_every_memory_on_it(world):
+    first = _plant(world["store"], _memory(world["project"], "first"))
+    second = _plant(world["store"], _memory(world["project"], "second"))
+    for citing, cited in ((first, second), (second, first)):
+        _sql(world["store"], "INSERT INTO memory_sources (memory_id, version, source_id, "
+             "source_version) VALUES (?, 1, ?, 1)", citing.id, cited.id)
+    assert sorted(_kinds(_inspect(world))) == sorted([("source-cycle", first.id),
+                                                      ("source-cycle", second.id)])
+
+
+def test_a_change_with_fewer_steps_than_recorded_is_listed_not_a_finding(world):
+    _sql(world["store"], "INSERT INTO changes (change_id, at, changed_by, step_count) "
+         "VALUES ('cccccccccc', '2026-09-27T00:00:00.000000Z', 'human', 2)")
+    report = _inspect(world)
+    assert (report.findings, report.incomplete_changes) == ((), ("cccccccccc",))

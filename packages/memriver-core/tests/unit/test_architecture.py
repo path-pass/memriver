@@ -271,20 +271,21 @@ def test_only_bootstrap_constructs_the_sqlite_inspector():
     )
 
 
-def test_maintenance_application_depends_only_on_models_and_inspection_port():
+def test_maintenance_application_depends_only_on_models_and_ports():
     imports = _imported_modules("memriver_core.application.maintenance")
     core_imports = {name for name in imports if name.startswith("memriver_core.")}
     allowed = {
         "memriver_core.models",
         "memriver_core.repository.inspection_protocol",
+        "memriver_core.repository.protocol",
+        "memriver_core.content_policy.protocol",
     }
     offenders = [
         name for name in core_imports
         if not any(_under(name, prefix) for prefix in allowed)
     ]
     assert not offenders, (
-        f"application/maintenance may import models and the inspection port only: "
-        f"{offenders}"
+        f"application/maintenance may import models and the ports only: {offenders}"
     )
 
 

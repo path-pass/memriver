@@ -17,8 +17,10 @@ from memriver_core.models import (
 from memriver_core.models.changes import (
     Change,
     Citation,
+    HardDeletePlan,
     MemoryVersion,
     Op,
+    PolicyHit,
     SoftDelete,
     Usage,
 )
@@ -99,6 +101,16 @@ class MemoryStore(Protocol):
       version of this one. `usage`: reads count and `last_read_at` per known
       id. `prune_reads(retention_days)`: drops older read facts, returns the
       count; never creates a store.
+    - `scan(check)`: `check(text)` on the description and body of every stored
+      version of every memory (deleted ones and all history included); one
+      `PolicyHit` per hit version, never the text; no side effect.
+    - `plan_hard_delete`: the target plus every memory with a stored version
+      citing any version of a member, to a fixed point; referrers only.
+      `hard_delete`: recomputes the plan in one write transaction and compares
+      it exactly with `expected` or `code` (the other is None); a difference
+      raises `PlanChanged(plan)` and deletes nothing; otherwise every member
+      goes with its versions, sources, reads and steps, change rows stay.
+      Both raise `MemoryNotFound` for an unknown id.
     - Errors carry fields, never words (see `models.errors`).
     """
 
@@ -121,6 +133,10 @@ class MemoryStore(Protocol):
                  include_deleted: bool = False) -> list[Memory]: ...
     def versions(self, memory_id: str) -> list[MemoryVersion]: ...
     def citing(self, memory_id: str) -> list[Citation]: ...
+    def scan(self, check: Callable[[str], str | None]) -> list[PolicyHit]: ...
+    def plan_hard_delete(self, memory_id: str) -> HardDeletePlan: ...
+    def hard_delete(self, memory_id: str, *, expected: frozenset[tuple[str, int]] | None,
+                    code: str | None) -> list[str]: ...
 
 
 class ProjectStore(Protocol):

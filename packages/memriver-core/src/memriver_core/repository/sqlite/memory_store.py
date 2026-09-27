@@ -9,6 +9,7 @@ change leaves nothing behind.
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
@@ -31,9 +32,13 @@ from memriver_core.models.changes import (
     Change,
     Citation,
     Create,
+    HardDeleteItem,
+    HardDeletePlan,
     MemoryVersion,
     Op,
     OpName,
+    PlanCitation,
+    PolicyHit,
     Restore,
     SoftDelete,
     SourceRef,
@@ -47,6 +52,7 @@ from memriver_core.models.errors import (
     GlobalReadOnly,
     IdCollision,
     MemoryNotFound,
+    PlanChanged,
     ProjectNotFound,
     ProjectUnavailable,
     StorageFailure,
@@ -453,6 +459,40 @@ def _change(conn: sqlite3.Connection, change_id: str) -> Change | None:
     return Change(*row, steps)
 
 
+def _plan(conn: sqlite3.Connection, memory_id: str) -> HardDeletePlan:
+    """The target and every memory with a stored version citing a member, to a fixed point.
+
+    Referrers only: a member's own sources are never followed.
+    """
+    if not _addressable(memory_id) or conn.execute(
+            "SELECT 1 FROM memories WHERE id = ?", (memory_id,)).fetchone() is None:
+        raise MemoryNotFound(memory_id)
+    members, frontier = {memory_id}, [memory_id]
+    citations: dict[str, list[PlanCitation]] = {}
+    while frontier:
+        cited_id = frontier.pop()
+        for citing_id, citing_version, cited_version, citing_current in conn.execute(
+                "SELECT s.memory_id, s.version, s.source_version, s.version = m.version "
+                "FROM memory_sources s JOIN memories m ON m.id = s.memory_id "
+                "WHERE s.source_id = ?", (cited_id,)).fetchall():
+            citations.setdefault(citing_id, []).append(PlanCitation(
+                citing_id, citing_version, cited_id, cited_version, bool(citing_current)))
+            if citing_id not in members:
+                members.add(citing_id)
+                frontier.append(citing_id)
+    ordered = [memory_id, *sorted(members - {memory_id})]
+    rows = {row[0]: row[1:] for row in conn.execute(
+        "SELECT id, project_id, version, deleted_at IS NOT NULL FROM memories "
+        f"WHERE id IN ({', '.join('?' for _ in ordered)})", ordered)}
+    items = tuple(HardDeleteItem(
+        member, rows[member][0], rows[member][1], bool(rows[member][2]),
+        tuple(sorted(citations.get(member, ()),
+                     key=lambda c: (c.citing_version, c.cited_id, c.cited_version))))
+        for member in ordered)
+    pairs = "\n".join(sorted(f"{item.memory_id}:{item.version}" for item in items))
+    return HardDeletePlan(memory_id, items, hashlib.sha256(pairs.encode("utf-8")).hexdigest()[:16])
+
+
 def _insert_version(batch: _Batch, index: int, memory_id: str, version: int,
                     state: _State) -> None:
     batch.conn.execute(
@@ -526,6 +566,47 @@ class SqliteMemoryStore:
                 raise MemoryNotFound(op.memory_id)
             return apply_ops(conn, [op], restriction=None, changed_by=changed_by,
                              changed_via=changed_via, check=check)
+
+    def scan(self, check: Callable[[str], str | None]) -> list[PolicyHit]:
+        """Every stored version of every memory against `check`: one hit per version, no text."""
+        with self._database.read() as conn:
+            if conn is None:
+                return []
+            rows = conn.execute(
+                "SELECT v.memory_id, v.version, v.description, v.body, m.version "
+                "FROM memory_versions v JOIN memories m ON m.id = v.memory_id "
+                "ORDER BY v.memory_id, v.version").fetchall()
+        # checked after the read transaction: scanning must not hold the read lock
+        hits: list[PolicyHit] = []
+        for memory_id, version, description, body, current in rows:
+            for text in (description, body):
+                rule = check(text) if isinstance(text, str) else None
+                if rule is not None:
+                    hits.append(PolicyHit(memory_id, version, rule, version == current))
+                    break
+        return hits
+
+    def plan_hard_delete(self, memory_id: str) -> HardDeletePlan:
+        with self._database.read() as conn:
+            if conn is None:
+                raise MemoryNotFound(memory_id)
+            return _plan(conn, memory_id)
+
+    def hard_delete(self, memory_id: str, *, expected: frozenset[tuple[str, int]] | None,
+                    code: str | None) -> list[str]:
+        """Recompute the plan in the write transaction; delete every member only if it matches."""
+        if not self._database.exists():
+            raise MemoryNotFound(memory_id)
+        with self._database.write(create=False) as conn:
+            plan = _plan(conn, memory_id)
+            if (expected is not None and plan.expected != frozenset(expected)) \
+                    or (code is not None and plan.code != code):
+                raise PlanChanged(plan)
+            members = [item.memory_id for item in plan.items]
+            # the cascade takes versions, source rows, reads and steps; change rows stay
+            conn.execute(f"DELETE FROM memories WHERE id IN ({', '.join('?' for _ in members)})",
+                         members)
+            return members
 
     def write(self, op: Op, *, restriction: ReadWriteSet, changed_by: str,
               changed_via: str | None, check: Check) -> Memory:

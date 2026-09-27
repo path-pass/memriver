@@ -81,6 +81,7 @@ def build_services(settings: Settings, *, root: Path | None = None,
     store_root = settings.root if root is None else root
     home = Path.home() if home is None else home
     project_store = SqliteProjectStore(store_root, home=home, busy_timeout_ms=BUSY_TIMEOUT_MS)
+    memory_store = SqliteMemoryStore(store_root, busy_timeout_ms=BUSY_TIMEOUT_MS)
     # one scanner per composition, still built on first use and shared by the
     # two services that check text
     content_policy = cache(_content_policy)
@@ -104,7 +105,7 @@ def build_services(settings: Settings, *, root: Path | None = None,
         tool_call_retention_s=TOOL_CALL_RETENTION_S,
     )
     memory = MemoryService(
-        SqliteMemoryStore(store_root, busy_timeout_ms=BUSY_TIMEOUT_MS), project_store,
+        memory_store, project_store,
         content_policy,
         refuse_pending=session.refuse_pending,
         mark_saved=session.mark_saved,
@@ -124,5 +125,6 @@ def build_services(settings: Settings, *, root: Path | None = None,
                                project_name_max_chars=PROJECT_NAME_MAX_CHARS),
         session=session,
         maintenance=MaintenanceService(
-            SqliteStoreInspector(store_root, busy_timeout_ms=BUSY_TIMEOUT_MS)),
+            SqliteStoreInspector(store_root, busy_timeout_ms=BUSY_TIMEOUT_MS),
+            memory_store=memory_store, content_policy_factory=content_policy),
     )

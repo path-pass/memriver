@@ -17,6 +17,11 @@ Two kinds of error live here, and they differ in who owns the words:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .changes import HardDeletePlan
+
 
 class MemoryError(Exception): ...            # base (namespaced; no builtins clash in-package)
 
@@ -188,3 +193,14 @@ class UndoRefused(MemoryError):
         super().__init__(f"undo refused: {reason}")
         self.reason = reason
         self.memory_ids = memory_ids
+
+
+class PlanChanged(MemoryError):
+    """A hard delete's plan differs from the one confirmed; nothing was deleted.
+
+    Fields only: `plan` is the plan as it stands now, for the caller to show again.
+    """
+
+    def __init__(self, plan: HardDeletePlan) -> None:
+        super().__init__(f"plan changed: {plan.target}")
+        self.plan = plan

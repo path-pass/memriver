@@ -146,3 +146,10 @@ def test_building_the_services_never_loads_the_secret_scanner(tmp_path):
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
                             check=True)
     assert result.stdout.strip() == "False"
+
+
+def test_maintenance_shares_the_memory_store_and_the_one_content_policy(tmp_path, monkeypatch):
+    monkeypatch.setattr(bootstrap, "_content_policy", lambda: object())
+    services = bootstrap.build_services(Settings(root=tmp_path))
+    assert services.maintenance._memory_store is services.memory._memory_store
+    assert services.maintenance._policy() is services.memory._policy()

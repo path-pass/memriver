@@ -64,14 +64,18 @@ def store_finding(kind: str, *, project_id: str | None = None,
 def test_invalid_limits_fail_before_inspection(kwargs):
     inspector = FakeInspector(StoreReport(True, (), (), ()))
     with pytest.raises(ValueError):
-        MaintenanceService(inspector).diagnose(**kwargs)
+        MaintenanceService(
+            inspector, memory_store=None, content_policy_factory=None
+        ).diagnose(**kwargs)
     assert inspector.calls == 0
 
 
 def test_malformed_now_fails_before_inspection():
     inspector = FakeInspector(StoreReport(True, (), (), ()))
     with pytest.raises(ValueError):
-        MaintenanceService(inspector).diagnose(now="not-a-timestamp")
+        MaintenanceService(
+            inspector, memory_store=None, content_policy_factory=None
+        ).diagnose(now="not-a-timestamp")
     assert inspector.calls == 0
 
 
@@ -90,7 +94,9 @@ def test_state_is_derived_without_backend_guessing(report, state):
     # fixture entries carry `updated=FIXED_NOW`, and without an explicit
     # `now` the real clock would eventually flag them stale, flipping the
     # expected "healthy" case here to "degraded".
-    assert MaintenanceService(FakeInspector(report)).diagnose(now=FIXED_NOW).state == state
+    assert MaintenanceService(
+        FakeInspector(report), memory_store=None, content_policy_factory=None
+    ).diagnose(now=FIXED_NOW).state == state
 
 
 # --- Step 2: policy tests ----------------------------------------------------
@@ -98,7 +104,9 @@ def test_state_is_derived_without_backend_guessing(report, state):
 def test_stale_entry_past_threshold_is_flagged():
     old = inspected("old-one", updated="2025-01-01T00:00:00Z")
     report = StoreReport(True, (old,), (), ())
-    result = MaintenanceService(FakeInspector(report)).diagnose(now=FIXED_NOW, stale_days=90)
+    result = MaintenanceService(
+        FakeInspector(report), memory_store=None, content_policy_factory=None
+    ).diagnose(now=FIXED_NOW, stale_days=90)
     stale = [f for f in result.findings if f.kind == "stale"]
     assert len(stale) == 1
     assert stale[0].memory_ids == ("old-one",)
@@ -108,14 +116,18 @@ def test_stale_entry_past_threshold_is_flagged():
 def test_recent_entry_is_not_stale():
     recent = inspected("fresh-one", updated=FIXED_NOW)
     report = StoreReport(True, (recent,), (), ())
-    result = MaintenanceService(FakeInspector(report)).diagnose(now=FIXED_NOW, stale_days=90)
+    result = MaintenanceService(
+        FakeInspector(report), memory_store=None, content_policy_factory=None
+    ).diagnose(now=FIXED_NOW, stale_days=90)
     assert not [f for f in result.findings if f.kind == "stale"]
 
 
 def test_invalid_updated_produces_finding_and_does_not_abort():
     bad = inspected("bad-one", updated="not-a-timestamp")
     report = StoreReport(True, (bad,), (), ())
-    result = MaintenanceService(FakeInspector(report)).diagnose(now=FIXED_NOW)
+    result = MaintenanceService(
+        FakeInspector(report), memory_store=None, content_policy_factory=None
+    ).diagnose(now=FIXED_NOW)
     invalid = [f for f in result.findings if f.kind == "invalid-updated"]
     assert len(invalid) == 1
     assert invalid[0].memory_ids == ("bad-one",)
@@ -125,7 +137,9 @@ def test_invalid_updated_produces_finding_and_does_not_abort():
 def test_naive_updated_is_invalid_not_a_crash():
     naive = inspected("naive-one", updated="2026-01-01T00:00:00")
     report = StoreReport(True, (naive,), (), ())
-    result = MaintenanceService(FakeInspector(report)).diagnose(now=FIXED_NOW)
+    result = MaintenanceService(
+        FakeInspector(report), memory_store=None, content_policy_factory=None
+    ).diagnose(now=FIXED_NOW)
     invalid = [f for f in result.findings if f.kind == "invalid-updated"]
     assert len(invalid) == 1
     assert result.state == "degraded"
@@ -138,7 +152,9 @@ def test_timestamp_conversion_overflow_is_invalid_not_a_crash():
     overflow = inspected("overflow-one", updated="0001-01-01T00:00:00+14:00")
     report = StoreReport(True, (overflow,), (), ())
     inspector = FakeInspector(report)
-    result = MaintenanceService(inspector).diagnose(now=FIXED_NOW)
+    result = MaintenanceService(
+        inspector, memory_store=None, content_policy_factory=None
+    ).diagnose(now=FIXED_NOW)
     invalid = [f for f in result.findings if f.kind == "invalid-updated"]
     assert len(invalid) == 1
     assert invalid[0].memory_ids == ("overflow-one",)
@@ -149,7 +165,9 @@ def test_timestamp_conversion_overflow_is_invalid_not_a_crash():
 def test_backend_findings_precede_policy_findings():
     old = inspected("old-one", updated="2025-01-01T00:00:00Z")
     report = StoreReport(True, (old,), (), (store_finding("unparsable"),))
-    result = MaintenanceService(FakeInspector(report)).diagnose(now=FIXED_NOW, stale_days=90)
+    result = MaintenanceService(
+        FakeInspector(report), memory_store=None, content_policy_factory=None
+    ).diagnose(now=FIXED_NOW, stale_days=90)
     assert result.findings[0].kind == "unparsable"
     assert result.findings[1].kind == "stale"
 
@@ -160,7 +178,9 @@ def test_huge_stale_days_on_empty_store_does_not_overflow():
     # against; clamping to datetime.min must keep this a plain "empty" run,
     # not an OverflowError bubbling past the doctor boundary.
     report = StoreReport(True, (), (), ())
-    result = MaintenanceService(FakeInspector(report)).diagnose(now=FIXED_NOW, stale_days=1_000_000)
+    result = MaintenanceService(
+        FakeInspector(report), memory_store=None, content_policy_factory=None
+    ).diagnose(now=FIXED_NOW, stale_days=1_000_000)
     assert result.state == "empty"
 
 
@@ -170,7 +190,10 @@ def test_now_none_uses_current_time_and_does_not_raise(monkeypatch):
     # `updated=FIXED_NOW`: fixing `_default_now` keeps this test's outcome
     # independent of when it runs.
     monkeypatch.setattr(maintenance, "_default_now", lambda: FIXED_NOW)
-    result = MaintenanceService(FakeInspector(StoreReport(True, (inspected("a"),), (), ()))).diagnose()
+    result = MaintenanceService(
+        FakeInspector(StoreReport(True, (inspected("a"),), (), ())),
+        memory_store=None, content_policy_factory=None,
+    ).diagnose()
     assert result.state == "healthy"
 
 
@@ -178,7 +201,9 @@ def test_near_duplicate_bodies_are_flagged():
     a = inspected("dup-a", body="The Quick Brown Fox Jumps Over The Lazy Dog")
     b = inspected("dup-b", body="the   quick brown FOX jumps over the lazy dog")
     report = StoreReport(True, (a, b), (), ())
-    result = MaintenanceService(FakeInspector(report)).diagnose(now=FIXED_NOW, jaccard_threshold=0.6)
+    result = MaintenanceService(
+        FakeInspector(report), memory_store=None, content_policy_factory=None
+    ).diagnose(now=FIXED_NOW, jaccard_threshold=0.6)
     dupes = [f for f in result.findings if f.kind == "near-duplicate"]
     assert len(dupes) == 1
     assert dupes[0].memory_ids == ("dup-a", "dup-b")
@@ -188,15 +213,19 @@ def test_short_bodies_do_not_divide_by_zero_or_pair():
     a = inspected("short-a", body="ab")
     b = inspected("short-b", body="cd")
     report = StoreReport(True, (a, b), (), ())
-    result = MaintenanceService(FakeInspector(report)).diagnose(now=FIXED_NOW)
+    result = MaintenanceService(
+        FakeInspector(report), memory_store=None, content_policy_factory=None
+    ).diagnose(now=FIXED_NOW)
     assert not [f for f in result.findings if f.kind == "near-duplicate"]
 
 
 def test_duplicate_pair_order_is_deterministic_by_project_then_id():
     z = inspected("zzz", body="alpha beta gamma delta epsilon")
     a = inspected("aaa", body="alpha beta gamma delta epsilon")
-    result = MaintenanceService(FakeInspector(StoreReport(True, (z, a), (), ()))).diagnose(
-        now=FIXED_NOW, jaccard_threshold=0.6)
+    result = MaintenanceService(
+        FakeInspector(StoreReport(True, (z, a), (), ())),
+        memory_store=None, content_policy_factory=None,
+    ).diagnose(now=FIXED_NOW, jaccard_threshold=0.6)
     dupes = [f for f in result.findings if f.kind == "near-duplicate"]
     assert [d.memory_ids for d in dupes] == [("aaa", "zzz")]
 
@@ -204,8 +233,10 @@ def test_duplicate_pair_order_is_deterministic_by_project_then_id():
 def test_duplicate_pair_order_uses_project_before_id():
     first = inspected("zzz", project_id=PID, body="alpha beta gamma delta epsilon")
     second = inspected("aaa", project_id=PID2, body="alpha beta gamma delta epsilon")
-    result = MaintenanceService(FakeInspector(StoreReport(True, (second, first), (), ()))).diagnose(
-        now=FIXED_NOW, jaccard_threshold=0.6)
+    result = MaintenanceService(
+        FakeInspector(StoreReport(True, (second, first), (), ())),
+        memory_store=None, content_policy_factory=None,
+    ).diagnose(now=FIXED_NOW, jaccard_threshold=0.6)
     dupes = [f for f in result.findings if f.kind == "near-duplicate"]
     assert dupes[0].memory_ids == ("zzz", "aaa")
     assert dupes[0].project_ids == (PID, PID2)
@@ -214,7 +245,10 @@ def test_duplicate_pair_order_uses_project_before_id():
 def test_no_shadowing_finding_exists_any_more():
     a = inspected("same-body-1", project_id=PID)
     b = inspected("same-body-2", project_id=PID2, body="entirely different words here")
-    result = MaintenanceService(FakeInspector(StoreReport(True, (a, b), (), ()))).diagnose(now=FIXED_NOW)
+    result = MaintenanceService(
+        FakeInspector(StoreReport(True, (a, b), (), ())),
+        memory_store=None, content_policy_factory=None,
+    ).diagnose(now=FIXED_NOW)
     assert "shadowing" not in {f.kind for f in result.findings}
     assert not hasattr(maintenance, "_shadowing_findings")
 
@@ -223,7 +257,9 @@ def test_a_legacy_store_is_degraded_and_still_says_it_is_not_initialized():
     report = StoreReport(False, (), (),
                          (store_finding("legacy-layout", location_hint="memories",
                                        memory_id=None),))
-    result = MaintenanceService(FakeInspector(report)).diagnose(now=FIXED_NOW)
+    result = MaintenanceService(
+        FakeInspector(report), memory_store=None, content_policy_factory=None
+    ).diagnose(now=FIXED_NOW)
     assert (result.state, result.initialized) == ("degraded", False)
 
 
@@ -245,7 +281,9 @@ def test_a_legacy_store_is_degraded_and_still_says_it_is_not_initialized():
 )
 def test_new_backend_kinds_get_their_own_suggestion(kind, suggestion):
     report = StoreReport(True, (), (), (store_finding(kind),))
-    mapped = MaintenanceService(FakeInspector(report)).diagnose(now=FIXED_NOW).findings[0]
+    mapped = MaintenanceService(
+        FakeInspector(report), memory_store=None, content_policy_factory=None
+    ).diagnose(now=FIXED_NOW).findings[0]
     assert mapped.suggestion == suggestion
 
 
@@ -253,7 +291,9 @@ def test_mixed_empty_and_nonempty_trigram_pair_yields_no_finding():
     a = inspected("short", body="ab")
     b = inspected("long", body="alpha beta gamma delta epsilon")
     report = StoreReport(True, (a, b), (), ())
-    result = MaintenanceService(FakeInspector(report)).diagnose(now=FIXED_NOW)
+    result = MaintenanceService(
+        FakeInspector(report), memory_store=None, content_policy_factory=None
+    ).diagnose(now=FIXED_NOW)
     assert not [f for f in result.findings if f.kind == "near-duplicate"]
 
 
@@ -262,7 +302,9 @@ def test_backend_finding_fields_are_copied_without_absolute_paths():
                             location_hint="memories/broken.md", memory_id="broken",
                             reason="memory file is not decodable memory markdown")
     report = StoreReport(True, (), (), (finding,))
-    result = MaintenanceService(FakeInspector(report)).diagnose(now=FIXED_NOW)
+    result = MaintenanceService(
+        FakeInspector(report), memory_store=None, content_policy_factory=None
+    ).diagnose(now=FIXED_NOW)
     assert len(result.findings) == 1
     mapped = result.findings[0]
     assert mapped.kind == "invalid-row"
@@ -279,4 +321,6 @@ def test_the_inspectors_projects_pass_through_to_the_report():
     project = InspectedProject(id=PID, name="demo", root="/w", is_global=False,
                                root_state="ok", active_memories=0, deleted_memories=0)
     report = StoreReport(initialized=True, entries=(), projects=(project,), findings=())
-    assert MaintenanceService(FakeInspector(report)).diagnose(now=FIXED_NOW).projects == (project,)
+    assert MaintenanceService(
+        FakeInspector(report), memory_store=None, content_policy_factory=None
+    ).diagnose(now=FIXED_NOW).projects == (project,)

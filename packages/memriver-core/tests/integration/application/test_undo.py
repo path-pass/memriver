@@ -154,6 +154,18 @@ def test_one_or_all_members_hard_deleted_refuses_while_an_unrelated_change_is_un
     assert _state(world, unrelated_id) == (3, "unrelated", 0)
 
 
+def test_a_real_hard_delete_of_one_member_refuses_the_undo_and_keeps_the_change_row(world):
+    maintenance = world["services"].maintenance
+    merge, merged, _alpha, _beta = _merge(world)
+    plan = maintenance.plan_hard_delete(merged)
+    assert maintenance.hard_delete(merged, expected=plan.expected) == [merged]
+    with pytest.raises(UndoRefused) as excinfo:
+        _undo(world, merge.change_id)
+    assert excinfo.value.reason == "hard-deleted"
+    assert world["sql"]("SELECT step_count FROM changes WHERE change_id = ?",
+                        merge.change_id) == [(3,)]        # the change row stays
+
+
 def test_a_policy_hit_in_the_restored_content_refuses_the_undo(world):
     memory, memory_id = world["memory"], world["create"]("clean")
     world["sql"]("UPDATE memory_versions SET body = ? WHERE memory_id = ? AND version = 1",

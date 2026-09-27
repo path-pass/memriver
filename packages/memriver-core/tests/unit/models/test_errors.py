@@ -124,3 +124,13 @@ def test_undo_refused_carries_a_known_reason_and_the_memories():
         UndoRefused("expired")
     assert memriver_core.UndoRefused is UndoRefused is models.UndoRefused
     assert "UndoRefused" in memriver_core.__all__ and "UndoRefused" in models.__all__
+
+
+def test_plan_changed_carries_the_new_plan():
+    from memriver_core import models
+    from memriver_core.models import HardDeletePlan
+    from memriver_core.models.errors import PlanChanged
+    plan = HardDeletePlan("aaaaaaaaaa", (), "0123456789abcdef")
+    assert PlanChanged(plan).plan is plan
+    assert memriver_core.PlanChanged is PlanChanged is models.PlanChanged
+    assert "PlanChanged" in memriver_core.__all__ and "PlanChanged" in models.__all__
