@@ -11,7 +11,12 @@ import re
 import pytest
 from memriver_core.models import PlanCitation
 from memriver_core.models.changes import SoftDelete, SourceRef, Update
-from memriver_core.models.errors import MemoryNotFound, PlanChanged, UndoRefused
+from memriver_core.models.errors import (
+    MemoryNotFound,
+    PlanChanged,
+    StorageFailure,
+    UndoRefused,
+)
 
 SECRET = "aws key AKIAIOSFODNN7EXAMPLE ok"          # from the secret-scanner tests
 TABLES = ("memories", "memory_versions", "memory_sources", "memory_reads", "changes",
@@ -120,6 +125,24 @@ def test_the_plan_follows_every_version_of_every_member_and_never_a_members_sour
     assert re.fullmatch(r"[0-9a-f]{16}", plan.code)
     pairs = "\n".join(sorted(f"{memory_id}:{version}" for memory_id, version in plan.expected))
     assert plan.code == hashlib.sha256(pairs.encode("utf-8")).hexdigest()[:16]
+
+
+# a memriver_id no write path could ever produce: invalid UTF-8, or valid UTF-8
+# outside ID_RE's alphabet (see test_the_scan_skips_a_row_whose_id_is_not_addressable)
+@pytest.mark.parametrize("raw_id", [b"\x80123456789", b"\x1b[31m\nABCD"])
+def test_the_plan_is_a_storage_failure_when_a_referrer_id_is_not_addressable(world, raw_id):
+    """A citer id memriver could not have written must never reach the `sorted()` inside
+    `_plan`: `StorageFailure`, the same answer damage gets everywhere else, never a
+    TypeError (bytes are not orderable against str) out of a dry run or a hard delete."""
+    target = world["create"]("the target")
+    world["create"]("cites it too", sources=(SourceRef(target, 1),))    # a second referrer,
+    # so sorting the two actually compares one against the other
+    citer = world["create"]("cites it", sources=(SourceRef(target, 1),))
+    world["sql"]("UPDATE memories SET id = CAST(? AS TEXT) WHERE id = ?", raw_id, citer)
+    world["sql"]("UPDATE memory_sources SET memory_id = CAST(? AS TEXT) WHERE memory_id = ?",
+                 raw_id, citer)
+    with pytest.raises(StorageFailure):
+        world["services"].maintenance.plan_hard_delete(target)
 
 
 @pytest.mark.parametrize("confirm", ["expected", "code"])

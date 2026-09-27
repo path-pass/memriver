@@ -391,11 +391,21 @@ def _state_of(conn: sqlite3.Connection, memory: Memory) -> _State:
 
 def _sources_of(conn: sqlite3.Connection, memory_id: str,
                 version: int) -> tuple[SourceRef, ...]:
-    return tuple(SourceRef(source_id, source_version)
-                 for source_id, source_version in conn.execute(
-                     "SELECT source_id, source_version FROM memory_sources "
-                     "WHERE memory_id = ? AND version = ? ORDER BY source_id",
-                     (memory_id, version)))
+    """A version's sources, decoded like `_decode_history_state`: `memory_sources` has
+    no CHECK on `source_id`, and the connection's lenient text factory hands back
+    undecodable TEXT as bytes rather than raising -- so a damaged source id must be
+    caught here, not carried into a `SourceRef` a caller (`memriver history`'s
+    `visible`) never expects to hold bytes. `StorageFailure` for a row memriver could
+    not have written: damage is reported as damage, never silently handed out.
+    """
+    sources = []
+    for source_id, source_version in conn.execute(
+            "SELECT source_id, source_version FROM memory_sources "
+            "WHERE memory_id = ? AND version = ? ORDER BY source_id", (memory_id, version)):
+        if not _addressable(source_id):
+            raise StorageFailure
+        sources.append(SourceRef(source_id, source_version))
+    return tuple(sources)
 
 
 def _decode_history_state(type_: object, trust: object, sync: object, description: object,
@@ -485,7 +495,13 @@ def _plan(conn: sqlite3.Connection, memory_id: str) -> HardDeletePlan:
             if citing_id not in members:
                 members.add(citing_id)
                 frontier.append(citing_id)
-    ordered = [memory_id, *sorted(members - {memory_id})]
+    referrers = members - {memory_id}
+    # a referrer id memriver could not have written (undecodable bytes) cannot be
+    # sorted against the addressable ones below; damage is reported as damage,
+    # not a crash out of the plan
+    if not all(_addressable(referrer) for referrer in referrers):
+        raise StorageFailure
+    ordered = [memory_id, *sorted(referrers)]
     rows = {row[0]: row[1:] for row in conn.execute(
         "SELECT id, project_id, version, deleted_at IS NOT NULL FROM memories "
         f"WHERE id IN ({', '.join('?' for _ in ordered)})", ordered)}

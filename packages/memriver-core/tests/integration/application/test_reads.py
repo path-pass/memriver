@@ -128,6 +128,14 @@ def test_a_damaged_history_row_is_a_storage_failure_never_bytes(world):
         world["memory"].versions(memory_id)
 
 
+def test_a_version_with_an_undecodable_source_id_is_a_storage_failure_never_bytes(world):
+    memory_id = world["create"]()
+    world["sql"]("INSERT INTO memory_sources (memory_id, version, source_id, source_version) "
+                "VALUES (?, 1, CAST(X'80' AS TEXT), 1)", memory_id)
+    with pytest.raises(StorageFailure):
+        world["memory"].versions(memory_id)
+
+
 def test_memories_lists_current_states_across_projects_and_global(world):
     memory = world["memory"]
     mine, global_one = world["create"]("mine"), world["create"]("g", project_id=world["global"])

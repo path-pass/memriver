@@ -185,6 +185,20 @@ def test_history_refuses_an_unknown_memory_or_version(world):
         2, f"no such version: {world.memory.id} v7\n")
 
 
+# same class of bug as the doctor crash: a source id no write path could ever have
+# produced must never reach `visible` as bytes; it answers store-unreadable, no traceback
+def test_history_of_a_version_with_an_undecodable_source_id_is_store_unreadable(world):
+    source = world.services.memory.record(content="source", type="project", sync=True,
+                                          harness="t", description="src", context=world.context)
+    world.services.memory.apply(
+        [Update(world.memory.id, 1, sources=(SourceRef(source.id, 1),))], changed_by="human")
+    with closing(sqlite3.connect(world.store / "memriver.db")) as conn, conn:
+        conn.execute("UPDATE memory_sources SET source_id = "
+                     "CAST(X'80808080808080808080' AS TEXT) WHERE memory_id = ?",
+                     (world.memory.id,))
+    assert _history(world, world.memory.id) == (2, memory_commands.STORE_UNREADABLE + "\n")
+
+
 # spec §9: migrated rows carry no change; memriver history still labels them "imported"
 def test_a_version_with_no_recorded_change_shows_imported():
     version = MemoryVersion(memory_id="mmmmmmmmmm", version=1, type="project", trust="agent",
@@ -497,6 +511,24 @@ def test_hard_dry_run_prints_the_plan_and_the_confirm_command(world):
                    f"to delete exactly these, run: memriver delete {target} --hard "
                    + _command_tail(world, plan_code))
     assert not _gone(world, target) and not _gone(world, citing)
+
+
+# same class of bug as the doctor crash: a referrer id no write path could ever have
+# produced must never reach the plan's sort as bytes; the dry run refuses cleanly
+def test_hard_dry_run_refuses_cleanly_when_a_referrer_id_is_not_addressable(world):
+    target = world.memory.id
+    _global_memory(world, (target, 1))                   # a second, addressable referrer
+    citer = _global_memory(world, (target, 1))
+    with closing(sqlite3.connect(world.store / "memriver.db")) as conn, conn:
+        conn.execute("UPDATE memories SET id = CAST(X'80808080808080808080' AS TEXT) "
+                     "WHERE id = ?", (citer,))
+        conn.execute("UPDATE memory_sources SET memory_id = "
+                     "CAST(X'80808080808080808080' AS TEXT) WHERE memory_id = ?", (citer,))
+
+    code, out = _delete(world, target, hard=True, dry_run=True, input_fn=_never_called)
+
+    assert code == 2
+    assert out == "refused: the memory store failed; nothing was deleted\n"
 
 
 # §8.2 --confirm CODE: no prompt; the code is the two-step link, nothing stored between
