@@ -2,14 +2,17 @@
 
 Shared memory layer for coding agents across harnesses (Claude Code / Codex /
 Cursor / Kiro), exposed via MCP. One SQLite database is the single source of
-truth. Local-only mode uses no LLM and no network.
+truth, and it keeps every version of every memory. Local-only mode uses no LLM
+and no network, until you set up the optional `memriver dream` maintenance run,
+which sends policy-passing memory and session text to a model (see *Dream*).
 
 Monorepo (uv workspace):
 
-- `packages/memriver-core` — the SQLite memory and project store, write gate
+- `packages/memriver-core` — the SQLite memory, history and project store, write gate, change log
+- `packages/memriver-dream` — the harness-neutral offline maintenance run behind `memriver dream`
 - `packages/memriver` — CLI + MCP server (the package users install)
 - `skills/` — agent skills that ship with the project (see *Migrating existing Claude Code memory*)
-- planned: `memriver-vector` / `memriver-dream` / `memriver-sync`
+- planned: `memriver-vector` / `memriver-sync`
   (installed on demand via extras, e.g. `memriver[vector]`)
 
 ## Install into your harnesses
@@ -116,21 +119,32 @@ reports go to stderr.
   since its last save -- a successful `memory_write` or `memory_update`
   counts as a save, `memory_delete` does not -- and then at most once every 5
   prompts after that, so a session that saves as it goes is never interrupted.
-- **`memory_read`** records that a memory was read (`last_read_at`); it is
-  not returned to the agent, but `memriver show`/`export` print it.
+- **`memory_read`** records that a memory was read: `last_read_at`, and one
+  read record (the version read, the time, the server's `--harness`, and the
+  calling session when the server is session-routed). Neither is returned to
+  the agent; `memriver show`/`export` print `last_read_at`, and `memriver
+  dream` counts the reads when it decides how long a memory may go unused
+  (*Dream*). A read never creates a version.
 - **Cursor / Kiro** use the static instructions block instead of hooks, and
   have no session routing: they resolve `--project-dir` once, when the
   server starts, and never re-resolve it for the life of that process.
 
-Hooks never fail the harness: an unreadable store is stated inline, in the
-injected header itself, as a labelled "unavailable" session -- exit 0, empty
-stderr, nothing blocked. Of the five, only `SessionStart` ever writes to
-stderr: when it hits something it cannot route around at all (a malformed
-payload, some other unhandled failure) it skips the injection entirely and
-prints one fixed, path-free stderr line instead. `UserPromptSubmit`, `Stop`,
+Hooks never fail the harness on a store they can degrade: an unreadable store
+is stated inline, in the injected header itself, as a labelled "unavailable"
+session -- exit 0, empty stderr, nothing blocked. Of the five, only
+`SessionStart` ever writes to stderr for a failure of this kind: when it hits
+something it cannot route around at all (a malformed payload, some other
+unhandled failure) it skips the injection entirely and prints one fixed,
+path-free stderr line instead, still exit 0. `UserPromptSubmit`, `Stop`,
 `SessionEnd` and `PreToolUse` degrade the same failures silently -- empty
-stdout, empty stderr, exit 0 -- since none of them owes the agent a header. If memories
-seem to be missing, `memriver doctor` shows what the store actually holds.
+stdout, empty stderr, exit 0 -- since none of them owes the agent a header.
+Two deliberate exceptions: an invalid `settings.toml` or `MEMRIVER_*` value
+makes `SessionStart`, `UserPromptSubmit` and `SessionEnd` print their one-line
+settings error and exit 1 -- a failing, non-blocking hook the harness shows --
+because a broken settings file needs fixing rather than being silently
+ignored (see *Settings*); and a store below schema version 4 is refused --
+every hook does nothing. If memories seem to
+be missing, `memriver doctor` shows what the store actually holds.
 
 Known limits: `session_search`/`memriver sessions` only look at each
 session's first prompt and its five most recent, each saved as at most 512
@@ -167,8 +181,9 @@ later -- shares that project's memories; the nearest registered ancestor
 wins, so registering a sub-directory carves it out as its own project. An
 unregistered directory has no project: agents can read global memory
 but have nowhere to save, and the session-start injection says so. Global
-memory is read-only to agents; it is written by hand (see *Storage
-layout*). A binding change reaches Cursor/Kiro at their MCP server's next
+memory is read-only to agents; `memriver dream` writes it, and a person
+manages it with the commands of *Browsing and managing memories directly*.
+A binding change reaches Cursor/Kiro at their MCP server's next
 start. It reaches Claude Code/Codex in a new session, or in a session that
 has no project yet once its agent calls `session_register` (on your request,
 or right after running `memriver project init` for you): a session's stored
@@ -220,7 +235,7 @@ Known limits:
 | `memory_write(content, type, sync=True, description="")` | Save one durable fact to the current project; memriver assigns the id and stamps `source.harness` with the server's own `--harness` value (an installed Cursor/Kiro server records `cursor`/`kiro`; `unknown` only when the server was started with no `--harness` at all); global is read-only to agents; `type` is `user` / `feedback` / `project` / `reference` |
 | `memory_update(memory_id, expected_version, content, description=None)` | Rewrite a memory's content in place (id, project and type stay); returns `{id, updated, version}`; refused for global memories or a stale `expected_version` |
 | `memory_delete(memory_id, expected_version)` | Remove a memory that is no longer true or wanted; returns `{deleted: memory_id}`; refused for global memories or a stale `expected_version` |
-| `session_search(query="", limit=None)` | Claude Code/Codex only: find this project's recorded sessions (newest activity first) by a word in their prompts, branch or entry directory; each result carries a `resume_command` to show the user -- whether to run it is the user's decision |
+| `session_search(query="", limit=None)` | Claude Code/Codex only: find this project's recorded sessions (newest activity first) by a word in their prompts, summary, branch or entry directory; each result carries a `resume_command` to show the user -- whether to run it is the user's decision |
 | `session_confirm()` | Claude Code/Codex only: register the calling session to the project memriver proposed for it; call only after the user agrees; returns the session's new project header |
 | `session_register()` | Claude Code/Codex only: register the calling session, when it has no project, to the registered project covering the directory it started in (the one stored when it registered); called when the user asks, or right after the agent ran `memriver project init` at the user's request; never changes a session that already has a project; returns the session's project header, with a note when no project covers that directory |
 
@@ -234,36 +249,95 @@ never as a raw exception through the transport; a call that does not match a
 tool's schema — an unknown argument, a missing one, a wrong type — is
 rejected by the MCP layer before the tool runs.
 
+Every successful `memory_write`, `memory_update` or `memory_delete` is one
+change in the store's change log, recorded as made by `mcp` through the
+server's `--harness`; an update that changes nothing records nothing. Agents
+never see history or the change log; a person does, with `memriver history`
+and `memriver undo` (*Browsing and managing memories directly*).
+
 The memory model — its fields, the four types, id rules, the strict boolean
 and timestamp formats — is specified in
 [`docs/memory-model.md`](docs/memory-model.md).
 
-## Browsing and deleting memories directly
+## Browsing and managing memories directly
 
 ```bash
 uvx memriver list [--project ID]                      # every project, or one; id, type, date, cue
 uvx memriver show ID [--deleted]                       # full memory: header fields + body
 uvx memriver search QUERY [--project ID] [--limit N]
 uvx memriver export DIR                                # DIR must not exist; a markdown snapshot, never read back
-uvx memriver delete ID --version N [--hard] [--yes]
+uvx memriver history ID [--show N]                     # every version of one memory; --show N prints version N's body
+uvx memriver restore ID --to N [--yes]                 # make version N's state current again
+uvx memriver undo CHANGE_ID [--yes]                    # reverse one change
+uvx memriver delete ID --version N [--yes]             # soft delete
+uvx memriver delete ID --hard [--dry-run | --confirm CODE]   # delete a memory with its whole history
 ```
 
-These are read-only views for a person, not the MCP surface agents use:
-`list`/`search`/`export` see every project, including global, but never a
-soft-deleted memory; `show --deleted` is the one view that can, and it prints
-the memory's `deleted_at`. `show` and `export` also expose `last_read_at`,
-set by a successful `memory_read`: `show` prints it as `never` until the
-first one, `export` writes the same field as JSON, `null` until then --
-neither is part of what an agent can read.
-`delete` needs the `version` that `memriver show` printed, and it always
-resolves the command's own current directory -- the same way directory mode
-does -- to decide which project it may touch. That is not always the same
-project a session-routed agent would use: an agent's `memory_delete` acts on
-its session's stored project instead (a session registered in A but resumed
-from B can delete only in A; running `delete` from B at that same moment
-acts on B). Either way global stays undeletable. It soft-deletes by default
-(the row's `deleted_at` is set, and it is recoverable only by an operator);
-`--hard` removes the row itself, including one already soft-deleted.
+These are commands for a person, not the MCP surface agents use; MCP has no
+path to history, restore, undo or a hard delete. `list`/`search`/`export` see
+every project, including global, but never a soft-deleted memory; `show
+--deleted` is the one view that can, and it prints the memory's `deleted_at`.
+`show` and `export` also expose `last_read_at`, set by a successful
+`memory_read`: `show` prints it as `never` until the first one, `export`
+writes the same field as JSON, `null` until then -- neither is part of what an
+agent can read.
+
+**History.** Every change of a memory's description, body, sources or deleted
+state creates a new version, and old versions are kept for good; a write that
+changes nothing creates none. Every write -- an agent's `memory_write`,
+`memory_update` or `memory_delete`, a `memriver dream` change, `restore`,
+`undo`, `delete` -- is one *change* with a change id, recording who made it
+(`mcp`, `dream` or `human`, and through which harness) and which versions of
+which memories it produced. `history ID` lists every version of one memory,
+global included: its number, time, who made it, its change id, whether it is
+deleted, its description and the ids of the memories it cites; `--show N`
+prints that version's body. A version with no change of its own shows as
+`imported`.
+
+**Restore.** `restore ID --to N` shows the current version and version N --
+what changes in content, sources and deleted state -- asks, and makes version
+N's state the new current version (a new version; nothing is rewritten).
+Restoring a version that was not deleted undeletes a memory. If the memory
+changed while you looked, it shows the new state and asks again. The content
+policy applies: a version that fails today's policy cannot be restored, and
+the rule is named.
+
+**Undo.** `undo CHANGE_ID` shows the change -- each memory it touched and its
+project, global flagged -- and what undoing it does, asks, and applies the
+reverse as one new change: a created memory is soft-deleted, anything else
+goes back to the version it had before. It is refused, with nothing changed,
+when any memory the change touched has changed since (`changed`, naming them;
+a read does not count, text changed back to the same words does), when a hard
+delete removed part of it (`hard-deleted`), when the reverse fails the
+content policy (the rule is named), or when there is no such change
+(`not-found`). An undo is itself a change and can be undone the same way;
+undoing an older change after a later one touched the same memories is
+refused -- `restore` handles that case. An imported version belongs to no
+change and cannot be undone.
+
+**Delete.** `delete ID --version N` soft-deletes, and needs the `version` that
+`memriver show` printed. A global memory is deleted by id, from anywhere; any
+other memory only from its own project's directory: `delete` resolves the
+command's current directory the way directory mode does, which is not always
+the project a session-routed agent would use (a session registered in A but
+resumed from B can delete only in A; running `delete` from B at that same
+moment acts on B). A soft-deleted memory keeps its history and comes back
+with `restore`.
+
+**Hard delete.** `delete ID --hard` is the only thing that removes versions.
+It deletes the memory with its whole history, together with every memory
+that cites any version of it, repeated until nothing outside the set cites a
+member (it never follows a member's own sources). It prints that plan -- each
+memory, its project, its current version, whether it is deleted and the
+citations that pulled it in -- asks, and deletes exactly the set shown; if
+the set changed meanwhile, it prints the new plan and asks again.
+`--dry-run` prints the plan and a command carrying `--confirm CODE`; that
+command deletes without asking only while the plan still matches the code,
+and otherwise exits 2 and deletes nothing. `--version` is not accepted with
+`--hard`, and `--dry-run` and `--confirm` only go with `--hard`. The change
+log keeps every change a hard delete touched, without the deleted memories'
+steps, and such a change can no longer be undone. This is how a secret that
+reached the store is removed: a soft delete keeps its text in the history.
 
 ## Sessions
 
@@ -273,14 +347,205 @@ uvx memriver sessions [QUERY] [--project ID] [--limit N] [--json]
 
 Lists every recorded Claude Code/Codex session (or one project's), newest
 activity first: harness, project, branch, when it was first recorded and last
-active, its last `SessionEnd`, its first and latest prompt, and a resume
-command (`claude --resume <id>` / `codex resume <id>`). `QUERY` matches a word
-in a session's saved prompt text (the same first-plus-five, 512-characters-each
-scope `session_search` has -- see its Known limits above), branch or entry
-directory, the same way `session_search` does for the calling session's own
-project; unlike `session_search`, this sees every project. `--json` emits
-the same item shape `session_search`
-returns.
+active, its last `SessionEnd`, its first and latest prompt, a resume command
+(`claude --resume <id>` / `codex resume <id>`), and the session's summary once
+`memriver dream` has written one. `QUERY` matches a word in a session's saved
+prompt text (the same first-plus-five, 512-characters-each scope
+`session_search` has -- see its Known limits above), its summary, branch or
+entry directory, the same way `session_search` does for the calling session's
+own project; unlike `session_search`, this sees every project. `--json` emits
+the same item shape `session_search` returns.
+
+## Dream: offline maintenance
+
+```bash
+uv tool install memriver   # the schedule needs a persistent memriver, not uvx's cache
+memriver dream init [--executor claude|codex] [--ttl-days N] [--at HH:MM] [--yes]
+memriver dream run [--phase summarize|consolidate|extract|retire]
+memriver dream report [RUN_ID] [--list [N]]
+memriver dream uninstall
+```
+
+`memriver dream` is an offline batch run, started every day by a schedule or
+by hand with `dream run`. One run at a time: a run that finds another one
+still going is recorded as skipped. Each run, in order:
+
+1. **Checks every stored version against the content policy** -- every
+   project and global, deleted memories and old versions included -- and lists
+   each hit under *Needs you* in its report by id, version, rule and whether
+   it is the current version, never the matched text. Nothing is deleted:
+   removing a secret for good is a hard delete you run (`memriver delete ID
+   --hard`). A memory whose current version hits is left out of every model
+   step of the run. No model is involved, so this also runs with no executor
+   configured: `memriver dream run` before `init` is a policy scan.
+2. **Summarizes sessions**: each Claude Code/Codex session bound to a project
+   that has new activity since its last summary gets a summary of its
+   transcript -- goal, what was done, results, open items, identifiers kept
+   verbatim -- which `session_search` and `memriver sessions` search and show.
+   A long session is summarized part by part and merged, and one too long for
+   a run keeps its progress for the next. A session whose transcript cannot be
+   read waits for new activity; a failed call, or a summary the content policy
+   refuses, is tried again by the next run. Transcript records that fail the
+   content policy are never sent.
+3. **Consolidates each project**: it merges entries that state the same fact
+   into one new entry citing them and soft-deletes the originals, rewrites an
+   entry that another entry of the project shows to be outdated (citing that
+   evidence), soft-deletes an entry a newer one explicitly replaces, and lists
+   contradictions and entries that are instructions addressed to an agent
+   under *Needs you* without changing them. Only the project's own memories
+   count as evidence, and no change is preferred when in doubt.
+4. **Extracts shared principles into global**: a principle backed by memories
+   of at least two projects becomes a global entry citing them, or supplements
+   an existing one; what only one project says stays there. Principles, not
+   commands: "Python projects prefer pytest for tests", never "pytest -q". A
+   global entry whose cited sources changed since is re-checked against their
+   new versions: kept, pointed at the new versions, revised, or listed under
+   *Needs you* as overturned.
+5. **Consolidates global** the way step 3 consolidates a project.
+6. **Retires memories unused past their TTL**, after asking the model whether
+   there is reason enough to retire each one: a memory's last use is the
+   latest of its creation, its last update and its last `memory_read`, and its
+   TTL is `ttl_days` times one plus its recorded reads, capped at
+   `ttl_read_multiplier_max` times. `keep` leaves it alone for another
+   `ttl_days`; `delete` soft-deletes it; `uncertain_limit` uncertain answers in
+   a row about the same version soft-delete it too. A read that lands while
+   the model decides keeps the memory.
+7. Writes its report, and deletes runs and reports older than
+   `report_retention_days`.
+
+`--phase` runs one step after the policy scan: `summarize` (2), `consolidate`
+(3 and 5), `extract` (4) or `retire` (6). A consolidation or extraction pass
+is skipped while the memories it would read are unchanged since its last
+finished pass.
+
+**Changes and undo.** Every change dream makes goes through the same change
+log as any other write, recorded as `dream` with its executor's harness, and
+takes effect at once, without a review step. Dream never hard-deletes. Its
+report lists each change with its memories, their versions and a
+one-sentence reason, followed by the command that reverses it, `memriver undo
+<change_id>` -- refused once any memory the change touched has changed since,
+where `memriver restore` takes over (*Browsing and managing memories
+directly*). A session summary is not a memory change and has no undo.
+
+**Reports.** `memriver dream report` prints the latest run's report (or
+`RUN_ID`'s) as it was written: the run, its trigger and executor; each change,
+by project; the TTL decisions; skips and failures with their reasons; *Needs
+you* -- content-policy hits with their `memriver delete ID --hard` command,
+contradictions, instruction-like entries, overturned global entries and
+refused extractions; and how the run finished. `--list [N]` lists the last N
+runs (default 10) with time, trigger and status. A run that stopped without
+finishing is shown as interrupted, and the next run marks each of its changes
+whose outcome is unknown with the `memriver history` command that settles it.
+A report never holds a memory body, a model's full input or output, or a
+secret; a description or model reason that fails the content policy appears
+as `(withheld)`. `memriver dream run` prints its report too. It exits 0 when
+the run completed (failures of single items included), was skipped, or only
+scanned because no `[dream]` table exists; and 1 on a store failure, an
+invalid `[dream]` table, `--phase` with no executor configured, a store below
+schema version 4, or a missing Codex provider variable (below).
+
+**Executors.** `init` picks Claude Code or Codex (`--executor`; default the
+configured one, else whichever of `claude` and `codex` is on `PATH`) and
+stores its absolute path. Each model call is one headless run -- `claude -p`
+with memriver's own system prompt, no tools, no MCP servers and none of your
+settings files, or `codex exec` ephemeral, in a read-only sandbox, ignoring
+your Codex config, with hooks and the built-in tools switched off, but reading
+your global `AGENTS.md` -- in an empty temporary directory, with your existing
+login, and with `MEMRIVER_ROOT` pointed at a path that does not exist so
+memriver's own hooks inside it do nothing. The prompt goes to the harness on
+its standard input. A failed call (timeout, not logged in, over quota, input
+too large, unreadable answer, a harness that cannot be started) is retried by
+the next run; dream never switches executor. The executor's provider receives
+memory text and session transcripts; memories and transcript records that
+fail the content policy are left out.
+
+What an executor run can and cannot do:
+
+- Claude Code runs with `--tools ""`, `--strict-mcp-config` and
+  `--restricted`: no built-in tool, no MCP server, and your user, project and
+  local settings files -- hooks included -- are ignored. Managed (enterprise)
+  settings, and their hooks, still apply.
+- Codex runs with `--ignore-user-config` (your `config.toml`, its MCP servers
+  included, is not loaded), `--disable hooks` (ignoring the config does not
+  stop hooks on its own) and switches that turn off the built-in tools (shell,
+  exec, image, multi-agent, goals, plugins, web search), in a read-only
+  sandbox. One harmless tool stays registered, `request_user_input`, and your
+  global `AGENTS.md` is read. The switches are Codex feature names; if a Codex
+  release renames one, the call fails and the next run reports it. Because
+  `config.toml` is not loaded, a model provider defined only there is not
+  used unless you give it in `[dream.codex_overrides]` (below).
+- Both use your login, and memriver's own hooks do nothing there.
+
+**Schedule.** On macOS, `init` installs a per-user LaunchAgent,
+`~/Library/LaunchAgents/io.github.path-pass.memriver.dream.plist`, that runs
+`memriver dream run` daily at `--at` (default 04:00) with `HOME`, a `PATH`
+holding the memriver and executor directories, and `MEMRIVER_ROOT` set to the
+store's absolute path; its output goes to `<root>/dream/dream.log`. It runs
+only while you are logged in, and needs no sudo. The schedule needs a
+persistent memriver: `uvx` runs memriver from uv's cache, which uv may delete
+at any time, so `init` refuses there -- install it with `uv tool install
+memriver` and run `memriver dream init` from that installation (run it again
+after moving the installation). Until memriver is on PyPI, `uv tool install
+memriver` finds the local wheels through `UV_FIND_LINKS` (see *Installing
+before the PyPI release*). Elsewhere, `init` writes the settings and prints
+the command line to add to your own scheduler. `init` is idempotent (running
+it again replaces the schedule); it repairs an invalid key it owns rather than
+refusing, and refuses only when the `[dream]` table holds an invalid key it
+does not own, naming the key; a failed replacement puts the previous schedule
+back, and says so if it cannot. `uninstall` removes the schedule and keeps the
+settings and data, and says so, keeping the plist, when launchd would not let
+go of it or could not say.
+
+```toml
+# ~/agent-memory/settings.toml -- [dream], every key shown with its default
+# except executor and executor_path, which have none;
+# init itself writes only executor, executor_path, ttl_days and schedule_at
+[dream]
+executor = "claude"                   # or "codex"
+executor_path = "/absolute/path/to/claude"
+ttl_days = 30                         # days unused before a memory is reviewed
+ttl_read_multiplier_max = 3           # cap on 1 + reads as a TTL multiplier
+uncertain_limit = 2                   # uncertain answers in a row that retire a memory
+report_retention_days = 30            # how long runs and their report files are kept
+schedule_at = "04:00"
+max_sessions_per_run = 20             # sessions one run summarizes
+max_groups_per_run = 20               # changes one run may make
+max_candidates_per_run = 30           # TTL reviews one run may ask for
+```
+
+**A Codex provider from `config.toml`.** Dream's Codex runs skip your
+`config.toml`, so a model provider defined there (an Azure deployment, a
+gateway) is given to dream separately, in a table you write yourself; `init`
+keeps it and checks it:
+
+```toml
+[dream.codex_overrides]               # keys are quoted, dots included
+"model_provider" = "azure-foundry"
+"model" = "your-deployment"
+"model_providers.azure-foundry.name" = "Azure AI Foundry"
+"model_providers.azure-foundry.base_url" = "https://your-resource.example/openai/v1"
+"model_providers.azure-foundry.env_key" = "AZURE_FOUNDRY_API_KEY"   # a variable's name
+"model_providers.azure-foundry.wire_api" = "responses"
+```
+
+Only these keys (and `model_providers.<id>.requires_openai_auth`, a boolean)
+are accepted, for the one provider `model_provider` names; anything else --
+features, tools, MCP servers, hooks, whole tables, token or header fields, a
+URL with credentials, a query or a fragment -- is refused, and the error names
+only the field `dream.codex_overrides`, never the offending key or its value.
+Never put a key itself in this table: `env_key` names the environment variable
+that holds it. `init` and every run refuse when that variable is not set,
+rather than falling back to Codex's default provider. The scheduled job does
+not see your shell's environment and memriver never copies the variable into
+the LaunchAgent: make it visible to your login session yourself (for example
+`launchctl setenv NAME value` after each login), or scheduled runs refuse and
+say so in `dream.log`.
+
+Known limits: token counts are a rough estimate (no tokenizer), kept inside a
+margin; a transcript file is read whole; the kind of an executor failure is
+recognized from the wording of the harness's own error messages, and an
+unrecognized one is reported as `exit`; a pass whose own changes moved
+versions runs once more on the next run before it is skipped.
 
 ## Doctor
 
@@ -303,7 +568,12 @@ written (`invalid-row`), a bound directory that is no longer canonical or
 could not be checked, two projects
 bound to the same directory under different spellings (`root-conflict`), the
 pre-SQLite file layout (`legacy-layout`), invalid `updated` timestamps, stale
-memories and near-duplicates. It also lists every project -- id, name, its
+memories and near-duplicates. It also checks the history -- a memory row that
+differs from its latest version, a gap in a memory's versions, a version
+without its change, a source reference that does not resolve, a source cycle
+-- and lists the changes a hard delete left incomplete (they can no longer be
+undone) and every stored version, current, older or deleted, that fails the
+content policy, by id, version and rule, never the text. It also lists every project -- id, name, its
 directory (or `global`), its root's state (a directory that has gone missing
 is only a state here, not a finding), and its active and deleted memory
 counts. Reports never contain memory bodies, and no finding carries a path --
@@ -332,7 +602,7 @@ shared files are never deleted. The harness's own memory setting is left as it
 is; the completion report says so and names any file left empty.
 
 `--purge-data` is the only thing that deletes the whole store rather than one
-memory (`memriver delete` removes a single memory; see *Browsing and deleting
+memory (`memriver delete` removes a single memory; see *Browsing and managing
 memories directly*), and only with the explicit flag (`--yes` merely skips the
 prompts). The resolved, canonical path is shown before deletion; the
 filesystem root, your home, the current directory and anything that resolves
@@ -399,9 +669,14 @@ memriver's own checkout).
 
 ```
 ~/agent-memory/
-  memriver.db          # 0600; the only data file -- every project and memory, bodies included
-  memriver.db-journal  # transient, SQLite's own; also left by a crashed writer until the next connection rolls it back
-  settings.toml        # optional, see Settings
+  memriver.db            # 0600; the only memory data file -- every project, memory and version, bodies included
+  memriver.db-journal    # transient, SQLite's own; also left by a crashed writer until the next connection rolls it back
+  settings.toml          # optional, see Settings
+  dream/                 # 0700; memriver dream's own (see Dream)
+    dream.db             # runs, TTL reviews, finished passes, source re-checks, summary progress
+    reports/             # one report file per run, kept report_retention_days
+    .lock                # one run at a time
+    dream.log            # the scheduled runs' output
 ```
 
 Every id is 10 random lowercase characters memriver generates (Crockford base32:
@@ -409,9 +684,12 @@ digits and letters without i, l, o, u). A memory belongs to exactly one project
 through its `project_id`; global is the one project row flagged global (it
 never has a directory -- an unbound project has none either; the flag is
 what tells them apart), shown as `global` by `doctor` and `project explain`.
-To maintain global memories by hand, edit `memriver.db`'s `memories` table
-where `project_id` is that project's id -- there is no write path to global
-through the CLI or MCP today. The root directory memriver creates is private
+Global memories are written by `memriver dream` and managed with `memriver
+history`, `restore`, `undo` and `delete`; MCP never writes them. Editing
+`memriver.db` by hand bypasses the history and the change log, and `memriver
+doctor` reports what that breaks. `dream.db` holds no memory body; the only
+model text in it is the policy-checked partial summaries of a long session
+still being summarized. The root directory memriver creates is private
 to your user (`0700`);
 `memriver.db` is `0600` and must be a real file (memriver never follows a link
 there).
@@ -454,8 +732,9 @@ Under Codex, the hook and MCP surfaces don't carry that line: a failed hook
 shows only `hook: SessionStart Failed` (or `UserPromptSubmit Failed`), and a
 failed MCP server start prints nothing by default. Run `memriver doctor` (or
 any other memriver command that reads settings) to see the one-line reason.
-Three entry points never read `settings.toml` at all, so none of them are
-affected: the `Stop` and `PreToolUse` hooks, and `memriver uninstall`.
+Four entry points never read `settings.toml` at all, so none of them are
+affected: the `Stop` and `PreToolUse` hooks, `memriver uninstall` and
+`memriver dream uninstall`.
 Everything else -- the server, the other three hooks, every `memriver project`
 and browsing command, and `memriver install` -- reads settings and stops on
 this error. This is new in this release: an invalid settings.toml used to be
@@ -470,6 +749,14 @@ search_limit_max = 50       # ceiling applied to any caller-supplied limit
 index_budget_lines = 100    # entries memory_index lists before truncating
 ```
 
+One more top-level key, unset by default: `memory_reads_retention_days = N`
+keeps read records for N days (unset keeps every one; a dropped read no longer
+lengthens a memory's TTL). The `[dream]` table belongs to `memriver dream` (see
+*Dream*) and is read by the `memriver dream` commands only: an invalid key there
+stops `memriver dream init`, `run` and `report` with the same one-line error
+(`field dream.<key>`), never the server or the other commands, and `memriver
+dream init` repairs an invalid key it owns instead of refusing.
+
 `search_limit_default` may not exceed `search_limit_max`. The root itself is
 set with `--root` or `MEMRIVER_ROOT`, not in this file: it is what locates the
 file.
@@ -477,7 +764,7 @@ file.
 ## Development
 
 ```bash
-uv run pytest             # both packages plus tools/
+uv run pytest             # every package plus tools/
 uv run ruff check .       # repo-wide lint gate
 ```
 
