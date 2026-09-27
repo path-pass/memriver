@@ -65,7 +65,7 @@ class Report:
 
     def line(self, text: str) -> None:
         """One line of the report's own wording; model text must go through safe()."""
-        self._write(" ".join(text.splitlines()) + "\n")
+        self._write(single_line(text) + "\n")
 
     def safe(self, text: str) -> str:
         """`text` on one line, or WITHHELD when the content policy hits it -- checked
@@ -89,7 +89,7 @@ class Report:
 
     def needs_you(self, text: str) -> None:
         """Collected and written under "Needs you" by footer()."""
-        self._needs_you.append(" ".join(text.splitlines()))
+        self._needs_you.append(single_line(text))
 
     def footer(self, *, status: str, finished_at: str) -> None:
         needs = "".join(f"{item}\n" for item in self._needs_you)
@@ -130,4 +130,9 @@ def mark_interrupted(path: Path) -> None:
     if text and not text.endswith("\n"):
         last = text.rpartition("\n")[2]
         tail = (_unknown(last) if last.startswith(_APPLYING) else "") + "\n"
-    _append(path, f"{tail}\n{INTERRUPTED}\nstatus: failed\n")
+    try:
+        _append(path, f"{tail}\n{INTERRUPTED}\nstatus: failed\n")
+    except OSError:
+        # made read-only, out of space, ...: same as unreadable above -- nothing to
+        # mark, but the caller still closes the stale run's row
+        return

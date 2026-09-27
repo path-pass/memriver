@@ -84,8 +84,31 @@ def test_without_an_executor_a_run_does_the_scan_and_the_upkeep_only(world, call
     assert calls == [("prune_reads",)]
     text = world.report_text(row)
     assert "== Policy scan ==\npolicy hits: 0; left out of model steps: 0\n" in text
-    assert "model phases skipped: no executor configured\n" in text
+    assert f"model phases skipped: no {missing} configured\n" in text
     assert "== Maintenance ==\nreads pruned: 0\nreports removed: 0\n" in text
+
+
+def test_the_skipped_message_names_every_missing_piece(world, calls):
+    row = world.run(executor=None, settings=None)
+    assert "model phases skipped: no executor and settings configured\n" in world.report_text(row)
+
+
+def test_an_unknown_trigger_is_refused_before_anything_runs(world, calls):
+    with pytest.raises(ValueError):
+        world.run(trigger="cron")
+    assert calls == []
+    assert not (world.root / "dream").exists()
+
+
+def test_an_unknown_trigger_never_closes_a_stale_running_row(world, calls):
+    store = _store(world)
+    world.reports.mkdir(parents=True)
+    crashed = RunRow("crashed005", shift_days(world.now, -1), None, "schedule", "running",
+                     "crashed005.txt")
+    store.start_run(crashed)
+    with pytest.raises(ValueError):
+        world.run(trigger="cron")
+    assert store.run(crashed.run_id) == crashed
 
 
 @pytest.mark.parametrize(("phases", "expected"), [
@@ -169,6 +192,26 @@ def test_a_crashed_runs_unreadable_report_still_lets_its_row_close(world, calls)
     store.start_run(crashed)
     (world.reports / crashed.report_file).mkdir()
     row = world.run()
+    assert row.status == "completed"
+    assert store.run(crashed.run_id) == replace(crashed, status="failed",
+                                                finished_at=world.now)
+
+
+def test_a_crashed_runs_unwritable_report_still_lets_its_row_close(world, calls):
+    # an OSError while appending to the old report (made read-only) must not stop the
+    # stale `running` row from being closed on the next run either
+    store = _store(world)
+    world.reports.mkdir(parents=True)
+    crashed = RunRow("crashed004", shift_days(world.now, -1), None, "schedule", "running",
+                     "crashed004.txt")
+    store.start_run(crashed)
+    report_path = world.reports / crashed.report_file
+    report_path.write_text("memriver dream run crashed004\n\napplying merge aaaaaaaaaa")
+    report_path.chmod(0o400)
+    try:
+        row = world.run()
+    finally:
+        report_path.chmod(0o600)
     assert row.status == "completed"
     assert store.run(crashed.run_id) == replace(crashed, status="failed",
                                                 finished_at=world.now)
@@ -298,6 +341,73 @@ def test_a_crash_between_unlink_and_row_delete_is_finished_next_time(world, monk
     monkeypatch.undo()
     assert prune_reports(store, world.reports, now=world.now, days=30) == [row]
     assert store.run(row.run_id) is None
+
+
+def test_a_run_that_cannot_record_its_own_failure_leaves_the_row_running(
+        world, calls, monkeypatch):
+    # every append after the change fails (e.g. a full disk): neither the completion
+    # footer nor the failure footer can be written, so the row must stay `running`
+    # for the next run's mark_interrupted to close it and finish the dangling line
+    memory_id = world.create(world.project.id, "old body")
+    real_append = report_module._append
+    tripped = False
+
+    def flaky(path, text):
+        nonlocal tripped
+        if tripped or text.startswith(" -> change"):
+            tripped = True
+            raise OSError("injected")
+        real_append(path, text)
+
+    monkeypatch.setattr(report_module, "_append", flaky)
+
+    def broken(ctx, project_id, scope):
+        apply_group(ctx, "rewrite", [memory_id],
+                    [Update(memory_id=memory_id, expected_version=1, body="new body")])
+        return PassResult(finished=True)   # unreachable: apply_group raises above
+
+    monkeypatch.setattr(consolidate, "run", broken)
+    with pytest.raises(OSError, match="^injected$"):
+        world.run()
+    store = _store(world)
+    (row,) = store.runs(10)
+    assert row.status == "running" and row.finished_at is None
+
+    monkeypatch.setattr(report_module, "_append", real_append)
+    monkeypatch.setattr(consolidate, "run",
+                        lambda ctx, project_id, scope: PassResult(finished=True))
+    second = world.run()
+    assert second.status == "completed"
+    assert store.run(row.run_id).status == "failed"
+    text = (world.reports / row.report_file).read_text()
+    assert text.endswith(
+        f"applying rewrite {memory_id} -> outcome unknown — see memriver history "
+        f"{memory_id}\n"
+        f"\n{INTERRUPTED}\nstatus: failed\n")
+    assert f"run {row.run_id} was interrupted; marked failed\n" in world.report_text(second)
+
+
+def test_max_groups_per_run_is_shared_across_phases(world):
+    # §10 item 9: groups_used lives on the shared Context, so a limit already reached
+    # in one phase carries into a later one, not reset per phase
+    a = world.create(world.project.id, "uv manages python")
+    b = world.create(world.project.id, "python is managed with uv")
+    victim = world.create(world.project.id, "the staging host is stage-3")
+    aged = shift_days(world.now, -60)
+    world.sql("UPDATE memories SET created = ?, updated = ?, last_read_at = ? WHERE id = ?",
+              aged, aged, aged, victim)
+    world.executor.replies = [
+        {"judgments": [{"kind": "merge", "ids": [a, b], "id": "", "by": "",
+                        "evidence_ids": [], "type": "project", "description": "python tooling",
+                        "body": "Use uv to manage python.", "reason": "same fact"}]},
+        {"decision": "delete", "reason": "no longer relevant", "evidence": []},
+    ]
+    limited = world.dream.model_copy(update={"max_groups_per_run": 1})
+    row = world.run(phases={"consolidate", "retire"}, settings=limited)
+    assert row.status == "completed"
+    text = world.report_text(row)
+    assert "applying merge" in text and " -> change" in text
+    assert f"not applied (group limit): retire {victim}\n" in text
 
 
 def _fail_header(monkeypatch):

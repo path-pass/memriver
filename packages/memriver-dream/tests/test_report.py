@@ -79,12 +79,12 @@ def test_safe_withholds_text_the_policy_hits_checked_whole_before_any_cut(tmp_pa
 
 def test_a_withheld_description_never_reaches_the_file(tmp_path):   # §10 item 12
     report = _report(tmp_path, _policy)
-    report.line(f'  aaaaaaaaaa "{report.safe("cue holding SECRET text")}"')
+    report.line(f'aaaaaaaaaa "{report.safe("cue holding SECRET text")}"')
     report.needs_you(f"contradiction aaaaaaaaaa: {report.safe('because SECRET')}")
     report.footer(status="completed", finished_at=T1)
     text = report.path.read_text()
     assert "SECRET" not in text
-    assert f'  aaaaaaaaaa "{WITHHELD}"\n' in text
+    assert f'aaaaaaaaaa "{WITHHELD}"\n' in text
     assert f"contradiction aaaaaaaaaa: {WITHHELD}\n" in text
 
 
@@ -95,6 +95,19 @@ def test_a_line_never_spans_two_lines(tmp_path):
     report.footer(status="completed", finished_at=T1)
     lines = report.path.read_text().splitlines()
     assert "first second" in lines and "one two" in lines
+
+
+def test_line_and_needs_you_strip_control_characters(tmp_path):
+    # dream.db values (e.g. a run id) can be hand-edited; the report is printed to a
+    # terminal, so an escape or NUL must never reach it, just as a newline does not
+    report = _report(tmp_path)
+    report.line("run \x1bred\x00 id")
+    report.needs_you("overturned \x1bred\x00 entry")
+    report.footer(status="completed", finished_at=T1)
+    text = report.path.read_text()
+    assert "\x1b" not in text and "\x00" not in text
+    assert "run red id\n" in text
+    assert "overturned red entry\n" in text
 
 
 def test_a_footer_after_an_unfinished_applying_line_marks_it_unknown(tmp_path):

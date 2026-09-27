@@ -85,6 +85,8 @@ def run_dream(services: Services, executor: Executor | None,
     is raised as it is: there is no run to record it on."""
     if phases is not None and not phases <= PHASES:
         raise ValueError(sorted(phases - PHASES))
+    if trigger not in ("schedule", "manual"):
+        raise ValueError(trigger)
     directory = Path(root) / DREAM_DIRECTORY
     reports = directory / DREAM_REPORTS_DIRECTORY
     with run_lock(root) as held:
@@ -102,6 +104,7 @@ def run_dream(services: Services, executor: Executor | None,
             mark_interrupted(reports / Path(row.report_file).name)
             store.finish_run(row.run_id, status="failed", finished_at=now)
         store.start_run(run)
+        footer_written = False
         try:
             report.header(run_id=run_id, started_at=now, trigger=trigger,
                           executor=executor_name)
@@ -118,17 +121,27 @@ def run_dream(services: Services, executor: Executor | None,
             removed = prune_reports(store, reports, now=now, days=days)
             report.line(f"reports removed: {len(removed)}")
             finished = clock()
-            # the row first: a footer that cannot be written still turns it to failed below
-            store.finish_run(run_id, status="completed", finished_at=finished)
+            # the footer first: written and only then does the row say so, so a footer
+            # that cannot be written at all never gets the row marked completed
             report.footer(status="completed", finished_at=finished)
+            footer_written = True
+            store.finish_run(run_id, status="completed", finished_at=finished)
         except BaseException:
             failed_at = clock()
             # the store or the report may be what failed: recording that must not
-            # replace the cause, which is re-raised as it is
-            with contextlib.suppress(Exception):
-                report.footer(status="failed", finished_at=failed_at)
-            with contextlib.suppress(Exception):
-                store.finish_run(run_id, status="failed", finished_at=failed_at)
+            # replace the cause, which is re-raised as it is. A footer already
+            # written (the completed one, above) is never written again; one that
+            # was never attempted or itself failed still gets one attempt here, and
+            # the row is marked failed only once some footer explains why -- a run
+            # that cannot record its own outcome at all is left `running`, for the
+            # next run's mark_interrupted to close it and finish its dangling line
+            if not footer_written:
+                with contextlib.suppress(Exception):
+                    report.footer(status="failed", finished_at=failed_at)
+                    footer_written = True
+            if footer_written:
+                with contextlib.suppress(Exception):
+                    store.finish_run(run_id, status="failed", finished_at=failed_at)
             raise
         return replace(run, status="completed", finished_at=finished)
 
@@ -181,8 +194,11 @@ def _phases(ctx: Context, wanted: frozenset[str] | set[str]) -> None:
     report = ctx.report
     report.section("Policy scan")
     scan.run(ctx)
-    if ctx.executor is None or ctx.transcripts is None or ctx.settings is None:
-        report.line("model phases skipped: no executor configured")
+    missing = [name for name, value in (("executor", ctx.executor),
+                                        ("transcripts", ctx.transcripts),
+                                        ("settings", ctx.settings)) if value is None]
+    if missing:
+        report.line(f"model phases skipped: no {' and '.join(missing)} configured")
         return
     if "summarize" in wanted:
         report.section("Session summaries")

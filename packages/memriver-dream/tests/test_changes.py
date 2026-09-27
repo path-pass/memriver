@@ -45,7 +45,7 @@ def test_a_group_is_applied_by_dream_and_reported_with_its_undo(world):
     assert ctx.groups_used == 1
     assert ctx.report.path.read_text().splitlines() == [
         f"applying rewrite {memory_id} -> change {change_id}; undo: memriver undo {change_id}",
-        f"  update {memory_id} v1→v2"]
+        f"update {memory_id} v1→v2"]
 
 
 def test_a_group_that_creates_says_so_and_lists_the_created_memory_after(world):
@@ -62,9 +62,9 @@ def test_a_group_that_creates_says_so_and_lists_the_created_memory_after(world):
     lines = ctx.report.path.read_text().splitlines()
     assert lines[0] == (f"applying merge {first} {second} (creates a memory) -> change "
                         f"{change_id}; undo: memriver undo {change_id}")
-    assert sorted(lines[1:]) == sorted([f"  create {created} new→v1",
-                                        f"  soft_delete {first} v1→v2",
-                                        f"  soft_delete {second} v1→v2"])
+    assert sorted(lines[1:]) == sorted([f"create {created} new→v1",
+                                        f"soft_delete {first} v1→v2",
+                                        f"soft_delete {second} v1→v2"])
 
 
 def test_a_conflict_is_reported_writes_nothing_and_does_not_count(world):   # §10 item 9
