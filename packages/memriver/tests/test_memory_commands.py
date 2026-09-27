@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import io
 import shlex
+import sqlite3
+from contextlib import closing
 from types import SimpleNamespace
 
 import pytest
@@ -129,6 +131,19 @@ def _gone(world, memory_id) -> bool:
 def _use_services(monkeypatch, world):
     """Make the commands use world.services, so a test can replace one method on it."""
     monkeypatch.setattr(memory_commands, "_services", lambda root, home: world.services)
+
+
+SECRET = "aws key AKIAIOSFODNN7EXAMPLE ok"          # from the secret-scanner tests
+
+
+def _plant_policy_hit(world, memory_id: str) -> None:
+    """Overwrite `memory_id`'s stored text so its current state now fails the content
+    policy -- the way core's test_a_soft_delete_of_a_memory_whose_text_now_hits_the_policy_is_refused
+    does, one statement behind the services' backs, committed."""
+    with closing(sqlite3.connect(world.store / "memriver.db")) as conn, conn:
+        conn.execute("UPDATE memories SET body = ? WHERE id = ?", (SECRET, memory_id))
+        conn.execute("UPDATE memory_versions SET body = ? WHERE memory_id = ?",
+                     (SECRET, memory_id))
 
 
 # --- history -----------------------------------------------------------------
@@ -397,6 +412,45 @@ def test_a_global_memory_is_soft_deleted_by_id_from_anywhere(world, tmp_path):
                           "(soft)\n")
     latest = _versions(world, shared)[-1]
     assert latest.deleted and latest.change.changed_by == "human"
+
+
+# spec C3-b: every apply is checked against the content policy, a soft delete included;
+# a memory whose stored text now hits the policy cannot be soft-deleted -- the way out
+# is the hard delete
+def test_a_soft_delete_of_a_project_memory_whose_text_now_hits_the_policy_is_refused(world):
+    memory_id = world.memory.id
+    _plant_policy_hit(world, memory_id)
+    with pytest.raises(ContentRejected) as excinfo:
+        world.services.memory.apply([SoftDelete(memory_id, 1)], changed_by="human")
+    rule_id = excinfo.value.rule_id
+    before = _versions(world, memory_id)
+
+    code, out = _delete(world, memory_id, version=1)
+
+    assert code == 2
+    assert out == (f"memriver delete: {memory_id} [project] in project {world.project.id}: "
+                   "the cue  (soft)\n"
+                   f"refused (content policy): {memory_id} fails rule {rule_id}; remove it "
+                   f"with memriver delete {memory_id} --hard\n")
+    assert _versions(world, memory_id) == before
+
+
+def test_a_soft_delete_of_a_global_memory_whose_text_now_hits_the_policy_is_refused(world,
+                                                                                    tmp_path):
+    shared = _global_memory(world)
+    _plant_policy_hit(world, shared)
+    with pytest.raises(ContentRejected) as excinfo:
+        world.services.memory.apply([SoftDelete(shared, 1)], changed_by="human")
+    rule_id = excinfo.value.rule_id
+    before = _versions(world, shared)
+
+    code, out = _delete(world, shared, version=1, cwd=tmp_path)
+
+    assert code == 2
+    assert out == (f"memriver delete: {shared} [project] in global: a shared rule  (soft)\n"
+                   f"refused (content policy): {shared} fails rule {rule_id}; remove it "
+                   f"with memriver delete {shared} --hard\n")
+    assert _versions(world, shared) == before
 
 
 def test_soft_delete_declined_at_eof_or_without_a_terminal_changes_nothing(world):

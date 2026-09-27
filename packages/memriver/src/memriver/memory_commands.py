@@ -363,6 +363,11 @@ def _soft_delete(services, memory_id: str, *, version: int, cwd: Path, yes: bool
         stdout.write(f"refused: {memory.id} changed since version {version}; run memriver "
                      f"show {memory.id} and retry\n")
         return 2
+    except ContentRejected as err:
+        stdout.write(f"refused (content policy): {visible(memory.id)} fails rule "
+                     f"{visible(err.rule_id)}; remove it with memriver delete "
+                     f"{visible(memory.id)} --hard\n")
+        return 2
     except StorageFailure:
         stdout.write(STORE_UNWRITABLE + "\n")
         return 2
