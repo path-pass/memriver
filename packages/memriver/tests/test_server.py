@@ -1272,3 +1272,39 @@ async def test_a_meta_value_of_the_wrong_shape_is_read_as_absent(world, monkeypa
     call_id_not_a_string = {"claudecode/toolUseId": 17}
     assert (await _call(claude_server, "memory_index", meta=call_id_not_a_string)) \
         .splitlines()[0] == _registered_header(world, world["dir"])
+
+
+@pytest.mark.parametrize(("harness", "changed_via", "read_harness"),
+                         [("cursor", "cursor", "cursor"), (None, None, "unknown")])
+async def test_mcp_writes_are_changed_by_mcp_via_the_harness_and_reads_name_it(
+        world, monkeypatch, harness, changed_via, read_harness):
+    # spec §3.4 / R6: changed_by and changed_via come from the entry point, never from a
+    # tool argument; a read records the harness it came through
+    from memriver import server as server_module
+
+    real_build = server_module.build_services
+    read_calls: list[dict] = []
+
+    def spying_build(*args, **kwargs):
+        services = real_build(*args, **kwargs)
+        real_read = services.memory.read
+
+        def read(memory_id, context, **read_kwargs):
+            read_calls.append(read_kwargs)
+            return real_read(memory_id, context, **read_kwargs)
+
+        monkeypatch.setattr(services.memory, "read", read)
+        return services
+
+    monkeypatch.setattr(server_module, "build_services", spying_build)
+    srv = build_server(root=world["store"], project_dir=world["dir"], harness=harness)
+    written = await _call(srv, "memory_write", content="v1", type="project")
+    await _call(srv, "memory_read", memory_id=written["id"])
+    await _call(srv, "memory_update", memory_id=written["id"], expected_version=1, content="v2")
+    await _call(srv, "memory_delete", memory_id=written["id"], expected_version=2)
+
+    assert read_calls == [{"harness": read_harness}]
+    services = build_services(Settings(root=world["store"]), root=world["store"])
+    versions = sorted(services.memory.versions(written["id"]), key=lambda v: v.version)
+    assert [v.change.changed_by for v in versions] == ["mcp", "mcp", "mcp"]
+    assert [v.change.changed_via for v in versions[1:]] == [changed_via, changed_via]

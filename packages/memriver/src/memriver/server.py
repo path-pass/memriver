@@ -13,6 +13,7 @@ from memriver_core import (
     GlobalReadOnly,
     MemoryNotFound,
     ProjectUnavailable,
+    StoreNeedsUpgrade,
     VersionConflict,
 )
 from memriver_core.bootstrap import build_services
@@ -36,6 +37,11 @@ Operation = Literal["read", "write", "update", "delete", "list", "confirm", "reg
 _SESSION_HARNESSES = ("claude-code", "codex")
 
 _COULD_NOT_READ_STORE = "could not read the memory store"
+
+# spec §9: a store below the schema this memriver needs is refused until it is
+# rebuilt offline; the agent is told who acts, never to act itself
+_UNSUPPORTED_STORE = ("The memory store is at schema version {version}, which this "
+                      "memriver does not support; no change was made.")
 
 # The global project is readable in every read/write set and writable in none, so
 # one refusal covers update and delete: it tells the agent to stop rather than
@@ -109,6 +115,8 @@ def _map_error(operation: Operation, err: Exception, *, memory_id: str | None = 
     the same error produces the same response byte for byte, and cannot leak
     a path, an errno or a driver message into one.
     """
+    if isinstance(err, StoreNeedsUpgrade):
+        return _UNSUPPORTED_STORE.format(version=err.version)
     if operation == "list":
         return _COULD_NOT_READ_STORE
     if isinstance(err, GlobalReadOnly):
@@ -160,7 +168,8 @@ def _map_error(operation: Operation, err: Exception, *, memory_id: str | None = 
 # _map_error it is only a named, expected refusal on the write path (and
 # only when it is not a UnicodeError) -- see `_fail`.
 _NAMED_ERRORS: tuple[type[Exception], ...] = (
-    ContentRejected, GlobalReadOnly, MemoryNotFound, ProjectUnavailable, VersionConflict,
+    ContentRejected, GlobalReadOnly, MemoryNotFound, ProjectUnavailable, StoreNeedsUpgrade,
+    VersionConflict,
 )
 
 
@@ -296,10 +305,19 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
     else:
         instructions = INSTRUCTIONS
         # resolved once, at build time: every tool answers for the same
-        # project for the life of the server, and the header cannot drift
-        directory_context = services.project.open_project_context(str(project_dir))
+        # project for the life of the server, and the header cannot drift. A
+        # store below the schema this memriver needs is remembered instead:
+        # every tool refuses with it until the store is rebuilt and the
+        # server restarts.
+        needs_upgrade: StoreNeedsUpgrade | None = None
+        try:
+            directory_context = services.project.open_project_context(str(project_dir))
+        except StoreNeedsUpgrade as err:
+            needs_upgrade, directory_context = err, None
 
         def context_of(ctx: Context) -> ProjectContext:
+            if needs_upgrade is not None:
+                raise StoreNeedsUpgrade(needs_upgrade.version)
             return directory_context
 
     mcp = FastMCP("memriver", instructions=instructions)
@@ -359,7 +377,7 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
             context = context_of(ctx)
             memory = memory_service.record(content=content, type=type, sync=sync,
                                            harness=source_harness, description=description,
-                                           context=context)
+                                           context=context, changed_by="mcp")
         except Exception as err:  # noqa: BLE001
             _fail("write", err, context_state=None if context is None else context.state,
                   session_keyed=context is not None and context.session_key is not None)
@@ -377,7 +395,8 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
         try:
             memory = memory_service.update(memory_id, content, context_of(ctx),
                                            expected_version=expected_version,
-                                           description=description)
+                                           description=description, changed_by="mcp",
+                                           changed_via=harness)
         except Exception as err:  # noqa: BLE001
             _fail("update", err, memory_id=memory_id)
         return {"id": memory.id, "updated": memory.updated, "version": memory.version}
@@ -389,7 +408,8 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
         Global entries are read-only; the call is refused."""
         try:
             memory_service.delete(memory_id, context_of(ctx),
-                                  expected_version=expected_version)
+                                  expected_version=expected_version, changed_by="mcp",
+                                  changed_via=harness)
         except Exception as err:  # noqa: BLE001
             _fail("delete", err, memory_id=memory_id)
         return {"deleted": memory_id}

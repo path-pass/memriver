@@ -1,10 +1,12 @@
 """Rendering and CLI wiring for `memriver doctor`.
 
 Every diagnostic rule lives in memriver_core, reached through
-``MaintenanceService.diagnose`` -- the projects section included. This module owns
-exit codes, fixed state messages, and JSON/human rendering; it never opens the
-store itself, and [DEFERRED-4] performs no harness-configuration audit (see
-spec S10).
+``MaintenanceService.diagnose`` -- the projects section included -- and
+``MaintenanceService.scan_policy``, whose hits (memory, version, rule id, never
+the text) doctor lists, as it lists the changes a hard delete left incomplete
+(not undoable; not a finding). This module owns exit codes, fixed state messages, and
+JSON/human rendering; it never opens the store itself, and [DEFERRED-4] performs
+no harness-configuration audit (see spec S10).
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from .project_context import visible
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from memriver_core.models import DiagnosticFinding, DiagnosticsReport
+    from memriver_core.models import DiagnosticFinding, DiagnosticsReport, PolicyHit
 
 # Fixed per spec S6.2; the inaccessible message is stderr-only and path-free.
 _STATE_MESSAGES = {
@@ -61,18 +63,47 @@ def _project_to_dict(project) -> dict:
             "deleted_memories": project.deleted_memories}
 
 
-def _render_json(report: DiagnosticsReport, stdout: IO[str]) -> None:
+def _policy_hit_to_dict(hit: PolicyHit) -> dict:
+    return {"memory_id": hit.memory_id, "version": hit.version, "rule_id": hit.rule_id,
+            "current": hit.current}
+
+
+def _render_json(report: DiagnosticsReport, hits: list[PolicyHit], stdout: IO[str]) -> None:
     import json
 
     stdout.write(json.dumps({
         "state": report.state,
         "initialized": report.initialized,
         "findings": [_finding_to_dict(f) for f in report.findings],
+        "policy_hits": [_policy_hit_to_dict(hit) for hit in hits],
+        "incomplete_changes": list(report.incomplete_changes),
         "projects": [_project_to_dict(p) for p in report.projects],
     }, indent=2) + "\n")
 
 
-def _render_human(report: DiagnosticsReport, stdout: IO[str]) -> None:
+def _render_policy_hits(hits: list[PolicyHit], stdout: IO[str]) -> None:
+    if not hits:
+        return
+    stdout.write("\ncontent policy hits:\n")
+    for hit in hits:
+        where = "current" if hit.current else "history"
+        stdout.write(f"  - {hit.memory_id} v{hit.version} ({where}): {_visible(hit.rule_id)}\n")
+    stdout.write("    suggestion: inspect with memriver history ID; memriver delete ID --hard "
+                 "removes every version\n")
+
+
+def _render_incomplete_changes(report: DiagnosticsReport, stdout: IO[str]) -> None:
+    # a legal hard delete's consequence, reported as a fact: never a finding, never
+    # part of the state or the exit code
+    if not report.incomplete_changes:
+        return
+    stdout.write("\nincomplete changes (a hard delete removed part of them; they cannot be "
+                 "undone):\n")
+    stdout.write("".join(f"  - {_visible(change_id)}\n"
+                         for change_id in report.incomplete_changes))
+
+
+def _render_human(report: DiagnosticsReport, hits: list[PolicyHit], stdout: IO[str]) -> None:
     stdout.write(_STATE_MESSAGES[report.state] + "\n")
     if not report.initialized and report.state != "uninitialized":
         stdout.write(_NOT_INITIALIZED_NOTE + "\n")
@@ -88,6 +119,8 @@ def _render_human(report: DiagnosticsReport, stdout: IO[str]) -> None:
             stdout.write(f"    locations: {locations}\n")
             stdout.write(f"    reason: {finding.reason}\n")
             stdout.write(f"    suggestion: {finding.suggestion}\n")
+    _render_policy_hits(hits, stdout)
+    _render_incomplete_changes(report, stdout)
     _render_projects_section(report, stdout)
 
 
@@ -108,15 +141,30 @@ def run_doctor(*, root: Path | None, json_output: bool, stale_days: int,
                stdout: IO[str], stderr: IO[str]) -> int:
     # imported here, not at module scope, to match the rest of the umbrella's
     # lazy-import convention for the memriver_core stack
+    from memriver_core import StoreNeedsUpgrade
     from memriver_core.bootstrap import build_services
     from memriver_core.settings import SettingsError, load_settings
 
     try:
         with quiet_core_logging():
             settings = load_settings(root_override=root)
-            maintenance_service = build_services(settings, root=settings.root).maintenance
-            report = maintenance_service.diagnose(stale_days=stale_days)
+            maintenance = build_services(settings, root=settings.root).maintenance
+            report = maintenance.diagnose(stale_days=stale_days)
+            # a store that is not there is never created just to be scanned
+            hits = maintenance.scan_policy() if report.initialized else []
     except Exception as err:  # noqa: BLE001 - see below
+        if isinstance(err, StoreNeedsUpgrade):
+            # spec §9: a store below the schema this memriver needs is refused
+            # like every other command does it -- exit 1, the one hint
+            from .views import unsupported_store
+
+            hint = unsupported_store(err)
+            stderr.write(f"memriver doctor: {hint}\n")
+            if json_output:
+                import json
+
+                stdout.write(json.dumps({"error": hint}) + "\n")
+            return 1
         # Everything from here to the report is "reading the store": a
         # StorageFailure, but also the settings load. Whatever the reason, exit 2
         # is the one honest answer -- exit 1 would claim findings doctor never
@@ -133,7 +181,8 @@ def run_doctor(*, root: Path | None, json_output: bool, stale_days: int,
             stdout.write(json.dumps({"error": reason}) + "\n")
         return 2
     if json_output:
-        _render_json(report, stdout)
+        _render_json(report, hits, stdout)
     else:
-        _render_human(report, stdout)
-    return _EXIT_CODES[report.state]
+        _render_human(report, hits, stdout)
+    # a policy hit is a finding to act on, whatever the store's own state
+    return max(_EXIT_CODES[report.state], 1 if hits else 0)

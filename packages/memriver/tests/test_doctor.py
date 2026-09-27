@@ -16,13 +16,14 @@ import sys
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from memriver import doctor
 from memriver.doctor import run_doctor
-from memriver_core import StorageFailure
+from memriver_core import StorageFailure, StoreNeedsUpgrade
 from memriver_core.bootstrap import Services, build_services
-from memriver_core.models import DiagnosticFinding, DiagnosticsReport
+from memriver_core.models import Create, DiagnosticFinding, DiagnosticsReport, PolicyHit
 from memriver_core.settings import Settings
 
 P = "aaaaaaaaaa"
@@ -59,6 +60,9 @@ class _FakeService:
     def diagnose(self, **kw) -> DiagnosticsReport:
         self._calls.append(kw["stale_days"])
         return self._report
+
+    def scan_policy(self) -> list:
+        return []
 
 
 def _only_maintenance(maintenance_service) -> Services:
@@ -226,6 +230,8 @@ _EXPECTED_JSON = {
         "reason": "stored entry cannot be decoded",
         "suggestion": "repair or remove the stored entry",
     }],
+    "policy_hits": [],
+    "incomplete_changes": [],
     "projects": [],
 }
 
@@ -242,7 +248,8 @@ def test_json_output_keeps_arrays_when_empty(monkeypatch, tmp_path):
     result = invoke_doctor(root=tmp_path, json_output=True)
 
     assert json.loads(result.stdout) == {
-        "state": "healthy", "initialized": True, "findings": [], "projects": [],
+        "state": "healthy", "initialized": True, "findings": [], "policy_hits": [],
+        "incomplete_changes": [], "projects": [],
     }
 
 
@@ -371,7 +378,8 @@ def test_doctor_reads_the_store_only(monkeypatch, tmp_path):
 
     assert (store / "memriver.db").read_bytes() == before
     assert list(sentinel_home.iterdir()) == []
-    assert set(json.loads(result.stdout)) == {"state", "initialized", "findings", "projects"}
+    assert set(json.loads(result.stdout)) == {"state", "initialized", "findings", "policy_hits",
+                                              "incomplete_changes", "projects"}
 
 
 def test_a_pre_release_store_is_degraded_and_says_it_is_not_initialized(tmp_path):
@@ -502,3 +510,108 @@ def test_doctor_json_reports_session_findings(tmp_path):
     assert "session-orphan" in kinds
     orphan = next(f for f in report["findings"] if f["kind"] == "session-orphan")
     assert orphan["location_hints"] == ["sessions/codex/pending-2"]
+
+
+class _PolicyMaintenance:
+    """A maintenance service whose diagnose() and scan_policy() give prepared answers;
+    hits None means scanning at all is a failure."""
+
+    def __init__(self, report: DiagnosticsReport, hits) -> None:
+        self._report, self._hits = report, hits
+
+    def diagnose(self, **kw) -> DiagnosticsReport:
+        return self._report
+
+    def scan_policy(self) -> list:
+        if self._hits is None:
+            raise AssertionError("a store that is not initialized is never scanned")
+        return self._hits
+
+
+def install_policy_hits(monkeypatch, hits, *, state="healthy", initialized=True) -> None:
+    maintenance = _PolicyMaintenance(
+        DiagnosticsReport(state=state, findings=(), initialized=initialized), hits)
+    monkeypatch.setattr("memriver_core.bootstrap.build_services",
+                        lambda settings, *, root=None, home=None:
+                        SimpleNamespace(maintenance=maintenance))
+
+
+# §8.2: doctor lists scan_policy() hits -- id, version, rule id, never the text
+def test_policy_hits_are_listed_by_version_and_rule_and_make_exit_one(monkeypatch, tmp_path):
+    install_policy_hits(monkeypatch, [PolicyHit("mmmmmmmmmm", 2, "github-pat", True),
+                                      PolicyHit("mmmmmmmmmm", 1, "memriver-instruction",
+                                                False)])
+    result = invoke_doctor(root=tmp_path)
+    assert result.exit_code == 1
+    assert result.stdout == (
+        "store is healthy\n"
+        "\ncontent policy hits:\n"
+        "  - mmmmmmmmmm v2 (current): github-pat\n"
+        "  - mmmmmmmmmm v1 (history): memriver-instruction\n"
+        "    suggestion: inspect with memriver history ID; memriver delete ID --hard "
+        "removes every version\n")
+
+
+def test_policy_hits_in_json(monkeypatch, tmp_path):
+    install_policy_hits(monkeypatch, [PolicyHit("mmmmmmmmmm", 1, "github-pat", False)])
+    result = invoke_doctor(root=tmp_path, json_output=True)
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["policy_hits"] == [
+        {"memory_id": "mmmmmmmmmm", "version": 1, "rule_id": "github-pat", "current": False}]
+
+
+def test_no_policy_hits_leave_the_output_and_exit_code_alone(monkeypatch, tmp_path):
+    install_policy_hits(monkeypatch, [])
+    result = invoke_doctor(root=tmp_path)
+    assert (result.exit_code, result.stdout) == (0, "store is healthy\n")
+
+
+def test_a_store_that_is_not_initialized_is_never_scanned(monkeypatch, tmp_path):
+    install_policy_hits(monkeypatch, None, state="uninitialized", initialized=False)
+    result = invoke_doctor(root=tmp_path)
+    assert (result.exit_code, result.stdout) == (
+        0, "store not initialized yet; run memriver install\n")
+
+
+# spec §9: every command exits 1 with the one hint on a store below the schema this
+# memriver needs
+@pytest.mark.parametrize("json_output", [False, True])
+def test_a_store_below_the_needed_schema_exits_one_with_the_hint(
+        monkeypatch, tmp_path, json_output):
+    class _OldStore:
+        def diagnose(self, **kw):
+            raise StoreNeedsUpgrade(3)
+
+    monkeypatch.setattr("memriver_core.bootstrap.build_services",
+                        lambda settings, *, root=None, home=None:
+                        SimpleNamespace(maintenance=_OldStore()))
+    result = invoke_doctor(root=tmp_path, json_output=json_output)
+    hint = "the memory store is at schema version 3; this memriver needs schema version 4"
+    assert (result.exit_code, result.stderr) == (1, f"memriver doctor: {hint}\n")
+    assert result.stdout == (json.dumps({"error": hint}) + "\n" if json_output else "")
+
+
+# spec §4.4: changes with fewer steps than step_count are listed as incomplete (not
+# undoable) -- the consequence of a legal hard delete, so not a finding and not "degraded"
+def test_a_change_a_hard_delete_cut_is_listed_as_incomplete_but_not_a_finding(tmp_path):
+    store, work = tmp_path / "mem", tmp_path / "work"
+    work.mkdir()
+    services = build_services(Settings(root=store), root=store)
+    services.project.ensure_global()
+    project = services.project.init_project("demo", services.project.plan_root(str(work)))
+    pair = services.memory.apply([Create(project.id, "project", "kept cue", "kept"),
+                                  Create(project.id, "project", "doomed cue", "doomed")],
+                                 changed_by="dream")
+    doomed = pair.steps[1].memory_id
+    plan = services.maintenance.plan_hard_delete(doomed)
+    services.maintenance.hard_delete(doomed, expected=plan.expected)
+
+    text = invoke_doctor(root=store)
+    assert text.exit_code == 0
+    assert text.stdout.startswith("store is healthy\n")
+    assert ("\nincomplete changes (a hard delete removed part of them; they cannot be "
+            f"undone):\n  - {pair.change_id}\n") in text.stdout
+
+    report = json.loads(invoke_doctor(root=store, json_output=True).stdout)
+    assert (report["state"], report["findings"]) == ("healthy", [])
+    assert report["incomplete_changes"] == [pair.change_id]

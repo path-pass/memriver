@@ -91,7 +91,8 @@ def capture_dispatch(argv: list[str], monkeypatch):
         return record
 
     for name in ("_serve", "_hook", "_install", "_view_list", "_view_show", "_view_search",
-                "_view_export", "_view_delete", "_view_sessions"):
+                "_view_export", "_view_sessions", "_memory_history", "_memory_restore",
+                "_memory_undo", "_memory_delete"):
         monkeypatch.setattr(cli, name, make_recorder(name))
     assert cli.main(list(argv)) == 0
     return seen[0]
@@ -147,15 +148,56 @@ def test_project_subcommands_parse(argv, handler, expected):
     (["sessions", "login bug", "--project", "aaaaaaaaaa", "--limit", "3", "--json"],
      "_view_sessions", {"query": "login bug", "project": "aaaaaaaaaa", "limit": 3,
                         "json": True}),
-    (["delete", "mmmmmmmmmm", "--version", "2"], "_view_delete",
-     {"memory_id": "mmmmmmmmmm", "version": 2, "yes": False}),
-    (["delete", "mmmmmmmmmm", "--version", "2", "--yes"], "_view_delete",
-     {"memory_id": "mmmmmmmmmm", "version": 2, "yes": True}),
 ])
 def test_view_subcommands_parse(argv, handler, expected, monkeypatch):
     args = capture_dispatch(argv, monkeypatch)
     assert args.handler is getattr(cli, handler)
     assert {key: getattr(args, key) for key in expected} == expected
+
+
+# §10 item 17: the §8.2 commands parse to their handlers
+@pytest.mark.parametrize(("argv", "handler", "expected"), [
+    (["history", "mmmmmmmmmm"], "_memory_history", {"memory_id": "mmmmmmmmmm", "show": None}),
+    (["history", "mmmmmmmmmm", "--show", "2"], "_memory_history", {"show": 2}),
+    (["restore", "mmmmmmmmmm", "--to", "1"], "_memory_restore",
+     {"memory_id": "mmmmmmmmmm", "to_version": 1, "yes": False}),
+    (["restore", "mmmmmmmmmm", "--to", "1", "--yes"], "_memory_restore", {"yes": True}),
+    (["undo", "cccccccccc", "--yes"], "_memory_undo", {"change_id": "cccccccccc", "yes": True}),
+    (["delete", "mmmmmmmmmm", "--version", "2"], "_memory_delete",
+     {"memory_id": "mmmmmmmmmm", "version": 2, "hard": False, "dry_run": False,
+      "confirm": None, "yes": False}),
+    (["delete", "mmmmmmmmmm", "--hard"], "_memory_delete",
+     {"version": None, "hard": True, "dry_run": False, "confirm": None}),
+    (["delete", "mmmmmmmmmm", "--hard", "--dry-run"], "_memory_delete",
+     {"hard": True, "dry_run": True, "confirm": None}),
+    (["delete", "mmmmmmmmmm", "--hard", "--confirm", "0123456789abcdef", "--yes"],
+     "_memory_delete", {"hard": True, "dry_run": False, "confirm": "0123456789abcdef",
+                        "yes": True}),
+])
+def test_memory_subcommands_parse(argv, handler, expected, monkeypatch):
+    args = capture_dispatch(argv, monkeypatch)
+    assert args.handler is getattr(cli, handler)
+    assert {key: getattr(args, key) for key in expected} == expected
+
+
+# §10 item 17: spec §8.2's delete flag matrix -- --version not with --hard; --dry-run and
+# --confirm only with --hard, and never together
+@pytest.mark.parametrize(("flags", "message"), [
+    ([], "--version is required without --hard"),
+    (["--version", "1", "--hard"], "--version is not accepted with --hard"),
+    (["--version", "1", "--dry-run"], "--dry-run and --confirm need --hard"),
+    (["--version", "1", "--confirm", "0123456789abcdef"], "--dry-run and --confirm need --hard"),
+    (["--hard", "--dry-run", "--confirm", "0123456789abcdef"], "not allowed with argument"),
+])
+def test_delete_flag_matrix_is_a_usage_error(tmp_path, monkeypatch, capsys, flags, message):
+    def never(*args, **kwargs):
+        raise AssertionError("run_delete must not run")
+
+    monkeypatch.setattr("memriver.memory_commands.run_delete", never)
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["delete", "mmmmmmmmmm", "--root", str(tmp_path / "mem"), *flags])
+    assert exit_info.value.code == 2
+    assert message in capsys.readouterr().err
 
 
 def test_project_without_a_subcommand_is_a_parser_error():

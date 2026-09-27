@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 from memriver.views import (
-    run_delete,
     run_export,
     run_list,
     run_search,
@@ -259,110 +258,6 @@ def test_export_refuses_an_existing_directory(world, tmp_path):
     code, out = _out(run_export, tmp_path / "snap", root=world["store"], home=world["home"],
                      cwd=tmp_path)
     assert code == 2 and "already exists" in out
-
-
-def _delete(world, *, version, answer="y", cwd=None):
-    out = io.StringIO()
-    code = run_delete(world["memory"].id, version=version, yes=False,
-                      root=world["store"], stdin_is_tty=True, input_fn=lambda _: answer,
-                      stdout=out, cwd=cwd or world["work"], home=world["home"])
-    return code, out.getvalue()
-
-
-def test_delete_is_soft_and_the_memory_stays_readable_to_the_management_view(world):
-    code, out = _delete(world, version=1)
-    assert code == 0 and out.endswith(f"deleted {world['memory'].id}\n")
-    code, out = _out(run_show, world["memory"].id, root=world["store"], deleted=True,
-                     home=world["home"])
-    assert code == 0 and "deleted:" in out
-
-
-def test_delete_needs_the_current_version(world):
-    code, out = _delete(world, version=5)
-    assert code == 2 and "changed since version 5" in out
-
-
-def test_delete_from_outside_the_project_names_the_owning_project(world, tmp_path):
-    out = io.StringIO()
-    code = run_delete(world["memory"].id, version=1, yes=False, root=world["store"],
-                      stdin_is_tty=True, input_fn=_never_called, stdout=out, cwd=tmp_path,
-                      home=world["home"])
-    assert code == 2
-    assert out.getvalue() == (
-        f"refused: {world['memory'].id} belongs to project {world['project'].id}, not this "
-        "directory's project; run memriver delete from that project's directory\n")
-    assert world["services"].memory.show(world["memory"].id).version == 1
-
-
-def test_delete_declined_changes_nothing(world):
-    code, _ = _delete(world, version=1, answer="n")
-    assert code == 1
-    assert world["services"].memory.show(world["memory"].id).version == 1
-
-
-def _never_called(_):
-    raise AssertionError("input_fn must not be called")
-
-
-def _plant_global_memory(world) -> str:
-    """A memory row inserted straight into the global project, behind the service's back."""
-    import sqlite3
-    from contextlib import closing
-
-    from memriver_core.models import Memory
-
-    global_id = world["services"].project.global_project_id()
-    memory = Memory.new(body="a global note", type="project", project_id=global_id,
-                        source={"harness": "t", "method": "agent"})
-    with closing(sqlite3.connect(world["store"] / "memriver.db")) as conn, conn:
-        conn.execute(
-            "INSERT INTO memories (id, project_id, type, source_harness, source_method, "
-            "trust, sync, description, body, created, updated, version, deleted_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (memory.id, memory.project_id, memory.type, memory.source["harness"],
-             memory.source["method"], memory.trust, int(memory.sync), memory.description,
-             memory.body, memory.created, memory.updated, memory.version, memory.deleted_at))
-    return memory.id
-
-
-def test_delete_refuses_a_global_memory_without_a_plan_line_or_prompt(world):
-    memory_id = _plant_global_memory(world)
-    out = io.StringIO()
-    code = run_delete(memory_id, version=1, yes=False, root=world["store"],
-                      stdin_is_tty=True, input_fn=_never_called, stdout=out,
-                      cwd=world["work"], home=world["home"])
-    assert code == 2
-    assert out.getvalue() == "refused: global memories cannot be deleted here\n"
-
-
-def test_delete_without_yes_over_a_non_tty_is_refused(world):
-    out = io.StringIO()
-    code = run_delete(world["memory"].id, version=1, yes=False, root=world["store"],
-                      stdin_is_tty=False, input_fn=_never_called, stdout=out,
-                      cwd=world["work"], home=world["home"])
-    assert code == 2
-    assert "stdin is not a terminal" in out.getvalue()
-
-
-def test_delete_with_yes_skips_the_prompt(world):
-    out = io.StringIO()
-    code = run_delete(world["memory"].id, version=1, yes=True, root=world["store"],
-                      stdin_is_tty=False, input_fn=_never_called, stdout=out,
-                      cwd=world["work"], home=world["home"])
-    assert code == 0
-    assert out.getvalue().endswith(f"deleted {world['memory'].id}\n")
-
-
-def test_delete_prompt_eof_is_treated_as_declined(world):
-    def _eof(_):
-        raise EOFError
-
-    out = io.StringIO()
-    code = run_delete(world["memory"].id, version=1, yes=False, root=world["store"],
-                      stdin_is_tty=True, input_fn=_eof, stdout=out, cwd=world["work"],
-                      home=world["home"])
-    assert code == 1
-    assert out.getvalue().endswith("aborted; nothing was changed\n")
 
 
 def test_list_reports_a_fixed_sentence_when_the_service_cannot_be_built(world, monkeypatch):

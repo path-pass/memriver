@@ -128,6 +128,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     _add_project_commands(commands)
     _add_view_commands(commands)
+    _add_memory_commands(commands)
     return parser
 
 
@@ -175,7 +176,7 @@ def _add_project_commands(commands) -> None:
 
 
 def _add_view_commands(commands) -> None:
-    """Human views of the store (read-only) and the one confirmed delete."""
+    """Human views of the store (read-only)."""
     def add(name: str, help_text: str) -> argparse.ArgumentParser:
         sub = commands.add_parser(name, help=help_text)
         sub.add_argument("--root", type=Path, default=None,
@@ -211,12 +212,49 @@ def _add_view_commands(commands) -> None:
                           help="emit the session_search item shape as JSON")
     sessions.set_defaults(handler=_view_sessions)
 
-    delete = add("delete", "delete one memory of the current directory's project")
+
+def _add_memory_commands(commands) -> None:
+    """Human management of memories: history, restore, undo and delete (never over MCP)."""
+    def add(name: str, help_text: str, *, confirmable: bool = True) -> argparse.ArgumentParser:
+        sub = commands.add_parser(name, help=help_text)
+        sub.add_argument("--root", type=Path, default=None,
+                         help="storage root (default: $MEMRIVER_ROOT or ~/agent-memory)")
+        if confirmable:
+            sub.add_argument("--yes", action="store_true", help="confirm without prompting")
+        return sub
+
+    history = add("history", "every version of one memory, global included",
+                  confirmable=False)
+    history.add_argument("memory_id")
+    history.add_argument("--show", type=_positive_int, default=None, metavar="N",
+                         help="print version N in full")
+    history.set_defaults(handler=_memory_history)
+
+    restore = add("restore", "make an earlier version's state the current one")
+    restore.add_argument("memory_id")
+    restore.add_argument("--to", dest="to_version", type=_positive_int, required=True,
+                         metavar="N", help="the version memriver history printed")
+    restore.set_defaults(handler=_memory_restore)
+
+    undo = add("undo", "undo one change, while none of its memories changed since")
+    undo.add_argument("change_id")
+    undo.set_defaults(handler=_memory_undo)
+
+    delete = add("delete", "delete one memory: soft (a global one by id, any other from its "
+                           "project's directory), or --hard with every memory citing it")
     delete.add_argument("memory_id")
-    delete.add_argument("--version", type=_positive_int, required=True,
-                        help="the version memriver show printed")
-    delete.add_argument("--yes", action="store_true", help="confirm without prompting")
-    delete.set_defaults(handler=_view_delete)
+    delete.add_argument("--version", type=_positive_int, default=None,
+                        help="the version memriver show printed (soft delete only)")
+    delete.add_argument("--hard", action="store_true",
+                        help="remove the memory, every memory citing it and all their "
+                             "versions, sources and reads")
+    second_step = delete.add_mutually_exclusive_group()
+    second_step.add_argument("--dry-run", action="store_true",
+                             help="with --hard: print the plan and its --confirm command")
+    second_step.add_argument("--confirm", default=None, metavar="CODE",
+                             help="with --hard: delete the plan --dry-run printed, without "
+                                  "prompting")
+    delete.set_defaults(handler=_memory_delete, usage_error=delete.error)
 
 
 def _positive_int(value: str) -> int:
@@ -283,8 +321,8 @@ def _install(args: argparse.Namespace) -> int:
     try:
         store_step = _store_step()
     except Exception as err:    # any other cause is one fixed, path-free line
-        if _is_settings_error(err):
-            raise                       # main() names the file and the field
+        if _is_settings_error(err) or _unsupported_store(err):
+            raise                       # main() names the file and field, or the refusal
         # a store that cannot even be read is not initialized behind the
         # user's back, and no harness is pointed at it
         sys.stderr.write("memriver install: the memory store could not be read; "
@@ -404,10 +442,42 @@ def _view_sessions(args: argparse.Namespace) -> int:
                         json_output=args.json, stdout=sys.stdout, home=Path.home())
 
 
-def _view_delete(args: argparse.Namespace) -> int:
-    from .views import run_delete
+def _memory_history(args: argparse.Namespace) -> int:
+    from .memory_commands import run_history
 
-    return run_delete(args.memory_id, version=args.version, yes=args.yes,
+    return run_history(args.memory_id, show=args.show, root=args.root, stdout=sys.stdout,
+                       home=Path.home())
+
+
+def _memory_restore(args: argparse.Namespace) -> int:
+    from .memory_commands import run_restore
+
+    return run_restore(args.memory_id, to_version=args.to_version, yes=args.yes,
+                       root=args.root, stdin_is_tty=sys.stdin.isatty(), input_fn=input,
+                       stdout=sys.stdout, home=Path.home())
+
+
+def _memory_undo(args: argparse.Namespace) -> int:
+    from .memory_commands import run_undo
+
+    return run_undo(args.change_id, yes=args.yes, root=args.root,
+                    stdin_is_tty=sys.stdin.isatty(), input_fn=input, stdout=sys.stdout,
+                    home=Path.home())
+
+
+def _memory_delete(args: argparse.Namespace) -> int:
+    from .memory_commands import run_delete
+
+    # spec §8.2's flag matrix: --version belongs to the soft delete, --dry-run and
+    # --confirm to --hard (the parser's group keeps those two apart)
+    if args.hard and args.version is not None:
+        args.usage_error("--version is not accepted with --hard")
+    if not args.hard and (args.dry_run or args.confirm is not None):
+        args.usage_error("--dry-run and --confirm need --hard")
+    if not args.hard and args.version is None:
+        args.usage_error("--version is required without --hard")
+    return run_delete(args.memory_id, version=args.version, hard=args.hard,
+                      dry_run=args.dry_run, confirm_code=args.confirm, yes=args.yes,
                       root=args.root, stdin_is_tty=sys.stdin.isatty(), input_fn=input,
                       stdout=sys.stdout, cwd=Path.cwd(), home=Path.home())
 
@@ -457,6 +527,14 @@ def _is_settings_error(err: BaseException) -> bool:
     return isinstance(err, SettingsError)
 
 
+def _unsupported_store(err: BaseException) -> bool:
+    """True for core's StoreNeedsUpgrade: every command refuses a store below the
+    schema this memriver needs. Imported only once something failed."""
+    from memriver_core import StoreNeedsUpgrade
+
+    return isinstance(err, StoreNeedsUpgrade)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     # before any handler can reach load_settings
     _configure_logging()
@@ -465,6 +543,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         return args.handler(args)
     except Exception as err:
+        if _unsupported_store(err):
+            # spec §9: one hint line and exit 1, from whichever handler read the store
+            from .views import unsupported_store
+
+            sys.stderr.write(f"memriver: {unsupported_store(err)}\n")
+            return 1
         # an unusable settings.toml or MEMRIVER_* value stops every command the
         # same way: one line naming the file and the field, exit 1, no traceback
         if not _is_settings_error(err):
