@@ -427,6 +427,11 @@ def _write_version(batch: _Batch, index: int, op_name: OpName, current: Memory,
     if after == before:
         raise BatchConflict(index, current.id, "same-state")
     # every resulting state passes today's policy, a deleted one included (spec §0.2)
+    # ponytail: every op's resulting text is scanned again here, while BEGIN IMMEDIATE
+    # holds the write lock, on top of the wrapper's own scan just before the call
+    # (application/memory.py's `_check_text`) -- one write pays for the policy check
+    # twice. Upgrade path: scan before taking the lock, and inside re-check only the
+    # text a concurrent writer could have changed since.
     rule = batch.check(after.description, after.body)
     if rule is not None:
         raise ContentRejected(rule_id=rule, memory_id=current.id)
