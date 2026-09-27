@@ -68,14 +68,19 @@ body:        All language runtimes on this machine are managed by mise, not nvm/
   entry out of hybrid/team sync, regardless of mode. It says nothing about
   `memriver dream`, once set up: dream sends any memory whose text passes the
   content policy -- `sync: false` included -- to the configured executor's
-  provider (README, *Dream*). An entry that cites sources is `sync: true` only
-  when its previous state and every cited version are.
+  provider (README, *Dream*). Creating or updating an entry with sources sets
+  `sync: true` only when its previous state and every cited version are;
+  restoring a version (directly, or as an undo) instead puts back that
+  version's own recorded `sync`, which can raise it again (*Updates, deletion,
+  and history*).
 - **trust** — provenance of the *source material*: `user` (stated
   explicitly), `agent` (judged worth keeping while working), or
   `untrusted-derived` (distilled from external content — web pages,
   third-party code, tool output). Trust gates future promotion into shared
-  storage. An entry that cites sources (*Storage*) gets the lowest trust of
-  its previous state and every cited version.
+  storage. Creating or updating an entry with sources (*Storage*) gives it the
+  lowest trust of its previous state and every cited version; restoring a
+  version (directly, or as an undo) instead puts back that version's own
+  recorded trust, which can raise it again.
 - Freshness is judged by `updated`, not by type.
 
 ## Storage
@@ -263,19 +268,21 @@ practice:
   the delete was soft or that the row remains: a later
   `memory_read`/`memory_search`/`memory_index` treats that id exactly as if
   it had never existed. `memory_delete` also requires `expected_version`.
-- Every write is one change: an id, a time, who made it (`mcp`, `dream` or
-  `human`, supplied by the entry point, never by a model) and through which
-  harness, and one step per memory it touched with its versions before and
-  after. A person reads the history (`memriver history`), makes an older
-  version current again (`memriver restore`, which also undeletes) and
-  reverses a whole change while none of the memories it touched has changed
-  since (`memriver undo`); agents see none of it, and MCP has no path to any
-  of it.
+- Every write that creates a version is one change: an id, a time, who made
+  it (`mcp`, `dream` or `human`, supplied by the entry point, never by a
+  model) and through which harness, and one step per memory it touched with
+  its versions before and after. A person reads the history (`memriver
+  history`), makes an older version current again (`memriver restore`, which
+  also undeletes) and reverses a whole change while none of the memories it
+  touched has changed since (`memriver undo`); agents see none of it, and MCP
+  has no path to any of it.
 - `memriver delete --hard` (the human CLI, *Management views*) is the only way
-  versions leave the store: it removes a memory with its whole history,
-  together with every memory citing any version of it, after showing that set
-  and checking it did not change. The change records stay, without the
-  deleted memories' steps. There is no MCP path to a hard delete.
+  versions leave the store, and it is not a change: it removes a memory's rows
+  outright -- its whole history, sources and reads -- together with every
+  memory citing any version of it, after showing that set and checking it did
+  not change, and with no content-policy check of its own. Existing change
+  records stay, without the deleted memories' steps, but a hard delete adds no
+  new one. There is no MCP path to a hard delete.
 - History stays local; replicating it is the sync layer's job.
 
 ## Management views
@@ -285,11 +292,12 @@ grammar) are read-only views for a person, not the MCP surface agents use:
 they see every project including global, `show --deleted` can surface a
 soft-deleted row and its `deleted_at`, and none of them go through a
 `ReadWriteSet` the way a session does. `memriver history` reads every version
-of one memory. `memriver delete`, `restore` and `undo` are the per-memory
-write paths outside MCP besides `memriver dream` (project `init`/`adopt`/
-`unbind`, `install` and `uninstall --purge-data` write too, but to the
-project rows or the whole store, never to one memory's content), each
-recorded as a change made by `human`. `delete` of an ordinary memory resolves
+of one memory. A soft `delete`, `restore` and `undo` are the per-memory write
+paths outside MCP besides `memriver dream` (project `init`/`adopt`/`unbind`,
+`install` and `uninstall --purge-data` write too, but to the project rows or
+the whole store, never to one memory's content), each recorded as a change
+made by `human`; a hard delete is the exception -- it makes no change of its
+own (*Updates, deletion, and history*). `delete` of an ordinary memory resolves
 the current directory the command itself runs in, the way directory mode does
 (*Storage*) -- not a session-routed agent's stored project, which
 `memory_delete` acts on instead; a global memory is deleted by id from
@@ -322,9 +330,13 @@ Every write passes a deterministic, LLM-free gate before touching disk:
 size limits, then a vendored secrets ruleset (gitleaks rules plus a small
 floor of provider rules with known upstream gaps). Rejections name the rule,
 never echo the secret. The gate is a pure function of the content, so
-local-only mode needs no network and no model. It applies to every write,
-`restore` and `undo` included; `memriver doctor` and the next dream run list
-any stored version that fails today's rules.
+local-only mode needs no network and no model. It applies to every write that
+creates a version -- a create, update or soft delete, `restore` and `undo`
+included -- so a soft delete of a memory whose stored text now fails a rule is
+refused too. A hard delete runs no check of its own: it deletes rows outright
+rather than writing a new state, which is how a secret already in the store
+is removed once a soft delete would be refused. `memriver doctor` and the
+next dream run list any stored version that fails today's rules.
 
 ## How harnesses learn the protocol
 

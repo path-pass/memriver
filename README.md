@@ -106,8 +106,8 @@ reports go to stderr.
   registered, not wherever it is now) and registers the project covering
   it. A session that already has a project never changes.
 - **A session memriver has never registered** (typically one resumed for the
-  first time since before you installed, or across a store upgrade) is not
-  silently bound to whatever directory it happens to be resumed in. It is
+  first time since before you installed) is not silently bound to whatever
+  directory it happens to be resumed in. It is
   marked "awaiting confirmation": only global memory is readable, every write
   is refused, and the agent is told to ask you and call `session_confirm`
   only once you agree to the project it proposes. When the directory it was
@@ -213,12 +213,14 @@ Known limits:
   `serve --harness` argument, so without it prompts are not counted, `Stop`
   never nudges, and the MCP server stays in directory mode. Then restart
   every harness session and MCP server that shares the store; a running
-  server keeps its old rules. This matters more with a schema upgrade: a
-  memriver of the previous release refuses the upgraded store outright as an
-  unrecognized schema, rather than merely behaving as before. A session that
-  was already running when you upgraded is not lost -- it is asked once, the
-  next time it resumes, whether to register to the project its directory
-  suggests (see *What your agent sees*).
+  server keeps its old rules. This release's store is schema version 4: a
+  store written by an earlier release is refused -- hooks do nothing, MCP
+  tools answer that the store's schema version is not supported and change
+  nothing, and every other command, `doctor`, `memriver dream run` and
+  `dream report` included, exits 1 with one line naming the store's schema
+  version; an earlier memriver refuses a v4 store. A session that already
+  has a row keeps being routed by it regardless of a software update (see
+  *What your agent sees*).
 - A store written by the pre-SQLite file layout (`global/`, `store.toml`,
   `projects/`, `memories/`, `registry/`) is not read or migrated; `memriver
   doctor` reports it as `legacy-layout`.
@@ -284,23 +286,24 @@ agent can read.
 
 **History.** Every change of a memory's description, body, sources or deleted
 state creates a new version, and old versions are kept for good; a write that
-changes nothing creates none. Every write -- an agent's `memory_write`,
-`memory_update` or `memory_delete`, a `memriver dream` change, `restore`,
-`undo`, `delete` -- is one *change* with a change id, recording who made it
-(`mcp`, `dream` or `human`, and through which harness) and which versions of
-which memories it produced. `history ID` lists every version of one memory,
-global included: its number, time, who made it, its change id, whether it is
+changes nothing creates none. Every one of those writes -- an agent's
+`memory_write`, `memory_update` or `memory_delete`, a `memriver dream`
+change, `restore`, `undo`, a soft `delete` -- is one *change* with a change
+id, recording who made it (`mcp`, `dream` or `human`, and through which
+harness) and which versions of which memories it produced. A hard delete
+makes no change of its own (*Hard delete*). `history ID` lists every version
+of one memory, global included: its number, time, who made it, its change id, whether it is
 deleted, its description and the ids of the memories it cites; `--show N`
 prints that version's body. A version with no change of its own shows as
 `imported`.
 
 **Restore.** `restore ID --to N` shows the current version and version N --
 what changes in content, sources and deleted state -- asks, and makes version
-N's state the new current version (a new version; nothing is rewritten).
-Restoring a version that was not deleted undeletes a memory. If the memory
-changed while you looked, it shows the new state and asks again. The content
-policy applies: a version that fails today's policy cannot be restored, and
-the rule is named.
+N's full recorded state -- trust and sync included -- the new current version
+(a new version; nothing is rewritten). Restoring a version that was not
+deleted undeletes a memory. If the memory changed while you looked, it shows
+the new state and asks again. The content policy applies: a version that
+fails today's policy cannot be restored, and the rule is named.
 
 **Undo.** `undo CHANGE_ID` shows the change -- each memory it touched and its
 project, global flagged -- and what undoing it does, asks, and applies the
@@ -322,22 +325,28 @@ command's current directory the way directory mode does, which is not always
 the project a session-routed agent would use (a session registered in A but
 resumed from B can delete only in A; running `delete` from B at that same
 moment acts on B). A soft-deleted memory keeps its history and comes back
-with `restore`.
+with `restore`. It passes the content policy like any other write: if the
+memory's stored text now fails a rule, the soft delete is refused and names
+the rule, pointing at `delete ID --hard` (`--dry-run` first, then
+`--confirm`) instead.
 
-**Hard delete.** `delete ID --hard` is the only thing that removes versions.
-It deletes the memory with its whole history, together with every memory
-that cites any version of it, repeated until nothing outside the set cites a
-member (it never follows a member's own sources). It prints that plan -- each
-memory, its project, its current version, whether it is deleted and the
-citations that pulled it in -- asks, and deletes exactly the set shown; if
-the set changed meanwhile, it prints the new plan and asks again.
+**Hard delete.** `delete ID --hard` is the only thing that removes versions,
+and it makes no change of its own: with no content-policy check, it deletes
+the plan's rows outright -- the memory with its whole history, together with
+every memory that cites any version of it, repeated until nothing outside the
+set cites a member (it never follows a member's own sources). It prints that
+plan -- each memory, its project, its current version, whether it is deleted
+and the citations that pulled it in -- asks, and deletes exactly the set
+shown; if the set changed meanwhile, it prints the new plan and asks again.
 `--dry-run` prints the plan and a command carrying `--confirm CODE`; that
 command deletes without asking only while the plan still matches the code,
 and otherwise exits 2 and deletes nothing. `--version` is not accepted with
-`--hard`, and `--dry-run` and `--confirm` only go with `--hard`. The change
-log keeps every change a hard delete touched, without the deleted memories'
-steps, and such a change can no longer be undone. This is how a secret that
-reached the store is removed: a soft delete keeps its text in the history.
+`--hard`, and `--dry-run` and `--confirm` only go with `--hard`. Existing
+change log entries a hard delete touched stay, without the deleted memories'
+steps, and can no longer be undone -- but the hard delete itself adds no new
+one. This is how a secret already in the store is removed even once its text
+fails today's policy: a soft delete would be refused (above), but a hard
+delete runs no such check.
 
 ## Sessions
 
@@ -556,9 +565,13 @@ uvx memriver doctor --stale-days 30   # flag memories not updated in 30 days (de
 uvx memriver doctor --root /path      # check a non-default store
 ```
 
-`doctor` diagnoses store problems in more detail than a tool call reports: an
-unrecognized schema version (`unknown-schema`; when the check cannot complete
-at all -- a garbage file, a missing table -- doctor takes the inaccessible
+A store below schema version 4 is refused before any of the checks below run:
+`doctor` prints the one line naming the store's schema version to stderr and
+exits 1, with `--json` still emitting `{"error": ...}` on stdout -- no report
+either way. On a store at schema version 4, `doctor` diagnoses problems in
+more detail than a tool call reports: a schema version this build does not
+recognize as current (`unknown-schema`; when the check cannot complete at
+all -- a garbage file, a missing table -- doctor takes the inaccessible
 branch below instead, exit 2), a failed SQLite integrity check (`integrity`),
 `memriver.db` as a symlink or anything but a regular file
 (`unsafe-database`), a memory whose project row no longer exists (`orphan`), a
