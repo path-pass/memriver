@@ -93,6 +93,21 @@ def test_a_merge_takes_the_type_of_one_of_its_originals(world):   # §10 item 10
     assert merged.type == "feedback"
 
 
+def test_a_merge_uses_the_version_a_memory_was_sent_at(world):
+    # the version code retires and cites is the one read for this pass, not always 1
+    a = world.create(world.project.id, "uv manages python")
+    b = world.create(world.project.id, "python is managed with uv")
+    world.services.memory.apply(
+        [Update(memory_id=a, expected_version=1, body="uv manages python (confirmed)")],
+        changed_by="test")
+    world.executor.replies = [_answer(_merge(a, b))]
+    result, _ = _pass(world)
+    assert result == PassResult(finished=True, digest=input_digest([(a, 2), (b, 1)]))
+    (merged,) = world.services.memory.memories(world.project.id)
+    assert set(_current(world, merged.id).sources) == {SourceRef(a, 2), SourceRef(b, 1)}
+    assert _current(world, a).deleted and _versions(world, a) == [1, 2, 3]
+
+
 @pytest.mark.parametrize(("case", "outcome", "field"), [
     ("unknown id", "invalid", "ids"), ("other scope", "invalid", "ids"),
     ("unstorable body", "invalid", "text"),
@@ -140,6 +155,23 @@ def test_a_rewrite_updates_in_place_citing_its_current_sources_plus_the_evidence
     assert f"applying rewrite {target} -> change" in text
 
 
+def test_a_rewrite_takes_the_evidence_at_the_version_sent_replacing_an_older_citation(world):
+    # the target already cites the evidence at an old version; the evidence moved on
+    # since, and the pass reads it at its current (sent) version, not the cited one
+    evidence = world.create(world.project.id, "the API moved to port 9000")
+    target = _cited(world, "The API runs on port 8000.", evidence)   # cites evidence@1
+    world.services.memory.apply(
+        [Update(memory_id=evidence, expected_version=1,
+                body="the API moved to port 9000, confirmed")], changed_by="test")   # now @2
+    world.executor.replies = [_answer(_judgment(
+        "rewrite", id=target, evidence_ids=(evidence,), description="api port",
+        body="The API runs on port 9000."))]
+    result, _ = _pass(world)
+    assert result.finished
+    rewritten = _current(world, target)
+    assert set(rewritten.sources) == {SourceRef(evidence, 2)}
+
+
 @pytest.mark.parametrize(("case", "outcome", "field"), [
     ("no evidence", "refused", "evidence_ids"), ("its own evidence", "refused", "evidence_ids"),
     ("itself among the evidence", "refused", "evidence_ids"),
@@ -177,6 +209,21 @@ def test_a_supersede_soft_deletes_the_older_entry_the_newer_replaces(world):   #
     assert '  description: "cue"\n' in text
 
 
+def test_a_supersede_uses_the_version_the_target_was_sent_at(world):
+    # the version code retires is the one read for this pass, not always 1
+    older = _dated(world, "deploys go through Jenkins", shift_days(world.now, -10))
+    newer = _dated(world, "deploys moved from Jenkins to GitHub Actions",
+                   shift_days(world.now, -1))
+    world.services.memory.apply(
+        [Update(memory_id=older, expected_version=1, body="deploys go through Jenkins (still)")],
+        changed_by="test")
+    world.sql("UPDATE memories SET updated = ? WHERE id = ?", shift_days(world.now, -10), older)
+    world.executor.replies = [_answer(_judgment("supersede", id=older, by=newer))]
+    result, _ = _pass(world)
+    assert result.finished
+    assert _current(world, older).deleted and _versions(world, older) == [1, 2, 3]
+
+
 @pytest.mark.parametrize(("case", "outcome", "field"), [
     ("by is older", "refused", "by"), ("same time", "refused", "by"),
     ("by itself", "refused", "id"), ("by unknown", "invalid", "id")])
@@ -192,6 +239,25 @@ def test_a_supersede_that_fails_validation_changes_nothing(world, case, outcome,
     assert result.finished is (outcome == "refused")
     assert f"{outcome} supersede: {field}\n" in text
     assert [_versions(world, memory_id) for memory_id in (older, newer, same)] == [[1], [1], [1]]
+
+
+@pytest.mark.parametrize(("case", "malformed"), [
+    ("target time unverifiable", "0000-hand-edited"),   # sorts before every valid year
+    ("by time unverifiable", "zzzz-hand-edited")])       # sorts after every valid year
+def test_a_supersede_cannot_prove_newer_from_a_malformed_stored_time(world, case, malformed):
+    # I2: entry() sends a malformed updated as "" (sendable_time); a raw string
+    # compare on the unsent field must never call that "newer" and delete on it -- the
+    # "by time" value is chosen to sort as falsely newer under a plain string compare
+    older = _dated(world, "deploys go through Jenkins", shift_days(world.now, -10))
+    newer = _dated(world, "deploys moved from Jenkins to GitHub Actions",
+                   shift_days(world.now, -1))
+    victim = older if case == "target time unverifiable" else newer
+    world.sql("UPDATE memories SET updated = ? WHERE id = ?", malformed, victim)
+    world.executor.replies = [_answer(_judgment("supersede", id=older, by=newer))]
+    result, text = _pass(world)
+    assert result.finished        # deterministic: reported, but the pass still finishes
+    assert "refused supersede: by\n" in text
+    assert _versions(world, older) == [1] and _versions(world, newer) == [1]
 
 
 def test_contradictions_and_instruction_like_entries_only_go_to_needs_you(world):
@@ -232,6 +298,22 @@ def test_no_change_finishes_the_pass_and_changes_nothing(world, answer):   # §1
     result, text = _pass(world)
     assert result == PassResult(finished=True, digest=input_digest([(a, 1)]))
     assert text.startswith("no change\n")
+    assert _versions(world, a) == [1]
+
+
+@pytest.mark.parametrize("case", ["unstorable", "policy hit"])
+def test_a_no_change_with_a_bad_reason_does_not_finish_the_pass(world, case):
+    # N1: no_change is dropped before it reaches _judge, but its reason must be
+    # checked exactly like every other kind's -- never a free pass to "finished"
+    a = world.create(world.project.id, "a fact")
+    reason = "x" + chr(0xD800) if case == "unstorable" else "key " + world.secret
+    outcome = "invalid" if case == "unstorable" else "rejected"
+    world.executor.replies = [_answer(_judgment("no_change", reason=reason))]
+    result, text = _pass(world)
+    assert not result.finished
+    assert f"{outcome} no_change: reason\n" in text
+    assert "no change\n" not in text
+    assert "ghp_" not in text
     assert _versions(world, a) == [1]
 
 

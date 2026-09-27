@@ -18,7 +18,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from memriver_core.models import single_line
+from memriver_core.models import is_timestamp, single_line
 from memriver_core.models.changes import Create, SoftDelete, SourceRef, Update
 from memriver_core.models.errors import MemoryNotFound
 
@@ -241,7 +241,10 @@ def _supersede(raw: dict, project_id: str, sent: dict[str, Memory],
         return Problem(INVALID, "id")
     if by == target:
         return Problem(REFUSED, "id")
-    if not sent[by].updated > sent[target].updated:
+    # a stored time that is not the fixed-width form (old or hand-edited data) proves
+    # nothing: refused, never taken as "newer" by a raw string compare
+    if not (is_timestamp(sent[by].updated) and is_timestamp(sent[target].updated)
+            and sent[by].updated > sent[target].updated):
         return Problem(REFUSED, "by")            # only a newer entry supersedes
     return ([target], [SoftDelete(memory_id=target, expected_version=sent[target].version)],
             sent[target].description)
@@ -301,10 +304,21 @@ def run(ctx: Context, project_id: str, scope: str) -> PassResult:
     if isinstance(result, str):
         ctx.report.line(f"not processed: {result}")
         return PassResult(finished=False, digest=digest)
-    judgments = [raw for raw in result["judgments"] if raw["kind"] != "no_change"]
-    if not judgments:
-        ctx.report.line("no change")
     finished = True
+    judgments = []
+    for raw in result["judgments"]:
+        if raw["kind"] != "no_change":
+            judgments.append(raw)
+            continue
+        # no_change is dropped, not judged, but its reason is checked exactly like
+        # every other kind's (§6.9): a malformed or policy-hit reason must not let
+        # the pass finish and the scope's digest get stored unnoticed
+        problem = reason_problem(ctx, raw["reason"])
+        if problem is not None:
+            ctx.report.line(f"{problem} no_change: reason")
+            finished = False
+    if not judgments and finished:
+        ctx.report.line("no change")
     for raw in judgments:
         finished = _judge(ctx, raw, project_id, sent, sources) and finished
     return PassResult(finished=finished, digest=digest)
