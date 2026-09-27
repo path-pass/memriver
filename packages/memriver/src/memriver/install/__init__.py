@@ -130,6 +130,7 @@ __all__ = [
     "operation_label",
     "render_change_summary",
     "render_removal_summary",
+    "replace_atomically",
     "run_config_uninstall",
     "run_install",
     "toml_roundtrip",
@@ -468,8 +469,8 @@ def _umask_mode() -> int:
     return 0o666 & ~mask
 
 
-def _replace_atomically(path: Path, data: bytes, mode: int,
-                        replace_file: Callable[[Path, Path], None]) -> None:
+def replace_atomically(path: Path, data: bytes, mode: int,
+                       replace_file: Callable[[Path, Path], None]) -> None:
     """Write through a same-directory temporary file, so the swap is atomic."""
     handle, name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".memriver-")
     temporary = Path(name)
@@ -549,7 +550,7 @@ def _write_target(snapshot: Snapshot, text: str, root: Path | None, stamp: str,
             recorded = True
             target.path.unlink()
         else:
-            _replace_atomically(target.path, data, mode, replace_file)
+            replace_atomically(target.path, data, mode, replace_file)
             record(write)
     except BaseException:
         # a write that never joined the rollback list takes its own directories
@@ -755,8 +756,8 @@ def _roll_back(writes: Sequence[_Write],
                     path.unlink(missing_ok=True)
                     report.append(f"removed {path} (this run created it)")
                 else:
-                    _replace_atomically(path, write.backup.read_bytes(),
-                                        write.original_mode, replace_file)
+                    replace_atomically(path, write.backup.read_bytes(),
+                                       write.original_mode, replace_file)
                     report.append(f"restored {path} from {write.backup}")
                 _remove_created_dirs(write.created_dirs)
                 continue
