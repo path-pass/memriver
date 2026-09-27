@@ -14,11 +14,15 @@ Three rules shape this module.
 
 *Never fail the harness.* A hook that exits non-zero, or writes a traceback to
 stdout, degrades the session it was meant to help. Every path here returns
-exit code 0. A store fault the core can degrade (an unreadable store) is
+exit code 0 but one. A store fault the core can degrade (an unreadable store) is
 injected as the labelled "unavailable" project context with an empty index.
 Any other SessionStart failure costs the user one fixed, path-free stderr
 line, never a message the agent can read as instructions; UserPromptSubmit,
-Stop and SessionEnd fail silently, with nothing on stdout or stderr.
+Stop and SessionEnd fail silently, with nothing on stdout or stderr. The one
+exception is an unusable settings.toml (or MEMRIVER_* value) on the events that
+load it: the user has to fix it, so every such event reports the same stderr
+line (naming the file and the field, never a value) and exits 1 -- a failing,
+non-blocking hook, whose stderr the harness shows.
 
 *Per-harness envelopes stay separate.* Every event keeps one encoder per
 harness even where both currently build the same object: the schemas are owned
@@ -193,6 +197,15 @@ def _session_key(harness: Harness, payload: dict[str, Any]) -> SessionKey | None
         return None
 
 
+def _settings_failure(err: Exception) -> HookResult | None:
+    """The settings error's one stderr line, or None for any other failure."""
+    from memriver_core.settings import SettingsError
+
+    if isinstance(err, SettingsError):
+        return HookResult(stderr=f"memriver: {err}\n", exit_code=1)
+    return None
+
+
 def _open_service(root: Path | None):
     # imported inside the function, not at module scope, so importing this
     # module (the CLI does, for every hook) does not pay for the core stack
@@ -296,8 +309,8 @@ def _user_prompt_submit(harness: Harness, payload_text: str, *, root: Path | Non
                 return HookResult()
             notice = _pending_notice(service, context)
         return HookResult(stdout=_emit(_USER_PROMPT_SUBMIT_ENCODERS[harness](notice)))
-    except Exception:  # noqa: BLE001 - never a message: the prompt must not leak
-        return HookResult()
+    except Exception as err:  # noqa: BLE001 - never a message: the prompt must not leak
+        return _settings_failure(err) or HookResult()
 
 
 def _session_end(harness: Harness, payload_text: str, *, root: Path | None) -> HookResult:
@@ -310,8 +323,8 @@ def _session_end(harness: Harness, payload_text: str, *, root: Path | None) -> H
                 if service.store_exists():
                     service.end_session(key)
         return HookResult()
-    except Exception:  # noqa: BLE001 - a missed end is never worth a message
-        return HookResult()
+    except Exception as err:  # noqa: BLE001 - a missed end is never worth a message
+        return _settings_failure(err) or HookResult()
 
 
 def _session_start(harness: Harness, payload_text: str, *, root: Path | None,
@@ -348,13 +361,13 @@ def _session_start(harness: Harness, payload_text: str, *, root: Path | None,
             index = context.header + "\n" + service.index(context)
         text = _compose(index, source, harness, notice)
         return HookResult(stdout=_emit(encode(text)))
-    except Exception:  # noqa: BLE001 - the reason belongs in `memriver doctor`
+    except Exception as err:  # noqa: BLE001 - the reason belongs in `memriver doctor`
         # one boundary around everything after the payload shape check --
         # encoder lookup, store read, composition and JSON emission alike --
         # because any of them escaping fails the session this hook exists to
         # help. path-free on purpose: this line can reach a shared terminal,
         # and a store path is the one thing here worth not printing.
-        return HookResult(stderr=STORE_UNAVAILABLE)
+        return _settings_failure(err) or HookResult(stderr=STORE_UNAVAILABLE)
 
 
 def _resolve_dir(harness: Harness, payload: dict[str, Any], project_dir: Path | None,

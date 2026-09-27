@@ -109,24 +109,27 @@ def run_doctor(*, root: Path | None, json_output: bool, stale_days: int,
     # imported here, not at module scope, to match the rest of the umbrella's
     # lazy-import convention for the memriver_core stack
     from memriver_core.bootstrap import build_service
-    from memriver_core.settings import load_settings
+    from memriver_core.settings import SettingsError, load_settings
 
     try:
         with quiet_core_logging():
             settings = load_settings(root_override=root)
             report = build_service(settings, root=settings.root).diagnose(stale_days=stale_days)
-    except Exception:  # noqa: BLE001 - see below
+    except Exception as err:  # noqa: BLE001 - see below
         # Everything from here to the report is "reading the store": a
-        # StorageFailure, but also the settings load, which does not swallow a
-        # bad MEMRIVER_* value. Whatever the reason, exit 2 is the one honest
-        # answer -- exit 1 would claim findings doctor never looked for -- and
-        # the reason itself stays out of stderr: a pydantic error echoes the
-        # rejected value, a traceback the absolute source paths.
-        stderr.write(_INACCESSIBLE_MESSAGE + "\n")
+        # StorageFailure, but also the settings load. Whatever the reason, exit 2
+        # is the one honest answer -- exit 1 would claim findings doctor never
+        # looked for -- and the reason itself stays out of stderr: a traceback
+        # carries the absolute source paths. An unusable settings.toml or
+        # MEMRIVER_* value is named instead (file and field, never the value):
+        # the user can act on that line.
+        settings_error = isinstance(err, SettingsError)
+        stderr.write(f"memriver: {err}\n" if settings_error else _INACCESSIBLE_MESSAGE + "\n")
         if json_output:
             import json
 
-            stdout.write(json.dumps({"error": _INACCESSIBLE_JSON_ERROR}) + "\n")
+            reason = str(err) if settings_error else _INACCESSIBLE_JSON_ERROR
+            stdout.write(json.dumps({"error": reason}) + "\n")
         return 2
     if json_output:
         _render_json(report, stdout)

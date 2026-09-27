@@ -146,36 +146,33 @@ def test_huge_stale_days_against_a_missing_store_stays_uninitialized(tmp_path):
     assert result.stdout == "store not initialized yet; run memriver install\n"
 
 
-def test_an_invalid_env_setting_is_the_same_path_free_exit_two(monkeypatch, tmp_path):
-    """`load_settings` is the one call doctor makes before the store is opened,
-    and the env layer's ValidationError is deliberately not swallowed there: it
-    echoes the offending value and, as a traceback, absolute source paths.
-    Neither may reach a terminal, and a doctor that never read the store must
-    not report findings (exit 1) either."""
+def test_an_invalid_env_setting_is_a_named_exit_two(monkeypatch, tmp_path):
+    """`load_settings` is the one call doctor makes before the store is opened. A
+    doctor that never read the store must not report findings (exit 1); the one
+    stderr line names the variable -- never the value, never a traceback."""
     monkeypatch.setenv("MEMRIVER_MAX_BODY_CHARS", "not-a-number")
     install_fake_diagnostics_service(monkeypatch, "healthy", 0)
     result = invoke_doctor(root=tmp_path)
 
     assert result.exit_code == 2
     assert result.stdout == ""
-    assert result.stderr == "memriver doctor: memory store is inaccessible\n"
+    assert result.stderr == "memriver: environment variable MEMRIVER_MAX_BODY_CHARS is invalid\n"
     assert "not-a-number" not in result.stderr
 
 
-def test_an_invalid_env_setting_with_json_still_emits_a_json_error_object(monkeypatch,
-                                                                          tmp_path):
-    """Same failure as above, but `--json` callers parse stdout as JSON and get
-    nothing today: a script piping `memriver doctor --json` cannot tell an
-    inaccessible store from a hang. The stderr line and exit code are
-    unchanged; stdout gets a machine-readable error object instead of silence."""
-    monkeypatch.setenv("MEMRIVER_MAX_BODY_CHARS", "not-a-number")
+def test_an_invalid_settings_file_with_json_emits_the_named_error(monkeypatch, tmp_path):
+    """`--json` callers parse stdout as JSON: the settings error is an error object
+    naming the file and the field, beside the same stderr line."""
+    (tmp_path / "settings.toml").write_text('max_body_chars = "not-a-number"\n',
+                                            encoding="utf-8")
     install_fake_diagnostics_service(monkeypatch, "healthy", 0)
     result = invoke_doctor(root=tmp_path, json_output=True)
 
     assert result.exit_code == 2
-    assert result.stderr == "memriver doctor: memory store is inaccessible\n"
+    assert result.stderr == "memriver: settings.toml is invalid: field max_body_chars\n"
     assert "not-a-number" not in result.stdout
-    assert json.loads(result.stdout) == {"error": "memory store is inaccessible"}
+    assert json.loads(result.stdout) == {
+        "error": "settings.toml is invalid: field max_body_chars"}
 
 
 def test_inaccessible_store_with_json_emits_a_json_error_object(monkeypatch, tmp_path):
@@ -191,11 +188,12 @@ def test_inaccessible_store_with_json_emits_a_json_error_object(monkeypatch, tmp
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
 def test_inaccessible_root_leaks_no_logging_line_to_real_stderr(tmp_path, capsys):
     """CLI-boundary regression against a REAL store, not the fake service:
-    memriver_core's own stdlib logging (e.g. an unreadable settings.toml) must
+    memriver_core's own stdlib logging (e.g. a skipped entry) must
     not slip onto the real process stderr alongside doctor's own output --
     logging.lastResort writes straight to sys.stderr, bypassing the `stderr`
     IO parameter entirely. A root with every permission removed cannot be
-    inspected at all, so it is inaccessible (exit 2), not a degraded store."""
+    inspected at all -- not even its settings.toml -- so it is exit 2 with the
+    settings line, not a degraded store."""
     root = tmp_path / "store"
     root.mkdir()
     root.chmod(0o000)
@@ -206,7 +204,7 @@ def test_inaccessible_root_leaks_no_logging_line_to_real_stderr(tmp_path, capsys
 
     assert result.exit_code == 2
     assert result.stdout == ""
-    assert result.stderr == "memriver doctor: memory store is inaccessible\n"
+    assert result.stderr == "memriver: settings.toml could not be read\n"
     assert str(root) not in result.stderr
     assert capsys.readouterr().err == ""
 
