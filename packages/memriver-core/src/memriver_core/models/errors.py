@@ -214,3 +214,23 @@ class SessionMoved(MemoryError):
 
     def __init__(self) -> None:
         super().__init__("session moved")
+
+
+UPGRADE_REASONS = frozenset({
+    "upgrade-running", "counts", "invariant", "foreign-keys", "schema",
+})
+
+
+class UpgradeRefused(MemoryError):
+    """The store was not rebuilt as schema v4; the live file is exactly as it was.
+
+    Fields only: `reason` is one of UPGRADE_REASONS -- another upgrade holds the
+    upgrade lock ("upgrade-running"), or the new file failed one verification
+    check (the other four). The CLI owns every sentence.
+    """
+
+    def __init__(self, reason: str) -> None:
+        if reason not in UPGRADE_REASONS:
+            raise ValueError(f"unknown upgrade reason: {reason!r}")
+        super().__init__(f"upgrade refused: {reason}")
+        self.reason = reason

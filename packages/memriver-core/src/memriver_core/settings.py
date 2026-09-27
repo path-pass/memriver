@@ -43,6 +43,9 @@ __all__ = [
     "STOP_NUDGE_INTERVAL_PROMPTS",
     "STOP_NUDGE_MIN_PROMPTS",
     "TOOL_CALL_RETENTION_S",
+    "UPGRADE_BACKUP_FILENAME",
+    "UPGRADE_LOCK_FILENAME",
+    "UPGRADE_WORK_FILENAME",
     "Settings",
     "SettingsError",
     "load_settings",
@@ -83,6 +86,10 @@ SESSION_SEARCH_LIMIT_DEFAULT = 10
 SESSION_SEARCH_LIMIT_MAX = 50
 TOOL_CALL_RETENTION_S = 3600            # how long a Claude Code call -> session mapping is kept
 SESSION_SUMMARY_MAX_CHARS = 1_200       # one published session summary
+# the offline rebuild to schema v4 (spec §9), each relative to the store root
+UPGRADE_LOCK_FILENAME = ".upgrade.lock"            # one upgrade at a time
+UPGRADE_WORK_FILENAME = "memriver.db.upgrade"      # the new file, built beside the live one
+UPGRADE_BACKUP_FILENAME = "memriver.db.v3-backup"  # the old file's byte copy
 
 # the settings file load_settings is building from, or None: a direct
 # Settings(...) construction reads no file. A ContextVar rather than a class

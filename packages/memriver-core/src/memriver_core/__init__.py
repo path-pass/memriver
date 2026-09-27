@@ -18,6 +18,7 @@ from .models.errors import (
     StorageFailure,
     StoreNeedsUpgrade,
     UndoRefused,
+    UpgradeRefused,
     VersionConflict,
 )
 
@@ -37,6 +38,7 @@ __all__ = [
     "StorageFailure",
     "StoreNeedsUpgrade",
     "UndoRefused",
+    "UpgradeRefused",
     "VersionConflict",
     "__version__",
 ]
