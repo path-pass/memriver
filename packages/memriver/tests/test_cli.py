@@ -15,7 +15,7 @@ import pytest
 from memriver import cli, hooks
 from memriver.hooks import HookResult
 from memriver.protocol_text import STOP_NUDGE
-from memriver_core.bootstrap import build_service
+from memriver_core.bootstrap import build_services
 from memriver_core.models import SessionKey
 from memriver_core.settings import STOP_NUDGE_MIN_PROMPTS, Settings
 
@@ -249,18 +249,18 @@ def _git_repo(tmp_path, name: str):
 
 def _register(root, repo) -> str:
     """Create a project and bind the fixture repo, the way `memriver project init` would."""
-    service = build_service(Settings(root=root), root=root)
-    return service.init_project(repo.name, service.plan_root(str(repo))).id
+    services = build_services(Settings(root=root), root=root)
+    return services.project.init_project(repo.name, services.project.plan_root(str(repo))).id
 
 
 def _due_session(root, directory) -> None:
     """A Codex session "s1" registered at ``directory``, due its first Stop nudge."""
-    service = build_service(Settings(root=root), root=root)
+    services = build_services(Settings(root=root), root=root)
     key = SessionKey("codex", "s1")
-    service.start_session(key, source="startup", entry_dir=str(directory),
+    services.session.start_session(key, source="startup", entry_dir=str(directory),
                           transcript_path=None)
     for _ in range(STOP_NUDGE_MIN_PROMPTS):
-        service.observe_prompt(key, prompt="next step", entry_dir=str(directory),
+        services.session.observe_prompt(key, prompt="next step", entry_dir=str(directory),
                                transcript_path=None)
 
 
@@ -623,7 +623,7 @@ def test_configure_logging_replaces_a_preattached_null_handler(tmp_path, capsys)
 
 def test_store_step_is_none_once_global_exists(monkeypatch, tmp_path):
     monkeypatch.setenv("MEMRIVER_ROOT", str(tmp_path / "store"))
-    build_service(Settings(root=tmp_path / "store"), root=tmp_path / "store").ensure_global()
+    build_services(Settings(root=tmp_path / "store"), root=tmp_path / "store").project.ensure_global()
     assert cli._store_step() is None
 
 
@@ -634,8 +634,8 @@ def test_store_step_for_an_uninitialized_store_creates_global_only_when_applied(
     assert "memory store (required): create the global project in" in step.summary
     assert not (tmp_path / "store" / "memriver.db").exists()    # building it writes nothing
     line = step.apply()
-    global_id = build_service(Settings(root=tmp_path / "store"),
-                              root=tmp_path / "store").global_project_id()
+    global_id = build_services(Settings(root=tmp_path / "store"),
+                              root=tmp_path / "store").project.global_project_id()
     assert line == f"memory store: ready (global project {global_id})"
 
 

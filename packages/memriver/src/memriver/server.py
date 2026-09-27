@@ -15,7 +15,7 @@ from memriver_core import (
     ProjectUnavailable,
     VersionConflict,
 )
-from memriver_core.bootstrap import build_service
+from memriver_core.bootstrap import build_services
 from memriver_core.models import ID_RE, Memory, ProjectContext, SessionKey
 from memriver_core.settings import SEARCH_SNIPPET_CHARS, Settings
 
@@ -230,7 +230,7 @@ def _meta_as_dict(meta: Any) -> dict:
     return dumped if isinstance(dumped, Mapping) else {}
 
 
-def _session_key(harness: str, ctx: Context, service: Any) -> SessionKey | None:
+def _session_key(harness: str, ctx: Context, session_service: Any) -> SessionKey | None:
     """The calling session, read from this call alone; None when it names none validly."""
     request_context = ctx.request_context
     meta = request_context.meta if request_context is not None else None
@@ -239,7 +239,8 @@ def _session_key(harness: str, ctx: Context, service: Any) -> SessionKey | None:
         # Claude Code keeps this server across /clear and an in-app /resume,
         # so its environment keeps naming the startup session; the PreToolUse
         # hook mapped this call's id to the session making it (spec U15)
-        mapped = service.session_key_for_call(harness, data.get("claudecode/toolUseId"))
+        mapped = session_service.session_key_for_call(harness,
+                                                      data.get("claudecode/toolUseId"))
         if mapped is not None:
             return mapped
         session_id = os.environ.get("CLAUDE_CODE_SESSION_ID")
@@ -278,7 +279,9 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
     `Settings()` supplies them from the environment and the built-in defaults.
     """
     settings = settings if settings is not None else Settings()
-    service = build_service(settings, root=root)
+    services = build_services(settings, root=root)
+    memory_service = services.memory
+    session_service = services.session
     source_harness = harness or "unknown"
     session_mode = harness in _SESSION_HARNESSES
 
@@ -288,12 +291,13 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
         def context_of(ctx: Context) -> ProjectContext:
             # per call, from the call itself: parallel calls never share a
             # "current session", and nothing is cached between them
-            return service.session_context(_session_key(harness, ctx, service))
+            return session_service.session_context(
+                _session_key(harness, ctx, session_service))
     else:
         instructions = INSTRUCTIONS
         # resolved once, at build time: every tool answers for the same
         # project for the life of the server, and the header cannot drift
-        directory_context = service.open_project_context(str(project_dir))
+        directory_context = services.project.open_project_context(str(project_dir))
 
         def context_of(ctx: Context) -> ProjectContext:
             return directory_context
@@ -302,10 +306,10 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
 
     # Tools are plain `def`: FastMCP runs each in a worker thread, so a slow
     # SQLite wait for another process's write lock cannot stall the event
-    # loop. Shared state is safe under that: `service` and a directory-mode
+    # loop. Shared state is safe under that: the services and a directory-mode
     # context are built once above and only read; a session-mode context is
     # a local of each call; each call opens its own SQLite connection; and
-    # the service's lazy content-policy build can race two callers, but
+    # a service's lazy content-policy build can race two callers, but
     # Python serializes the scanner module's import and an attribute
     # assignment never exposes a half-built object, so no lock is needed.
 
@@ -315,7 +319,7 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
         memories followed by global's."""
         try:
             context = context_of(ctx)
-            return context.header + "\n" + service.index(context)
+            return context.header + "\n" + memory_service.index(context)
         except Exception as err:  # noqa: BLE001
             _fail("list", err)
 
@@ -324,7 +328,7 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
         """Read one memory in full by id, including the version that
         memory_update and memory_delete must name."""
         try:
-            return _full(service.read(memory_id, context_of(ctx)))
+            return _full(memory_service.read(memory_id, context_of(ctx)))
         except Exception as err:  # noqa: BLE001
             _fail("read", err, memory_id=memory_id)
 
@@ -336,7 +340,7 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
             context = context_of(ctx)
             global_project_id = context.read_write_set.global_project_id
             return [_hit(m, "global" if m.project_id == global_project_id else "project")
-                    for m in service.search(query, context, limit)]
+                    for m in memory_service.search(query, context, limit)]
         except Exception as err:  # noqa: BLE001
             _fail("list", err)
 
@@ -353,9 +357,9 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
         context = None
         try:
             context = context_of(ctx)
-            memory = service.record(content=content, type=type, sync=sync,
-                                    harness=source_harness, description=description,
-                                    context=context)
+            memory = memory_service.record(content=content, type=type, sync=sync,
+                                           harness=source_harness, description=description,
+                                           context=context)
         except Exception as err:  # noqa: BLE001
             _fail("write", err, context_state=None if context is None else context.state,
                   session_keyed=context is not None and context.session_key is not None)
@@ -371,8 +375,9 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
         description: omit to keep the existing one; pass a string to replace
         it, or "" to clear it."""
         try:
-            memory = service.update(memory_id, content, context_of(ctx),
-                                    expected_version=expected_version, description=description)
+            memory = memory_service.update(memory_id, content, context_of(ctx),
+                                           expected_version=expected_version,
+                                           description=description)
         except Exception as err:  # noqa: BLE001
             _fail("update", err, memory_id=memory_id)
         return {"id": memory.id, "updated": memory.updated, "version": memory.version}
@@ -383,7 +388,8 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
         expected_version: the version memory_read returned.
         Global entries are read-only; the call is refused."""
         try:
-            service.delete(memory_id, context_of(ctx), expected_version=expected_version)
+            memory_service.delete(memory_id, context_of(ctx),
+                                  expected_version=expected_version)
         except Exception as err:  # noqa: BLE001
             _fail("delete", err, memory_id=memory_id)
         return {"deleted": memory_id}
@@ -394,7 +400,8 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
             raise ToolError(_SESSION_TOOLS_UNAVAILABLE, log_level=logging.DEBUG)
         try:
             return [session_item(session)
-                    for session in service.search_sessions(query, context_of(ctx), limit)]
+                    for session in session_service.search_sessions(query, context_of(ctx),
+                                                                   limit)]
         except Exception as err:  # noqa: BLE001
             _fail("list", err)
 
@@ -405,10 +412,10 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
         if not session_mode:
             raise ToolError(_SESSION_TOOLS_UNAVAILABLE, log_level=logging.DEBUG)
         try:
-            key = _session_key(harness, ctx, service)
+            key = _session_key(harness, ctx, session_service)
             if key is None:
                 raise ProjectUnavailable(reason="unidentified")
-            return {"header": service.confirm_session(key).header}
+            return {"header": session_service.confirm_session(key).header}
         except Exception as err:  # noqa: BLE001
             _fail("confirm", err)
 
@@ -421,10 +428,10 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
         if not session_mode:
             raise ToolError(_SESSION_TOOLS_UNAVAILABLE, log_level=logging.DEBUG)
         try:
-            key = _session_key(harness, ctx, service)
+            key = _session_key(harness, ctx, session_service)
             if key is None:
                 raise ProjectUnavailable(reason="unidentified")
-            context = service.register_session(key)
+            context = session_service.register_session(key)
         except Exception as err:  # noqa: BLE001
             _fail("register", err)
         if context.state in ("none", "pending"):

@@ -1,6 +1,6 @@
-"""Backend-neutral diagnostics policy over a `StoreInspector`.
+"""MaintenanceService: the store's real checks, backend-neutral over a `StoreInspector`.
 
-`DiagnosticsService` owns the checks no backend should have to reimplement --
+`diagnose` owns the checks no backend should have to reimplement --
 staleness, near-duplicate bodies -- and maps backend-reported findings into
 the same neutral shape. It never touches a file, a table, or any other
 storage detail; that all lives behind `StoreInspector`.
@@ -147,12 +147,12 @@ def _derive_state(report: StoreReport,
     return "healthy"
 
 
-class DiagnosticsService:
+class MaintenanceService:
     def __init__(self, inspector: StoreInspector) -> None:
         self._inspector = inspector
 
-    def run(self, *, now: str | None = None, stale_days: int = 90,
-            jaccard_threshold: float = 0.6) -> DiagnosticsReport:
+    def diagnose(self, *, now: str | None = None, stale_days: int = 90,
+                 jaccard_threshold: float = 0.6) -> DiagnosticsReport:
         if stale_days <= 0:
             raise ValueError("stale_days must be a positive number of days")
         if not (0 < jaccard_threshold <= 1):

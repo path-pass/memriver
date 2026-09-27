@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from memriver.project_commands import run_adopt, run_explain, run_init, run_unbind
 from memriver_core import ProjectNotFound, StorageFailure
-from memriver_core.bootstrap import build_service
+from memriver_core.bootstrap import build_services
 from memriver_core.models import ID_RE, new_id
 from memriver_core.settings import Settings
 
@@ -53,13 +53,13 @@ def env(tmp_path):
     return {"home": home, "work": work, "store": store}
 
 
-def _service(env):
-    return build_service(Settings(root=env["store"]), root=env["store"], home=env["home"])
+def _services(env):
+    return build_services(Settings(root=env["store"]), root=env["store"], home=env["home"])
 
 
 def _init_bound(env, directory: Path, name: str = "work") -> str:
-    service = _service(env)
-    return service.init_project(name, service.plan_root(str(directory))).id
+    services = _services(env)
+    return services.project.init_project(name, services.project.plan_root(str(directory))).id
 
 
 def _project(env, name: str = "work") -> str:
@@ -67,9 +67,9 @@ def _project(env, name: str = "work") -> str:
     scratch = env["home"] / "scratch" / new_id()
     scratch.mkdir(parents=True)
     pid = _init_bound(env, scratch, name)
-    service = _service(env)
-    plan, _ = service.plan_unbind(pid, str(scratch.resolve()), str(env["work"]))
-    service.unbind(plan)
+    services = _services(env)
+    plan, _ = services.project.plan_unbind(pid, str(scratch.resolve()), str(env["work"]))
+    services.project.unbind(plan)
     return pid
 
 
@@ -87,11 +87,11 @@ def _unbind(env, pid, directory, **kw):
 
 
 def _nothing_created(env) -> bool:
-    return not (env["store"] / "memriver.db").exists() or _service(env).list_projects() == []
+    return not (env["store"] / "memriver.db").exists() or _services(env).project.list_projects() == []
 
 
 def _resolved_id(env, directory: Path) -> str | None:
-    return _service(env).open_project_context(str(directory)).read_write_set.project_id
+    return _services(env).project.open_project_context(str(directory)).read_write_set.project_id
 
 
 # --- init -----------------------------------------------------------------------
@@ -100,7 +100,7 @@ def test_init_creates_a_named_project_and_binds_the_directory(env):
     before = _tree(env["work"])
     code, out = _init(env)
     assert code == 0
-    (registered,) = _service(env).list_projects()
+    (registered,) = _services(env).project.list_projects()
     assert ID_RE.fullmatch(registered.id)
     assert registered.root == str(env["work"].resolve())
     assert registered.name == "work"
@@ -115,7 +115,7 @@ def test_init_creates_a_named_project_and_binds_the_directory(env):
 def test_init_takes_a_name_option_and_refuses_a_bad_name_before_the_prompt(env):
     code, _ = _init(env, name="  My Work  ", yes=True)
     assert code == 0
-    (registered,) = _service(env).list_projects()
+    (registered,) = _services(env).project.list_projects()
     assert registered.name == "My Work"
     prompts: list[str] = []
     out = io.StringIO()
@@ -200,7 +200,7 @@ def test_init_refuses_missing_directory_and_already_bound_dir(env):
     before = _tree(env["work"])
     code, out = _init(env, env["work"], yes=True)
     assert code == 2 and f"already bound to project {pid}" in out
-    assert len(_service(env).list_projects()) == 1
+    assert len(_services(env).project.list_projects()) == 1
     assert _tree(env["work"]) == before
 
 
@@ -213,7 +213,7 @@ def test_init_refuses_an_unaddressable_path_without_a_traceback(env):
 def test_init_inside_a_registered_parent_is_allowed(env):
     parent = _init_bound(env, env["work"])
     code, _ = _init(env, env["work"] / "frontend", yes=True)
-    assert code == 0 and len(_service(env).list_projects()) == 2
+    assert code == 0 and len(_services(env).project.list_projects()) == 2
     assert _resolved_id(env, env["work"] / "frontend") != parent
     assert _resolved_id(env, env["work"] / "backend") == parent
 
@@ -243,7 +243,7 @@ def test_init_independent_list_never_forges_a_fake_project_line(env):
     canonical_work = env["work"].resolve()
     fake_id = new_id()
     forged = f"{canonical_work}/child\n    {fake_id}: /forged"
-    _service(env).ensure_global()
+    _services(env).project.ensure_global()
     _sql(env["store"], "INSERT INTO projects (id, name, root, is_global) VALUES (?, ?, ?, 0)",
          new_id(), "forger", forged)
     code, out = _init(env, yes=True)
@@ -305,7 +305,7 @@ def test_init_is_one_transaction_and_a_changed_target_creates_nothing(env):
                     input_fn=answer_after_breaking_the_target, stdout=out, cwd=env["work"].parent,
                     home=env["home"])
     assert code == 2 and "plan is out of date" in out.getvalue()
-    assert _service(env).list_projects() == []
+    assert _services(env).project.list_projects() == []
 
 
 @pytest.mark.parametrize("command", ["init", "adopt", "unbind"])
@@ -315,14 +315,14 @@ def test_a_store_link_redirected_during_the_prompt_is_refused(env, command):
     other.mkdir()
     link = env["home"] / "store-link"
     link.symlink_to(real)
-    service = build_service(Settings(root=link), root=link, home=env["home"])
-    service.ensure_global()
+    services = build_services(Settings(root=link), root=link, home=env["home"])
+    services.project.ensure_global()
     pid = None
     if command != "init":
-        pid = service.init_project("work", service.plan_root(str(env["work"]))).id
+        pid = services.project.init_project("work", services.project.plan_root(str(env["work"]))).id
         if command == "adopt":
-            plan, _ = service.plan_unbind(pid, str(env["work"].resolve()), str(env["work"]))
-            service.unbind(plan)
+            plan, _ = services.project.plan_unbind(pid, str(env["work"].resolve()), str(env["work"]))
+            services.project.unbind(plan)
 
     def redirect(_prompt):
         link.unlink()
@@ -356,10 +356,10 @@ def test_adopt_binds_an_existing_project_and_is_idempotent(env):
     code, out = _adopt(env, pid, env["work"], yes=True)
     assert code == 0 and "nothing to do" in out
     code, _ = _unbind(env, pid, env["work"], yes=True)
-    assert code == 0 and _service(env).read_project(pid).root is None
+    assert code == 0 and _services(env).project.read_project(pid).root is None
     code, out = _adopt(env, pid, env["work"], yes=True)
     assert code == 0 and "project: work" in out
-    assert _service(env).read_project(pid).root == str(env["work"].resolve())
+    assert _services(env).project.read_project(pid).root == str(env["work"].resolve())
     other = env["home"] / "99_git" / "other"
     other.mkdir()
     code, out = _adopt(env, pid, other, yes=True)
@@ -376,7 +376,7 @@ def test_adopt_binds_an_existing_project_and_is_idempotent(env):
 ])
 def test_adopt_survives_the_project_read_failing_after_has_directory(env, monkeypatch,
                                                                      error, sentence):
-    from memriver_core.application.service import MemoryService
+    from memriver_core.application.projects import ProjectService
 
     pid = _init_bound(env, env["work"])
     other = env["home"] / "99_git" / "other"
@@ -385,16 +385,16 @@ def test_adopt_survives_the_project_read_failing_after_has_directory(env, monkey
     def failing_read(self, project_id):
         raise error
 
-    monkeypatch.setattr(MemoryService, "read_project", failing_read)
+    monkeypatch.setattr(ProjectService, "read_project", failing_read)
     code, out = _adopt(env, pid, other, yes=True)
     assert code == 2 and sentence in out
 
 
 def test_adopt_refuses_the_global_project(env):
-    global_id = _service(env).ensure_global()
+    global_id = _services(env).project.ensure_global()
     code, out = _adopt(env, global_id, env["work"], yes=True)
     assert code == 2 and "refused: the global project cannot be bound to a directory" in out
-    assert _service(env).read_project(global_id).root is None
+    assert _services(env).project.read_project(global_id).root is None
 
 
 def test_an_invalid_project_id_argument_cannot_forge_an_output_line(env):
@@ -439,7 +439,7 @@ def test_unbind_literal_first_and_shows_next_identity(env):
     shutil.rmtree(old_dir)
     code, out = _unbind(env, pid, Path(old), yes=True)
     assert code == 0 and "afterwards: none" in out
-    assert _service(env).read_project(pid).root is None
+    assert _services(env).project.read_project(pid).root is None
     code, out = _unbind(env, pid, Path(old), yes=True)
     assert code == 2 and "not bound" in out
 
@@ -453,7 +453,7 @@ def test_unbind_of_a_root_that_became_a_symlink_removes_the_stored_spelling(env)
     new.mkdir()
     old.symlink_to(new)
     code, _ = _unbind(env, pid, old, yes=True)
-    assert code == 0 and _service(env).read_project(pid).root is None
+    assert code == 0 and _services(env).project.read_project(pid).root is None
 
 
 def test_unbind_shows_parent_as_next_identity(env):
@@ -472,19 +472,19 @@ def test_unbind_resolves_a_relative_directory_against_the_injected_cwd(env):
     pid = _init_bound(env, env["work"] / "frontend")
     code, out = _unbind(env, pid, Path("link"), yes=True)
     assert code == 0, out
-    assert _service(env).read_project(pid).root is None
+    assert _services(env).project.read_project(pid).root is None
 
 
 def test_unbind_executes_exactly_the_pair_it_showed(env):
     pid = _init_bound(env, env["work"])
 
     def rebind_elsewhere_while_prompting(_prompt):
-        service = _service(env)
-        plan, _ = service.plan_unbind(pid, str(env["work"].resolve()), str(env["work"]))
-        service.unbind(plan)
+        services = _services(env)
+        plan, _ = services.project.plan_unbind(pid, str(env["work"].resolve()), str(env["work"]))
+        services.project.unbind(plan)
         other = env["home"] / "99_git" / "other"
         other.mkdir()
-        service.adopt(pid, service.plan_root(str(other), pid))
+        services.project.adopt(pid, services.project.plan_root(str(other), pid))
         return "y"
 
     out = io.StringIO()
@@ -492,7 +492,7 @@ def test_unbind_executes_exactly_the_pair_it_showed(env):
                       input_fn=rebind_elsewhere_while_prompting, stdout=out, cwd=env["work"],
                       home=env["home"])
     assert code == 2 and "binding changed while waiting" in out.getvalue()
-    assert _service(env).read_project(pid).root == str((env["home"] / "99_git" / "other").resolve())
+    assert _services(env).project.read_project(pid).root == str((env["home"] / "99_git" / "other").resolve())
 
 
 # --- explain ----------------------------------------------------------------------
@@ -513,7 +513,7 @@ def test_explain_states_and_exit_codes(env):
     pid = _init_bound(env, env["work"])
     code, text = _explain(env, project_dir=env["work"] / "frontend")
     assert code == 0 and f"reads: {pid}\n" in text
-    _service(env).ensure_global()
+    _services(env).project.ensure_global()
     code, text = _explain(env, project_dir=env["work"] / "frontend")
     assert code == 0
     assert f"project: {pid}" in text and "name: work\n" in text
@@ -554,7 +554,7 @@ def test_explain_diagnostic_never_forges_a_fake_root_line(env):
     link = env["home"] / "link"
     link.symlink_to(real)
     forged = f"{link}/x\n  root: /forged"
-    _service(env).ensure_global()
+    _services(env).project.ensure_global()
     _sql(env["store"], "INSERT INTO projects (id, name, root, is_global) VALUES (?, ?, ?, 0)",
          new_id(), "forger", forged)
     code, text = _explain(env, cwd=env["home"])
@@ -567,7 +567,7 @@ def test_explain_never_creates_or_writes_the_store(env):
     code, _ = _explain(env)
     assert code == 0 and not env["store"].exists()
     _init_bound(env, env["work"])
-    _service(env).ensure_global()
+    _services(env).project.ensure_global()
     before = _tree(env["store"])
     code, _ = _explain(env)
     assert code == 0 and _tree(env["store"]) == before
@@ -627,4 +627,4 @@ def test_no_command_or_refusal_touches_the_target(env, scenario):
 
 def test_read_project_is_how_existence_is_decided(env):
     with pytest.raises(ProjectNotFound):
-        _service(env).read_project(new_id())
+        _services(env).project.read_project(new_id())

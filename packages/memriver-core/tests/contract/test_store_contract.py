@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from memriver_core.application.service import MemoryService
+from memriver_core.application.memory import MemoryService
 from memriver_core.models import (
     Memory,
     Project,
@@ -573,17 +573,12 @@ def test_an_undecodable_row_in_the_same_project_is_skipped_by_search_and_index_n
         conn.execute("UPDATE memories SET body = CAST(X'80' AS TEXT) WHERE id = ?", (bad.id,))
     assert world["project_store"].search(world["mine"], world["read_write_set"], query=None,
                                          limit=None) == [good]
-    service = MemoryService(
+    memory_service = MemoryService(
         world["memory_store"], world["project_store"], content_policy_factory=lambda: None,
-        diagnostics=None, max_body_chars=10_000, metadata_max_chars=1_000,
-        search_limit_default=20, search_limit_max=100, index_budget_lines=50,
-        index_cue_chars=80, header_field_chars=80, project_name_max_chars=120,
-        session_store=None, canonical_directory=None, main_tree_path=None, current_branch=None, root_is_intact=None,
-        session_prompt_chars=512, session_recent_prompts=5, session_prompt_scan_max_bytes=65536,
-        stop_nudge_min_prompts=5, stop_nudge_interval_prompts=5,
-        session_search_limit_default=10, session_search_limit_max=50,
-        tool_call_retention_s=3600)
-    assert good.id in service.index(ProjectContext("registered", "", world["read_write_set"]))
+        refuse_pending=lambda context: None, mark_saved=lambda context: None,
+        max_body_chars=10_000, metadata_max_chars=1_000, search_limit_default=20,
+        search_limit_max=100, index_budget_lines=50, index_cue_chars=80)
+    assert good.id in memory_service.index(ProjectContext("registered", "", world["read_write_set"]))
     assert world["memory_store"].read(good.id, world["read_write_set"]) == good
     with pytest.raises(StorageFailure):
         world["memory_store"].read(bad.id, world["read_write_set"])

@@ -305,7 +305,7 @@ def _store_step():
     nothing to consent to). Built here because the installer package never
     imports memriver_core; building it reads the store and writes nothing.
     """
-    from memriver_core.bootstrap import build_service
+    from memriver_core.bootstrap import build_services
     from memriver_core.settings import load_settings
 
     from .core_logging import quiet_core_logging
@@ -314,14 +314,14 @@ def _store_step():
 
     with quiet_core_logging():
         settings = load_settings()
-        service = build_service(settings, root=settings.root)
-        if service.global_project_id() is not None:
+        project_service = build_services(settings, root=settings.root).project
+        if project_service.global_project_id() is not None:
             return None
     where = visible(str(settings.root))
 
     def apply() -> str:
         with quiet_core_logging():
-            return f"memory store: ready (global project {service.ensure_global()})"
+            return f"memory store: ready (global project {project_service.ensure_global()})"
 
     return StoreStep(summary=f"memory store (required): create the global project in {where}",
                      label=f"memory store in {where}", apply=apply)

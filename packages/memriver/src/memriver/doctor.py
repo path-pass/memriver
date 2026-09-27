@@ -1,7 +1,7 @@
 """Rendering and CLI wiring for `memriver doctor`.
 
 Every diagnostic rule lives in memriver_core, reached through
-``MemoryService.diagnose`` -- the projects section included. This module owns
+``MaintenanceService.diagnose`` -- the projects section included. This module owns
 exit codes, fixed state messages, and JSON/human rendering; it never opens the
 store itself, and [DEFERRED-4] performs no harness-configuration audit (see
 spec S10).
@@ -108,13 +108,14 @@ def run_doctor(*, root: Path | None, json_output: bool, stale_days: int,
                stdout: IO[str], stderr: IO[str]) -> int:
     # imported here, not at module scope, to match the rest of the umbrella's
     # lazy-import convention for the memriver_core stack
-    from memriver_core.bootstrap import build_service
+    from memriver_core.bootstrap import build_services
     from memriver_core.settings import SettingsError, load_settings
 
     try:
         with quiet_core_logging():
             settings = load_settings(root_override=root)
-            report = build_service(settings, root=settings.root).diagnose(stale_days=stale_days)
+            maintenance_service = build_services(settings, root=settings.root).maintenance
+            report = maintenance_service.diagnose(stale_days=stale_days)
     except Exception as err:  # noqa: BLE001 - see below
         # Everything from here to the report is "reading the store": a
         # StorageFailure, but also the settings load. Whatever the reason, exit 2

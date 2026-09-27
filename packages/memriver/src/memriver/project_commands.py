@@ -2,7 +2,7 @@
 
 Every command shows its plan and asks before writing; ``explain`` writes
 nothing. None of them ever creates or modifies a file inside a target
-directory. Every rule and every write is the core's (``MemoryService``); this
+directory. Every rule and every write is the core's (``ProjectService``); this
 module owns the plan text, the prompt and the sentences.
 """
 
@@ -31,17 +31,18 @@ GLOBAL_REFUSAL = "refused: the global project cannot be bound to a directory"
 BINDING_CHANGED = "refused: the binding changed while waiting; nothing was changed; run the command again"
 
 
-def _service(store: Path, home: Path):
-    """The core facade over this store, with its settings.toml and MEMRIVER_* values.
+def _project_service(store: Path, home: Path):
+    """The core project facade over this store, with its settings.toml and MEMRIVER_* values.
 
     An unusable setting raises SettingsError, which cli.main names in one stderr
     line; any other failure building the facade is a store failure.
     """
-    from memriver_core.bootstrap import build_service
+    from memriver_core.bootstrap import build_services
     from memriver_core.settings import SettingsError, load_settings
 
     try:
-        return build_service(load_settings(root_override=store), root=store, home=home)
+        return build_services(load_settings(root_override=store), root=store,
+                              home=home).project
     except SettingsError:
         raise
     except Exception as err:
@@ -140,8 +141,8 @@ def run_init(directory: Path | None, *, name: str | None, root: Path | None, yes
     store = _configured_root(root, home, cwd)
     target = _absolute(directory, cwd)
     try:
-        service = _service(store, home)
-        plan = service.plan_root(target)
+        project_service = _project_service(store, home)
+        plan = project_service.plan_root(target)
     except BindingRefused as err:
         stdout.write(_refusal(err, target=target, store=_display_root(store)) + "\n")
         return 2
@@ -166,7 +167,7 @@ def run_init(directory: Path | None, *, name: str | None, root: Path | None, yes
         return code
     try:
         # one transaction: the project and its directory, under the confirmed plan
-        project = service.init_project(display, plan)
+        project = project_service.init_project(display, plan)
     except BindingRefused as err:
         stdout.write(_refusal(err, target=plan.root, store=plan.store) + "\n")
         return 2
@@ -183,15 +184,15 @@ def run_adopt(project_id: str, directory: Path | None, *, root: Path | None, yes
     store = _configured_root(root, home, cwd)
     target = _absolute(directory, cwd)
     try:
-        service = _service(store, home)
-        plan = service.plan_root(target, project_id)
-        project = service.read_project(project_id)
+        project_service = _project_service(store, home)
+        plan = project_service.plan_root(target, project_id)
+        project = project_service.read_project(project_id)
     except BindingRefused as err:
         if err.reason == "no-such-project":
             return _no_such_project(project_id, stdout)
         if err.reason == "has-directory":
             try:        # a second read: the project may be gone or the store broken by now
-                current = service.read_project(project_id).root or ""
+                current = project_service.read_project(project_id).root or ""
             except ProjectNotFound:
                 return _no_such_project(project_id, stdout)
             except StorageFailure:
@@ -221,7 +222,7 @@ def run_adopt(project_id: str, directory: Path | None, *, root: Path | None, yes
     if code is not None:
         return code
     try:
-        service.adopt(project_id, plan)
+        project_service.adopt(project_id, plan)
     except BindingRefused as err:
         if err.reason == "no-such-project":
             return _no_such_project(project_id, stdout)
@@ -243,8 +244,8 @@ def run_unbind(project_id: str, directory: Path, *, root: Path | None, yes: bool
     store = _configured_root(root, home, cwd)
     literal = _absolute(directory, cwd)
     try:
-        service = _service(store, home)
-        plan, afterwards = service.plan_unbind(project_id, literal, str(cwd))
+        project_service = _project_service(store, home)
+        plan, afterwards = project_service.plan_unbind(project_id, literal, str(cwd))
     except BindingRefused as err:
         if err.reason == "no-such-project":
             return _no_such_project(project_id, stdout)
@@ -269,7 +270,7 @@ def run_unbind(project_id: str, directory: Path, *, root: Path | None, yes: bool
     if code is not None:
         return code
     try:
-        service.unbind(plan)        # exactly the pair the confirmation showed
+        project_service.unbind(plan)        # exactly the pair the confirmation showed
     except BindingRefused as err:
         stdout.write(_refusal(err, target=plan.root, store=plan.store) + "\n")
         return 2
@@ -295,7 +296,7 @@ def run_explain(*, root: Path | None, project_dir: Path | None, stdout, cwd: Pat
     except (OSError, RuntimeError, ValueError):
         canonical = str(start)
     try:
-        project_context = _service(store_root, home).open_project_context(str(start))
+        project_context = _project_service(store_root, home).open_project_context(str(start))
     except StorageFailure:          # settings could not even be built
         from memriver_core.models import ProjectContext, ReadWriteSet
 

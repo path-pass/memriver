@@ -219,11 +219,16 @@ CONCRETE_ADAPTER_MODULES = {
 }
 
 # The services bootstrap composes are held to the same rule for the same
-# reason: DiagnosticsService is not an adapter, but a second module naming it
-# would be a second composition point just the same. It gets its own table
-# because the exemption and the failure message differ in kind, not in force.
+# reason: a service is not an adapter, but a second module naming one would be
+# a second composition point just the same -- and a service importing another
+# service's module would be one service constructing (or reaching into)
+# another. It gets its own table because the exemption and the failure message
+# differ in kind, not in force.
 COMPOSED_SERVICE_MODULES = {
-    "DiagnosticsService": "memriver_core.application.diagnostics",
+    "MemoryService": "memriver_core.application.memory",
+    "ProjectService": "memriver_core.application.projects",
+    "SessionService": "memriver_core.application.sessions",
+    "MaintenanceService": "memriver_core.application.maintenance",
 }
 
 
@@ -266,8 +271,8 @@ def test_only_bootstrap_constructs_the_sqlite_inspector():
     )
 
 
-def test_diagnostics_application_depends_only_on_models_and_inspection_port():
-    imports = _imported_modules("memriver_core.application.diagnostics")
+def test_maintenance_application_depends_only_on_models_and_inspection_port():
+    imports = _imported_modules("memriver_core.application.maintenance")
     core_imports = {name for name in imports if name.startswith("memriver_core.")}
     allowed = {
         "memriver_core.models",
@@ -278,7 +283,7 @@ def test_diagnostics_application_depends_only_on_models_and_inspection_port():
         if not any(_under(name, prefix) for prefix in allowed)
     ]
     assert not offenders, (
-        f"application/diagnostics may import models and the inspection port only: "
+        f"application/maintenance may import models and the inspection port only: "
         f"{offenders}"
     )
 
@@ -298,8 +303,11 @@ def test_only_bootstrap_imports_settings(symbol):
         )
 
 
-def test_application_names_the_store_ports_not_the_adapters():
-    imports = _imported_modules("memriver_core.application.service")
+@pytest.mark.parametrize("module", ["memriver_core.application.memory",
+                                    "memriver_core.application.projects",
+                                    "memriver_core.application.sessions"])
+def test_application_names_the_store_ports_not_the_adapters(module):
+    imports = _imported_modules(module)
     assert "memriver_core.repository.protocol" in imports
     assert not any(_under(t, "memriver_core.repository.sqlite") for t in imports)
 

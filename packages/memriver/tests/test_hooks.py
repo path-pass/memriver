@@ -12,6 +12,7 @@ noise, whatever the store does.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import sqlite3
@@ -42,7 +43,7 @@ from memriver.protocol_text import (
     UNTRUSTED_DATA_NOTICE,
 )
 from memriver_core import bootstrap
-from memriver_core.bootstrap import build_service
+from memriver_core.bootstrap import build_services
 from memriver_core.models import Memory, ReadWriteSet, SessionKey
 from memriver_core.settings import Settings
 
@@ -99,17 +100,18 @@ def compact_context(header: str) -> str:
 
 @pytest.fixture
 def fake_service(monkeypatch):
-    real_build = bootstrap.build_service
+    real_build = bootstrap.build_services
 
     def install(index_text: str = INDEX_LINE) -> FakeService:
-        service = FakeService(index_text)
+        memory_service = FakeService(index_text)
 
         def build(settings, *, root=None, home=None):
-            service.real = real_build(settings, root=root)
-            return service
+            real = real_build(settings, root=root)
+            memory_service.real = real.memory
+            return dataclasses.replace(real, memory=memory_service)
 
-        monkeypatch.setattr(bootstrap, "build_service", build)
-        return service
+        monkeypatch.setattr(bootstrap, "build_services", build)
+        return memory_service
 
     return install
 
@@ -124,12 +126,12 @@ def _registered_header(store, cwd) -> str:
     """The real header, through the same `open_project_context` the hook uses
     -- never rebuilt from the raw path, because header fields are capped and
     a long tmp_path would make a hand-formatted expectation diverge."""
-    return _real_service(store).open_project_context(str(cwd)).header
+    return _real_services(store).project.open_project_context(str(cwd)).header
 
 
 class FakeService:
-    """The real service for everything but the index body, which is fake; records
-    the read/write set."""
+    """The real memory service for everything but the index body, which is fake;
+    records the read/write set."""
 
     def __init__(self, index_text: str):
         self.index_text = index_text
@@ -144,35 +146,35 @@ class FakeService:
         return self.index_text
 
 
-def _real_service(store):
-    return build_service(Settings(root=store), root=store)
+def _real_services(store):
+    return build_services(Settings(root=store), root=store)
 
 
 def _bind_new(store, directory, name="demo") -> str:
-    service = _real_service(store)
-    return service.init_project(name, service.plan_root(str(directory))).id
+    services = _real_services(store)
+    return services.project.init_project(name, services.project.plan_root(str(directory))).id
 
 
 def _store(tmp_path) -> Path:
     """An existing, empty store: a hook routes nothing without one."""
     root = tmp_path / "root"
-    _real_service(root).ensure_global()
+    _real_services(root).project.ensure_global()
     return root
 
 
 def _session(store, harness="claude-code", session_id=SESSION_ID):
     key = SessionKey(harness, session_id)
-    return next((s for s in _real_service(store).list_sessions() if s.key == key), None)
+    return next((s for s in _real_services(store).session.list_sessions() if s.key == key), None)
 
 
 def _due_session(store, directory, harness="claude-code", session_id=SESSION_ID) -> None:
     """A session registered at ``directory`` with the prompts that make a Stop nudge due."""
-    service = _real_service(store)
+    services = _real_services(store)
     key = SessionKey(harness, session_id)
-    service.start_session(key, source="startup", entry_dir=str(directory),
+    services.session.start_session(key, source="startup", entry_dir=str(directory),
                           transcript_path=None)
     for number in range(5):
-        service.observe_prompt(key, prompt=f"prompt {number}", entry_dir=str(directory),
+        services.session.observe_prompt(key, prompt=f"prompt {number}", entry_dir=str(directory),
                                transcript_path=None)
 
 
@@ -197,7 +199,7 @@ def _plant(store: Path, memory: Memory) -> Memory:
 
 def _plant_global(root, **memory_fields) -> Memory:
     """A global memory written directly: no agent-facing path can write one."""
-    global_id = _real_service(root).ensure_global()
+    global_id = _real_services(root).project.ensure_global()
     return _plant(root, Memory.new(project_id=global_id,
                                    source={"harness": "pytest", "method": "agent"},
                                    **memory_fields))
@@ -526,42 +528,42 @@ def test_header_survives_truncation(fake_service, tmp_path, registered):
 
 
 def test_project_dir_option_beats_payload_cwd_and_fallback(tmp_path, fake_service):
-    service = fake_service()
+    memory_service = fake_service()
     store = tmp_path / "mem"
     chosen = a_directory(tmp_path, "chosen")
     expected = _bind_new(store, chosen)
     session_start("claude-code", {"cwd": str(a_directory(tmp_path, "payload"))},
                   root=store, project_dir=chosen,
                   cwd=a_directory(tmp_path, "fallback"))
-    assert service.read_write_sets[-1].project_id == expected
+    assert memory_service.read_write_sets[-1].project_id == expected
 
 
 def test_payload_cwd_beats_the_supplied_fallback(tmp_path, fake_service):
-    service = fake_service()
+    memory_service = fake_service()
     store = tmp_path / "mem"
     payload_dir = a_directory(tmp_path, "payload")
     expected = _bind_new(store, payload_dir)
     session_start("claude-code", {"cwd": str(payload_dir)}, root=store,
                   cwd=a_directory(tmp_path, "fallback"))
-    assert service.read_write_sets[-1].project_id == expected
+    assert memory_service.read_write_sets[-1].project_id == expected
 
 
 @pytest.mark.parametrize("payload_cwd", [{}, {"cwd": 17}, {"cwd": None}])
 def test_fallback_cwd_is_used_when_the_payload_has_no_string_cwd(payload_cwd,
                                                                  tmp_path,
                                                                  fake_service):
-    service = fake_service()
+    memory_service = fake_service()
     store = tmp_path / "mem"
     fallback = a_directory(tmp_path, "fallback")
     expected = _bind_new(store, fallback)
     session_start("claude-code", payload_cwd, root=store, cwd=fallback)
-    assert service.read_write_sets[-1].project_id == expected
+    assert memory_service.read_write_sets[-1].project_id == expected
 
 
 def test_an_unregistered_directory_is_global_only(tmp_path, fake_service):
-    service = fake_service()
+    memory_service = fake_service()
     session_start("claude-code", {"cwd": str(tmp_path)}, root=_store(tmp_path))
-    assert service.read_write_sets[-1].project_id is None
+    assert memory_service.read_write_sets[-1].project_id is None
 
 
 # --- session-start failure shapes ----------------------------------------
@@ -617,7 +619,7 @@ def test_an_unusable_store_is_one_path_free_stderr_line(failing, tmp_path,
         raise OSError(f"/private/secret/{failing} is on fire")
 
     if failing == "build":
-        monkeypatch.setattr(bootstrap, "build_service", boom)
+        monkeypatch.setattr(bootstrap, "build_services", boom)
     else:
         monkeypatch.setattr(fake_service(""), "index", boom)
     result = session_start("claude-code", {"cwd": str(tmp_path)},
@@ -681,7 +683,7 @@ def test_a_store_with_only_unreadable_entries_is_empty_not_broken(tmp_path,
     def never(*args, **kwargs):  # pragma: no cover - the assertion is the call
         raise AssertionError("the hook must not run the administrative inspector")
 
-    monkeypatch.setattr(bootstrap.DiagnosticsService, "run", never)
+    monkeypatch.setattr(bootstrap.MaintenanceService, "diagnose", never)
     result = session_start("claude-code", {"cwd": str(tmp_path)},
                            root=tmp_path / "root")
     text = additional_context(result)
@@ -698,7 +700,7 @@ def test_partial_corruption_shows_the_healthy_entries(tmp_path, monkeypatch):
     def never(*args, **kwargs):  # pragma: no cover - the assertion is the call
         raise AssertionError("the hook must not run the administrative inspector")
 
-    monkeypatch.setattr(bootstrap.DiagnosticsService, "run", never)
+    monkeypatch.setattr(bootstrap.MaintenanceService, "diagnose", never)
     result = session_start("claude-code", {"cwd": str(tmp_path)},
                            root=tmp_path / "root")
     context = additional_context(result)
@@ -739,7 +741,7 @@ def _rows(store, table) -> list[dict]:
 
 
 def _project_id(store, name) -> str:
-    return next(p.id for p in _real_service(store).list_projects() if p.name == name)
+    return next(p.id for p in _real_services(store).project.list_projects() if p.name == name)
 
 
 @pytest.mark.parametrize("harness", ["claude-code", "codex"])
@@ -899,10 +901,10 @@ def test_pre_tool_use_records_the_call_silently(tmp_path):
     assert pre_tool_use(root=store, tool_use_id="toolu_1") == HookResult()
     assert pre_tool_use(root=store, tool_use_id="toolu_2", session_id="session-2") == \
         HookResult()
-    service = _real_service(store)
-    assert service.session_key_for_call("claude-code", "toolu_1") == \
+    services = _real_services(store)
+    assert services.session.session_key_for_call("claude-code", "toolu_1") == \
         SessionKey("claude-code", SESSION_ID)
-    assert service.session_key_for_call("claude-code", "toolu_2") == \
+    assert services.session.session_key_for_call("claude-code", "toolu_2") == \
         SessionKey("claude-code", "session-2")
 
 
@@ -943,7 +945,7 @@ def test_a_failing_pre_tool_use_never_fails_the_harness(tmp_path, monkeypatch):
     def boom(*args, **kwargs):
         raise OSError("/private/secret is on fire")
 
-    monkeypatch.setattr(bootstrap, "build_service", boom)
+    monkeypatch.setattr(bootstrap, "build_services", boom)
     assert pre_tool_use(root=_store(tmp_path)) == HookResult()
 
 
@@ -1134,7 +1136,7 @@ def test_an_invalid_or_missing_session_id_makes_every_hook_a_silent_no_op(
     result = run_hook(event, "claude-code", json.dumps(payload), root=store,
                       project_dir=None, cwd=tmp_path)
     assert result == HookResult()
-    assert _real_service(store).list_sessions() == []
+    assert _real_services(store).session.list_sessions() == []
 
 
 def test_claude_code_registers_at_claude_project_dir_over_the_payload_cwd(
@@ -1173,7 +1175,7 @@ def test_a_failing_store_never_fails_the_harness(event, tmp_path, monkeypatch, r
     def boom(*args, **kwargs):
         raise OSError("/private/secret is on fire")
 
-    monkeypatch.setattr(bootstrap, "build_service", boom)
+    monkeypatch.setattr(bootstrap, "build_services", boom)
     result = hook(event, "codex", {"prompt": "hello", "stop_hook_active": False,
                                    "cwd": str(registered)}, root=tmp_path / "mem")
     assert result == HookResult()

@@ -2,8 +2,8 @@
 
 Most diagnostic policy is faked out here: these tests pin doctor.py's
 CLI-facing contract (state -> message -> exit code, JSON/human shape) against
-a stand-in memriver_core.bootstrap.build_service whose diagnose() returns a
-prepared report. The few real-store tests pin the boundary end to end.
+a stand-in memriver_core.bootstrap.build_services whose maintenance service's
+diagnose() returns a prepared report. The few real-store tests pin the boundary end to end.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import pytest
 from memriver import doctor
 from memriver.doctor import run_doctor
 from memriver_core import StorageFailure
-from memriver_core.bootstrap import build_service
+from memriver_core.bootstrap import Services, build_services
 from memriver_core.models import DiagnosticFinding, DiagnosticsReport
 from memriver_core.settings import Settings
 
@@ -61,8 +61,13 @@ class _FakeService:
         return self._report
 
 
+def _only_maintenance(maintenance_service) -> Services:
+    # doctor needs the maintenance service alone: touching any other is an error
+    return Services(memory=None, project=None, session=None, maintenance=maintenance_service)
+
+
 def install_fake_diagnostics_service(monkeypatch, state: str, finding_count: int):
-    """Stand in for build_service; returns (build_calls, diagnose_calls)."""
+    """Stand in for build_services; returns (build_calls, diagnose_calls)."""
     report = DiagnosticsReport(
         state=state, findings=tuple(_finding() for _ in range(finding_count)))
     build_calls: list = []
@@ -70,9 +75,9 @@ def install_fake_diagnostics_service(monkeypatch, state: str, finding_count: int
 
     def fake_build(settings, *, root=None, home=None):
         build_calls.append((settings, root))
-        return _FakeService(report, diagnose_calls)
+        return _only_maintenance(_FakeService(report, diagnose_calls))
 
-    monkeypatch.setattr("memriver_core.bootstrap.build_service", fake_build)
+    monkeypatch.setattr("memriver_core.bootstrap.build_services", fake_build)
     return build_calls, diagnose_calls
 
 
@@ -82,9 +87,9 @@ def install_fake_diagnostics_service_for_findings(monkeypatch, state: str, findi
     report = DiagnosticsReport(state=state, findings=tuple(findings))
 
     def fake_build(settings, *, root=None, home=None):
-        return _FakeService(report, [])
+        return _only_maintenance(_FakeService(report, []))
 
-    monkeypatch.setattr("memriver_core.bootstrap.build_service", fake_build)
+    monkeypatch.setattr("memriver_core.bootstrap.build_services", fake_build)
 
 
 def install_raising_service(monkeypatch, exc: Exception):
@@ -94,9 +99,9 @@ def install_raising_service(monkeypatch, exc: Exception):
             raise exc
 
     def fake_build(settings, *, root=None, home=None):
-        return _RaisingService()
+        return _only_maintenance(_RaisingService())
 
-    monkeypatch.setattr("memriver_core.bootstrap.build_service", fake_build)
+    monkeypatch.setattr("memriver_core.bootstrap.build_services", fake_build)
 
 
 @pytest.mark.parametrize(
@@ -115,8 +120,9 @@ def test_doctor_state_exit_contract(monkeypatch, state, finding_count, exit_code
 
     assert result.exit_code == exit_code
     assert result.stderr == ""
-    # doctor calls only build_service(settings, root=settings.root)
-    # .diagnose(stale_days=stale_days) -- never a concrete inspector or application module
+    # doctor calls only build_services(settings, root=settings.root)
+    # .maintenance.diagnose(stale_days=stale_days) -- never a concrete inspector or
+    # application module
     assert len(build_calls) == 1
     settings, root = build_calls[0]
     assert root == settings.root
@@ -345,7 +351,7 @@ def test_an_uninitialized_store_names_the_command_to_run(tmp_path):
 
 def test_an_initialized_empty_store_is_empty(tmp_path):
     root = tmp_path / "store"
-    build_service(Settings(root=root), root=root).ensure_global()
+    build_services(Settings(root=root), root=root).project.ensure_global()
     result = invoke_doctor(root=root, json_output=True)
     report = json.loads(result.stdout)
     assert (report["state"], report["initialized"]) == ("empty", True)
@@ -383,9 +389,9 @@ def test_a_pre_release_store_is_degraded_and_says_it_is_not_initialized(tmp_path
 def _real_store(tmp_path):
     store, work = tmp_path / "mem", tmp_path / "work"
     work.mkdir()
-    service = build_service(Settings(root=store), root=store)
-    service.ensure_global()
-    project = service.init_project("demo", service.plan_root(str(work)))
+    services = build_services(Settings(root=store), root=store)
+    services.project.ensure_global()
+    project = services.project.init_project("demo", services.project.plan_root(str(work)))
     return store, work, project
 
 

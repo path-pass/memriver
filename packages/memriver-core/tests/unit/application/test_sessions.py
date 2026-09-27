@@ -1,4 +1,5 @@
-"""MemoryService session operations (spec §5, §5.1, §5.2) over a real SQLite store.
+"""SessionService operations (spec §5, §5.1, §5.2) over a real SQLite store, with the
+memory writes that ask it whether a session is pending and mark it saved.
 
 The worktree callables and the root-integrity check are fakes the test steers;
 everything else -- the three stores and the secret scanner -- is the real thing.
@@ -17,7 +18,10 @@ from pathlib import Path
 
 import pytest
 from memriver_core import bootstrap
-from memriver_core.application.service import NONE_HEADER, MemoryService
+from memriver_core.application.contexts import NONE_HEADER
+from memriver_core.application.memory import MemoryService
+from memriver_core.application.projects import ProjectService
+from memriver_core.application.sessions import SessionService
 from memriver_core.content_policy.secret_scanner import SecretScanner
 from memriver_core.models import (
     ProjectContext,
@@ -95,35 +99,40 @@ class World:
         self.policy = SecretScanner()
         self.session_store = SqliteSessionStore(self.store, busy_timeout_ms=BUSY_TIMEOUT_MS)
         self.memory_store = SqliteMemoryStore(self.store, busy_timeout_ms=BUSY_TIMEOUT_MS)
-        self.service = self.build()
+        self.services = self.build()
 
-    def build(self) -> MemoryService:
+    def build(self) -> bootstrap.Services:
         def intact(root: str) -> bool:
             self.intact_calls.append(root)
             return self.intact
 
-        return MemoryService(
-            self.memory_store,
-            SqliteProjectStore(self.store, home=self.base / "home",
-                               busy_timeout_ms=BUSY_TIMEOUT_MS),
-            lambda: self.policy, None,
-            session_store=self.session_store,
+        project_store = SqliteProjectStore(self.store, home=self.base / "home",
+                                           busy_timeout_ms=BUSY_TIMEOUT_MS)
+        session = SessionService(
+            self.session_store, project_store, lambda: self.policy,
             canonical_directory=canonical_directory,
             main_tree_path=lambda path: self.main_tree(path),
             current_branch=lambda path: self.branch,
-            root_is_intact=intact,
-            max_body_chars=8000, metadata_max_chars=8000, search_limit_default=5,
-            search_limit_max=50, index_budget_lines=100, index_cue_chars=60,
-            header_field_chars=120, project_name_max_chars=120,
+            root_is_intact=intact, header_field_chars=120,
             session_prompt_chars=512, session_recent_prompts=5,
             session_prompt_scan_max_bytes=65536, stop_nudge_min_prompts=5,
             stop_nudge_interval_prompts=5, session_search_limit_default=10,
             session_search_limit_max=50, tool_call_retention_s=3600)
+        memory = MemoryService(
+            self.memory_store, project_store, lambda: self.policy,
+            refuse_pending=session.refuse_pending, mark_saved=session.mark_saved,
+            max_body_chars=8000, metadata_max_chars=8000, search_limit_default=5,
+            search_limit_max=50, index_budget_lines=100, index_cue_chars=60)
+        project = ProjectService(project_store, header_field_chars=120,
+                                 project_name_max_chars=120)
+        # no maintenance service: these tests never diagnose
+        return bootstrap.Services(memory=memory, project=project, session=session,
+                                  maintenance=None)
 
     def initialize(self) -> None:
-        self.global_id = self.service.ensure_global()
-        self.project = self.service.init_project("demo",
-                                                 self.service.plan_root(str(self.work)))
+        self.global_id = self.services.project.ensure_global()
+        self.project = self.services.project.init_project("demo",
+                                                 self.services.project.plan_root(str(self.work)))
 
     def row(self, key: SessionKey = KEY):
         return self.session_store.get(key)
@@ -134,16 +143,16 @@ class World:
 
     def start(self, source: str = "startup", entry: Path | None = None, key=KEY,
               transcript: str | None = "/t/1.jsonl") -> ProjectContext:
-        return self.service.start_session(key, source=source,
+        return self.services.session.start_session(key, source=source,
                                           entry_dir=str(entry or self.work),
                                           transcript_path=transcript)
 
     def prompt(self, text: object = "hello", entry: Path | None = None, key=KEY):
-        return self.service.observe_prompt(key, prompt=text, entry_dir=str(entry or self.work),
+        return self.services.session.observe_prompt(key, prompt=text, entry_dir=str(entry or self.work),
                                            transcript_path=None)
 
     def write(self, context: ProjectContext, content: str = "uv manages python"):
-        return self.service.record(content=content, type="project", sync=False,
+        return self.services.memory.record(content=content, type="project", sync=False,
                                    harness="claude-code", description="cue", context=context)
 
 
@@ -312,18 +321,18 @@ def test_a_first_start_and_a_first_prompt_racing_share_one_row(world, first_writ
     for a key with no row: one INSERT wins, both callers answer from it, and
     the prompt is counted once."""
     world.session_store = BothReadFirst(world.session_store, first_writer)
-    service = world.build()
+    services = world.build()
     with ThreadPoolExecutor(max_workers=2) as pool:
-        started = pool.submit(service.start_session, KEY, source="startup",
+        started = pool.submit(services.session.start_session, KEY, source="startup",
                               entry_dir=str(world.work), transcript_path=None)
-        prompted = pool.submit(service.observe_prompt, KEY, prompt="first",
+        prompted = pool.submit(services.session.observe_prompt, KEY, prompt="first",
                                entry_dir=str(world.work), transcript_path=None)
         start_context, (prompt_context, created) = started.result(), prompted.result()
-    [row] = service.list_sessions()
+    [row] = services.session.list_sessions()
     assert (row.key, row.status, row.prompt_count, row.first_prompt.text) == (
         KEY, status, 1, "first")
     assert created is (first_writer == "add_prompt")
-    assert start_context == prompt_context == service.session_context(KEY)
+    assert start_context == prompt_context == services.session.session_context(KEY)
 
 
 def test_prompt_text_is_one_line_capped_and_only_the_recent_ones_are_kept(world):
@@ -392,7 +401,7 @@ def test_without_a_store_no_directory_question_and_no_scan_is_asked(storeless):
     main_tree, policy = Recording(), Recording()
     storeless.main_tree, storeless.policy = main_tree, policy
     missing = storeless.base / "never-created-directory"
-    assert storeless.service.store_exists() is False
+    assert storeless.services.session.store_exists() is False
     assert storeless.start(entry=missing).state == "none"
     assert storeless.prompt(entry=missing)[0].state == "none"
     assert storeless.start().state == "none"
@@ -406,7 +415,7 @@ def test_an_uncheckable_store_counts_as_present(world, monkeypatch):
     goes on to its operation, which reports it as unavailable."""
     monkeypatch.setattr(world.session_store, "store_exists",
                         Broken(world.session_store, "store_exists").store_exists)
-    assert world.service.store_exists() is True
+    assert world.services.session.store_exists() is True
 
 
 def test_a_prompt_whose_directory_cannot_be_mapped_records_nothing(world):
@@ -421,10 +430,10 @@ def test_a_prompt_whose_directory_cannot_be_mapped_records_nothing(world):
 def test_end_marks_the_row_and_an_unknown_session_is_left_alone(world):
     world.start()
     before = world.row()
-    world.service.end_session(KEY)
+    world.services.session.end_session(KEY)
     after = world.row()
     assert after.ended_at is not None and after.last_active_at >= before.last_active_at
-    world.service.end_session(OTHER_KEY)
+    world.services.session.end_session(OTHER_KEY)
     assert world.row(OTHER_KEY) is None
 
 
@@ -433,42 +442,42 @@ def test_stop_nudges_after_n_unsaved_prompts_then_every_m(world):
     decisions = []
     for _ in range(10):
         world.prompt()
-        decisions.append(world.service.stop_decision(KEY))
+        decisions.append(world.services.session.stop_decision(KEY))
     assert decisions == [False] * 4 + [True] + [False] * 4 + [True]
     world.write(_registered(world))
     for _ in range(4):
         world.prompt()
-        assert world.service.stop_decision(KEY) is False
+        assert world.services.session.stop_decision(KEY) is False
 
 
 def test_stop_is_silent_for_pending_projectless_unknown_and_broken_sessions(world):
     for _ in range(6):
         world.prompt()                                  # pending
-    assert world.service.stop_decision(KEY) is False
+    assert world.services.session.stop_decision(KEY) is False
     world.start(entry=world.base, key=OTHER_KEY)        # registered, no project
     for _ in range(6):
         world.prompt(key=OTHER_KEY)
-    assert world.service.stop_decision(OTHER_KEY) is False
-    assert world.service.stop_decision(SessionKey("codex", "unknown")) is False
+    assert world.services.session.stop_decision(OTHER_KEY) is False
+    assert world.services.session.stop_decision(SessionKey("codex", "unknown")) is False
     world.session_store = Broken(world.session_store, "nudge_if_due")
-    assert world.build().stop_decision(KEY) is False
+    assert world.build().session.stop_decision(KEY) is False
 
 
 # --- session_context -----------------------------------------------------------------
 
 def test_session_context_follows_the_stored_row(world):
-    assert world.service.session_context(None) == _no_project(
+    assert world.services.session.session_context(None) == _no_project(
         world, "unidentified", UNIDENTIFIED_HEADER, key=None)
-    assert world.service.session_context(KEY) == _no_project(
+    assert world.services.session.session_context(KEY) == _no_project(
         world, "unidentified", UNIDENTIFIED_HEADER)
     world.prompt()
-    assert world.service.session_context(KEY) == _no_project(world, "pending", PENDING_HEADER)
+    assert world.services.session.session_context(KEY) == _no_project(world, "pending", PENDING_HEADER)
     world.start(entry=world.base, key=OTHER_KEY)
-    assert world.service.session_context(OTHER_KEY) == _no_project(
+    assert world.services.session.session_context(OTHER_KEY) == _no_project(
         world, "none", SESSION_NONE_HEADER, key=OTHER_KEY)
     third = SessionKey("claude-code", "session-3")
     world.start(key=third)
-    assert world.service.session_context(third) == ProjectContext(
+    assert world.services.session.session_context(third) == ProjectContext(
         **{**_registered(world).__dict__, "session_key": third})
 
 
@@ -477,7 +486,7 @@ def test_a_session_whose_project_is_gone_or_global_is_degraded(world, project_id
     world.start()
     world.sql("UPDATE sessions SET project_id = ?",
               world.global_id if project_id == "global" else project_id)
-    assert world.service.session_context(KEY) == ProjectContext(
+    assert world.services.session.session_context(KEY) == ProjectContext(
         "degraded", SESSION_PROJECT_GONE_HEADER,
         ReadWriteSet(project_id=None, global_project_id=world.global_id),
         diagnostic="session project missing", session_key=KEY)
@@ -485,7 +494,7 @@ def test_a_session_whose_project_is_gone_or_global_is_degraded(world, project_id
 
 def test_a_store_failure_is_an_unavailable_session_context(world):
     world.session_store = Broken(world.session_store, "get")
-    context = world.build().session_context(KEY)
+    context = world.build().session.session_context(KEY)
     assert context.state == "unavailable" and context.session_key == KEY
     assert context.read_write_set == ReadWriteSet(project_id=None, global_project_id=None)
 
@@ -494,22 +503,22 @@ def test_a_store_failure_is_an_unavailable_session_context(world):
 
 def test_confirming_a_candidate_registers_its_project(world):
     world.prompt()
-    assert world.service.confirm_session(KEY) == _registered(world)
+    assert world.services.session.confirm_session(KEY) == _registered(world)
     assert world.intact_calls == [world.project.root]
     assert (world.row().status, world.row().project_id) == ("registered", world.project.id)
     # idempotent: a registered row answers unchanged
-    assert world.service.confirm_session(KEY) == _registered(world)
+    assert world.services.session.confirm_session(KEY) == _registered(world)
 
 
 def test_a_pending_session_without_a_candidate_is_not_offered_for_confirmation(world):
     context, created = world.prompt(entry=world.base)
     assert created and context == _no_project(world, "pending", PENDING_NO_CANDIDATE_HEADER)
-    assert world.service.session_context(KEY) == context
+    assert world.services.session.session_context(KEY) == context
 
 
 def test_confirming_a_null_candidate_registers_no_project(world):
     world.prompt(entry=world.base)
-    assert world.service.confirm_session(KEY) == _no_project(world, "none", SESSION_NONE_HEADER)
+    assert world.services.session.confirm_session(KEY) == _no_project(world, "none", SESSION_NONE_HEADER)
     assert world.intact_calls == []
     assert (world.row().status, world.row().project_id) == ("registered", None)
 
@@ -518,7 +527,7 @@ def test_a_candidate_whose_root_is_not_intact_is_refused_and_stays_pending(world
     world.prompt()
     world.intact = False
     with pytest.raises(ProjectUnavailable) as caught:
-        world.service.confirm_session(KEY)
+        world.services.session.confirm_session(KEY)
     assert caught.value.reason == "candidate-changed"
     assert world.row().status == "pending"
 
@@ -528,14 +537,14 @@ def test_a_candidate_without_its_root_never_confirms_to_a_rootless_project(world
     world.sql("UPDATE projects SET root = NULL WHERE id = ?", world.project.id)
     world.sql("UPDATE sessions SET candidate_root = NULL")
     with pytest.raises(ProjectUnavailable) as caught:
-        world.service.confirm_session(KEY)
+        world.services.session.confirm_session(KEY)
     assert caught.value.reason == "candidate-changed"
     assert world.row().status == "pending"
 
 
 def test_confirming_an_unknown_session_is_unidentified(world):
     with pytest.raises(ProjectUnavailable) as caught:
-        world.service.confirm_session(KEY)
+        world.services.session.confirm_session(KEY)
     assert caught.value.reason == "unidentified"
 
 
@@ -551,7 +560,7 @@ def _projectless_start(world, *parts: str, key=KEY) -> Path:
 
 def _init(world, directory: Path, name: str = "later"):
     directory.mkdir(parents=True, exist_ok=True)
-    return world.service.init_project(name, world.service.plan_root(str(directory)))
+    return world.services.project.init_project(name, world.services.project.plan_root(str(directory)))
 
 
 def _registered_to(world, project, key=KEY) -> ProjectContext:
@@ -565,8 +574,8 @@ def test_register_binds_a_projectless_session_to_a_project_inited_at_its_entry(w
     entry = _projectless_start(world)
     before = world.row()
     project = _init(world, entry)
-    assert world.service.register_session(KEY) == _registered_to(world, project)
-    assert world.service.session_context(KEY) == _registered_to(world, project)
+    assert world.services.session.register_session(KEY) == _registered_to(world, project)
+    assert world.services.session.session_context(KEY) == _registered_to(world, project)
     after = world.row()
     assert (after.status, after.project_id) == ("registered", project.id)
     # only the project changes: where and how the session started stays
@@ -577,14 +586,14 @@ def test_register_binds_a_projectless_session_to_a_project_inited_at_its_entry(w
 def test_register_binds_the_project_inited_at_an_ancestor_of_the_entry(world):
     _projectless_start(world, "deep", "sub")
     project = _init(world, world.base / "later")
-    assert world.service.register_session(KEY) == _registered_to(world, project)
+    assert world.services.session.register_session(KEY) == _registered_to(world, project)
 
 
 def test_register_with_no_project_covering_the_entry_changes_nothing(world):
     _projectless_start(world)
     _init(world, world.base / "unrelated")
     before = world.row()
-    assert world.service.register_session(KEY) == _no_project(world, "none",
+    assert world.services.session.register_session(KEY) == _no_project(world, "none",
                                                               SESSION_NONE_HEADER)
     assert world.row() == before
 
@@ -593,11 +602,11 @@ def test_register_makes_a_pending_session_without_a_candidate_registered(world):
     entry = world.base / "later"
     entry.mkdir()
     world.prompt(entry=entry)
-    assert world.service.register_session(KEY) == _no_project(
+    assert world.services.session.register_session(KEY) == _no_project(
         world, "pending", PENDING_NO_CANDIDATE_HEADER)
     assert world.row().status == "pending"
     project = _init(world, entry)
-    assert world.service.register_session(KEY) == _registered_to(world, project)
+    assert world.services.session.register_session(KEY) == _registered_to(world, project)
     row = world.row()
     assert (row.status, row.origin, row.project_id, row.candidate_id) == (
         "registered", "first-seen", project.id, None)
@@ -607,7 +616,7 @@ def test_register_refuses_a_pending_session_with_a_candidate(world):
     world.prompt()
     before = world.row()
     with pytest.raises(ProjectUnavailable) as caught:
-        world.service.register_session(KEY)
+        world.services.session.register_session(KEY)
     assert caught.value.reason == "pending"
     assert world.row() == before
 
@@ -617,7 +626,7 @@ def test_register_never_changes_a_session_that_has_a_project(world):
     assert world.start(entry=world.work / "sub") == _registered(world)
     before = world.row()
     _init(world, world.work / "sub", "sub")     # the entry now has a nearer project
-    assert world.service.register_session(KEY) == _registered(world)
+    assert world.services.session.register_session(KEY) == _registered(world)
     assert world.row() == before
 
 
@@ -638,7 +647,7 @@ def test_register_keeps_a_project_the_row_got_in_the_meantime(world):
             return getattr(self._inner, name)
 
     world.session_store = GotOneMeanwhile(world.session_store)
-    assert world.build().register_session(KEY) == _registered_to(world, other)
+    assert world.build().session.register_session(KEY) == _registered_to(world, other)
     assert world.row().project_id == other.id != project.id
 
 
@@ -649,7 +658,7 @@ def test_register_maps_a_linked_worktree_entry_to_the_main_trees_project(world):
                                     if path == str(worktree_sub) else path)
     assert world.start(entry=worktree_sub).state == "none"
     project = _init(world, world.base / "main", "main")
-    assert world.service.register_session(KEY) == _registered_to(world, project)
+    assert world.services.session.register_session(KEY) == _registered_to(world, project)
     assert world.row().entry_cwd == str(worktree_sub)
 
 
@@ -662,21 +671,21 @@ def test_a_degraded_registration_writes_nothing(world, break_resolution):
     else:
         world.sql("UPDATE sessions SET entry_cwd = ?", str(world.base / "gone"))
     before = world.row()
-    context = world.service.register_session(KEY)
+    context = world.services.session.register_session(KEY)
     assert context.state == "degraded" and context.read_write_set.project_id is None
     assert context.session_key == KEY
     assert world.row() == before
 
 
 def test_register_without_a_store_answers_none_and_creates_nothing(storeless):
-    context = storeless.service.register_session(KEY)
+    context = storeless.services.session.register_session(KEY)
     assert (context.state, context.header) == ("none", NONE_HEADER)
     assert not storeless.store.exists()
 
 
 def test_registering_an_unknown_session_is_unidentified(world):
     with pytest.raises(ProjectUnavailable) as caught:
-        world.service.register_session(KEY)
+        world.services.session.register_session(KEY)
     assert caught.value.reason == "unidentified"
 
 
@@ -685,7 +694,7 @@ def test_a_store_failure_while_registering_propagates(world):
     world.session_store = Broken(world.session_store, "assign_project")
     _init(world, world.base / "later")
     with pytest.raises(StorageFailure):
-        world.build().register_session(KEY)
+        world.build().session.register_session(KEY)
 
 
 def _git(*args: str, cwd: Path) -> None:
@@ -705,24 +714,24 @@ def test_a_candidate_whose_root_went_missing_in_the_main_tree_still_confirms(tmp
     _git("worktree", "add", "-b", "feature", str(base / "wt"), cwd=main)
     (main / "sub").mkdir()
     (base / "wt" / "sub").mkdir()
-    service = bootstrap.build_service(Settings(root=base / "store"), root=base / "store",
+    services = bootstrap.build_services(Settings(root=base / "store"), root=base / "store",
                                       home=base / "home")
-    service.ensure_global()
-    project = service.init_project("demo", service.plan_root(str(main / "sub")))
-    service.observe_prompt(KEY, prompt="hi", entry_dir=str(base / "wt" / "sub"),
+    services.project.ensure_global()
+    project = services.project.init_project("demo", services.project.plan_root(str(main / "sub")))
+    services.session.observe_prompt(KEY, prompt="hi", entry_dir=str(base / "wt" / "sub"),
                            transcript_path=None)
-    assert service.pending_candidate(service.session_context(KEY)) == project
+    assert services.session.pending_candidate(services.session.session_context(KEY)) == project
     (main / "sub").rmdir()          # the main tree's checkout no longer has it
-    context = service.confirm_session(KEY)
+    context = services.session.confirm_session(KEY)
     assert (context.state, context.read_write_set.project_id) == ("registered", project.id)
 
 
 
-def _real_service(base: Path) -> MemoryService:
-    service = bootstrap.build_service(Settings(root=base / "store"), root=base / "store",
+def _real_services(base: Path) -> bootstrap.Services:
+    services = bootstrap.build_services(Settings(root=base / "store"), root=base / "store",
                                       home=base / "home")
-    service.ensure_global()
-    return service
+    services.project.ensure_global()
+    return services
 
 
 def test_a_symlinked_alias_registers_and_proposes_its_targets_project(tmp_path):
@@ -731,17 +740,17 @@ def test_a_symlinked_alias_registers_and_proposes_its_targets_project(tmp_path):
     (base / "b").mkdir()
     alias = base / "b" / "alias"
     alias.symlink_to(base / "a" / "sub")
-    service = _real_service(base)
-    target = service.init_project("a", service.plan_root(str(base / "a")))
-    service.init_project("b", service.plan_root(str(base / "b")))
-    assert service.open_project_context(str(alias)).project == target
-    context = service.start_session(KEY, source="startup", entry_dir=str(alias),
+    services = _real_services(base)
+    target = services.project.init_project("a", services.project.plan_root(str(base / "a")))
+    services.project.init_project("b", services.project.plan_root(str(base / "b")))
+    assert services.project.open_project_context(str(alias)).project == target
+    context = services.session.start_session(KEY, source="startup", entry_dir=str(alias),
                                     transcript_path=None)
     assert context.project == target
-    assert service.list_sessions()[0].entry_cwd == str(base / "a" / "sub")
-    pending, _ = service.observe_prompt(OTHER_KEY, prompt="hi", entry_dir=str(alias),
+    assert services.session.list_sessions()[0].entry_cwd == str(base / "a" / "sub")
+    pending, _ = services.session.observe_prompt(OTHER_KEY, prompt="hi", entry_dir=str(alias),
                                         transcript_path=None)
-    assert pending.state == "pending" and service.pending_candidate(pending) == target
+    assert pending.state == "pending" and services.session.pending_candidate(pending) == target
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
@@ -754,24 +763,24 @@ def test_an_alias_into_a_linked_worktree_registers_the_main_trees_project_and_br
     _git("worktree", "add", "-b", "feature", str(base / "wt"), cwd=main)
     (base / "wt" / "sub").mkdir()
     (base / "link").symlink_to(base / "wt" / "sub")
-    service = _real_service(base)
-    project = service.init_project("demo", service.plan_root(str(main)))
-    context = service.start_session(KEY, source="startup", entry_dir=str(base / "link"),
+    services = _real_services(base)
+    project = services.project.init_project("demo", services.project.plan_root(str(main)))
+    context = services.session.start_session(KEY, source="startup", entry_dir=str(base / "link"),
                                     transcript_path=None)
     assert context.project == project
-    row = service.list_sessions()[0]
+    row = services.session.list_sessions()[0]
     assert (row.entry_cwd, row.branch) == (str(base / "wt" / "sub"), "feature")
 
 
 def test_an_entry_with_a_nul_is_degraded_and_writes_nothing(tmp_path):
-    service = _real_service(Path(os.path.realpath(tmp_path)))
+    services = _real_services(Path(os.path.realpath(tmp_path)))
     entry = "/tmp/x" + chr(0) + "y"
-    assert service.start_session(KEY, source="startup", entry_dir=entry,
+    assert services.session.start_session(KEY, source="startup", entry_dir=entry,
                                  transcript_path=None).state == "degraded"
-    context, created = service.observe_prompt(KEY, prompt="hi", entry_dir=entry,
+    context, created = services.session.observe_prompt(KEY, prompt="hi", entry_dir=entry,
                                               transcript_path=None)
     assert (context.state, created) == ("degraded", False)
-    assert service.list_sessions() == []
+    assert services.session.list_sessions() == []
 
 
 # --- search_sessions / list_sessions / pending_candidate / entry_of -----------------------
@@ -782,37 +791,37 @@ def test_session_search_sees_only_the_writable_projects_registered_rows(world):
     world.prompt(key=SessionKey("codex", "pending"))
     world.start(entry=world.base, key=SessionKey("codex", "unbound"))
     registered = _registered(world)
-    assert len(world.service.search_sessions("", registered)) == 10
-    assert len(world.service.search_sessions("", registered, 100)) == 12
-    assert len(world.service.search_sessions("", registered, 0)) == 1
-    assert {s.key.session_id for s in world.service.search_sessions("", registered, 50)} == {
+    assert len(world.services.session.search_sessions("", registered)) == 10
+    assert len(world.services.session.search_sessions("", registered, 100)) == 12
+    assert len(world.services.session.search_sessions("", registered, 0)) == 1
+    assert {s.key.session_id for s in world.services.session.search_sessions("", registered, 50)} == {
         f"s{n}" for n in range(12)}
-    for context in (world.service.session_context(SessionKey("codex", "pending")),
-                    world.service.session_context(SessionKey("codex", "unbound")),
-                    world.service.session_context(None)):
-        assert world.service.search_sessions("", context) == []
+    for context in (world.services.session.session_context(SessionKey("codex", "pending")),
+                    world.services.session.session_context(SessionKey("codex", "unbound")),
+                    world.services.session.session_context(None)):
+        assert world.services.session.search_sessions("", context) == []
 
 
 def test_list_sessions_reads_every_row_with_optional_filters(world):
     world.start(key=SessionKey("codex", "a"))
     world.prompt("needle here", key=SessionKey("codex", "b"))
-    assert {s.key.session_id for s in world.service.list_sessions()} == {"a", "b"}
-    assert [s.key.session_id for s in world.service.list_sessions(query="NEEDLE")] == ["b"]
-    assert [s.key.session_id for s in world.service.list_sessions(
+    assert {s.key.session_id for s in world.services.session.list_sessions()} == {"a", "b"}
+    assert [s.key.session_id for s in world.services.session.list_sessions(query="NEEDLE")] == ["b"]
+    assert [s.key.session_id for s in world.services.session.list_sessions(
         project_id=world.project.id)] == ["a"]
-    assert len(world.service.list_sessions(limit=1)) == 1
+    assert len(world.services.session.list_sessions(limit=1)) == 1
 
 
 def test_pending_candidate_and_entry_of_answer_from_the_stored_row(world):
     world.prompt()
-    pending = world.service.session_context(KEY)
-    assert world.service.pending_candidate(pending) == world.project
-    assert world.service.entry_of(pending) == str(world.work)
+    pending = world.services.session.session_context(KEY)
+    assert world.services.session.pending_candidate(pending) == world.project
+    assert world.services.session.entry_of(pending) == str(world.work)
     world.prompt(entry=world.base, key=OTHER_KEY)
-    assert world.service.pending_candidate(world.service.session_context(OTHER_KEY)) is None
-    directory = world.service.open_project_context(str(world.work))
-    assert world.service.pending_candidate(directory) is None
-    assert world.service.entry_of(directory) is None
+    assert world.services.session.pending_candidate(world.services.session.session_context(OTHER_KEY)) is None
+    directory = world.services.project.open_project_context(str(world.work))
+    assert world.services.session.pending_candidate(directory) is None
+    assert world.services.session.entry_of(directory) is None
 
 
 # --- tools through a session context ------------------------------------------------------
@@ -824,7 +833,7 @@ def test_record_and_update_move_the_save_watermark(world):
     memory = world.write(context)
     assert world.row().last_write_prompt_count == 3
     world.prompt()
-    world.service.update(memory.id, "uv manages all python", context,
+    world.services.memory.update(memory.id, "uv manages all python", context,
                          expected_version=memory.version)
     assert world.row().last_write_prompt_count == 4
 
@@ -838,7 +847,7 @@ def test_a_failed_save_leaves_the_watermark_alone(world):
     memory = world.write(context)
     world.prompt()
     with pytest.raises(VersionConflict):
-        world.service.update(memory.id, "changed", context,
+        world.services.memory.update(memory.id, "changed", context,
                              expected_version=memory.version + 1)
     assert world.row().last_write_prompt_count == 1
 
@@ -846,10 +855,10 @@ def test_a_failed_save_leaves_the_watermark_alone(world):
 def test_a_failed_watermark_never_fails_the_save(world):
     context = world.start()
     world.session_store = Broken(world.session_store, "mark_saved")
-    service = world.build()
-    memory = service.record(content="kept", type="user", sync=False, harness="codex",
+    services = world.build()
+    memory = services.memory.record(content="kept", type="user", sync=False, harness="codex",
                             description="", context=context)
-    assert service.update(memory.id, "kept too", context,
+    assert services.memory.update(memory.id, "kept too", context,
                           expected_version=memory.version).version == memory.version + 1
 
 
@@ -857,70 +866,70 @@ def test_delete_never_moves_the_watermark(world):
     context = world.start()
     memory = world.write(context)
     world.prompt()
-    world.service.delete(memory.id, context, expected_version=memory.version)
+    world.services.memory.delete(memory.id, context, expected_version=memory.version)
     assert world.row().last_write_prompt_count == 0
 
 
 def test_a_recorded_tool_call_names_its_session(world):
     world.start()
-    world.service.record_tool_call(OTHER_KEY_CLAUDE, "call-1")
-    assert world.service.session_key_for_call("claude-code", "call-1") == OTHER_KEY_CLAUDE
-    assert world.service.session_key_for_call("claude-code", "call-2") is None
+    world.services.session.record_tool_call(OTHER_KEY_CLAUDE, "call-1")
+    assert world.services.session.session_key_for_call("claude-code", "call-1") == OTHER_KEY_CLAUDE
+    assert world.services.session.session_key_for_call("claude-code", "call-2") is None
 
 
 def test_the_tool_call_mapping_never_fails_its_caller(world):
     world.start()
     world.session_store = Broken(world.session_store, "record_call", "session_for_call")
-    service = world.build()
-    assert service.record_tool_call(KEY, "call-1") is None
-    assert service.session_key_for_call("claude-code", "call-1") is None
+    services = world.build()
+    assert services.session.record_tool_call(KEY, "call-1") is None
+    assert services.session.session_key_for_call("claude-code", "call-1") is None
 
 
 def test_only_read_records_last_read_at(world):
     context = world.start()
     memory = world.write(context)
-    world.service.index(context)
-    world.service.search("uv", context)
-    assert world.service.show(memory.id).last_read_at is None
-    world.service.read(memory.id, context)
-    assert world.service.show(memory.id).last_read_at is not None
+    world.services.memory.index(context)
+    world.services.memory.search("uv", context)
+    assert world.services.memory.show(memory.id).last_read_at is None
+    world.services.memory.read(memory.id, context)
+    assert world.services.memory.show(memory.id).last_read_at is not None
 
 
 def test_a_failed_last_read_at_never_fails_the_read(world):
     context = world.start()
     memory = world.write(context)
     world.memory_store = Broken(world.memory_store, "touch_read")
-    assert world.build().read(memory.id, context) == memory
+    assert world.build().memory.read(memory.id, context) == memory
 
 
 def test_a_pending_session_can_neither_write_update_nor_delete(world):
     registered = world.start(key=OTHER_KEY)
-    memory = world.service.record(content="fact", type="user", sync=False, harness="codex",
+    memory = world.services.memory.record(content="fact", type="user", sync=False, harness="codex",
                                   description="", context=registered)
     world.prompt()
-    pending = world.service.session_context(KEY)
+    pending = world.services.session.session_context(KEY)
     for attempt in (
             lambda: world.write(pending),
-            lambda: world.service.update(memory.id, "x", pending,
+            lambda: world.services.memory.update(memory.id, "x", pending,
                                          expected_version=memory.version),
-            lambda: world.service.delete(memory.id, pending, expected_version=memory.version)):
+            lambda: world.services.memory.delete(memory.id, pending, expected_version=memory.version)):
         with pytest.raises(ProjectUnavailable) as caught:
             attempt()
         assert caught.value.reason == "pending"
-    assert world.service.read(memory.id, registered).version == memory.version
+    assert world.services.memory.read(memory.id, registered).version == memory.version
 
 
 def test_a_pending_session_without_a_candidate_is_refused_with_its_own_reason(world):
     registered = world.start(key=OTHER_KEY)
-    memory = world.service.record(content="fact", type="user", sync=False, harness="codex",
+    memory = world.services.memory.record(content="fact", type="user", sync=False, harness="codex",
                                   description="", context=registered)
     world.prompt(entry=world.base)
-    pending = world.service.session_context(KEY)
+    pending = world.services.session.session_context(KEY)
     for attempt in (
             lambda: world.write(pending),
-            lambda: world.service.update(memory.id, "x", pending,
+            lambda: world.services.memory.update(memory.id, "x", pending,
                                          expected_version=memory.version),
-            lambda: world.service.delete(memory.id, pending, expected_version=memory.version)):
+            lambda: world.services.memory.delete(memory.id, pending, expected_version=memory.version)):
         with pytest.raises(ProjectUnavailable) as caught:
             attempt()
         assert caught.value.reason == "pending-no-candidate"

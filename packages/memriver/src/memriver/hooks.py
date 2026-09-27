@@ -31,7 +31,7 @@ by two vendors and have diverged before. Composition of the text itself is
 shared, because that is ours.
 
 *Stop and PreToolUse stay light.* The Stop path only moves the session's
-nudge watermark through the core facade (``stop_decision``), and PreToolUse
+nudge watermark through the core's SessionService (``stop_decision``), and PreToolUse
 only records one call mapping (``record_tool_call``): neither loads the
 content policy, scans memories or creates the store. PreToolUse never writes
 anything to stdout -- no decision, no context -- so it can neither block nor
@@ -207,23 +207,23 @@ def _settings_failure(err: Exception) -> HookResult | None:
     return None
 
 
-def _open_service(root: Path | None):
+def _open_services(root: Path | None):
     # imported inside the function, not at module scope, so importing this
     # module (the CLI does, for every hook) does not pay for the core stack
-    from memriver_core.bootstrap import build_service
+    from memriver_core.bootstrap import build_services
     from memriver_core.settings import load_settings
 
     settings = load_settings(root_override=root)
-    return build_service(settings, root=settings.root)
+    return build_services(settings, root=settings.root)
 
 
-def _light_service(root: Path | None):
-    """The facade without loading settings.toml: for the hooks that must stay light."""
-    from memriver_core.bootstrap import build_service
+def _light_services(root: Path | None):
+    """The facades without loading settings.toml: for the hooks that must stay light."""
+    from memriver_core.bootstrap import build_services
     from memriver_core.settings import Settings, storage_root
 
     store_root = Path(root) if root is not None else storage_root()
-    return build_service(Settings(root=store_root), root=store_root)
+    return build_services(Settings(root=store_root), root=store_root)
 
 
 def _transcript_path(payload: dict[str, Any]) -> str | None:
@@ -246,8 +246,8 @@ def _stop(harness: Harness, payload_text: str, *, root: Path | None) -> HookResu
             return HookResult()
         # the watermark write only: no content policy, and a missing store
         # stays missing
-        service = _light_service(root)
-        if not (service.store_exists() and service.stop_decision(key)):
+        session_service = _light_services(root).session
+        if not (session_service.store_exists() and session_service.stop_decision(key)):
             return HookResult()
         return HookResult(stdout=_emit(_STOP_ENCODERS[harness](STOP_NUDGE)))
     except Exception:  # noqa: BLE001 - a failed nudge is never worth a message
@@ -276,7 +276,7 @@ def _pre_tool_use(harness: Harness, payload_text: str, *, root: Path | None) -> 
             return HookResult()
         # the mapping write only: no content policy, and a missing store
         # stays missing (the write is a no-op without one)
-        _light_service(root).record_tool_call(key, call_id)
+        _light_services(root).session.record_tool_call(key, call_id)
         return HookResult()
     except Exception:  # noqa: BLE001 - a missed mapping falls back to the server's session id
         return HookResult()
@@ -297,10 +297,10 @@ def _user_prompt_submit(harness: Harness, payload_text: str, *, root: Path | Non
         if key is None:
             return HookResult()
         with quiet_core_logging():
-            service = _open_service(root)
-            if not service.store_exists():
+            session_service = _open_services(root).session
+            if not session_service.store_exists():
                 return HookResult()
-            context, created = service.observe_prompt(
+            context, created = session_service.observe_prompt(
                 key, prompt=payload.get("prompt"),
                 entry_dir=str(_resolve_dir(harness, payload, project_dir, cwd)),
                 transcript_path=_transcript_path(payload))
@@ -308,7 +308,7 @@ def _user_prompt_submit(harness: Harness, payload_text: str, *, root: Path | Non
             # already told a session whose row it made
             if not (created and context.state == "pending"):
                 return HookResult()
-            notice = _pending_notice(service, context)
+            notice = _pending_notice(session_service, context)
         return HookResult(stdout=_emit(_USER_PROMPT_SUBMIT_ENCODERS[harness](notice)))
     except Exception as err:  # noqa: BLE001 - never a message: the prompt must not leak
         return _settings_failure(err) or HookResult()
@@ -320,9 +320,9 @@ def _session_end(harness: Harness, payload_text: str, *, root: Path | None) -> H
         key = _session_key(harness, payload) if isinstance(payload, dict) else None
         if key is not None:
             with quiet_core_logging():
-                service = _open_service(root)
-                if service.store_exists():
-                    service.end_session(key)
+                session_service = _open_services(root).session
+                if session_service.store_exists():
+                    session_service.end_session(key)
         return HookResult()
     except Exception as err:  # noqa: BLE001 - a missed end is never worth a message
         return _settings_failure(err) or HookResult()
@@ -348,18 +348,18 @@ def _session_start(harness: Harness, payload_text: str, *, root: Path | None,
         encode = _SESSION_START_ENCODERS[harness]
         source = payload.get("source")
         with quiet_core_logging():
-            service = _open_service(root)
+            services = _open_services(root)
             # no store, nothing to route: silent, and nothing is created
-            if not service.store_exists():
+            if not services.session.store_exists():
                 return HookResult()
-            context = service.start_session(
+            context = services.session.start_session(
                 key, source=source if isinstance(source, str) else "",
                 entry_dir=str(_resolve_dir(harness, payload, project_dir, cwd)),
                 transcript_path=_transcript_path(payload))
-            notice = (_pending_notice(service, context) if context.state == "pending"
-                      else "")
+            notice = (_pending_notice(services.session, context)
+                      if context.state == "pending" else "")
             # the same header and body the MCP server shows for this context
-            index = context.header + "\n" + service.index(context)
+            index = context.header + "\n" + services.memory.index(context)
         text = _compose(index, source, harness, notice)
         return HookResult(stdout=_emit(encode(text)))
     except Exception as err:  # noqa: BLE001 - the reason belongs in `memriver doctor`
@@ -389,10 +389,10 @@ def _resolve_dir(harness: Harness, payload: dict[str, Any], project_dir: Path | 
     return Path(payload_cwd) if isinstance(payload_cwd, str) else Path(cwd)
 
 
-def _pending_notice(service: Any, context: ProjectContext) -> str:
+def _pending_notice(session_service: Any, context: ProjectContext) -> str:
     """The pending notice for ``context``, naming the stored entry and its candidate."""
-    candidate = service.pending_candidate(context)
-    entry_cwd = visible(service.entry_of(context) or "")
+    candidate = session_service.pending_candidate(context)
+    entry_cwd = visible(session_service.entry_of(context) or "")
     if candidate is None:
         return PENDING_NOTICE_NO_PROJECT.format(entry_cwd=entry_cwd)
     return PENDING_NOTICE.format(

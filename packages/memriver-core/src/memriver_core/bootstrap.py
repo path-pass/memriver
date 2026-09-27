@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from functools import partial
+from dataclasses import dataclass
+from functools import cache, partial
 from pathlib import Path
 
-from .application.diagnostics import DiagnosticsService
+from .application.maintenance import MaintenanceService
 
 # EMPTY_INDEX is re-exported (not composed) here: bootstrap is the one
 # memriver_core surface, alongside settings/models, that a transport may import.
-from .application.service import EMPTY_INDEX, MemoryService
+from .application.memory import EMPTY_INDEX, MemoryService
+from .application.projects import ProjectService
+from .application.sessions import SessionService
 
 # The store purge is the one data operation outside the facade (the user's
 # choice): it destroys the whole storage directory rather than records.
@@ -48,8 +51,8 @@ from .settings import (
 )
 
 __all__ = [
-    "EMPTY_INDEX", "PurgePlan", "PurgeRefusal", "PurgeResult", "build_service", "plan_purge",
-    "purge",
+    "EMPTY_INDEX", "PurgePlan", "PurgeRefusal", "PurgeResult", "Services", "build_services",
+    "plan_purge", "purge",
 ]
 
 
@@ -61,34 +64,36 @@ def _content_policy():
     return SecretScanner()
 
 
-def build_service(settings: Settings, *, root: Path | None = None,
-                  home: Path | None = None) -> MemoryService:
+@dataclass(frozen=True)
+class Services:
+    """The four core facades over one root, one settings object and one content policy."""
+
+    memory: MemoryService
+    project: ProjectService
+    session: SessionService
+    maintenance: MaintenanceService
+
+
+def build_services(settings: Settings, *, root: Path | None = None,
+                   home: Path | None = None) -> Services:
     # an explicit root is authoritative: callers that already resolved it (the
     # CLI, the tests) must not have it replaced by the environment or settings
     store_root = settings.root if root is None else root
     home = Path.home() if home is None else home
-    return MemoryService(
-        SqliteMemoryStore(store_root, busy_timeout_ms=BUSY_TIMEOUT_MS),
-        SqliteProjectStore(store_root, home=home, busy_timeout_ms=BUSY_TIMEOUT_MS),
-        _content_policy,
-        DiagnosticsService(SqliteStoreInspector(store_root, busy_timeout_ms=BUSY_TIMEOUT_MS)),
-        session_store=SqliteSessionStore(store_root, busy_timeout_ms=BUSY_TIMEOUT_MS),
+    project_store = SqliteProjectStore(store_root, home=home, busy_timeout_ms=BUSY_TIMEOUT_MS)
+    # one scanner per composition, still built on first use and shared by the
+    # two services that check text
+    content_policy = cache(_content_policy)
+    session = SessionService(
+        SqliteSessionStore(store_root, busy_timeout_ms=BUSY_TIMEOUT_MS), project_store,
+        content_policy,
         canonical_directory=canonical_directory,
         main_tree_path=partial(main_tree_path, timeout_s=GIT_QUERY_TIMEOUT_S),
         current_branch=partial(current_branch, timeout_s=GIT_QUERY_TIMEOUT_S),
         # the integrity rule resolution applies: an offline root is fine, a
         # re-pointed or uncheckable one is not (spec §5)
         root_is_intact=lambda root: root_state(root) in ("ok", "missing"),
-        max_body_chars=settings.max_body_chars,
-        # metadata keeps the default budget, so a tightened body limit does
-        # not silently change harness/description acceptance
-        metadata_max_chars=DEFAULT_MAX_BODY_CHARS,
-        search_limit_default=settings.search_limit_default,
-        search_limit_max=settings.search_limit_max,
-        index_budget_lines=settings.index_budget_lines,
-        index_cue_chars=INDEX_CUE_CHARS,
         header_field_chars=HEADER_FIELD_CHARS,
-        project_name_max_chars=PROJECT_NAME_MAX_CHARS,
         session_prompt_chars=SESSION_PROMPT_CHARS,
         session_recent_prompts=SESSION_RECENT_PROMPTS,
         session_prompt_scan_max_bytes=SESSION_PROMPT_SCAN_MAX_BYTES,
@@ -97,4 +102,26 @@ def build_service(settings: Settings, *, root: Path | None = None,
         session_search_limit_default=SESSION_SEARCH_LIMIT_DEFAULT,
         session_search_limit_max=SESSION_SEARCH_LIMIT_MAX,
         tool_call_retention_s=TOOL_CALL_RETENTION_S,
+    )
+    memory = MemoryService(
+        SqliteMemoryStore(store_root, busy_timeout_ms=BUSY_TIMEOUT_MS), project_store,
+        content_policy,
+        refuse_pending=session.refuse_pending,
+        mark_saved=session.mark_saved,
+        max_body_chars=settings.max_body_chars,
+        # metadata keeps the default budget, so a tightened body limit does
+        # not silently change harness/description acceptance
+        metadata_max_chars=DEFAULT_MAX_BODY_CHARS,
+        search_limit_default=settings.search_limit_default,
+        search_limit_max=settings.search_limit_max,
+        index_budget_lines=settings.index_budget_lines,
+        index_cue_chars=INDEX_CUE_CHARS,
+    )
+    return Services(
+        memory=memory,
+        project=ProjectService(project_store, header_field_chars=HEADER_FIELD_CHARS,
+                               project_name_max_chars=PROJECT_NAME_MAX_CHARS),
+        session=session,
+        maintenance=MaintenanceService(
+            SqliteStoreInspector(store_root, busy_timeout_ms=BUSY_TIMEOUT_MS)),
     )
