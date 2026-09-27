@@ -83,9 +83,9 @@ memory cannot be seeded through the agent-facing service. `seed_global_memory
 `MemoryService.apply` (`memriver_core.bootstrap.build_services` composed over
 the already-installed store), landing in the one `projects` row with
 `is_global = 1`. `Create(<global id>, "project", text, text, trust="user")`
-with `changed_by="manual"`, `changed_via="e2e"` gives the row the same shape
-the old hand-written INSERT did (`source_method`/`source_harness` = `manual`/
-`e2e`, so `memriver show` still reports `source: e2e/manual`), `version = 1`
+with `changed_by="human"`, `changed_via="e2e"` gives the row
+`source_method`/`source_harness` = `human`/`e2e` (`memriver show` reports
+`source: e2e/human`), `version = 1`
 and `deleted_at = NULL`, plus the change/version/step rows the kernel now
 always writes alongside it. The text doubles as the description, i.e. the
 index cue (60-character budget), so the injected index line reads `- [project,
@@ -125,7 +125,7 @@ entering from the registered project and one from unregistered `/root`:
   global  (global)` followed by the seeded memory's line (`<id>  [project]
   <date>  <cue>`) and `<id>  e2e-project  (/root/e2e-project)`; `uvx memriver
   show <id>` prints the header (`project: <global id>`, `trust: user`, `source:
-  e2e/manual`, `version: 1`, no `deleted:`) and the body after `---`; `uvx
+  e2e/human`, `version: 1`, no `deleted:`) and the body after `---`; `uvx
   memriver export /root/snap` prints `exported 1 memories to /root/snap` and
   writes `/root/snap/<global id>/<id>.md` (mode `0600`, front matter with
   `version: 1`, the body after it) and `projects.md` (mode `0600`, one line per

@@ -124,9 +124,9 @@ PY
 # service.record only writes the session's own project), so this seeds it the
 # way the management path does: one Create through services.memory.apply
 # (memriver_core.bootstrap.build_services over the already-installed store),
-# with project_id = the id of the one is_global project. changed_by="manual",
-# changed_via="e2e" so the stored source is "e2e/manual" (source_harness/
-# source_method) exactly as before; trust="user": a human wrote it. The
+# with project_id = the id of the one is_global project. changed_by="human"
+# (the real source: a person seeding the store), changed_via="e2e", so the
+# stored source is "e2e/human" (source_harness/source_method); trust="user". The
 # content is passed through argv, not interpolated into the heredoc.
 seed_global_memory() {
     local content="$1" memory_id
@@ -143,7 +143,7 @@ services = build_services(Settings(root=store), root=store)
 global_id = services.project.global_project_id()
 change = services.memory.apply(
     [Create(global_id, "project", content, content, trust="user")],
-    changed_by="manual", changed_via="e2e")
+    changed_by="human", changed_via="e2e")
 print(change.steps[0].memory_id)
 PY
 )"
