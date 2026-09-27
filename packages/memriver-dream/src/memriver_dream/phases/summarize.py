@@ -234,15 +234,16 @@ _PROGRESS_KEYS = frozenset({"fingerprint", "prompt_version", "room", "next_chunk
 
 def _valid_progress(progress: object) -> bool:
     """Whether stored `progress` has the shape an attempt can consume: exactly these
-    keys, sane types and ranges, and a non-empty `partials` list of non-empty strings
-    each storable as text. Corrupted or hand-edited data fails this and is discarded
+    keys, sane types and ranges, every string storable as text, and a non-empty
+    `partials` list of non-empty strings. Corrupted or hand-edited data fails this and is discarded
     -- as if there were no checkpoint -- rather than raised on or read as done."""
     if not isinstance(progress, dict) or set(progress) != _PROGRESS_KEYS:
         return False
     fingerprint, prompt_version = progress["fingerprint"], progress["prompt_version"]
     room, next_chunk, partials = progress["room"], progress["next_chunk"], progress["partials"]
-    return (isinstance(fingerprint, str) and bool(fingerprint)
+    return (isinstance(fingerprint, str) and bool(fingerprint) and storable(fingerprint)
             and isinstance(prompt_version, str) and bool(prompt_version)
+            and storable(prompt_version)
             and type(room) is int and room >= 1
             and type(next_chunk) is int and next_chunk >= 1
             and isinstance(partials, list) and bool(partials)

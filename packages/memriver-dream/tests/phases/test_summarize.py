@@ -10,6 +10,7 @@ import re
 import sqlite3
 from contextlib import closing
 
+import pytest
 from memriver_core.models import SessionKey
 from memriver_core.settings import SESSION_SUMMARY_MAX_CHARS
 from memriver_dream.phases import PassResult, summarize
@@ -401,6 +402,17 @@ def test_a_checkpointed_partial_that_is_not_utf8_storable_is_discarded(world):
     key = _checkpointed(world)
     row = _row(world, key)
     tampered = {**row.progress, "partials": [row.progress["partials"][0] + "\ud800"]}
+    _plant_progress(world, key, json.dumps(tampered))
+    assert _phase(world, budget_tokens=ROOM_100) == ["codex s1: partial"]
+    assert len(world.executor.calls) == 12 + 12            # started over, the checkpoint is gone
+
+
+@pytest.mark.parametrize("field", ["fingerprint", "prompt_version"])
+def test_a_checkpoint_whose_metadata_is_not_utf8_storable_is_discarded(world, field):
+    # the same lone surrogate in a metadata string must not reach the write-back either
+    key = _checkpointed(world)
+    row = _row(world, key)
+    tampered = {**row.progress, field: row.progress[field] + "\ud800"}
     _plant_progress(world, key, json.dumps(tampered))
     assert _phase(world, budget_tokens=ROOM_100) == ["codex s1: partial"]
     assert len(world.executor.calls) == 12 + 12            # started over, the checkpoint is gone
