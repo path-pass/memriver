@@ -27,6 +27,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    StrictBool,
     ValidationError,
     ValidationInfo,
     field_validator,
@@ -124,9 +125,11 @@ class ClassifierSettings(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    enabled: bool = True                # false: off, the table kept
-    agent_writes: bool = True           # check changed_by "mcp"
-    dream_writes: bool = True           # check changed_by "dream"
+    # strict: pydantic's lax bool reads 1/"no" as booleans, and tightening this
+    # later would break a released user's settings.toml
+    enabled: StrictBool = True          # false: off, the table kept
+    agent_writes: StrictBool = True     # check changed_by "mcp"
+    dream_writes: StrictBool = True     # check changed_by "dream"
     backend: Literal["claude", "codex", "jev"]
     # declared after backend: its validator reads the backend already validated
     executor_path: str | None = Field(None, validate_default=True)

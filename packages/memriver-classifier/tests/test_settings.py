@@ -48,6 +48,12 @@ def test_a_headless_backend_defaults_to_a_sixty_second_timeout(tmp_path):
     assert load_classifier_settings(_root(tmp_path / "b", CLAUDE + "timeout_s = 5\n")).timeout == 5
 
 
+def test_each_switch_set_to_false_is_read_as_false(tmp_path):
+    text = JEV + "enabled = false\nagent_writes = false\ndream_writes = false\n"
+    table = load_classifier_settings(_root(tmp_path, text))
+    assert (table.enabled, table.agent_writes, table.dream_writes) == (False, False, False)
+
+
 def test_keys_match_case_insensitively_and_unknown_keys_are_ignored(tmp_path):
     table = load_classifier_settings(
         _root(tmp_path, '[classifier]\nBackend = "jev"\nbackend = "claude"\nunknown = 1\n'))
@@ -83,6 +89,12 @@ def test_codex_overrides_are_read_from_their_subtable(tmp_path):
     (JEV + f'[classifier.codex_overrides]\n"features.hooks" = "{PASTED}"\n',
      "classifier.codex_overrides"),
     ("classifier = 5\n", "classifier"),
+    (JEV + "enabled = 1\n", "classifier.enabled"),
+    (JEV + 'enabled = "no"\n', "classifier.enabled"),
+    (JEV + "agent_writes = 1\n", "classifier.agent_writes"),
+    (JEV + 'agent_writes = "no"\n', "classifier.agent_writes"),
+    (JEV + "dream_writes = 1\n", "classifier.dream_writes"),
+    (JEV + 'dream_writes = "no"\n', "classifier.dream_writes"),
 ])
 def test_an_invalid_table_raises_naming_only_the_file_and_the_field(tmp_path, text, field):
     root = _root(tmp_path, "max_body_chars = 42\n" + text)
