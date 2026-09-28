@@ -12,15 +12,16 @@ nothing else unless that exits clean.
 from __future__ import annotations
 
 import subprocess
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TextIO
 
 from .install import run_config_uninstall
 
-# the two packages memriver's own install ever populates in uv's cache; `uv
+# the packages memriver's own install ever populates in uv's cache; `uv
 # cache clean` takes one package name at a time
-_UV_CACHE_PACKAGES = ("memriver", "memriver-core")
+_UV_CACHE_PACKAGES = ("memriver", "memriver-core", "memriver-dream")
 
 # a wedged `uv` must not hang uninstall after config removal already committed
 _UV_CACHE_CLEAN_TIMEOUT_SECONDS = 30
@@ -31,18 +32,29 @@ def run_uninstall(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
                   home: Path, cwd: Path, env: Mapping[str, str],
                   input_fn: Callable[[str], str], stdout: TextIO,
                   replace_file: Callable[[Path, Path], None],
-                  root: Path | None = None) -> int:
-    """Config removal, then -- only once that succeeds -- the data root and cache.
+                  root: Path | None = None,
+                  launchctl: Callable[[list[str]], int] | None = None,
+                  uid: int | None = None,
+                  platform: str = sys.platform) -> int:
+    """Config removal, then -- only once that succeeds -- the schedule, the data
+    root and the cache.
 
     ``root``, when given, is the ``--purge-data`` target outright -- it wins
     over both the injected ``env``'s ``MEMRIVER_ROOT`` and the injected
     ``home``'s default, the same precedence ``doctor --root`` already gives
-    its own root override.
+    its own root override. ``launchctl``, ``uid`` and ``platform`` are the same
+    seams ``memriver dream``'s own commands take, so a test can stand in for
+    launchd without ever calling it.
     """
     exit_code = run_config_uninstall(
         harnesses, yes=yes, dry_run=dry_run, home=home, cwd=cwd, env=env,
         input_fn=input_fn, stdout=stdout, replace_file=replace_file,
     )
+    if exit_code != 0:
+        return exit_code
+
+    exit_code = _remove_dream_schedule(dry_run=dry_run, home=home, stdout=stdout,
+                                       launchctl=launchctl, uid=uid, platform=platform)
     if exit_code != 0:
         return exit_code
 
@@ -57,6 +69,35 @@ def run_uninstall(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
         _clean_uv_cache(stdout)
 
     return 0
+
+
+def _remove_dream_schedule(*, dry_run: bool, home: Path, stdout: TextIO,
+                           launchctl: Callable[[list[str]], int] | None,
+                           uid: int | None, platform: str) -> int:
+    """Stop the daily dream run config removal alone leaves behind.
+
+    Without this, a scheduled dream keeps sending memories to the model
+    service every day after uninstall. This reuses ``memriver dream``'s own
+    uninstall path so its refusal wording is never duplicated here; a platform
+    dream never schedules on gets no output at all, not even a note.
+    """
+    if platform != "darwin":
+        return 0
+    # imported here, not at module scope, for the same reason memriver_core is:
+    # dream_commands pulls in memriver_dream and pydantic, which a plain
+    # uninstall on a platform without a schedule (or one that fails before
+    # this point) never needs to pay for
+    from . import dream_commands, launch_agent
+
+    label = dream_commands.DREAM_LAUNCH_AGENT_LABEL
+    if dry_run:
+        if launch_agent.plist_path(home, label).exists():
+            stdout.write("dry run: the dream schedule would be removed.\n")
+        return 0
+    return dream_commands.run_uninstall(
+        home=home, stdout=stdout, launchctl=launchctl or launch_agent.run_launchctl,
+        uid=uid, platform=platform, label=label,
+    )
 
 
 def _resolve_storage_root(root_override: Path | None, env: Mapping[str, str],

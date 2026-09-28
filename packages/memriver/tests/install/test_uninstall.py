@@ -39,6 +39,7 @@ from pathlib import Path
 
 import pytest
 import tomlkit
+from memriver import launch_agent
 from memriver.install import (
     HARNESS_SETTING_TAKEOVER_NOTICE,
     PlanningError,
@@ -104,6 +105,32 @@ def refuse_to_read(prompt: str) -> str:
     raise EOFError(prompt)
 
 
+class FakeLaunchctl:
+    """launchd in miniature, the same fake ``test_launch_agent.py`` and
+    ``test_dream_commands.py`` use: one job, loaded or not; `print` can fail
+    to answer and bootout can fail. Standing in here keeps every uninstall
+    test off the real launchd."""
+
+    def __init__(self, *, loaded: bool = False, bootout_fails: bool = False,
+                 print_fails: bool = False) -> None:
+        self.loaded, self.bootout_fails, self.print_fails = loaded, bootout_fails, print_fails
+        self.calls: list[list[str]] = []
+
+    def __call__(self, args: list[str]) -> int:
+        self.calls.append(list(args))
+        if args[0] == "print":
+            if self.print_fails:
+                return 5                    # launchd could not say
+            return 0 if self.loaded else 113
+        if args[0] == "bootout":
+            if self.bootout_fails:
+                return 5
+            self.loaded = False
+            return 0
+        self.loaded = True
+        return 0
+
+
 class Run:
     def __init__(self, exit_code: int, stdout: str, answers: Answers | None,
                  replace: ReplaceSpy) -> None:
@@ -148,7 +175,8 @@ def full_uninstall(harnesses, *, home: Path, cwd: Path, yes: bool = True,
                    dry_run: bool = False, purge_data: bool = False,
                    clean_uv_cache: bool = False, env: dict | None = None,
                    root: Path | None = None,
-                   replies=None, input_fn=None) -> Run:
+                   replies=None, input_fn=None,
+                   launchctl=None, uid: int = 501, platform: str = "darwin") -> Run:
     out = io.StringIO()
     answers = None
     if input_fn is None:
@@ -159,6 +187,8 @@ def full_uninstall(harnesses, *, home: Path, cwd: Path, yes: bool = True,
         clean_uv_cache=clean_uv_cache, root=root, home=home, cwd=cwd,
         env=env if env is not None else {}, input_fn=input_fn, stdout=out,
         replace_file=lambda s, d: __import__("os").replace(s, d),
+        launchctl=launchctl if launchctl is not None else FakeLaunchctl(),
+        uid=uid, platform=platform,
     )
     return Run(exit_code, out.getvalue(), answers, None)
 
@@ -2131,6 +2161,83 @@ def test_purge_data_refuses_a_symlinked_ancestor_anywhere_in_the_target_path(
     assert victim.is_dir()
 
 
+# --- uninstall also removes the dream schedule ------------------------------
+
+
+def _install_dream_schedule(home: Path, launchctl) -> None:
+    plist = launch_agent.render(
+        program=["/opt/memriver", "dream", "run", "--trigger", "schedule"],
+        schedule_at="04:30", env={}, log_path=home / "dream.log")
+    launch_agent.install(home=home, plist=plist, uid=501, launchctl=launchctl)
+
+
+def test_uninstall_removes_an_installed_dream_schedule(home, project):
+    launchctl = FakeLaunchctl()
+    _install_dream_schedule(home, launchctl)
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                            launchctl=launchctl)
+
+    assert result.exit_code == 0
+    assert "removed the schedule; settings and data are kept" in result.stdout
+    assert not launch_agent.plist_path(home).exists()
+
+
+def test_uninstall_reports_no_schedule_when_none_was_installed(home, project):
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True)
+
+    assert result.exit_code == 0
+    assert "no schedule installed" in result.stdout
+
+
+def test_uninstall_dry_run_reports_it_would_remove_an_installed_schedule(home,
+                                                                         project):
+    launchctl = FakeLaunchctl()
+    _install_dream_schedule(home, launchctl)
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                            dry_run=True, launchctl=launchctl)
+
+    assert result.exit_code == 0
+    assert "dry run: the dream schedule would be removed." in result.stdout
+    assert launch_agent.plist_path(home).exists()  # dry run touches nothing
+
+
+def test_uninstall_dry_run_says_nothing_about_an_absent_schedule(home, project):
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                            dry_run=True)
+
+    assert result.exit_code == 0
+    assert "schedule" not in result.stdout
+
+
+def test_uninstall_says_nothing_extra_about_dream_on_a_non_darwin_platform(home,
+                                                                           project):
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                            platform="linux")
+
+    assert result.exit_code == 0
+    assert "schedule" not in result.stdout
+
+
+def test_a_dream_schedule_removal_failure_is_non_zero_and_skips_the_purge(
+        home, project, tmp_path):
+    launchctl = FakeLaunchctl(bootout_fails=True)
+    _install_dream_schedule(home, launchctl)
+    root = tmp_path / "agent-memory"
+    root.mkdir()
+    (root / "memriver.db").write_text("db")
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                            purge_data=True, env={"MEMRIVER_ROOT": str(root)},
+                            launchctl=launchctl)
+
+    assert result.exit_code != 0
+    assert "refused: launchd did not confirm the schedule is unloaded" in result.stdout
+    assert "memory storage root" not in result.stdout
+    assert root.exists() and (root / "memriver.db").exists()
+
+
 def test_clean_uv_cache_invokes_uv_with_the_exact_arguments(home, project,
                                                              monkeypatch):
     calls = []
@@ -2148,6 +2255,7 @@ def test_clean_uv_cache_invokes_uv_with_the_exact_arguments(home, project,
     assert calls == [
         ["uv", "cache", "clean", "memriver"],
         ["uv", "cache", "clean", "memriver-core"],
+        ["uv", "cache", "clean", "memriver-dream"],
     ]
 
 
