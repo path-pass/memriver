@@ -102,6 +102,11 @@ def _refusal_text(refusal) -> str:
                 "store itself and run uninstall --purge-data again.\n")
     if refusal.kind == "not-directory":
         return f"memriver uninstall: {refusal.path} is not a directory; nothing was removed.\n"
+    if refusal.kind == "not-a-store":
+        return (f"memriver uninstall: {refusal.path} does not look like a memriver store "
+                "-- it is not empty and holds no memriver.db; nothing was removed. Point "
+                "--root (or MEMRIVER_ROOT) at the memriver store itself and run uninstall "
+                "--purge-data again.\n")
     return (f"memriver uninstall: {refusal.path} could not be opened as a directory "
             f"({refusal.detail}); nothing was removed.\n")
 

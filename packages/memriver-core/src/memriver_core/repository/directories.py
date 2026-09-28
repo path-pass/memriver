@@ -16,6 +16,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Self
 
+# the one file name every store backend's database lives at; shared here so a
+# purge target can be recognized as a store without this module reaching into
+# a concrete adapter (only bootstrap.py may do that)
+DATABASE_FILENAME = "memriver.db"
+
 
 def same_directory(a: str, b: str) -> bool | None:
     """``os.path.samefile`` with "absent" and "could not check" told apart.
@@ -178,7 +183,7 @@ def nearest_bound(start: str, bound: Sequence[tuple[str, str]], *,
 
 
 PurgeRefusalKind = Literal["unresolvable", "symlink", "too-broad", "not-directory",
-                           "unopenable"]
+                           "unopenable", "not-a-store"]
 
 
 @dataclass(frozen=True)
@@ -325,6 +330,21 @@ def _open_directory_without_following_symlinks(path: Path) -> int:
     return fd
 
 
+def _holds_no_store(canonical: Path) -> bool:
+    """Whether ``canonical`` is neither empty nor holds ``memriver.db`` directly.
+
+    A directory this narrow a check cannot read (permission, I/O) is not
+    refused here: the later open-for-real step already turns that into its
+    own refusal, with the right error text.
+    """
+    try:
+        with os.scandir(canonical) as entries:
+            names = [entry.name for entry in entries]
+    except OSError:
+        return False
+    return bool(names) and DATABASE_FILENAME not in names
+
+
 def plan_purge(given: Path, *, home: Path, cwd: Path,
                dry_run: bool = False) -> PurgePlan | PurgeRefusal:
     """Canonicalize and check a purge target; open it unless this is a dry run.
@@ -352,6 +372,8 @@ def plan_purge(given: Path, *, home: Path, cwd: Path,
         return PurgeRefusal("unresolvable", canonical, canonical, str(error))
     if not stat.S_ISDIR(mode):
         return PurgeRefusal("not-directory", canonical, canonical)
+    if _holds_no_store(canonical):
+        return PurgeRefusal("not-a-store", canonical, canonical)
     if dry_run:
         return PurgePlan(given, canonical, home, cwd, exists=True)
     try:

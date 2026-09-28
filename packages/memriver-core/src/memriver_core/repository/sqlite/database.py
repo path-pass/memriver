@@ -34,7 +34,8 @@ from memriver_core.models import (
 )
 from memriver_core.models.errors import StorageFailure, StoreNeedsUpgrade
 
-DATABASE_FILENAME = "memriver.db"
+from ..directories import DATABASE_FILENAME
+
 SCHEMA_VERSION = 4
 
 # spec §3.5: the session rows of v2, plus the published summary

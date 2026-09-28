@@ -1403,6 +1403,7 @@ def test_purge_data_without_the_flag_leaves_the_store_untouched(home, project,
 def test_purge_data_with_yes_removes_the_resolved_root(home, project, tmp_path):
     root = tmp_path / "agent-memory"
     root.mkdir()
+    (root / "memriver.db").write_text("x")
     (root / "marker.txt").write_text("data")
 
     result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
@@ -1411,6 +1412,25 @@ def test_purge_data_with_yes_removes_the_resolved_root(home, project, tmp_path):
     assert result.exit_code == 0
     assert str(root) in result.stdout
     assert not root.exists()
+
+
+def test_purge_data_refuses_a_directory_holding_no_memriver_store(home, project,
+                                                                   tmp_path):
+    """`--root ~/Documents` (or a mistyped MEMRIVER_ROOT) must not wipe a
+    directory nobody ever asked memriver to own -- checked before any prompt,
+    so `--yes` cannot skip past it either."""
+    root = tmp_path / "documents"
+    root.mkdir()
+    (root / "notes.txt").write_text("mine")
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                            purge_data=True, env={"MEMRIVER_ROOT": str(root)})
+
+    assert result.exit_code != 0
+    assert "does not look like a memriver store" in result.stdout
+    assert "nothing was removed" in result.stdout
+    assert root.exists()
+    assert (root / "notes.txt").read_text() == "mine"
 
 
 def test_purge_data_declined_leaves_the_store_in_place(home, project, tmp_path):
@@ -1520,6 +1540,7 @@ def test_purge_data_reports_a_partial_removal_when_the_walk_fails(home, project,
     delete_tree = shutil.rmtree
     root = tmp_path / "agent-memory"
     (root / "sessions").mkdir(parents=True)
+    (root / "memriver.db").write_text("db")
     (root / "sessions" / "one.json").write_text("gone")
     (root / "index.db").write_text("still here")
 
@@ -1746,6 +1767,7 @@ def test_purge_data_refuses_a_replacement_directory_at_the_confirmed_path(
     one the user confirmed. Deleting it would destroy a tree nobody agreed to."""
     root = tmp_path / "agent-memory"
     root.mkdir()
+    (root / "memriver.db").write_text("db")
     (root / "confirmed.txt").write_text("the object the user saw")
     moved = tmp_path / "moved-away"
 
@@ -1774,6 +1796,7 @@ def test_purge_data_deletes_the_confirmed_directory_when_a_parent_is_swapped_las
     parent = tmp_path / "parent"
     store = parent / "agent-memory"
     (store / "sessions").mkdir(parents=True)
+    (store / "memriver.db").write_text("db")
     (store / "sessions" / "one.json").write_text("memriver's own")
     victim_parent = tmp_path / "victim-parent"
     victim = victim_parent / "agent-memory"
@@ -1807,6 +1830,7 @@ def test_purge_data_leaves_a_replacement_swapped_in_after_the_confirmed_open(
     checked once more before the emptied root itself is detached."""
     root = tmp_path / "agent-memory"
     (root / "sessions").mkdir(parents=True)
+    (root / "memriver.db").write_text("db")
     (root / "sessions" / "one.json").write_text("the object the user saw")
     moved = tmp_path / "moved-away"
 
@@ -1841,6 +1865,7 @@ def test_purge_data_leaves_a_replacement_swapped_in_under_the_confirmed_root(
     is checked once more first, and the stranger is left standing and named."""
     root = tmp_path / "agent-memory"
     (root / "sessions").mkdir(parents=True)
+    (root / "memriver.db").write_text("db")
     (root / "sessions" / "one.json").write_text("the object the walk opened")
     moved = tmp_path / "moved-away"
 
@@ -1872,6 +1897,7 @@ def test_purge_data_leaves_a_replacement_that_reuses_the_freed_child_inode(
     of reach of the ``mkdir``."""
     root = tmp_path / "agent-memory"
     (root / "sessions").mkdir(parents=True)
+    (root / "memriver.db").write_text("db")
     (root / "sessions" / "one.json").write_text("the object the walk opened")
     moved = tmp_path / "moved-away"
 
@@ -1904,6 +1930,7 @@ def test_purge_data_removes_a_nested_tree_through_the_confirmed_directory(
     root = tmp_path / "agent-memory"
     (root / "sessions" / "2026" / "09").mkdir(parents=True)
     (root / "sessions" / "2026" / "09" / "one.json").write_text("{}")
+    (root / "memriver.db").write_text("db")
     (root / "index.db").write_text("db")
     (root / "elsewhere").symlink_to(outside, target_is_directory=True)
 
@@ -1998,6 +2025,7 @@ def test_purge_data_removes_the_canonical_target_not_the_given_spelling(
         home, project, tmp_path):
     outside = tmp_path / "outside"
     (outside / "store").mkdir(parents=True)
+    (outside / "store" / "memriver.db").write_text("db")
     (outside / "store" / "marker.txt").write_text("data")
     alias = tmp_path / "alias"
     alias.symlink_to(outside, target_is_directory=True)
@@ -2046,6 +2074,7 @@ def test_purge_data_refuses_an_ancestor_swapped_for_a_symlink_before_the_confirm
     safe_parent = tmp_path / "safe-parent"
     store = safe_parent / "store"
     (store / "sessions").mkdir(parents=True)
+    (store / "memriver.db").write_text("db")
     (store / "sessions" / "one.json").write_text("memriver's own")
     victim_parent = tmp_path / "victim-parent"
     victim = victim_parent / "store"
@@ -2078,6 +2107,7 @@ def test_purge_data_refuses_a_symlinked_ancestor_anywhere_in_the_target_path(
     grand = tmp_path / "grand"
     store = grand / "mid" / "store"
     (store / "sessions").mkdir(parents=True)
+    (store / "memriver.db").write_text("db")
     (store / "sessions" / "one.json").write_text("memriver's own")
     victim_grand = tmp_path / "victim-grand"
     victim = victim_grand / "mid" / "store"

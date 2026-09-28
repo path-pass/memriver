@@ -37,6 +37,32 @@ def test_a_confirmed_store_is_removed(places):
     assert plan.fd is None                       # the context manager closed it
 
 
+def test_a_nonempty_directory_without_a_store_is_refused(places, tmp_path):
+    home, cwd, _ = places
+    target = tmp_path / "documents"
+    target.mkdir()
+    (target / "notes.txt").write_text("mine")
+
+    refusal = plan_purge(target, home=home, cwd=cwd)
+
+    assert isinstance(refusal, PurgeRefusal) and refusal.kind == "not-a-store"
+    assert refusal.canonical == target.resolve()
+    assert (target / "notes.txt").read_text() == "mine"
+
+
+def test_an_empty_directory_is_still_purged(places, tmp_path):
+    home, cwd, _ = places
+    target = tmp_path / "empty"
+    target.mkdir()
+
+    with plan_purge(target, home=home, cwd=cwd) as plan:
+        assert isinstance(plan, PurgePlan) and plan.exists and plan.fd is not None
+        result = purge(plan)
+
+    assert (result.outcome, result.path) == ("removed", target.resolve())
+    assert not target.exists()
+
+
 def test_a_missing_store_is_a_plan_with_nothing_to_remove(places):
     home, cwd, store = places
     plan = plan_purge(store.parent / "absent", home=home, cwd=cwd)
