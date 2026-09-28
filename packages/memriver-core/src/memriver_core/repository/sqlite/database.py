@@ -374,6 +374,9 @@ class Database:
         conn.text_factory = _lenient_text
         try:
             conn.execute("PRAGMA foreign_keys = ON")
+            # a hard delete's freed pages are overwritten with zeros instead of left
+            # holding the plaintext until something else reuses them
+            conn.execute("PRAGMA secure_delete = ON")
             if read_only:
                 conn.execute("PRAGMA query_only = ON")
         except BaseException:

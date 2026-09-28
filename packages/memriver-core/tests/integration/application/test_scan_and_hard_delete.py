@@ -215,6 +215,19 @@ def test_an_unknown_id_is_not_found(world):
         maintenance.hard_delete("zzzzzzzzzz", code="0123456789abcdef")
 
 
+def test_a_hard_delete_leaves_no_copy_of_the_secret_in_the_database_file(world):
+    marker = "AKIASECRETMARKER1234567890"
+    maintenance = world["services"].maintenance
+    target = world["create"](marker)
+    plan = maintenance.plan_hard_delete(target)
+    assert maintenance.hard_delete(target, expected=plan.expected) == [target]
+
+    db_path = world["store"] / "memriver.db"
+    for suffix in ("-journal", "-wal"):
+        assert not db_path.with_name(db_path.name + suffix).exists()
+    assert marker.encode("utf-8") not in db_path.read_bytes()
+
+
 def test_a_global_or_deleted_target_is_deleted_like_any_other(world):
     maintenance = world["services"].maintenance
     principle = world["create"]("a principle", project_id=world["global"])

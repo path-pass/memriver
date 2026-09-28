@@ -346,7 +346,10 @@ change log entries a hard delete touched stay, without the deleted memories'
 steps, and can no longer be undone -- but the hard delete itself adds no new
 one. This is how a secret already in the store is removed even once its text
 fails today's policy: a soft delete would be refused (above), but a hard
-delete runs no such check.
+delete runs no such check. It reaches only the store file itself: a copy made
+outside the store -- a backup, or the harness's own transcript the secret
+came from -- keeps its own text, and disk blocks the filesystem had already
+freed before the delete stay whatever they held.
 
 ## Sessions
 
