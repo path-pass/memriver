@@ -12,6 +12,7 @@ from dataclasses import replace
 import memriver_dream.store as store_module
 import pytest
 from memriver_dream.store import (
+    _SCHEMA,
     DreamStore,
     ReviewRow,
     RunRow,
@@ -43,6 +44,43 @@ def test_the_file_is_private_and_holds_the_five_tables(tmp_path):
                      "session_summaries"}
     store.put_scope_pass("global", "d1", T0)
     assert DreamStore(store.path).scope_digest("global") == "d1"     # reopening keeps rows
+
+
+def test_a_fresh_store_is_stamped_with_the_current_schema_version(tmp_path):
+    store = _store(tmp_path)
+    with closing(sqlite3.connect(store.path)) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+
+
+def test_an_unstamped_dream_db_is_stamped_on_open_and_keeps_its_rows(tmp_path):
+    path = tmp_path / "dream" / "dream.db"
+    path.parent.mkdir(mode=0o700, parents=True)
+    run = _run("run0000001", T0, "running")
+    with closing(sqlite3.connect(path)) as conn, conn:
+        for statement in _SCHEMA:
+            conn.execute(statement)
+        conn.execute("INSERT INTO runs (run_id, started_at, finished_at, trigger, status, "
+                     "report_file) VALUES (?, ?, ?, ?, ?, ?)",
+                     (run.run_id, run.started_at, run.finished_at, run.trigger,
+                      run.status, run.report_file))
+    store = DreamStore(path)
+    with closing(sqlite3.connect(path)) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+    assert store.run("run0000001") == run
+
+
+def test_a_dream_db_with_an_unsupported_version_is_refused_untouched(tmp_path):
+    path = tmp_path / "dream" / "dream.db"
+    path.parent.mkdir(mode=0o700, parents=True)
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.execute("PRAGMA user_version = 2")
+    with pytest.raises(sqlite3.DatabaseError):
+        DreamStore(path)
+    with closing(sqlite3.connect(path)) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        names = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert names == set()
 
 
 def test_a_symlink_at_the_path_is_refused_not_followed(tmp_path):

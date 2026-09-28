@@ -19,7 +19,11 @@ no test edit needed.
 from __future__ import annotations
 
 import ast
+import json
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import memriver
@@ -141,3 +145,69 @@ def test_agent_paths_never_reach_the_maintenance_service(module):
     names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
     assert "maintenance" not in attributes, f"{module} reaches services.maintenance"
     assert "MaintenanceService" not in names | attributes, f"{module} names MaintenanceService"
+
+
+# spec §2 / §10 item 17: the umbrella composes memriver_dream for `memriver dream`
+# only; every session start, prompt and tool call imports these modules, so none of
+# them may load memriver_dream, directly or through anything they import
+HOT_PATH_MODULES = ("memriver.cli", "memriver.hooks", "memriver.server", "memriver.install")
+
+
+def test_the_hot_paths_never_load_memriver_dream():
+    probe = (f"import sys\nfor name in {HOT_PATH_MODULES!r}:\n    __import__(name)\n"
+             "print(sorted(m for m in sys.modules if m.split('.')[0] == 'memriver_dream'))")
+    result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
+                            check=True)
+    assert result.stdout.strip() == "[]"
+
+
+def test_running_the_hot_paths_never_loads_memriver_dream(tmp_path):
+    """The guard above only proves the four modules import clean; it never calls
+    anything in them, so a handler that imports memriver_dream lazily, inside a
+    function body reached only once that branch actually runs, would sail
+    through it. This drives the two things an agent's turn actually triggers --
+    a SessionStart followed by a nudge-due Stop through the hook entry point,
+    and building the MCP server -- against a throwaway store and HOME, in a
+    clean subprocess, and checks the same thing: memriver_dream never enters
+    sys.modules.
+    """
+    store, directory, home = tmp_path / "mem", tmp_path / "demo", tmp_path / "home"
+    directory.mkdir()
+    home.mkdir()
+    script = (
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "from memriver.hooks import run_hook\n"
+        "from memriver.server import build_server\n"
+        "from memriver_core.bootstrap import build_services\n"
+        "from memriver_core.settings import Settings\n"
+        f"store, directory = Path({str(store)!r}), Path({str(directory)!r})\n"
+        "services = build_services(Settings(root=store), root=store)\n"
+        "services.project.ensure_global()\n"
+        "services.project.init_project('demo', services.project.plan_root(str(directory)))\n"
+        "session_id = 'session-1'\n"
+        "start = json.dumps({'session_id': session_id, 'source': 'startup', 'cwd': str(directory)})\n"
+        "run_hook('session-start', 'claude-code', start, root=store, project_dir=None,\n"
+        "         cwd=directory)\n"
+        "for number in range(5):\n"
+        "    prompt = json.dumps({'session_id': session_id, 'prompt': f'prompt {number}',\n"
+        "                         'cwd': str(directory)})\n"
+        "    run_hook('user-prompt-submit', 'claude-code', prompt, root=store,\n"
+        "             project_dir=None, cwd=directory)\n"
+        "stop_payload = json.dumps({'session_id': session_id, 'stop_hook_active': False})\n"
+        "stop_result = run_hook('stop', 'claude-code', stop_payload, root=store,\n"
+        "                       project_dir=None, cwd=directory)\n"
+        "build_server(root=store, project_dir=directory)\n"
+        "print(json.dumps({\n"
+        "    'nudged': bool(stop_result.stdout),\n"
+        "    'dream_modules': sorted(m for m in sys.modules if m.split('.')[0] == 'memriver_dream'),\n"
+        "}))\n"
+    )
+    env = os.environ | {"HOME": str(home)}
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                            check=True, env=env, cwd=str(tmp_path))
+    outcome = json.loads(result.stdout.strip().splitlines()[-1])
+    # the Stop branch really nudged: a hook that silently did nothing would
+    # also report no dream modules, and pass this test for the wrong reason
+    assert outcome["nudged"] is True
+    assert outcome["dream_modules"] == []

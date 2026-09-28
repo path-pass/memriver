@@ -18,6 +18,7 @@ classifiers = [
 ]
 dependencies = [
     "memriver-core>=0.1.0",
+    "memriver-dream>=0.1.0",
     "fastmcp>=3.4.7,<4",
     "pydantic>=2",
     "tomlkit",
@@ -36,6 +37,7 @@ Issues = "https://github.com/path-pass/memriver/issues"
 
 [tool.uv.sources]
 memriver-core = { workspace = true }
+memriver-dream = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

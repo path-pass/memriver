@@ -794,15 +794,12 @@ def test_install_tells_claude_code_and_codex_users_to_restart_running_sessions(
     assert RESTART_SESSIONS_NOTE in result.stdout
 
 
-def test_the_restart_note_says_an_old_session_asks_when_it_next_resumes():
-    # a running session's hooks are the ones it started with: only a resume
-    # runs the new SessionStart that asks
+def test_the_restart_note_tells_a_running_session_to_reconnect():
+    # a running session's MCP server process is the one started before this
+    # install ran, so only a restart or an /mcp reconnect picks up the new one
     assert RESTART_SESSIONS_NOTE == (
-        "Restart any running Claude Code/Codex session: its memriver MCP server "
-        "from before this install refuses the upgraded memory store. A session "
-        "that was already running when the store upgraded is asked once, the "
-        "next time it resumes, whether to register to the project its directory "
-        "suggests.")
+        "Restart any running Claude Code/Codex session, or reconnect it with "
+        "/mcp, so it picks up the new memriver this install just wrote.")
 
 
 def test_install_says_nothing_about_restarting_sessions_for_directory_mode_harnesses(

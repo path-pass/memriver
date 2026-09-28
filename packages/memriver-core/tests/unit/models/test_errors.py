@@ -101,7 +101,7 @@ def test_batch_conflict_carries_index_memory_and_one_known_reason():
         BatchConflict(0, None, "because")
 
 
-def test_store_needs_upgrade_carries_the_store_version():
+def test_a_below_version_store_error_carries_its_version():
     from memriver_core.models.errors import StoreNeedsUpgrade
     assert StoreNeedsUpgrade(2).version == 2
 
@@ -142,15 +142,3 @@ def test_session_moved_takes_no_arguments_and_is_public():
     assert str(SessionMoved()) == "session moved"
     assert memriver_core.SessionMoved is SessionMoved is models.SessionMoved
     assert "SessionMoved" in memriver_core.__all__ and "SessionMoved" in models.__all__
-
-
-def test_upgrade_refused_carries_one_known_reason_and_is_public():
-    from memriver_core.models.errors import UPGRADE_REASONS, UpgradeRefused
-    assert UPGRADE_REASONS == {
-        "upgrade-running", "in-use", "counts", "invariant", "foreign-keys", "schema"}
-    refused = UpgradeRefused("upgrade-running")
-    assert refused.reason == "upgrade-running"
-    assert isinstance(refused, MemoryError)
-    assert memriver_core.UpgradeRefused is UpgradeRefused
-    with pytest.raises(ValueError):
-        UpgradeRefused("because")

@@ -130,6 +130,7 @@ __all__ = [
     "operation_label",
     "render_change_summary",
     "render_removal_summary",
+    "replace_atomically",
     "run_config_uninstall",
     "run_install",
     "toml_roundtrip",
@@ -158,19 +159,14 @@ CODEX_TRUST_NOTE = (
     "this run changed either of those definitions."
 )
 
-# Spec 11: a previous-release MCP server refuses the v2 store the upgraded
-# database moves to on first open, so a session already running against it
-# has to be restarted; one that was already running when the upgrade landed
-# gets a one-time confirmation prompt for its project (U11) instead of a
-# fallback to a directory guess. Fixed text, shown whenever this run touches
-# a session-routed harness -- a property of which harness is installed, not
-# of what this particular run happened to change.
+# A running session's MCP server process is the one started before this
+# install ran, so it keeps the old memriver until the session is restarted
+# (or its MCP connection reconnected). Fixed text, shown whenever this run
+# touches a session-routed harness -- a property of which harness is
+# installed, not of what this particular run happened to change.
 RESTART_SESSIONS_NOTE = (
-    "Restart any running Claude Code/Codex session: its memriver MCP server "
-    "from before this install refuses the upgraded memory store. A session "
-    "that was already running when the store upgraded is asked once, the "
-    "next time it resumes, whether to register to the project its directory "
-    "suggests."
+    "Restart any running Claude Code/Codex session, or reconnect it with "
+    "/mcp, so it picks up the new memriver this install just wrote."
 )
 
 MISSING_UVX_NOTE = (
@@ -468,8 +464,8 @@ def _umask_mode() -> int:
     return 0o666 & ~mask
 
 
-def _replace_atomically(path: Path, data: bytes, mode: int,
-                        replace_file: Callable[[Path, Path], None]) -> None:
+def replace_atomically(path: Path, data: bytes, mode: int,
+                       replace_file: Callable[[Path, Path], None]) -> None:
     """Write through a same-directory temporary file, so the swap is atomic."""
     handle, name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".memriver-")
     temporary = Path(name)
@@ -549,7 +545,7 @@ def _write_target(snapshot: Snapshot, text: str, root: Path | None, stamp: str,
             recorded = True
             target.path.unlink()
         else:
-            _replace_atomically(target.path, data, mode, replace_file)
+            replace_atomically(target.path, data, mode, replace_file)
             record(write)
     except BaseException:
         # a write that never joined the rollback list takes its own directories
@@ -755,8 +751,8 @@ def _roll_back(writes: Sequence[_Write],
                     path.unlink(missing_ok=True)
                     report.append(f"removed {path} (this run created it)")
                 else:
-                    _replace_atomically(path, write.backup.read_bytes(),
-                                        write.original_mode, replace_file)
+                    replace_atomically(path, write.backup.read_bytes(),
+                                       write.original_mode, replace_file)
                     report.append(f"restored {path} from {write.backup}")
                 _remove_created_dirs(write.created_dirs)
                 continue

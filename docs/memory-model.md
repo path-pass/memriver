@@ -53,23 +53,34 @@ body:        All language runtimes on this machine are managed by mise, not nvm/
 - **project_id** — the one project this memory belongs to; global memories
   belong to the one project row flagged global (it never has a directory --
   an unbound project has none either; the flag, not the missing directory,
-  is what makes it global), read-only to agents and, today, to the CLI too
-  (*Maintenance*). The id itself carries no project.
-- **version** — an optimistic-concurrency counter, starting at 1 and
-  incrementing on every update or soft delete (`--hard` removes the row
-  instead, so there is no new version to see). `memory_read` returns it so
-  `memory_update`/`memory_delete` can require it back (*Updates, deletion,
-  and history*). A row also carries `deleted_at` (set only by a soft delete)
-  and `last_read_at` (set by a successful `memory_read`); neither is ever
-  part of what an agent can read — the fields above are the whole set an
-  agent may know.
-- **sync** — per-entry privacy boundary: `false` means this entry never
-  leaves the machine, regardless of mode.
+  is what makes it global), read-only to agents; `memriver dream` and a
+  person's management commands write it (*Maintenance*). The id itself
+  carries no project.
+- **version** — the number of the memory's current version, starting at 1;
+  every change of its description, body, sources or deleted state adds one,
+  and every earlier version is kept (*Updates, deletion, and history*).
+  `memory_read` returns it so `memory_update`/`memory_delete` can require it
+  back. A row also carries `deleted_at` (set while the current version is
+  deleted) and `last_read_at` (set by a successful `memory_read`); neither,
+  nor any older version, is ever part of what an agent can read — the fields
+  above are the whole set an agent may know.
+- **sync** — per-entry boundary for future replication: `false` keeps this
+  entry out of hybrid/team sync, regardless of mode. It says nothing about
+  `memriver dream`, once set up: dream sends any memory whose text passes the
+  content policy -- `sync: false` included -- to the configured executor's
+  provider (README, *Dream*). Creating or updating an entry with sources sets
+  `sync: true` only when its previous state and every cited version are;
+  restoring a version (directly, or as an undo) instead puts back that
+  version's own recorded `sync`, which can raise it again (*Updates, deletion,
+  and history*).
 - **trust** — provenance of the *source material*: `user` (stated
   explicitly), `agent` (judged worth keeping while working), or
   `untrusted-derived` (distilled from external content — web pages,
   third-party code, tool output). Trust gates future promotion into shared
-  storage.
+  storage. Creating or updating an entry with sources (*Storage*) gives it the
+  lowest trust of its previous state and every cited version; restoring a
+  version (directly, or as an undo) instead puts back that version's own
+  recorded trust, which can raise it again.
 - Freshness is judged by `updated`, not by type.
 
 ## Storage
@@ -86,6 +97,118 @@ life of that process answers for it. A session-routed harness (Claude Code,
 Codex) also resolves a directory once, but per session rather than per
 process: at the session's own start, into its persistent row, kept for as
 long as that session lives, even after its working directory changes.
+
+The tables of `memriver.db` (schema version 4). Solid lines are foreign keys;
+the dotted line is a reference the schema does not enforce (a tool call's
+session).
+
+```mermaid
+erDiagram
+    projects ||--o{ memories : "project_id"
+    projects |o--o{ sessions : "project_id / candidate_id"
+    sessions ||..o{ tool_calls : "(harness, session_id)"
+    memories ||--|{ memory_versions : "memory_id: every version"
+    memory_versions ||--o{ memory_sources : "(memory_id, version): its sources"
+    memory_versions ||--o{ memory_sources : "(source_id, source_version): cited"
+    changes |o--o{ memory_versions : "change_id: NULL for an imported version"
+    changes ||--o{ change_steps : "change_id"
+    memories ||--o{ change_steps : "memory_id"
+    changes |o--o| changes : "undoes"
+    memories ||--o{ memory_reads : "memory_id"
+
+    projects {
+        text id PK
+        text name
+        text root "bound directory; NULL for global"
+        int is_global
+    }
+    memories {
+        text id PK
+        text project_id FK
+        text source_harness "set at creation"
+        text source_method "set at creation"
+        text created
+        int version "the current version"
+        text type "user | feedback | project | reference"
+        text trust "user | agent | untrusted-derived"
+        int sync
+        text description
+        text body
+        text updated
+        text deleted_at "set while deleted"
+        text last_read_at
+    }
+    memory_versions {
+        text memory_id PK, FK
+        int version PK
+        text type
+        text trust
+        int sync
+        text description
+        text body
+        int deleted
+        text change_id FK "NULL for an imported version"
+    }
+    memory_sources {
+        text memory_id PK, FK
+        int version PK, FK
+        text source_id PK, FK
+        int source_version FK
+    }
+    changes {
+        text change_id PK
+        text at
+        text changed_by "the caller: mcp, dream, human"
+        text changed_via "the harness"
+        int step_count "fixed at commit"
+        text undoes FK "the change this one undid"
+    }
+    change_steps {
+        text change_id PK, FK
+        int step PK
+        text memory_id FK
+        text op "create | update | soft_delete | restore"
+        int before_version "NULL for create"
+        int after_version
+    }
+    memory_reads {
+        text memory_id FK
+        int memory_version "the version returned"
+        text read_at
+        text harness
+        text session_id "NULL for directory mode"
+    }
+    sessions {
+        text harness PK
+        text session_id PK
+        text status "registered | pending"
+        text project_id FK
+        text candidate_id FK
+        text transcript_path
+        text last_active_at
+        text summary "published by dream"
+        text summary_at
+    }
+    tool_calls {
+        text harness PK
+        text call_id PK
+        text session_id
+        text recorded_at
+    }
+```
+
+`memories` holds each memory's current state, which always equals its
+`memory_versions` row at `version`; agent reads, the index and search read
+`memories` alone. `memory_sources` lists, for each version, the versions of
+other memories it was built from (`memriver dream`'s merges, rewrites and
+extractions); a cited version cannot be deleted while a version citing it
+exists, except by a hard delete that takes both. Every version except an
+imported one belongs to exactly one `changes` row, and a change has one
+`change_steps` row per memory it touched. Changes are kept for good and
+`step_count` stays as committed, so a change a hard delete made incomplete
+has fewer steps than `step_count`. `memory_reads` is written by
+`memory_read`. `memriver dream`'s own records live in a separate file
+(`dream/dream.db`), not here.
 
 ## Identity
 
@@ -132,28 +255,35 @@ practice:
 
 ## Updates, deletion, and history
 
-- Update = rewrite the row's `body`/`description` in place inside one
-  transaction, bump `version` and `updated`. `memory_update` requires the
+- Every change of a memory's description, body, sources or deleted state
+  writes a new version, in one transaction with its change record, and moves
+  the row's `version` and `updated`; old versions are kept for good, and a
+  write that changes nothing writes nothing. `memory_update` requires the
   `expected_version` that `memory_read` returned; a memory changed since is
   refused with nothing written, never silently overwritten.
-- Delete through MCP is always a soft delete: `deleted_at` is set and
-  `version` bumps, but the row stays. `memory_delete` confirms the delete
-  (`{deleted: id}`) like any other tool call, but nothing anywhere -- that
-  result, an error, or an index entry -- ever reveals that the delete was
-  soft or that the row remains: a later `memory_read`/`memory_search`/
-  `memory_index` treats that id exactly as if it had never existed.
-  `memory_delete` also requires `expected_version`.
-- `memriver delete --hard` (the human CLI, *Management views*) removes the
-  row itself, including one already soft-deleted. A soft-deleted memory is
-  otherwise recoverable only by an operator — there is no undelete command,
-  so recovery means clearing `deleted_at` on that row directly in
-  `memriver.db` (`memriver show ID --deleted` finds it first); `memory_write`
-  cannot do this, since it always assigns a new id rather than reviving an
-  old one. There is no MCP path to a hard delete.
-- The local store keeps **no history of old bodies**: `version` guards
-  against a lost concurrent update, it is not a log. History and
-  conflict-free replication remain the sync layer's job, where object-store
-  native versioning provides them without any local machinery.
+- Delete through MCP is always a soft delete: a new version marked deleted,
+  `deleted_at` set, the row and its history kept. `memory_delete` confirms
+  the delete (`{deleted: id}`) like any other tool call, but nothing
+  anywhere -- that result, an error, or an index entry -- ever reveals that
+  the delete was soft or that the row remains: a later
+  `memory_read`/`memory_search`/`memory_index` treats that id exactly as if
+  it had never existed. `memory_delete` also requires `expected_version`.
+- Every write that creates a version is one change: an id, a time, who made
+  it (`mcp`, `dream` or `human`, supplied by the entry point, never by a
+  model) and through which harness, and one step per memory it touched with
+  its versions before and after. A person reads the history (`memriver
+  history`), makes an older version current again (`memriver restore`, which
+  also undeletes) and reverses a whole change while none of the memories it
+  touched has changed since (`memriver undo`); agents see none of it, and MCP
+  has no path to any of it.
+- `memriver delete --hard` (the human CLI, *Management views*) is the only way
+  versions leave the store, and it is not a change: it removes a memory's rows
+  outright -- its whole history, sources and reads -- together with every
+  memory citing any version of it, after showing that set and checking it did
+  not change, and with no content-policy check of its own. Existing change
+  records stay, without the deleted memories' steps, but a hard delete adds no
+  new one. There is no MCP path to a hard delete.
+- History stays local; replicating it is the sync layer's job.
 
 ## Management views
 
@@ -161,26 +291,38 @@ practice:
 grammar) are read-only views for a person, not the MCP surface agents use:
 they see every project including global, `show --deleted` can surface a
 soft-deleted row and its `deleted_at`, and none of them go through a
-`ReadWriteSet` the way a session does. `memriver delete` is the one
-per-memory write path outside MCP (project `init`/`adopt`/`unbind`, `install`
-and `uninstall --purge-data` write too, but to the project rows or the
-whole store, never to one memory's content); `delete` always resolves the
-current directory the command itself runs in, the way directory mode does
+`ReadWriteSet` the way a session does. `memriver history` reads every version
+of one memory. A soft `delete`, `restore` and `undo` are the per-memory write
+paths outside MCP besides `memriver dream` (project `init`/`adopt`/`unbind`,
+`install` and `uninstall --purge-data` write too, but to the project rows or
+the whole store, never to one memory's content), each recorded as a change
+made by `human`; a hard delete is the exception -- it makes no change of its
+own (*Updates, deletion, and history*). `delete` of an ordinary memory resolves
+the current directory the command itself runs in, the way directory mode does
 (*Storage*) -- not a session-routed agent's stored project, which
-`memory_delete` acts on instead -- so global stays undeletable either way.
+`memory_delete` acts on instead; a global memory is deleted by id from
+anywhere.
 
 ## Maintenance
 
 `updated` is the time of the last change, nothing more: rewriting an entry
 records that it was rewritten, not that anyone confirmed it is still true.
-memriver has no review queue today. Global is read-only everywhere today: MCP
-refuses every write to it -- for whichever project a session is registered
-to, in session mode -- and the human CLI's `delete` refuses it too, for the
-project its own command line's current directory resolves to; neither can
-reach global. Cross-project knowledge will be distilled into global by a separate dream
-service (not yet built); until then, the only way to change it is by hand
-against `memriver.db`. `memriver doctor --stale-days N` lists memories not
-updated in N days as a starting point for a manual review.
+Agents never write global: MCP refuses every write to it, whichever project a
+session is registered to. `memriver dream` -- an offline run started by a
+schedule or by hand (README, *Dream*) -- keeps the store in shape without a
+review step, through the same write path and change log as everything else,
+as `dream`: it merges duplicates, rewrites outdated entries and soft-deletes
+superseded ones within one project (or within global); it extracts
+principles backed by memories of at least two projects into global, citing
+them, and re-checks a global entry when a source it cites has changed; and it
+soft-deletes memories unused past a TTL that every recorded read lengthens,
+after asking a model. It never hard-deletes: content-policy hits in any
+stored version, contradictions and instruction-like entries are listed for a
+person to act on. Each of its changes can be undone with `memriver undo`
+while the memories it touched are unchanged. Maintenance never counts as
+use: no dream read moves `last_read_at` or records a read. `memriver doctor
+--stale-days N` still lists memories not updated in N days as a starting
+point for a manual review.
 
 ## The write gate
 
@@ -188,7 +330,13 @@ Every write passes a deterministic, LLM-free gate before touching disk:
 size limits, then a vendored secrets ruleset (gitleaks rules plus a small
 floor of provider rules with known upstream gaps). Rejections name the rule,
 never echo the secret. The gate is a pure function of the content, so
-local-only mode needs no network and no model.
+local-only mode needs no network and no model. It applies to every write that
+creates a version -- a create, update or soft delete, `restore` and `undo`
+included -- so a soft delete of a memory whose stored text now fails a rule is
+refused too. A hard delete runs no check of its own: it deletes rows outright
+rather than writing a new state, which is how a secret already in the store
+is removed once a soft delete would be refused. `memriver doctor` and the
+next dream run list any stored version that fails today's rules.
 
 ## How harnesses learn the protocol
 
@@ -226,7 +374,11 @@ itself part of why it was adopted.
 
 ## Modes and sync (forward-looking)
 
-- **Local-only** — everything above; one local SQLite file, no LLM, no network.
+- **Local-only** — everything above; one local SQLite file, no LLM, no network
+  for the store, its tools and its CLI. `memriver dream`'s policy scan needs
+  neither; its model steps are the exception, and send policy-passing memory
+  and session text to whichever harness `memriver dream init` configures as
+  executor (README, *Dream*) -- nothing is sent until that setup is done.
 - **Hybrid** — entries with `sync: true` replicate to user-owned object
   storage; versioning and multi-device semantics live there.
 - **Team** — shared knowledge is produced by a distillation pipeline with
@@ -241,7 +393,7 @@ provisioning for the later modes.
 - A new memory taxonomy, storage format, or recall strategy.
 - Local search infrastructure beyond a plain substring scan (full-text
   search, tokenizers, embeddings).
-- Local version history, immutable entry chains, or supersede protocols.
-- Restoring a soft-deleted memory through MCP or the human CLI (an operator
-  can, by hand against `memriver.db`).
+- History visible to agents, or supersede protocols agents must follow.
+- Restoring a soft-deleted memory through MCP (a person can, with `memriver
+  restore`).
 - Agent-controlled naming or layout.

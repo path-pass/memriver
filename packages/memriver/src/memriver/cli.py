@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -129,6 +130,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_project_commands(commands)
     _add_view_commands(commands)
     _add_memory_commands(commands)
+    _add_dream_commands(commands)
     return parser
 
 
@@ -255,6 +257,59 @@ def _add_memory_commands(commands) -> None:
                              help="with --hard: delete the plan --dry-run printed, without "
                                   "prompting")
     delete.set_defaults(handler=_memory_delete, usage_error=delete.error)
+
+
+def _agent_label(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9.-]{1,128}", value):
+        raise argparse.ArgumentTypeError("a label is letters, digits, dots and dashes")
+    return value
+
+
+def _add_dream_commands(commands) -> None:
+    """`memriver dream ...`: the offline maintenance run."""
+    dream = commands.add_parser(
+        "dream", help="summarize sessions, consolidate memories and retire unused ones, "
+                      "offline and on a schedule")
+    dream_commands = dream.add_subparsers(dest="dream_command", required=True)
+
+    def add(name: str, help_text: str) -> argparse.ArgumentParser:
+        sub = dream_commands.add_parser(name, help=help_text)
+        sub.add_argument("--root", type=Path, default=None,
+                         help="storage root (default: $MEMRIVER_ROOT or ~/agent-memory)")
+        return sub
+
+    init = add("init", "configure dream and install its daily schedule")
+    init.add_argument("--executor", choices=["claude", "codex"], default=None,
+                      help="the harness that runs the model (default: the configured one, "
+                           "else claude, else codex, whichever is on PATH)")
+    init.add_argument("--ttl-days", type=_positive_int, default=None,
+                      help="days unused before a memory is reviewed for retirement "
+                           "(default: 30; each recorded read lengthens it)")
+    init.add_argument("--at", default=None, help="daily run time, HH:MM (default: 04:00)")
+    init.add_argument("--yes", action="store_true", help="confirm without prompting")
+    # a separate agent for acceptance runs, leaving the user's own schedule alone
+    init.add_argument("--agent-label", type=_agent_label, default=None, help=argparse.SUPPRESS)
+    init.set_defaults(handler=_dream_init)
+
+    run = add("run", "run dream once now (what the schedule runs)")
+    run.add_argument("--phase", choices=["summarize", "consolidate", "extract", "retire"],
+                     default=None, help="run only this step after the policy scan")
+    run.add_argument("--trigger", choices=["manual", "schedule"], default="manual",
+                     help=argparse.SUPPRESS)
+    run.set_defaults(handler=_dream_run)
+
+    report = add("report", "print a dream run's report")
+    report.add_argument("run_id", nargs="?", default=None,
+                        help="the run to show (default: the latest)")
+    report.add_argument("--list", dest="list_count", nargs="?", const=10, default=None,
+                        type=_positive_int, metavar="N", help="list the last N runs (10)")
+    report.set_defaults(handler=_dream_report)
+
+    uninstall = dream_commands.add_parser(
+        "uninstall", help="remove the daily schedule; settings and data stay")
+    uninstall.add_argument("--agent-label", type=_agent_label, default=None,
+                           help=argparse.SUPPRESS)
+    uninstall.set_defaults(handler=_dream_uninstall)
 
 
 def _positive_int(value: str) -> int:
@@ -480,6 +535,40 @@ def _memory_delete(args: argparse.Namespace) -> int:
                       dry_run=args.dry_run, confirm_code=args.confirm, yes=args.yes,
                       root=args.root, stdin_is_tty=sys.stdin.isatty(), input_fn=input,
                       stdout=sys.stdout, cwd=Path.cwd(), home=Path.home())
+
+
+def _dream_label(args: argparse.Namespace) -> dict:
+    return {} if args.agent_label is None else {"label": args.agent_label}
+
+
+def _dream_init(args: argparse.Namespace) -> int:
+    import os
+
+    from .dream_commands import run_init
+
+    return run_init(executor=args.executor, ttl_days=args.ttl_days, at=args.at, yes=args.yes,
+                    root=args.root, stdin_is_tty=sys.stdin.isatty(), input_fn=input,
+                    stdout=sys.stdout, home=Path.home(), env=os.environ, **_dream_label(args))
+
+
+def _dream_run(args: argparse.Namespace) -> int:
+    from .dream_commands import run_run
+
+    return run_run(phase=args.phase, trigger=args.trigger, root=args.root, stdout=sys.stdout,
+                   stderr=sys.stderr)
+
+
+def _dream_report(args: argparse.Namespace) -> int:
+    from .dream_commands import run_report
+
+    return run_report(args.run_id, list_count=args.list_count, root=args.root,
+                      stdout=sys.stdout)
+
+
+def _dream_uninstall(args: argparse.Namespace) -> int:
+    from .dream_commands import run_uninstall
+
+    return run_uninstall(home=Path.home(), stdout=sys.stdout, **_dream_label(args))
 
 
 def _doctor(args: argparse.Namespace) -> int:
