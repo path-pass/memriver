@@ -8,14 +8,13 @@ from pathlib import Path
 
 import pytest
 from memriver.views import (
-    run_delete,
     run_export,
     run_list,
     run_search,
     run_sessions,
     run_show,
 )
-from memriver_core.bootstrap import build_service
+from memriver_core.bootstrap import build_services
 from memriver_core.models import SessionKey
 from memriver_core.settings import Settings
 
@@ -25,13 +24,13 @@ def world(tmp_path):
     store, work, home = tmp_path / "mem", tmp_path / "work", tmp_path / "home"
     work.mkdir()
     home.mkdir()
-    service = build_service(Settings(root=store), root=store, home=home)
-    service.ensure_global()
-    project = service.init_project("demo", service.plan_root(str(work)))
-    project_context = service.open_project_context(str(work))
-    memory = service.record(content="line one\nline two", type="project", sync=True,
+    services = build_services(Settings(root=store), root=store, home=home)
+    services.project.ensure_global()
+    project = services.project.init_project("demo", services.project.plan_root(str(work)))
+    project_context = services.project.open_project_context(str(work))
+    memory = services.memory.record(content="line one\nline two", type="project", sync=True,
                             harness="t", description="the cue", context=project_context)
-    return {"store": store, "work": work, "home": home, "service": service,
+    return {"store": store, "work": work, "home": home, "services": services,
             "project": project, "memory": memory, "project_context": project_context}
 
 
@@ -43,12 +42,12 @@ def _out(fn, *args, **kwargs) -> tuple[int, str]:
 
 def _start(world, key, directory, source="startup"):
     """Start a session the way the SessionStart hook does, through the service."""
-    return world["service"].start_session(key, source=source, entry_dir=str(directory),
+    return world["services"].session.start_session(key, source=source, entry_dir=str(directory),
                                           transcript_path=None)
 
 
 def _observe(world, key, directory, prompt):
-    world["service"].observe_prompt(key, prompt=prompt, entry_dir=str(directory),
+    world["services"].session.observe_prompt(key, prompt=prompt, entry_dir=str(directory),
                                     transcript_path=None)
 
 
@@ -76,15 +75,15 @@ def test_show_prints_fields_then_the_body_with_its_newlines(world):
 
 
 def test_show_neutralises_terminal_escapes_in_the_body_but_keeps_newlines(world):
-    service, project_context = world["service"], world["project_context"]
-    memory = service.record(content="a\x1b[2Jb\nc", type="project", sync=True, harness="t",
+    services, project_context = world["services"], world["project_context"]
+    memory = services.memory.record(content="a\x1b[2Jb\nc", type="project", sync=True, harness="t",
                             description="", context=project_context)
     _, out = _out(run_show, memory.id, root=world["store"], deleted=False, home=world["home"])
     assert "\x1b" not in out and "a [2Jb\nc" in out
 
 
 def test_show_of_a_soft_deleted_memory_needs_the_flag(world):
-    world["service"].delete(world["memory"].id, world["project_context"],
+    world["services"].memory.delete(world["memory"].id, world["project_context"],
                             expected_version=1)
     code, out = _out(run_show, world["memory"].id, root=world["store"], deleted=False,
                      home=world["home"])
@@ -95,12 +94,12 @@ def test_show_of_a_soft_deleted_memory_needs_the_flag(world):
 
 
 def test_search_finds_across_projects_and_by_project(world, tmp_path):
-    service = world["service"]
+    services = world["services"]
     other_work = tmp_path / "other"
     other_work.mkdir()
-    other_project = service.init_project("other", service.plan_root(str(other_work)))
-    other_project_context = service.open_project_context(str(other_work))
-    other_memory = service.record(content="another line entirely", type="project", sync=True,
+    other_project = services.project.init_project("other", services.project.plan_root(str(other_work)))
+    other_project_context = services.project.open_project_context(str(other_work))
+    other_memory = services.memory.record(content="another line entirely", type="project", sync=True,
                                   harness="t", description="",
                                   context=other_project_context)
 
@@ -138,7 +137,7 @@ def test_export_writes_a_private_snapshot_and_never_reads_it_back(world, tmp_pat
     fields = dict(line.split(": ", 1) for line in header.decode("utf-8").strip().splitlines())
     assert json.loads(fields["version"]) == 1 and "deleted_at" not in fields
     assert json.loads(fields["source_harness"]) == "t"
-    assert json.loads(fields["source_method"]) == "agent"
+    assert json.loads(fields["source_method"]) == "mcp"
     assert "source" not in fields
     # byte-for-byte (spec section 10.4): no trailing newline appended after the body
     assert body == world["memory"].body.encode("utf-8")
@@ -261,112 +260,6 @@ def test_export_refuses_an_existing_directory(world, tmp_path):
     assert code == 2 and "already exists" in out
 
 
-def _delete(world, *, version, hard=False, answer="y", cwd=None):
-    out = io.StringIO()
-    code = run_delete(world["memory"].id, version=version, hard=hard, yes=False,
-                      root=world["store"], stdin_is_tty=True, input_fn=lambda _: answer,
-                      stdout=out, cwd=cwd or world["work"], home=world["home"])
-    return code, out.getvalue()
-
-
-def test_delete_is_soft_by_default_and_hard_purges_a_soft_deleted_memory(world):
-    code, out = _delete(world, version=1)
-    assert code == 0 and out.endswith(f"deleted {world['memory'].id}\n")
-    code, out = _delete(world, version=2, hard=True)
-    assert code == 0 and out.endswith(f"purged {world['memory'].id}\n")
-    code, out = _out(run_show, world["memory"].id, root=world["store"], deleted=True,
-                     home=world["home"])
-    assert code == 2
-
-
-def test_delete_needs_the_current_version(world):
-    code, out = _delete(world, version=5)
-    assert code == 2 and "changed since version 5" in out
-
-
-def test_delete_from_outside_the_project_names_the_owning_project(world, tmp_path):
-    out = io.StringIO()
-    code = run_delete(world["memory"].id, version=1, hard=False, yes=False, root=world["store"],
-                      stdin_is_tty=True, input_fn=_never_called, stdout=out, cwd=tmp_path,
-                      home=world["home"])
-    assert code == 2
-    assert out.getvalue() == (
-        f"refused: {world['memory'].id} belongs to project {world['project'].id}, not this "
-        "directory's project; run memriver delete from that project's directory\n")
-    assert world["service"].show(world["memory"].id).version == 1
-
-
-def test_delete_declined_changes_nothing(world):
-    code, _ = _delete(world, version=1, answer="n")
-    assert code == 1
-    assert world["service"].show(world["memory"].id).version == 1
-
-
-def _never_called(_):
-    raise AssertionError("input_fn must not be called")
-
-
-def _plant_global_memory(world) -> str:
-    """A memory row inserted straight into the global project, behind the service's back."""
-    import sqlite3
-    from contextlib import closing
-
-    from memriver_core.models import Memory
-
-    global_id = world["service"].global_project_id()
-    memory = Memory.new(body="a global note", type="project", project_id=global_id,
-                        source={"harness": "t", "method": "agent"})
-    with closing(sqlite3.connect(world["store"] / "memriver.db")) as conn, conn:
-        conn.execute(
-            "INSERT INTO memories (id, project_id, type, source_harness, source_method, "
-            "trust, sync, description, body, created, updated, version, deleted_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (memory.id, memory.project_id, memory.type, memory.source["harness"],
-             memory.source["method"], memory.trust, int(memory.sync), memory.description,
-             memory.body, memory.created, memory.updated, memory.version, memory.deleted_at))
-    return memory.id
-
-
-def test_delete_refuses_a_global_memory_without_a_plan_line_or_prompt(world):
-    memory_id = _plant_global_memory(world)
-    out = io.StringIO()
-    code = run_delete(memory_id, version=1, hard=False, yes=False, root=world["store"],
-                      stdin_is_tty=True, input_fn=_never_called, stdout=out,
-                      cwd=world["work"], home=world["home"])
-    assert code == 2
-    assert out.getvalue() == "refused: global memories cannot be deleted here\n"
-
-
-def test_delete_without_yes_over_a_non_tty_is_refused(world):
-    out = io.StringIO()
-    code = run_delete(world["memory"].id, version=1, hard=False, yes=False, root=world["store"],
-                      stdin_is_tty=False, input_fn=_never_called, stdout=out,
-                      cwd=world["work"], home=world["home"])
-    assert code == 2
-    assert "stdin is not a terminal" in out.getvalue()
-
-
-def test_delete_with_yes_skips_the_prompt(world):
-    out = io.StringIO()
-    code = run_delete(world["memory"].id, version=1, hard=False, yes=True, root=world["store"],
-                      stdin_is_tty=False, input_fn=_never_called, stdout=out,
-                      cwd=world["work"], home=world["home"])
-    assert code == 0
-    assert out.getvalue().endswith(f"deleted {world['memory'].id}\n")
-
-
-def test_delete_prompt_eof_is_treated_as_declined(world):
-    def _eof(_):
-        raise EOFError
-
-    out = io.StringIO()
-    code = run_delete(world["memory"].id, version=1, hard=False, yes=False, root=world["store"],
-                      stdin_is_tty=True, input_fn=_eof, stdout=out, cwd=world["work"],
-                      home=world["home"])
-    assert code == 1
-    assert out.getvalue().endswith("aborted; nothing was changed\n")
-
-
 def test_list_reports_a_fixed_sentence_when_the_service_cannot_be_built(world, monkeypatch):
     import memriver_core.bootstrap as bootstrap_module
     from memriver import views
@@ -374,7 +267,7 @@ def test_list_reports_a_fixed_sentence_when_the_service_cannot_be_built(world, m
     def _boom(*args, **kwargs):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(bootstrap_module, "build_service", _boom)
+    monkeypatch.setattr(bootstrap_module, "build_services", _boom)
     code, out = _out(run_list, root=world["store"], project_id=None, home=world["home"])
     assert code == 2
     assert out == views.STORE_UNREADABLE + "\n"
@@ -387,7 +280,7 @@ def test_show_reports_a_fixed_sentence_when_the_service_cannot_be_built(world, m
     def _boom(*args, **kwargs):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(bootstrap_module, "build_service", _boom)
+    monkeypatch.setattr(bootstrap_module, "build_services", _boom)
     code, out = _out(run_show, world["memory"].id, root=world["store"], deleted=False,
                      home=world["home"])
     assert code == 2
@@ -395,7 +288,7 @@ def test_show_reports_a_fixed_sentence_when_the_service_cannot_be_built(world, m
 
 
 def test_export_skips_a_soft_deleted_memory(world, tmp_path):
-    world["service"].delete(world["memory"].id, world["project_context"],
+    world["services"].memory.delete(world["memory"].id, world["project_context"],
                             expected_version=1)
     target = tmp_path / "snap"
     code, out = _out(run_export, target, root=world["store"], home=world["home"], cwd=tmp_path)
@@ -427,8 +320,8 @@ def test_show_reports_never_read_then_the_timestamp_once_read(world):
     code, out = _out(run_show, memory.id, root=world["store"], deleted=False, home=world["home"])
     assert code == 0 and "last_read_at: never" in out
 
-    world["service"].read(memory.id, world["project_context"])
-    reread = world["service"].show(memory.id)
+    world["services"].memory.read(memory.id, world["project_context"], harness="cli")
+    reread = world["services"].memory.show(memory.id)
     code, out = _out(run_show, memory.id, root=world["store"], deleted=False, home=world["home"])
     assert code == 0
     assert "last_read_at: never" not in out
@@ -436,7 +329,7 @@ def test_show_reports_never_read_then_the_timestamp_once_read(world):
 
 
 def test_export_header_includes_last_read_at(world):
-    world["service"].read(world["memory"].id, world["project_context"])
+    world["services"].memory.read(world["memory"].id, world["project_context"], harness="cli")
     target = world["work"].parent / "snap"
     code, _ = _out(run_export, target, root=world["store"], home=world["home"],
                    cwd=world["work"].parent)
@@ -472,7 +365,7 @@ def test_sessions_lists_harness_project_branch_and_prompts(world):
 def test_sessions_shows_the_relative_age_from_the_injected_now(world):
     key = SessionKey("codex", "sess-2")
     _start(world, key, world["work"])
-    stored = world["service"].list_sessions()[0]
+    stored = world["services"].session.list_sessions()[0]
     fixed_now = _plus_days(stored.last_active_at, 42)
 
     code, out = _sessions("", root=world["store"], home=world["home"], now=fixed_now)
@@ -508,17 +401,19 @@ def test_sessions_json_matches_the_session_search_item_shape(world):
     item = items[0]
     assert set(item) == {"harness", "session_id", "project", "branch", "entry_cwd",
                          "first_recorded", "last_active_at", "last_end_event_at",
-                         "first_prompt", "recent_prompts", "resume_command"}
+                         "first_prompt", "recent_prompts", "resume_command",
+                         "summary", "summary_at"}
+    assert (item["summary"], item["summary_at"]) == (None, None)
     assert item["resume_command"] == "codex resume sess-3"
     assert item["project"] == world["project"].id
     assert item["first_prompt"]["text"] == "task one"
 
 
 def test_sessions_filters_by_project_and_query_and_limit(world, tmp_path):
-    service = world["service"]
+    services = world["services"]
     other_work = tmp_path / "other"
     other_work.mkdir()
-    other_project = service.init_project("other", service.plan_root(str(other_work)))
+    other_project = services.project.init_project("other", services.project.plan_root(str(other_work)))
     mine, theirs = SessionKey("codex", "mine"), SessionKey("codex", "theirs")
     _start(world, mine, world["work"])
     _observe(world, mine, world["work"], "fix the login bug")
@@ -552,7 +447,7 @@ def test_sessions_reports_a_fixed_sentence_when_the_service_cannot_be_built(worl
     def _boom(*args, **kwargs):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(bootstrap_module, "build_service", _boom)
+    monkeypatch.setattr(bootstrap_module, "build_services", _boom)
     code, out = _sessions("", root=world["store"], home=world["home"])
     assert code == 2
     assert out == views.STORE_UNREADABLE + "\n"
@@ -571,3 +466,16 @@ def test_sessions_neutralises_an_invisible_character_in_a_prompt(world):
     assert code == 0
     assert zero_width_space not in out
     assert "task one" in out
+
+
+def test_sessions_show_a_published_summary_as_one_line(world):
+    key = SessionKey("codex", "sess-summary")
+    _start(world, key, world["work"])
+    session_service = world["services"].session
+    stored = next(s for s in session_service.list_sessions() if s.key == key)
+    session_service.publish_summary(key, "Fixed the build.\nThen the docs.",
+                                    expected_last_active_at=stored.last_active_at)
+    code, out = _sessions("", root=world["store"], home=world["home"], json_output=False)
+    assert code == 0 and "  summary: Fixed the build. Then the docs." in out
+    code, out = _sessions("", root=world["store"], home=world["home"], json_output=True)
+    assert json.loads(out)[0]["summary"] == "Fixed the build.\nThen the docs."

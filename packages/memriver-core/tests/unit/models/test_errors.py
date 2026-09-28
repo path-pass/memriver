@@ -78,3 +78,79 @@ def test_binding_reasons_are_the_eleven_the_spec_lists():
 def test_an_unknown_binding_reason_is_a_programming_error():
     with pytest.raises(ValueError):
         BindingRefused("because")
+
+
+def test_content_rejected_carries_its_rule_and_memory_as_fields():
+    from memriver_core.models.errors import ContentRejected as Rejected
+    err = Rejected(rule_id="github-pat", memory_id="mmmmmmmmmm")
+    assert (err.rule_id, err.memory_id) == ("github-pat", "mmmmmmmmmm")
+    assert "github-pat" in str(err)
+    worded = Rejected("content is empty; nothing to store", rule_id="empty")
+    assert (str(worded), worded.rule_id, worded.memory_id) == \
+        ("content is empty; nothing to store", "empty", None)
+
+
+def test_batch_conflict_carries_index_memory_and_one_known_reason():
+    from memriver_core.models.errors import BATCH_CONFLICT_REASONS, BatchConflict
+    assert BATCH_CONFLICT_REASONS == {"version", "deleted", "same-state", "source", "cycle",
+                                      "read-since", "missing"}
+    err = BatchConflict(2, "mmmmmmmmmm", "version")
+    assert (err.index, err.memory_id, err.reason) == (2, "mmmmmmmmmm", "version")
+    assert BatchConflict(0, None, "source").memory_id is None
+    with pytest.raises(ValueError):
+        BatchConflict(0, None, "because")
+
+
+def test_store_needs_upgrade_carries_the_store_version():
+    from memriver_core.models.errors import StoreNeedsUpgrade
+    assert StoreNeedsUpgrade(2).version == 2
+
+
+@pytest.mark.parametrize("name", ["BatchConflict", "StoreNeedsUpgrade"])
+def test_the_new_errors_are_public(name):
+    from memriver_core import models
+    assert getattr(memriver_core, name) is getattr(errors, name) is getattr(models, name)
+    assert name in memriver_core.__all__ and name in models.__all__
+
+
+def test_undo_refused_carries_a_known_reason_and_the_memories():
+    from memriver_core import models
+    from memriver_core.models.errors import UNDO_REFUSED_REASONS, UndoRefused
+    assert UNDO_REFUSED_REASONS == {"not-found", "hard-deleted", "changed"}
+    refused = UndoRefused("changed", ("aaaaaaaaaa", "bbbbbbbbbb"))
+    assert (refused.reason, refused.memory_ids) == ("changed", ("aaaaaaaaaa", "bbbbbbbbbb"))
+    assert UndoRefused("not-found").memory_ids == ()
+    with pytest.raises(ValueError):
+        UndoRefused("expired")
+    assert memriver_core.UndoRefused is UndoRefused is models.UndoRefused
+    assert "UndoRefused" in memriver_core.__all__ and "UndoRefused" in models.__all__
+
+
+def test_plan_changed_carries_the_new_plan():
+    from memriver_core import models
+    from memriver_core.models import HardDeletePlan
+    from memriver_core.models.errors import PlanChanged
+    plan = HardDeletePlan("aaaaaaaaaa", (), "0123456789abcdef")
+    assert PlanChanged(plan).plan is plan
+    assert memriver_core.PlanChanged is PlanChanged is models.PlanChanged
+    assert "PlanChanged" in memriver_core.__all__ and "PlanChanged" in models.__all__
+
+
+def test_session_moved_takes_no_arguments_and_is_public():
+    from memriver_core import models
+    from memriver_core.models.errors import SessionMoved
+    assert str(SessionMoved()) == "session moved"
+    assert memriver_core.SessionMoved is SessionMoved is models.SessionMoved
+    assert "SessionMoved" in memriver_core.__all__ and "SessionMoved" in models.__all__
+
+
+def test_upgrade_refused_carries_one_known_reason_and_is_public():
+    from memriver_core.models.errors import UPGRADE_REASONS, UpgradeRefused
+    assert UPGRADE_REASONS == {
+        "upgrade-running", "in-use", "counts", "invariant", "foreign-keys", "schema"}
+    refused = UpgradeRefused("upgrade-running")
+    assert refused.reason == "upgrade-running"
+    assert isinstance(refused, MemoryError)
+    assert memriver_core.UpgradeRefused is UpgradeRefused
+    with pytest.raises(ValueError):
+        UpgradeRefused("because")

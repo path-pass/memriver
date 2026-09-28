@@ -50,13 +50,13 @@ from memriver.install.codex import (
     NATIVE_MEMORY_OFF_NOTE as CODEX_NATIVE_MEMORY_OFF_NOTE,
 )
 from memriver.install.editors import Target
-from memriver_core.bootstrap import build_service
+from memriver_core.bootstrap import build_services
 from memriver_core.settings import Settings
 
 
 def _bind_new(store: Path, directory: Path, name: str) -> str:
-    service = build_service(Settings(root=store), root=store)
-    return service.init_project(name, service.plan_root(str(directory))).id
+    services = build_services(Settings(root=store), root=store)
+    return services.project.init_project(name, services.project.plan_root(str(directory))).id
 
 
 CODEX_TRUST_TEXT = (

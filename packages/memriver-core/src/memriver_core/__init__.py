@@ -5,28 +5,40 @@ these are the same class objects, not copies.
 """
 
 from .models.errors import (
+    BatchConflict,
     BindingRefused,
     ContentRejected,
     GlobalReadOnly,
     MemoryError,
     MemoryNotFound,
+    PlanChanged,
     ProjectNotFound,
     ProjectUnavailable,
+    SessionMoved,
     StorageFailure,
+    StoreNeedsUpgrade,
+    UndoRefused,
+    UpgradeRefused,
     VersionConflict,
 )
 
 __version__ = "0.1.0"
 
 __all__ = [
+    "BatchConflict",
     "BindingRefused",
     "ContentRejected",
     "GlobalReadOnly",
     "MemoryError",
     "MemoryNotFound",
+    "PlanChanged",
     "ProjectNotFound",
     "ProjectUnavailable",
+    "SessionMoved",
     "StorageFailure",
+    "StoreNeedsUpgrade",
+    "UndoRefused",
+    "UpgradeRefused",
     "VersionConflict",
     "__version__",
 ]

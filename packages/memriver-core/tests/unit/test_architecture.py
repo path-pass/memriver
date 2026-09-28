@@ -219,11 +219,16 @@ CONCRETE_ADAPTER_MODULES = {
 }
 
 # The services bootstrap composes are held to the same rule for the same
-# reason: DiagnosticsService is not an adapter, but a second module naming it
-# would be a second composition point just the same. It gets its own table
-# because the exemption and the failure message differ in kind, not in force.
+# reason: a service is not an adapter, but a second module naming one would be
+# a second composition point just the same -- and a service importing another
+# service's module would be one service constructing (or reaching into)
+# another. It gets its own table because the exemption and the failure message
+# differ in kind, not in force.
 COMPOSED_SERVICE_MODULES = {
-    "DiagnosticsService": "memriver_core.application.diagnostics",
+    "MemoryService": "memriver_core.application.memory",
+    "ProjectService": "memriver_core.application.projects",
+    "SessionService": "memriver_core.application.sessions",
+    "MaintenanceService": "memriver_core.application.maintenance",
 }
 
 
@@ -266,20 +271,21 @@ def test_only_bootstrap_constructs_the_sqlite_inspector():
     )
 
 
-def test_diagnostics_application_depends_only_on_models_and_inspection_port():
-    imports = _imported_modules("memriver_core.application.diagnostics")
+def test_maintenance_application_depends_only_on_models_and_ports():
+    imports = _imported_modules("memriver_core.application.maintenance")
     core_imports = {name for name in imports if name.startswith("memriver_core.")}
     allowed = {
         "memriver_core.models",
         "memriver_core.repository.inspection_protocol",
+        "memriver_core.repository.protocol",
+        "memriver_core.content_policy.protocol",
     }
     offenders = [
         name for name in core_imports
         if not any(_under(name, prefix) for prefix in allowed)
     ]
     assert not offenders, (
-        f"application/diagnostics may import models and the inspection port only: "
-        f"{offenders}"
+        f"application/maintenance may import models and the ports only: {offenders}"
     )
 
 
@@ -298,8 +304,11 @@ def test_only_bootstrap_imports_settings(symbol):
         )
 
 
-def test_application_names_the_store_ports_not_the_adapters():
-    imports = _imported_modules("memriver_core.application.service")
+@pytest.mark.parametrize("module", ["memriver_core.application.memory",
+                                    "memriver_core.application.projects",
+                                    "memriver_core.application.sessions"])
+def test_application_names_the_store_ports_not_the_adapters(module):
+    imports = _imported_modules(module)
     assert "memriver_core.repository.protocol" in imports
     assert not any(_under(t, "memriver_core.repository.sqlite") for t in imports)
 
@@ -376,3 +385,122 @@ def test_no_git_discovery_in_models_or_application(package, marker):
         source = SOURCES[module].read_text(encoding="utf-8")
         assert marker not in source, \
             f"{module} contains git-discovery code ({marker}); that belongs to memriver"
+
+
+# --- G0: core takes no plug-in vocabulary (spec §0.1, §2; acceptance §10 item 17) -------
+
+FORBIDDEN_FRAGMENTS = ("dream", "ttl", "run_id")
+
+# PEP 695 (`def f[T]`, `class C[T]`) type-param node classes: Python 3.12+ only. Read
+# through getattr so this module still imports on an older interpreter -- `isinstance`
+# against an empty tuple is simply always False, never an AttributeError.
+_TYPE_PARAM_TYPES = tuple(
+    cls for cls in (getattr(ast, name, None)
+                    for name in ("TypeVar", "ParamSpec", "TypeVarTuple"))
+    if cls is not None)
+
+
+def _forbidden_fragment(identifier: str) -> str | None:
+    lowered = identifier.lower()
+    return next((fragment for fragment in FORBIDDEN_FRAGMENTS if fragment in lowered), None)
+
+
+def _identifiers_in(source: str) -> set[str]:
+    """Every identifier (and string constant) this rule covers: Name ids, Attribute
+    attrs, def/class names, positional and keyword argument names, every import name
+    and alias (module path and bound name alike), an `except ... as name` binding, a
+    `global`/`nonlocal` name, a `match` pattern's capture name (`case x:`, `case
+    [*xs]:`, `case {**rest}:`), a PEP 695 type-param name (`def f[T]`, `class C[T]`,
+    `type X = ...` -- the last binds through the ordinary `Name` case, since a
+    `TypeAlias`'s own name is itself a child `Name` node), and every string constant
+    (a table or column name embedded in SQL DDL, a dict key, any other string literal)."""
+    identifiers: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Name):
+            identifiers.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            identifiers.add(node.attr)
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            identifiers.add(node.name)
+        elif isinstance(node, ast.arg | ast.keyword) and node.arg is not None:
+            identifiers.add(node.arg)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                identifiers.add(alias.name)
+                if alias.asname:
+                    identifiers.add(alias.asname)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                identifiers.add(node.module)
+            for alias in node.names:
+                identifiers.add(alias.name)
+                if alias.asname:
+                    identifiers.add(alias.asname)
+        elif isinstance(node, ast.ExceptHandler) and node.name is not None:
+            identifiers.add(node.name)
+        elif isinstance(node, ast.Global | ast.Nonlocal):
+            identifiers.update(node.names)
+        elif isinstance(node, ast.MatchAs | ast.MatchStar) and node.name is not None:
+            identifiers.add(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest is not None:
+            identifiers.add(node.rest)
+        elif _TYPE_PARAM_TYPES and isinstance(node, _TYPE_PARAM_TYPES):
+            identifiers.add(node.name)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            identifiers.add(node.value)
+    return identifiers
+
+
+def _path_parts(path: Path) -> tuple[str, ...]:
+    """Every directory name on `path` below `SRC`, plus its file stem -- so a package
+    directory (not only a module's own file name) is covered too."""
+    relative = path.relative_to(SRC)
+    return (*relative.parent.parts, relative.stem)
+
+
+@pytest.mark.parametrize("module", sorted(SOURCES))
+def test_no_dream_ttl_or_run_id_identifier(module):
+    """G0: core never names a plug-in or takes its vocabulary (merge, extract, TTL, run)
+    into its interfaces or identifiers. Data files (gitleaks.toml) are out of scope --
+    `SOURCES` only ever holds `.py` files."""
+    path = SOURCES[module]
+    for part in _path_parts(path):
+        hit = _forbidden_fragment(part)
+        assert hit is None, f"{path} carries the forbidden fragment {hit!r} in its path ({part!r})"
+    source = path.read_text(encoding="utf-8")
+    for identifier in _identifiers_in(source):
+        hit = _forbidden_fragment(identifier)
+        assert hit is None, \
+            f"{module} names {identifier!r}, carrying the forbidden fragment {hit!r}"
+
+
+# each node kind _identifiers_in added beyond the original Name/Attribute/def/import
+# set, proven against a small inline snippet rather than only trusted by inspection
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        # ExceptHandler.name
+        ("try:\n    pass\nexcept Exception as dream_err:\n    pass\n", "dream_err"),
+        # Global / Nonlocal names
+        ("def f():\n    global dream_flag\n", "dream_flag"),
+        ("def f():\n    x = 1\n    def g():\n        nonlocal ttl_seconds\n    return g\n",
+         "ttl_seconds"),
+        # match capture names: a bare capture, a sequence *rest, a mapping **rest
+        ("match x:\n    case dream_value:\n        pass\n", "dream_value"),
+        ("match x:\n    case [*run_id_rest]:\n        pass\n", "run_id_rest"),
+        ("match x:\n    case {**ttl_rest}:\n        pass\n", "ttl_rest"),
+        # PEP 695 type params, on a function and on a class -- neither annotates
+        # anything with the type var, so only the TypeVar node itself carries the name
+        ("def f[dream_t]():\n    return 1\n", "dream_t"),
+        ("class C[ttl_t]:\n    pass\n", "ttl_t"),
+        # a PEP 695 type alias's own name (via the ordinary Name case, not a special one)
+        ("type run_id_alias = int\n", "run_id_alias"),
+        # string constants: SQL DDL and a dict key
+        ('x = "CREATE TABLE dream_log (a TEXT)"\n', "CREATE TABLE dream_log (a TEXT)"),
+        ('d = {"ttl_seconds": 1}\n', "ttl_seconds"),
+    ],
+)
+def test_identifiers_in_catches_every_new_node_kind(source, expected):
+    identifiers = _identifiers_in(source)
+    assert expected in identifiers
+    assert _forbidden_fragment(expected) is not None

@@ -17,43 +17,6 @@ SESSION_COLUMNS = ("harness, session_id, status, origin, project_id, candidate_i
                    "last_active_at, ended_at, prompt_count, last_write_prompt_count, "
                    "last_nudge_prompt_count, first_prompt, recent_prompts")
 
-# the v1 schema, frozen here to build a database an upgrade must act on
-_V1_SCHEMA = (
-    """CREATE TABLE projects (
-      id        TEXT PRIMARY KEY NOT NULL CHECK (length(id) = 10),
-      name      TEXT NOT NULL CHECK (length(name) >= 1),
-      root      TEXT UNIQUE,
-      is_global INTEGER NOT NULL DEFAULT 0 CHECK (is_global IN (0, 1)),
-      CHECK (is_global = 0 OR root IS NULL)
-    ) STRICT""",
-    "CREATE UNIQUE INDEX projects_one_global ON projects(is_global) WHERE is_global = 1",
-    """CREATE TABLE memories (
-      id             TEXT PRIMARY KEY NOT NULL CHECK (length(id) = 10),
-      project_id     TEXT NOT NULL REFERENCES projects(id),
-      type           TEXT NOT NULL CHECK (type IN ('user','feedback','project','reference')),
-      source_harness TEXT NOT NULL,
-      source_method  TEXT NOT NULL,
-      trust          TEXT NOT NULL CHECK (trust IN ('user','agent','untrusted-derived')),
-      sync           INTEGER NOT NULL CHECK (sync IN (0, 1)),
-      description    TEXT NOT NULL,
-      body           TEXT NOT NULL,
-      created        TEXT NOT NULL,
-      updated        TEXT NOT NULL,
-      version        INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
-      deleted_at     TEXT
-    ) STRICT""",
-    ("CREATE INDEX memories_active_by_project "
-     "ON memories(project_id, updated DESC) WHERE deleted_at IS NULL"),
-)
-
-
-def _build_v1(store: Path) -> None:
-    with closing(sqlite3.connect(store / "memriver.db")) as conn, conn:
-        for statement in _V1_SCHEMA:
-            conn.execute(statement)
-        conn.execute("PRAGMA user_version = 1")
-
-
 def _plant(store: Path, memory: Memory) -> Memory:
     with closing(sqlite3.connect(store / "memriver.db")) as conn, conn:
         conn.execute(
@@ -62,6 +25,13 @@ def _plant(store: Path, memory: Memory) -> Memory:
              memory.source["method"], memory.trust, int(memory.sync), memory.description,
              memory.body, memory.created, memory.updated, memory.version, memory.deleted_at,
              memory.last_read_at))
+        # imported history (no change): versions 1..current, each in the row's state
+        conn.executemany(
+            "INSERT INTO memory_versions (memory_id, version, type, trust, sync, description, "
+            "body, deleted, change_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+            [(memory.id, version, memory.type, memory.trust, int(memory.sync),
+              memory.description, memory.body, int(memory.deleted_at is not None))
+             for version in range(1, memory.version + 1)])
     return memory
 
 
@@ -343,29 +313,18 @@ def test_an_unknown_schema_is_one_finding(world):
     assert [f.kind for f in report.findings] == ["unknown-schema"]
 
 
-def test_doctor_as_the_first_opener_upgrades_and_reports_no_unknown_schema(tmp_path):
+@pytest.mark.parametrize("version", [1, 2, 3])
+def test_a_store_below_v4_is_one_unknown_schema_finding_and_is_left_untouched(tmp_path,
+                                                                              version):
     store = tmp_path / "store"
     store.mkdir()
-    _build_v1(store)
-    report = SqliteStoreInspector(store, busy_timeout_ms=2000).inspect()
-    assert "unknown-schema" not in [f.kind for f in report.findings]
     with closing(sqlite3.connect(store / "memriver.db")) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
-
-
-def test_a_failed_upgrade_is_reported_as_unknown_schema_not_a_crash(tmp_path, monkeypatch):
-    from memriver_core.repository.sqlite import database as database_module
-
-    store = tmp_path / "store"
-    store.mkdir()
-    _build_v1(store)
-    broken = list(database_module._UPGRADE_STATEMENTS)
-    broken[-1] = "CREATE INDEX sessions_by_project ON no_such_table(project_id)"
-    monkeypatch.setattr(database_module, "_UPGRADE_STATEMENTS", broken)
+        conn.execute("CREATE TABLE projects (id TEXT)")
+        conn.execute(f"PRAGMA user_version = {version}")
+    before = (store / "memriver.db").read_bytes()
     report = SqliteStoreInspector(store, busy_timeout_ms=2000).inspect()
     assert [f.kind for f in report.findings] == ["unknown-schema"]
-    with closing(sqlite3.connect(store / "memriver.db")) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+    assert (store / "memriver.db").read_bytes() == before
 
 
 def test_a_symlinked_database_is_unsafe_and_not_followed(tmp_path):
@@ -458,9 +417,8 @@ def test_a_failing_pragma_still_closes_the_connection(world, monkeypatch):
                         lambda *a, **k: Failing(real_connect(*a, **k)))
     with pytest.raises(StorageFailure):
         SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
-    # the module-wide patch also wraps upgrade_if_needed's own connection, which
-    # closes cleanly (it never touches query_only) before the inspector's own fails
-    assert closed == [True, True]
+    # the inspector opens exactly one connection, and closes it on the failure too
+    assert closed == [True]
 
 
 def test_inspection_never_writes(world):
@@ -497,3 +455,136 @@ def test_directory_checks_run_after_the_read_transaction(world, monkeypatch):
     # the report is still the snapshot read before the peer's commit
     assert {p.id: p.active_memories for p in report.projects}[world["project"]] == 0
     assert report.entries == ()
+
+
+def _inspect(world):
+    return SqliteStoreInspector(world["store"], busy_timeout_ms=2000).inspect()
+
+
+def _kinds(report) -> list[tuple]:
+    return [(f.kind, f.memory_id) for f in report.findings]
+
+
+def test_a_gap_in_the_versions_is_a_finding(world):
+    memory = _memory(world["project"])
+    memory.version = 3
+    _plant(world["store"], memory)
+    _sql(world["store"], "DELETE FROM memory_versions WHERE memory_id = ? AND version = 2",
+         memory.id)
+    assert _kinds(_inspect(world)) == [("version-gap", memory.id)]
+
+
+def test_a_row_that_differs_from_its_latest_version_is_a_finding(world):
+    memory = _plant(world["store"], _memory(world["project"]))
+    _sql(world["store"], "UPDATE memories SET body = 'edited by hand' WHERE id = ?", memory.id)
+    assert _kinds(_inspect(world)) == [("version-mismatch", memory.id)]
+
+
+def test_a_version_naming_a_change_without_its_step_is_a_finding(world):
+    memory = _plant(world["store"], _memory(world["project"]))
+    _sql(world["store"], "INSERT INTO changes (change_id, at, changed_by, step_count) "
+         "VALUES ('cccccccccc', '2026-09-27T00:00:00.000000Z', 'human', 1)")
+    _sql(world["store"], "INSERT INTO change_steps (change_id, step, memory_id, op, "
+         "before_version, after_version) VALUES ('cccccccccc', 1, ?, 'update', 1, 2)",
+         memory.id)
+    _sql(world["store"], "UPDATE memory_versions SET change_id = 'cccccccccc' "
+         "WHERE memory_id = ?", memory.id)
+    assert _kinds(_inspect(world)) == [("unrecorded-version", memory.id)]
+
+
+def test_a_source_citing_a_version_that_is_not_stored_is_a_finding(world):
+    memory = _plant(world["store"], _memory(world["project"]))
+    _sql(world["store"], "INSERT INTO memory_sources (memory_id, version, source_id, "
+         "source_version) VALUES (?, 1, 'zzzzzzzzzz', 1)", memory.id)
+    report = _inspect(world)
+    assert _kinds(report) == [("dangling-source", memory.id)]
+    assert report.findings[0].project_id == world["project"]
+
+
+def test_a_source_finding_never_carries_a_damaged_project_id(world):
+    memory = _plant(world["store"], _memory(world["project"]))
+    _sql(world["store"], "INSERT INTO memory_sources (memory_id, version, source_id, "
+         "source_version) VALUES (?, 1, 'zzzzzzzzzz', 1)", memory.id)
+    _sql(world["store"], "UPDATE memories SET project_id = CAST(X'80' AS TEXT) WHERE id = ?",
+         memory.id)
+    findings = [f for f in _inspect(world).findings if f.kind == "dangling-source"]
+    assert [(f.memory_id, f.project_id) for f in findings] == [(memory.id, None)]
+
+
+def test_a_source_row_whose_own_citing_version_is_not_stored_is_also_a_finding(world):
+    """The cited side (spec §4.4) is not the only side a source row must resolve on:
+    the citing (memory_id, version) itself must be a stored version too."""
+    citer = _plant(world["store"], _memory(world["project"], "citer"))
+    cited = _plant(world["store"], _memory(world["project"], "cited"))
+    _sql(world["store"], "INSERT INTO memory_sources (memory_id, version, source_id, "
+         "source_version) VALUES (?, 9, ?, 1)", citer.id, cited.id)
+    assert _kinds(_inspect(world)) == [("dangling-source", citer.id)]
+
+
+def test_a_source_cycle_is_a_finding_for_every_memory_on_it(world):
+    first = _plant(world["store"], _memory(world["project"], "first"))
+    second = _plant(world["store"], _memory(world["project"], "second"))
+    for citing, cited in ((first, second), (second, first)):
+        _sql(world["store"], "INSERT INTO memory_sources (memory_id, version, source_id, "
+             "source_version) VALUES (?, 1, ?, 1)", citing.id, cited.id)
+    report = _inspect(world)
+    assert sorted(_kinds(report)) == sorted([("source-cycle", first.id),
+                                             ("source-cycle", second.id)])
+    assert {f.project_id for f in report.findings} == {world["project"]}
+
+
+def test_a_change_with_fewer_steps_than_recorded_is_listed_not_a_finding(world):
+    _sql(world["store"], "INSERT INTO changes (change_id, at, changed_by, step_count) "
+         "VALUES ('cccccccccc', '2026-09-27T00:00:00.000000Z', 'human', 2)")
+    report = _inspect(world)
+    assert (report.findings, report.incomplete_changes) == ((), ("cccccccccc",))
+
+
+def test_a_change_with_an_undecodable_id_is_invalid_row_not_incomplete(world):
+    """An id no write path could ever have produced must never reach `incomplete_changes`:
+    a caller (doctor's `visible`, its `--json` rendering) treats every entry there as an
+    addressable id, never as bytes."""
+    _sql(world["store"], "INSERT INTO changes (change_id, at, changed_by, step_count) "
+         "VALUES (CAST(X'80808080808080808080' AS TEXT), "
+         "'2026-09-27T00:00:00.000000Z', 'human', 2)")
+    report = _inspect(world)
+    assert report.incomplete_changes == ()
+    assert [(f.kind, f.location_hint) for f in report.findings] == [("invalid-row", "changes")]
+
+
+def test_a_huge_current_version_with_one_stored_row_is_a_gap_not_a_crash(world):
+    """The version-gap check must size itself by the stored rows, never by the
+    memory's own (possibly corrupt) current version number."""
+    memory = _plant(world["store"], _memory(world["project"]))
+    _sql(world["store"], "UPDATE memories SET version = ? WHERE id = ?",
+         2**63 - 1, memory.id)
+    assert _kinds(_inspect(world)) == [("version-gap", memory.id)]
+
+
+@pytest.mark.parametrize("corrupt", ["body", "trust"])
+def test_a_bad_older_version_under_a_healthy_current_one_is_invalid_row(world, corrupt):
+    memory = _memory(world["project"])
+    memory.version = 2
+    _plant(world["store"], memory)
+    if corrupt == "body":
+        _sql(world["store"], "UPDATE memory_versions SET body = CAST(X'80' AS TEXT) "
+             "WHERE memory_id = ? AND version = 1", memory.id)
+    else:
+        _sql(world["store"], "UPDATE memory_versions SET trust = 'invalid-trust' "
+             "WHERE memory_id = ? AND version = 1", memory.id)
+    assert _kinds(_inspect(world)) == [("invalid-row", memory.id)]
+
+
+def test_a_version_naming_a_change_whose_row_is_gone_is_unrecorded_version(world):
+    """`changes` itself, not only the matching step, must exist for a non-migrated
+    version (simulated with foreign keys off, as the other corruption tests do)."""
+    memory = _plant(world["store"], _memory(world["project"]))
+    _sql(world["store"], "INSERT INTO changes (change_id, at, changed_by, step_count) "
+         "VALUES ('cccccccccc', '2026-09-27T00:00:00.000000Z', 'human', 1)")
+    _sql(world["store"], "INSERT INTO change_steps (change_id, step, memory_id, op, "
+         "before_version, after_version) VALUES ('cccccccccc', 1, ?, 'update', 1, 1)",
+         memory.id)
+    _sql(world["store"], "UPDATE memory_versions SET change_id = 'cccccccccc' "
+         "WHERE memory_id = ?", memory.id)
+    _sql(world["store"], "DELETE FROM changes WHERE change_id = 'cccccccccc'")
+    assert _kinds(_inspect(world)) == [("unrecorded-version", memory.id)]

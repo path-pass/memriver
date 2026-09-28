@@ -44,7 +44,7 @@ head, body = out.split("\n---\n", 1)
 fields = dict(l.split(": ", 1) for l in head.splitlines())
 assert fields["id"] == mid and fields["project"] == gid, fields
 assert fields["version"] == "1" and fields["type"] == "project" and fields["trust"] == "user", fields
-assert fields["source"] == "e2e/manual" and "deleted" not in fields, fields
+assert fields["source"] == "e2e/human" and "deleted" not in fields, fields
 assert body.strip() == "project mascot is a purple axolotl named Quibble", body
 PY
 pass "uvx memriver show $SEEDED_MEMORY_ID: project=$GLOBAL_ID, version: 1, trust user, body intact"

@@ -83,3 +83,7 @@ class Session:
     last_nudge_prompt_count: int
     first_prompt: PromptEntry | None
     recent_prompts: tuple[PromptEntry, ...]   # newest last
+    # the published summary (spec §3.5): both set or both None; how it was
+    # produced is the producer's business, never stored here
+    summary: str | None = None
+    summary_at: str | None = None

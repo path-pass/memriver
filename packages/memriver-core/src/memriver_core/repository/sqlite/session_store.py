@@ -20,17 +20,21 @@ from memriver_core.models import (
     is_call_id,
     is_timestamp,
 )
-from memriver_core.models.errors import ProjectUnavailable, StorageFailure
+from memriver_core.models.errors import ProjectUnavailable, SessionMoved, StorageFailure
 
 from .database import Database
 
 SESSION_COLUMNS = ("harness, session_id, status, origin, project_id, candidate_id, "
                    "candidate_root, entry_cwd, branch, transcript_path, started_at, "
                    "last_active_at, ended_at, prompt_count, last_write_prompt_count, "
-                   "last_nudge_prompt_count, first_prompt, recent_prompts")
+                   "last_nudge_prompt_count, first_prompt, recent_prompts, summary, summary_at")
 _PLACEHOLDERS = ", ".join("?" for _ in SESSION_COLUMNS.split(","))
 _BY_KEY = " WHERE harness = ? AND session_id = ?"
 _SELECT = f"SELECT {SESSION_COLUMNS} FROM sessions"
+# registered with a project that exists and is not global: the sessions a summary belongs to
+_SELECT_BOUND = ("SELECT " + ", ".join(f"s.{column.strip()}" for column in SESSION_COLUMNS.split(","))
+                 + " FROM sessions s JOIN projects p ON p.id = s.project_id "
+                 "WHERE s.status = 'registered' AND p.is_global = 0")
 _INSERT = (f"INSERT INTO sessions ({SESSION_COLUMNS}) VALUES ({_PLACEHOLDERS}) "
            "ON CONFLICT(harness, session_id) DO NOTHING")
 # every column but the key, rewritten from the validated row
@@ -85,7 +89,8 @@ def session_to_row(session: Session) -> tuple:
             session.entry_cwd, session.branch, session.transcript_path, session.started_at,
             session.last_active_at, session.ended_at, session.prompt_count,
             session.last_write_prompt_count, session.last_nudge_prompt_count, first_prompt,
-            _dumps([_entry_object(entry) for entry in session.recent_prompts]))
+            _dumps([_entry_object(entry) for entry in session.recent_prompts]), session.summary,
+            session.summary_at)
 
 
 def session_from_row(row: Sequence[object]) -> Session:
@@ -93,7 +98,7 @@ def session_from_row(row: Sequence[object]) -> Session:
     (harness, session_id, status, origin, project_id, candidate_id, candidate_root,
      entry_cwd, branch, transcript_path, started_at, last_active_at, ended_at,
      prompt_count, last_write_prompt_count, last_nudge_prompt_count, first_prompt,
-     recent_prompts) = row
+     recent_prompts, summary, summary_at) = row
     key = SessionKey(harness, session_id)
     if status not in get_args(SessionStatus) or origin not in get_args(SessionOrigin):
         raise ValueError("unknown status or origin")
@@ -117,6 +122,11 @@ def session_from_row(row: Sequence[object]) -> Session:
     recent = _loads(recent_prompts)
     if not isinstance(recent, list):
         raise ValueError("recent_prompts is not a list")  # noqa: TRY004 - a bad row
+    if (summary is None) != (summary_at is None):
+        raise ValueError("a summary is stored without its time, or a time without it")
+    if summary is not None and not (isinstance(summary, str) and summary.strip()
+                                    and is_timestamp(summary_at)):
+        raise ValueError("the summary is not text with its timestamp")
     return Session(
         key=key, status=status, origin=origin, project_id=project_id,
         candidate_id=candidate_id, candidate_root=candidate_root, entry_cwd=entry_cwd,
@@ -125,7 +135,8 @@ def session_from_row(row: Sequence[object]) -> Session:
         last_write_prompt_count=last_write_prompt_count,
         last_nudge_prompt_count=last_nudge_prompt_count,
         first_prompt=None if first_prompt is None else _entry_from_object(_loads(first_prompt)),
-        recent_prompts=tuple(_entry_from_object(entry) for entry in recent))
+        recent_prompts=tuple(_entry_from_object(entry) for entry in recent),
+        summary=summary, summary_at=summary_at)
 
 
 def _checked_row(session: Session) -> tuple:
@@ -162,7 +173,7 @@ def _require_timestamp(at: object) -> None:
 def _matches(session: Session, needle: str) -> bool:
     prompts = (session.first_prompt, *session.recent_prompts)
     texts = [entry.text for entry in prompts if entry is not None and entry.text is not None]
-    texts += [session.entry_cwd, session.branch or ""]
+    texts += [session.entry_cwd, session.branch or "", session.summary or ""]
     return any(needle in text.lower() for text in texts)
 
 
@@ -334,6 +345,38 @@ class SqliteSessionStore:
                 if _matches(session, needle):
                     found.append(session)
         return found
+
+    def bound(self) -> list[Session]:
+        found: list[Session] = []
+        with self._database.read() as conn:
+            if conn is None:
+                return []
+            for row in conn.execute(_SELECT_BOUND + " ORDER BY s.last_active_at DESC, "
+                                    "s.harness, s.session_id"):
+                try:
+                    found.append(session_from_row(row))
+                except ValueError:
+                    continue                # a bad row is skipped here, a doctor finding
+        return found
+
+    def publish_summary(self, key: SessionKey, text: str, *, expected_last_active_at: str,
+                        at: str) -> None:
+        _require_timestamp(at)
+
+        def publish(conn: sqlite3.Connection) -> bool:
+            stored = _stored(conn, key)
+            bound = stored is not None and stored.status == "registered" \
+                and stored.project_id is not None and conn.execute(
+                    "SELECT 1 FROM projects WHERE id = ? AND is_global = 0",
+                    (stored.project_id,)).fetchone() is not None
+            # decided under the write lock: activity since the caller read the
+            # session means the summary does not cover it
+            if not bound or stored.last_active_at != expected_last_active_at:
+                raise SessionMoved()
+            _save(conn, dataclasses.replace(stored, summary=text, summary_at=at))
+            return True
+        if self._write(publish) is None:
+            raise SessionMoved()                # no store, so no such session
 
     def _write(self, operation: Callable[[sqlite3.Connection], _T]) -> _T | None:
         """`operation` in one write transaction; None when the store is absent.

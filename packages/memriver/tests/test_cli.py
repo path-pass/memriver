@@ -15,7 +15,7 @@ import pytest
 from memriver import cli, hooks
 from memriver.hooks import HookResult
 from memriver.protocol_text import STOP_NUDGE
-from memriver_core.bootstrap import build_service
+from memriver_core.bootstrap import build_services
 from memriver_core.models import SessionKey
 from memriver_core.settings import STOP_NUDGE_MIN_PROMPTS, Settings
 
@@ -91,7 +91,8 @@ def capture_dispatch(argv: list[str], monkeypatch):
         return record
 
     for name in ("_serve", "_hook", "_install", "_view_list", "_view_show", "_view_search",
-                "_view_export", "_view_delete", "_view_sessions"):
+                "_view_export", "_view_sessions", "_memory_history", "_memory_restore",
+                "_memory_undo", "_memory_delete"):
         monkeypatch.setattr(cli, name, make_recorder(name))
     assert cli.main(list(argv)) == 0
     return seen[0]
@@ -147,15 +148,56 @@ def test_project_subcommands_parse(argv, handler, expected):
     (["sessions", "login bug", "--project", "aaaaaaaaaa", "--limit", "3", "--json"],
      "_view_sessions", {"query": "login bug", "project": "aaaaaaaaaa", "limit": 3,
                         "json": True}),
-    (["delete", "mmmmmmmmmm", "--version", "2"], "_view_delete",
-     {"memory_id": "mmmmmmmmmm", "version": 2, "hard": False, "yes": False}),
-    (["delete", "mmmmmmmmmm", "--version", "2", "--hard", "--yes"], "_view_delete",
-     {"memory_id": "mmmmmmmmmm", "version": 2, "hard": True, "yes": True}),
 ])
 def test_view_subcommands_parse(argv, handler, expected, monkeypatch):
     args = capture_dispatch(argv, monkeypatch)
     assert args.handler is getattr(cli, handler)
     assert {key: getattr(args, key) for key in expected} == expected
+
+
+# §10 item 17: the §8.2 commands parse to their handlers
+@pytest.mark.parametrize(("argv", "handler", "expected"), [
+    (["history", "mmmmmmmmmm"], "_memory_history", {"memory_id": "mmmmmmmmmm", "show": None}),
+    (["history", "mmmmmmmmmm", "--show", "2"], "_memory_history", {"show": 2}),
+    (["restore", "mmmmmmmmmm", "--to", "1"], "_memory_restore",
+     {"memory_id": "mmmmmmmmmm", "to_version": 1, "yes": False}),
+    (["restore", "mmmmmmmmmm", "--to", "1", "--yes"], "_memory_restore", {"yes": True}),
+    (["undo", "cccccccccc", "--yes"], "_memory_undo", {"change_id": "cccccccccc", "yes": True}),
+    (["delete", "mmmmmmmmmm", "--version", "2"], "_memory_delete",
+     {"memory_id": "mmmmmmmmmm", "version": 2, "hard": False, "dry_run": False,
+      "confirm": None, "yes": False}),
+    (["delete", "mmmmmmmmmm", "--hard"], "_memory_delete",
+     {"version": None, "hard": True, "dry_run": False, "confirm": None}),
+    (["delete", "mmmmmmmmmm", "--hard", "--dry-run"], "_memory_delete",
+     {"hard": True, "dry_run": True, "confirm": None}),
+    (["delete", "mmmmmmmmmm", "--hard", "--confirm", "0123456789abcdef", "--yes"],
+     "_memory_delete", {"hard": True, "dry_run": False, "confirm": "0123456789abcdef",
+                        "yes": True}),
+])
+def test_memory_subcommands_parse(argv, handler, expected, monkeypatch):
+    args = capture_dispatch(argv, monkeypatch)
+    assert args.handler is getattr(cli, handler)
+    assert {key: getattr(args, key) for key in expected} == expected
+
+
+# §10 item 17: spec §8.2's delete flag matrix -- --version not with --hard; --dry-run and
+# --confirm only with --hard, and never together
+@pytest.mark.parametrize(("flags", "message"), [
+    ([], "--version is required without --hard"),
+    (["--version", "1", "--hard"], "--version is not accepted with --hard"),
+    (["--version", "1", "--dry-run"], "--dry-run and --confirm need --hard"),
+    (["--version", "1", "--confirm", "0123456789abcdef"], "--dry-run and --confirm need --hard"),
+    (["--hard", "--dry-run", "--confirm", "0123456789abcdef"], "not allowed with argument"),
+])
+def test_delete_flag_matrix_is_a_usage_error(tmp_path, monkeypatch, capsys, flags, message):
+    def never(*args, **kwargs):
+        raise AssertionError("run_delete must not run")
+
+    monkeypatch.setattr("memriver.memory_commands.run_delete", never)
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["delete", "mmmmmmmmmm", "--root", str(tmp_path / "mem"), *flags])
+    assert exit_info.value.code == 2
+    assert message in capsys.readouterr().err
 
 
 def test_project_without_a_subcommand_is_a_parser_error():
@@ -249,18 +291,18 @@ def _git_repo(tmp_path, name: str):
 
 def _register(root, repo) -> str:
     """Create a project and bind the fixture repo, the way `memriver project init` would."""
-    service = build_service(Settings(root=root), root=root)
-    return service.init_project(repo.name, service.plan_root(str(repo))).id
+    services = build_services(Settings(root=root), root=root)
+    return services.project.init_project(repo.name, services.project.plan_root(str(repo))).id
 
 
 def _due_session(root, directory) -> None:
     """A Codex session "s1" registered at ``directory``, due its first Stop nudge."""
-    service = build_service(Settings(root=root), root=root)
+    services = build_services(Settings(root=root), root=root)
     key = SessionKey("codex", "s1")
-    service.start_session(key, source="startup", entry_dir=str(directory),
+    services.session.start_session(key, source="startup", entry_dir=str(directory),
                           transcript_path=None)
     for _ in range(STOP_NUDGE_MIN_PROMPTS):
-        service.observe_prompt(key, prompt="next step", entry_dir=str(directory),
+        services.session.observe_prompt(key, prompt="next step", entry_dir=str(directory),
                                transcript_path=None)
 
 
@@ -315,30 +357,102 @@ def test_settings_file_in_root_is_honoured_end_to_end(tmp_path):
     assert _active_memories(root, project_id) == 0
 
 
-def test_bad_env_value_reports_readably(tmp_path):
-    """A bad MEMRIVER_* env var fails loudly, but not as a bare traceback."""
-    env = {**os.environ, "MEMRIVER_MAX_BODY_CHARS": "abc"}
-    out = subprocess.run([sys.executable, "-m", "memriver.cli",
-                          "--root", str(tmp_path / "mem")],
-                         capture_output=True, text=True, env=env, timeout=30, check=False)
-    assert out.returncode != 0
-    assert "Traceback" not in out.stderr
-    assert "MEMRIVER_" in out.stderr and "max_body_chars" in out.stderr
+def _cli(*args: str, env: dict | None = None,
+         stdin: str = "") -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, "-m", "memriver.cli", *args], input=stdin,
+                          capture_output=True, text=True, env={**os.environ, **(env or {})},
+                          timeout=30, check=False)
 
 
-def test_bad_env_value_leaves_doctor_a_path_free_exit_two(tmp_path):
-    """The same bad env var that `serve` fails loudly on is, for doctor, a
-    store it could not read: exit 2 and the one fixed line, never a traceback
-    carrying source paths and the rejected value."""
-    env = {**os.environ, "MEMRIVER_MAX_BODY_CHARS": "not-a-number"}
-    out = subprocess.run([sys.executable, "-m", "memriver.cli", "doctor",
-                          "--root", str(tmp_path / "mem")],
-                         capture_output=True, text=True, env=env, timeout=30,
-                         check=False)
+def test_bad_env_value_reports_the_variable_in_one_line(tmp_path):
+    """A bad MEMRIVER_* env var stops serve with one line naming the variable --
+    never the value, never a traceback."""
+    out = _cli("--root", str(tmp_path / "mem"), env={"MEMRIVER_MAX_BODY_CHARS": "abc"})
+    assert (out.returncode, out.stdout) == (1, "")
+    assert out.stderr == "memriver: environment variable MEMRIVER_MAX_BODY_CHARS is invalid\n"
+
+
+def _broken_settings(tmp_path, text: str | bytes) -> Path:
+    root = tmp_path / "mem"
+    root.mkdir()
+    (root / "settings.toml").write_bytes(text if isinstance(text, bytes) else text.encode())
+    return root
+
+
+INVALID_LINE = "memriver: settings.toml is invalid: field search_limit_default\n"
+UNREADABLE_LINE = "memriver: settings.toml could not be read\n"
+
+
+@pytest.mark.parametrize(("text", "line"), [
+    ('search_limit_default = "/secret/value"\n', INVALID_LINE),
+    (b"search_limit_default = = 1\n", UNREADABLE_LINE),
+])
+@pytest.mark.parametrize("command", [["serve"], ["list"], ["search", "x"], ["sessions"],
+                                     ["show", "0" * 26]])
+def test_a_broken_settings_file_stops_a_command_with_one_named_line(tmp_path, text, line,
+                                                                    command):
+    root = _broken_settings(tmp_path, text)
+    out = _cli(*command, "--root", str(root))
+    assert (out.returncode, out.stdout, out.stderr) == (1, "", line)
+    assert "/secret/value" not in out.stderr and str(root) not in out.stderr
+
+
+def test_a_settings_path_that_is_a_directory_stops_serve(tmp_path):
+    root = tmp_path / "mem"
+    (root / "settings.toml").mkdir(parents=True)
+    out = _cli("serve", "--root", str(root))
+    assert (out.returncode, out.stdout, out.stderr) == (1, "", UNREADABLE_LINE)
+
+
+@pytest.mark.parametrize(("env", "text", "line"), [
+    ({}, 'search_limit_default = "/secret/value"\n', INVALID_LINE),
+    ({"MEMRIVER_MAX_BODY_CHARS": "/secret/value"}, None,
+     "memriver: environment variable MEMRIVER_MAX_BODY_CHARS is invalid\n"),
+])
+def test_an_unusable_setting_stops_project_commands_with_the_named_line(tmp_path, env, text,
+                                                                        line):
+    root = tmp_path / "mem"
+    root.mkdir()
+    if text is not None:
+        (root / "settings.toml").write_text(text, encoding="utf-8")
+    out = _cli("project", "explain", "--root", str(root), "--project-dir", str(tmp_path),
+               env=env)
+    assert (out.returncode, out.stdout, out.stderr) == (1, "", line)
+
+
+def test_a_broken_settings_file_gives_doctor_the_named_line_and_exit_two(tmp_path):
+    root = _broken_settings(tmp_path, 'search_limit_default = "/secret/value"\n')
+    out = _cli("doctor", "--root", str(root))
+    assert (out.returncode, out.stdout, out.stderr) == (2, "", INVALID_LINE)
+
+
+@pytest.mark.parametrize("event", ["session-start", "user-prompt-submit", "session-end"])
+def test_a_broken_settings_file_fails_each_settings_loading_hook_with_the_line(tmp_path,
+                                                                              event):
+    # the hook exits 1 (a failing, non-blocking hook) so the harness shows the line
+    root = _broken_settings(tmp_path, 'search_limit_default = "/secret/value"\n')
+    payload = json.dumps({"session_id": "0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee",
+                          "prompt": "hello", "cwd": str(tmp_path)})
+    out = _cli("hook", event, "--harness", "claude-code", "--root", str(root), stdin=payload)
+    assert (out.returncode, out.stdout, out.stderr) == (1, "", INVALID_LINE)
+
+
+def test_a_broken_settings_file_stops_install_before_any_change(tmp_path):
+    root = _broken_settings(tmp_path, 'search_limit_default = "/secret/value"\n')
+    home = tmp_path / "home"
+    home.mkdir()
+    out = _cli("install", "--dry-run", env={"MEMRIVER_ROOT": str(root), "HOME": str(home)})
+    assert (out.returncode, out.stdout, out.stderr) == (1, "", INVALID_LINE)
+
+
+def test_bad_env_value_gives_doctor_the_named_line_and_exit_two(tmp_path):
+    """For doctor, a bad env var is still exit 2 (it never looked at the store),
+    with the one line naming the variable -- never the value or a traceback."""
+    out = _cli("doctor", "--root", str(tmp_path / "mem"),
+               env={"MEMRIVER_MAX_BODY_CHARS": "not-a-number"})
     assert out.returncode == 2
     assert out.stdout == ""
-    assert out.stderr == "memriver doctor: memory store is inaccessible\n"
-    assert "not-a-number" not in out.stderr
+    assert out.stderr == "memriver: environment variable MEMRIVER_MAX_BODY_CHARS is invalid\n"
 
 
 @pytest.mark.parametrize(("event", "stderr"), [
@@ -551,7 +665,7 @@ def test_configure_logging_replaces_a_preattached_null_handler(tmp_path, capsys)
 
 def test_store_step_is_none_once_global_exists(monkeypatch, tmp_path):
     monkeypatch.setenv("MEMRIVER_ROOT", str(tmp_path / "store"))
-    build_service(Settings(root=tmp_path / "store"), root=tmp_path / "store").ensure_global()
+    build_services(Settings(root=tmp_path / "store"), root=tmp_path / "store").project.ensure_global()
     assert cli._store_step() is None
 
 
@@ -562,8 +676,8 @@ def test_store_step_for_an_uninitialized_store_creates_global_only_when_applied(
     assert "memory store (required): create the global project in" in step.summary
     assert not (tmp_path / "store" / "memriver.db").exists()    # building it writes nothing
     line = step.apply()
-    global_id = build_service(Settings(root=tmp_path / "store"),
-                              root=tmp_path / "store").global_project_id()
+    global_id = build_services(Settings(root=tmp_path / "store"),
+                              root=tmp_path / "store").project.global_project_id()
     assert line == f"memory store: ready (global project {global_id})"
 
 

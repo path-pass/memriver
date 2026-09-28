@@ -31,7 +31,7 @@ step_verify_uvx_resolution() {
 # initializes it before any harness file is written, printing
 # "memory store: ready (global project <id>)" (cli._store_step). Failures go to
 # stderr, which must stay empty. The store is one SQLite file,
-# <root>/memriver.db (mode 0600, PRAGMA user_version = 2): the printed id must
+# <root>/memriver.db (mode 0600, PRAGMA user_version = 4): the printed id must
 # be the one row of `projects` with is_global = 1 (name "global", no root), and
 # none of the old file-store names (store.toml, projects/, memories/,
 # registry/) may exist.
@@ -58,13 +58,13 @@ assert stat.S_IMODE(db.stat().st_mode) == 0o600, oct(db.stat().st_mode)
 legacy = [n for n in ("store.toml", "projects", "memories", "registry") if (store / n).exists()]
 assert not legacy, f"old file-store names present: {legacy}"
 conn = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)
-assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
 rows = conn.execute("SELECT id, name, root FROM projects WHERE is_global = 1").fetchall()
 assert rows == [(gid, "global", None)], rows
 print(f"global project {gid}")
 PY
     rm -f "$out" "$err"
-    pass "uvx memriver install --harness $harness --yes: exit 0, empty stderr, store step shown and applied; memriver.db (0600, user_version 2) holds the printed id as its one is_global row; no old store files"
+    pass "uvx memriver install --harness $harness --yes: exit 0, empty stderr, store step shown and applied; memriver.db (0600, user_version 4) holds the printed id as its one is_global row; no old store files"
 }
 
 step_install() { step_install_harness claude-code; }
@@ -122,39 +122,33 @@ PY
 # Seeds one GLOBAL memory whose description (the index cue) and body are
 # $1. Global is read-only to agents through the service (GlobalReadOnly;
 # service.record only writes the session's own project), so this seeds it the
-# way an operator would: one INSERT into <root>/memriver.db's `memories` table,
-# with project_id = the id of the one is_global project and foreign keys on.
-# The id and timestamps come from core's own model (Memory.new), so the row is
-# what memriver itself would store: version 1, deleted_at NULL. trust="user":
-# a human wrote it. The content is passed through argv, not interpolated into
-# the heredoc.
+# way the management path does: one Create through services.memory.apply
+# (memriver_core.bootstrap.build_services over the already-installed store),
+# with project_id = the id of the one is_global project. changed_by="human"
+# (the real source: a person seeding the store), changed_via="e2e", so the
+# stored source is "e2e/human" (source_harness/source_method); trust="user". The
+# content is passed through argv, not interpolated into the heredoc.
 seed_global_memory() {
     local content="$1" memory_id
     memory_id="$(uv run --no-project --with memriver python - "$E2E_STORE" "$content" <<'PY'
-import sqlite3, sys
+import sys
 from pathlib import Path
-from memriver_core.models import Memory
 
-db, content = Path(sys.argv[1]) / "memriver.db", sys.argv[2]
-conn = sqlite3.connect(f"{db.as_uri()}?mode=rw", uri=True)
-conn.execute("PRAGMA foreign_keys = ON")
-with conn:
-    (gid,) = conn.execute("SELECT id FROM projects WHERE is_global = 1").fetchone()
-    m = Memory.new(body=content, type="project", project_id=gid,
-                   source={"harness": "e2e", "method": "manual"}, trust="user",
-                   description=content)
-    conn.execute(
-        "INSERT INTO memories (id, project_id, type, source_harness, source_method, trust,"
-        " sync, description, body, created, updated, version, deleted_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL)",
-        (m.id, m.project_id, m.type, m.source["harness"], m.source["method"], m.trust,
-         int(m.sync), m.description, m.body, m.created, m.updated))
-conn.close()
-print(m.id)
+from memriver_core.bootstrap import build_services
+from memriver_core.models.changes import Create
+from memriver_core.settings import Settings
+
+store, content = Path(sys.argv[1]), sys.argv[2]
+services = build_services(Settings(root=store), root=store)
+global_id = services.project.global_project_id()
+change = services.memory.apply(
+    [Create(global_id, "project", content, content, trust="user")],
+    changed_by="human", changed_via="e2e")
+print(change.steps[0].memory_id)
 PY
 )"
     SEEDED_MEMORY_ID="$memory_id"
-    pass "seeded global memory $memory_id ('$content') as a memriver.db row, project_id = the is_global project"
+    pass "seeded global memory $memory_id ('$content') through memriver_core's write path (services.memory.apply), project_id = the is_global project"
 }
 
 # A distinctive, checkable fact (not a generic "e2e marker memory" label) is

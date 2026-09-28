@@ -58,13 +58,13 @@ from memriver.install import (
 from memriver.install.codex import NATIVE_MEMORY_LEFT_NOTE as CODEX_NATIVE_MEMORY_LEFT
 from memriver.protocol_text import PROTOCOL_BLOCK
 from memriver.uninstall import run_uninstall as run_full_uninstall
-from memriver_core.bootstrap import build_service
+from memriver_core.bootstrap import build_services
 from memriver_core.settings import Settings
 
 
 def _bind_new(store: Path, directory: Path, name: str) -> str:
-    service = build_service(Settings(root=store), root=store)
-    return service.init_project(name, service.plan_root(str(directory))).id
+    services = build_services(Settings(root=store), root=store)
+    return services.project.init_project(name, services.project.plan_root(str(directory))).id
 
 
 ALL_HARNESSES = ["claude-code", "codex", "cursor", "kiro"]
@@ -2382,5 +2382,5 @@ def test_config_uninstall_leaves_the_binding_alone(home, project):
     result = uninstall(["cursor"], home=home, cwd=project)
 
     assert result.exit_code == 0
-    project_row = build_service(Settings(root=store), root=store).read_project(pid)
+    project_row = build_services(Settings(root=store), root=store).project.read_project(pid)
     assert (project_row.name, project_row.root) == ("work", str(project.resolve()))

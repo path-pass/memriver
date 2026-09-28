@@ -19,6 +19,7 @@ no test edit needed.
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 import memriver
@@ -95,14 +96,48 @@ def test_install_modules_import_no_memriver_core_symbol_at_all():
         )
 
 
-FORBIDDEN_NAMES = ("SqliteStoreInspector", "DiagnosticsService")
+FORBIDDEN_NAMES = ("SqliteStoreInspector",)
 
 
-def test_umbrella_never_names_the_concrete_inspector_or_diagnostics_service():
+def test_umbrella_never_names_the_concrete_inspector():
     for module, path in SOURCES.items():
         source = path.read_text(encoding="utf-8")
         for name in FORBIDDEN_NAMES:
             assert name not in source, (
-                f"{module} references {name}; neither may be constructed or "
+                f"{module} references {name}; it may not be constructed or "
                 "imported outside memriver_core.bootstrap"
             )
+
+
+def test_no_umbrella_module_names_the_removed_single_facade_builder():
+    # every entry point builds the four services; the one-facade builder is gone
+    for module, path in SOURCES.items():
+        assert not re.search(r"\bbuild_service\b", path.read_text(encoding="utf-8")), \
+            f"{module} names build_service; use build_services"
+
+
+# the MCP server and the hooks are the paths agents drive: they reach core
+# through build_services alone and never touch the maintenance service (the
+# store inspector and diagnostics are `memriver doctor`'s)
+AGENT_PATHS = ("memriver.server", "memriver.hooks")
+
+
+def _tree(module: str) -> ast.AST:
+    return ast.parse(SOURCES[module].read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("module", AGENT_PATHS)
+def test_agent_paths_import_only_build_services_from_bootstrap(module):
+    imported = {alias.name for node in ast.walk(_tree(module))
+                if isinstance(node, ast.ImportFrom) and node.module == "memriver_core.bootstrap"
+                for alias in node.names}
+    assert imported == {"build_services"}, f"{module} imports {imported} from bootstrap"
+
+
+@pytest.mark.parametrize("module", AGENT_PATHS)
+def test_agent_paths_never_reach_the_maintenance_service(module):
+    tree = _tree(module)
+    attributes = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+    names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    assert "maintenance" not in attributes, f"{module} reaches services.maintenance"
+    assert "MaintenanceService" not in names | attributes, f"{module} names MaintenanceService"

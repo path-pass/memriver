@@ -444,10 +444,23 @@ its cached one. `install` prints a note when `uvx` itself is not on `PATH`.
 
 Settings are read from `--root` / `MEMRIVER_*` environment variables and an
 optional `<root>/settings.toml`, in that order of precedence. All four file
-settings are positive integers; an unknown key, an unparsable file or an invalid
-value is warned about and the file is ignored, so a typo can never stop the
-server from starting (a bad `MEMRIVER_*` variable does fail, with a readable
-message):
+settings are positive integers. A key or table memriver does not use is ignored.
+An unreadable file, bad TOML or an invalid value (in the file or in a
+`MEMRIVER_*` variable) stops every entry point that reads settings with one
+stderr line naming the file (or variable) and the field, never the value --
+for example `memriver: settings.toml is invalid: field search_limit_default`;
+`memriver doctor` prints that same one line and exits 2 instead of a report.
+Under Codex, the hook and MCP surfaces don't carry that line: a failed hook
+shows only `hook: SessionStart Failed` (or `UserPromptSubmit Failed`), and a
+failed MCP server start prints nothing by default. Run `memriver doctor` (or
+any other memriver command that reads settings) to see the one-line reason.
+Three entry points never read `settings.toml` at all, so none of them are
+affected: the `Stop` and `PreToolUse` hooks, and `memriver uninstall`.
+Everything else -- the server, the other three hooks, every `memriver project`
+and browsing command, and `memriver install` -- reads settings and stops on
+this error. This is new in this release: an invalid settings.toml used to be
+silently ignored by the entry points that read it; now they stop until it is
+fixed.
 
 ```toml
 # ~/agent-memory/settings.toml

@@ -1,4 +1,4 @@
-"""Read-only views of the store for people, and one confirmed delete.
+"""Read-only views of the store for people.
 
 Every read is the core's management view (all projects); every rule is the
 core's. This module renders, prompts and words refusals -- nothing else.
@@ -10,17 +10,14 @@ import json
 import os
 import shlex
 import unicodedata
-from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import IO
+from typing import IO, TYPE_CHECKING
 
 from memriver_core import (
-    GlobalReadOnly,
     MemoryNotFound,
     ProjectNotFound,
     StorageFailure,
-    VersionConflict,
 )
 from memriver_core.models import Memory, Project, PromptEntry, Session, single_line
 from memriver_core.models import now as _now
@@ -28,7 +25,19 @@ from memriver_core.settings import INDEX_CUE_CHARS
 
 from .project_context import _INVISIBLE_CATEGORIES, visible
 
+if TYPE_CHECKING:
+    from memriver_core import StoreNeedsUpgrade
+
 STORE_UNREADABLE = "refused: the memory store could not be read"
+
+
+def unsupported_store(err: StoreNeedsUpgrade) -> str:
+    """The one line every command prints for a store below the schema this memriver
+    needs (spec §9). The MCP server words its own, for the agent."""
+    return (f"the memory store is at schema version {err.version}; this memriver "
+            "needs schema version 4")
+
+
 _EXPORT_FIELDS = ("id", "project_id", "type", "source_harness", "source_method", "trust",
                   "sync", "created", "updated", "version", "last_read_at", "description")
 
@@ -46,15 +55,18 @@ def _export_value(memory: Memory, field: str) -> object:
     return getattr(memory, field)
 
 
-def _service(root: Path | None, home: Path):
-    """The facade; a bad MEMRIVER_* value is reported like an unreadable store."""
-    from memriver_core.bootstrap import build_service
-    from memriver_core.settings import load_settings
+def _services(root: Path | None, home: Path):
+    """The facades. An unusable settings.toml or MEMRIVER_* value raises SettingsError
+    (cli.main names the file and the field); any other failure is StorageFailure."""
+    from memriver_core.bootstrap import build_services
+    from memriver_core.settings import SettingsError, load_settings
 
     try:
         settings = load_settings(root_override=root)
-        return build_service(settings, root=settings.root, home=home)
-    except Exception as err:   # pydantic's ValidationError echoes the value: never shown
+        return build_services(settings, root=settings.root, home=home)
+    except SettingsError:
+        raise               # cli.main names the file and the field
+    except Exception as err:   # never shown: its text may carry a path
         raise StorageFailure from err
 
 
@@ -82,9 +94,9 @@ def _body(text: str) -> str:
 
 def run_list(*, root: Path | None, project_id: str | None, stdout: IO[str], home: Path) -> int:
     try:
-        service = _service(root, home)
-        listed = service.list_memories(project_id)
-        global_id = service.global_project_id()
+        services = _services(root, home)
+        listed = services.memory.list_memories(project_id)
+        global_id = services.project.global_project_id()
     except ProjectNotFound:
         stdout.write(f"no such project: {visible((project_id or '')[:255])}\n")
         return 2
@@ -100,7 +112,7 @@ def run_list(*, root: Path | None, project_id: str | None, stdout: IO[str], home
 def run_show(memory_id: str, *, root: Path | None, deleted: bool, stdout: IO[str],
              home: Path) -> int:
     try:
-        memory = _service(root, home).show(memory_id, include_deleted=deleted)
+        memory = _services(root, home).memory.show(memory_id, include_deleted=deleted)
     except MemoryNotFound:
         stdout.write(f"no such memory: {visible(memory_id[:255])}\n")
         return 2
@@ -123,7 +135,7 @@ def run_show(memory_id: str, *, root: Path | None, deleted: bool, stdout: IO[str
 def run_search(query: str, *, root: Path | None, project_id: str | None, limit: int | None,
                stdout: IO[str], home: Path) -> int:
     try:
-        hits = _service(root, home).search_all(query, project_id, limit)
+        hits = _services(root, home).memory.search_all(query, project_id, limit)
     except ProjectNotFound:
         stdout.write(f"no such project: {visible((project_id or '')[:255])}\n")
         return 2
@@ -155,7 +167,8 @@ def session_item(session: Session) -> dict:
             "first_prompt": _prompt_payload(session.first_prompt),
             "recent_prompts": [_prompt_payload(entry) for entry in session.recent_prompts],
             "resume_command": (f"{_RESUME_COMMANDS[key.harness]} "
-                               f"{shlex.quote(key.session_id)}")}
+                               f"{shlex.quote(key.session_id)}"),
+            "summary": session.summary, "summary_at": session.summary_at}
 
 
 # thresholds for the text view's relative age (spec section 9): under a
@@ -218,6 +231,7 @@ def _session_block(session: Session, *, names: dict[str, str], reference: str) -
         f"  last end event: {visible(session.ended_at) if session.ended_at else '-'}",
         f"  first prompt: {visible(_prompt_cell(session.first_prompt))}",
         f"  latest prompt: {visible(_prompt_cell(latest))}",
+        f"  summary: {visible(single_line(session.summary)) if session.summary else '-'}",
         f"  resume: {visible(session_item(session)['resume_command'])}",
     ]
     return "\n".join(lines)
@@ -226,8 +240,9 @@ def _session_block(session: Session, *, names: dict[str, str], reference: str) -
 def run_sessions(query: str, *, root: Path | None, project_id: str | None, limit: int | None,
                  json_output: bool, stdout: IO[str], home: Path, now: str | None = None) -> int:
     try:
-        service = _service(root, home)
-        sessions = service.list_sessions(project_id=project_id, query=query, limit=limit)
+        services = _services(root, home)
+        sessions = services.session.list_sessions(project_id=project_id, query=query,
+                                                  limit=limit)
     except ProjectNotFound:
         stdout.write(f"no such project: {visible((project_id or '')[:255])}\n")
         return 2
@@ -241,7 +256,7 @@ def run_sessions(query: str, *, root: Path | None, project_id: str | None, limit
         stdout.write("(no sessions)\n")
         return 0
     try:
-        names = {p.id: visible(p.name) for p in service.list_projects()}
+        names = {p.id: visible(p.name) for p in services.project.list_projects()}
     except StorageFailure:
         names = {}
     reference = now if now is not None else _now()
@@ -282,9 +297,9 @@ def run_export(directory: Path, *, root: Path | None, stdout: IO[str], home: Pat
         stdout.write(f"refused: {visible(str(target))} already exists\n")
         return 2
     try:
-        service = _service(root, home)
-        listed = service.list_memories(None)
-        global_id = service.global_project_id()
+        services = _services(root, home)
+        listed = services.memory.list_memories(None)
+        global_id = services.project.global_project_id()
     except StorageFailure:
         stdout.write(STORE_UNREADABLE + "\n")
         return 2
@@ -335,65 +350,4 @@ def run_export(directory: Path, *, root: Path | None, stdout: IO[str], home: Pat
         if target_fd is not None:
             os.close(target_fd)
     stdout.write(f"exported {count} memories to {visible(str(target))}\n")
-    return 0
-
-
-def run_delete(memory_id: str, *, version: int, hard: bool, yes: bool, root: Path | None,
-               stdin_is_tty: bool, input_fn: Callable[[str], str], stdout: IO[str], cwd: Path,
-               home: Path) -> int:
-    try:
-        service = _service(root, home)
-        project_context = service.open_project_context(str(cwd))
-        read_write_set = project_context.read_write_set
-        memory = service.show(memory_id, include_deleted=hard)
-    except MemoryNotFound:
-        stdout.write(f"no such memory: {visible(memory_id[:255])}\n")
-        return 2
-    except StorageFailure:
-        stdout.write(STORE_UNREADABLE + "\n")
-        return 2
-    # decided from the facts already in hand, before any plan line or prompt: the
-    # in-transaction checks below still decide at write time, for a change between
-    # this read and the delete itself
-    if memory.project_id == read_write_set.global_project_id:
-        stdout.write("refused: global memories cannot be deleted here\n")
-        return 2
-    if memory.project_id not in read_write_set.writable():
-        # `memriver show` displays it, so "no such memory" would mislead a human
-        stdout.write(f"refused: {memory.id} belongs to project {memory.project_id}, not this "
-                     "directory's project; run memriver delete from that project's directory\n")
-        return 2
-    plan = (f"memriver delete: {memory.id} [{memory.type}] in project {memory.project_id}: "
-            f"{_cue(memory)}  ({'hard' if hard else 'soft'})")
-    if hard and memory.deleted_at is not None:
-        plan += " (already deleted)"
-    stdout.write(plan + "\n")
-    if not yes:
-        if not stdin_is_tty:
-            stdout.write("refused: stdin is not a terminal; pass --yes to confirm non-interactively\n")
-            return 2
-        try:
-            answer = input_fn("Proceed? [y/N] ")
-        except EOFError:
-            stdout.write("aborted; nothing was changed\n")
-            return 1
-        if answer.strip().lower() not in ("y", "yes"):
-            stdout.write("aborted; nothing was changed\n")
-            return 1
-    try:
-        service.delete(memory_id, project_context, expected_version=version, hard=hard)
-    except MemoryNotFound:
-        stdout.write(f"no such memory: {visible(memory_id[:255])}\n")
-        return 2
-    except GlobalReadOnly:
-        stdout.write("refused: global memories cannot be deleted here\n")
-        return 2
-    except VersionConflict:
-        stdout.write(f"refused: {memory_id} changed since version {version}; run memriver "
-                     f"show {memory_id} and retry\n")
-        return 2
-    except StorageFailure:
-        stdout.write("refused: the memory store could not be written\n")
-        return 2
-    stdout.write(f"{'purged' if hard else 'deleted'} {memory_id}\n")
     return 0

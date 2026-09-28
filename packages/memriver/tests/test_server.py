@@ -20,7 +20,7 @@ from memriver.protocol_text import (
     UNTRUSTED_DATA_NOTICE,
 )
 from memriver.server import build_server
-from memriver_core.bootstrap import build_service
+from memriver_core.bootstrap import build_services
 from memriver_core.models import Memory, SessionKey, new_id
 from memriver_core.settings import Settings
 
@@ -78,8 +78,8 @@ CODEX_META = json.loads((Path(__file__).parent / "fixtures" / "codex_mcp_meta.js
 CODEX_ID = CODEX_META["root"]["x-codex-turn-metadata"]["session_id"]
 
 
-def _service(store: Path):
-    return build_service(Settings(root=store), root=store)
+def _services(store: Path):
+    return build_services(Settings(root=store), root=store)
 
 
 MEMORY_COLUMNS = ("id, project_id, type, source_harness, source_method, trust, sync, "
@@ -125,10 +125,10 @@ def world(tmp_path):
     store, directory, elsewhere = tmp_path / "mem", tmp_path / "demo", tmp_path / "other"
     directory.mkdir()
     elsewhere.mkdir()
-    service = _service(store)
-    global_id = service.ensure_global()
-    project_id = service.init_project("demo", service.plan_root(str(directory))).id
-    other_id = service.init_project("other", service.plan_root(str(elsewhere))).id
+    services = _services(store)
+    global_id = services.project.ensure_global()
+    project_id = services.project.init_project("demo", services.project.plan_root(str(directory))).id
+    other_id = services.project.init_project("other", services.project.plan_root(str(elsewhere))).id
     return {"store": store, "dir": directory, "global": global_id, "project": project_id,
             "other": other_id}
 
@@ -203,7 +203,7 @@ async def test_write_then_read_returns_the_eleven_agent_fields(server, world):
     assert "deleted_at" not in read
     assert (read["body"], read["description"], read["sync"], read["trust"]) == \
         ("本项目用 uv", "包管理", False, "agent")
-    assert read["source"] == {"harness": "unknown", "method": "agent"}
+    assert read["source"] == {"harness": "unknown", "method": "mcp"}
 
 
 async def test_index_shows_the_header_then_project_then_global_entries(server, world):
@@ -260,6 +260,20 @@ async def test_no_tool_offers_a_scope_or_name_argument(server):
             assert "name" not in tool.inputSchema.get("properties", {})
         with pytest.raises(ToolError):
             await c.call_tool("memory_write", {"content": "x", "type": "user", "name": "n"})
+
+
+# spec §2 / acceptance item 3: management stays off MCP, and nothing a model sends
+# chooses a project, sources, a role or who made the change
+MANAGEMENT_PARAMETERS = {"project", "project_id", "sources", "role", "trust", "changed_by",
+                         "changed_via", "to_version", "change_id", "hard", "ops"}
+
+
+async def test_no_tool_offers_a_management_operation_or_parameter(server):
+    async with Client(server) as c:
+        tools = await c.list_tools()
+    assert not {"apply", "history", "restore", "undo"} & {t.name for t in tools}
+    for tool in tools:
+        assert not MANAGEMENT_PARAMETERS & set(tool.inputSchema.get("properties", {}))
 
 
 async def test_a_foreign_id_and_an_unknown_id_answer_identically(server, world):
@@ -522,26 +536,20 @@ async def test_stored_user_text_about_deletion_is_returned_verbatim(server):
     assert (await _call(server, "memory_read", memory_id=written["id"]))["body"] == text
 
 
-async def test_no_tool_reaches_the_management_reads_or_hard_delete(world, monkeypatch):
+async def test_no_tool_reaches_the_management_paths(world, monkeypatch):
     from memriver import server as server_module
 
-    real_build = server_module.build_service
+    real_build = server_module.build_services
     seen: list[str] = []
 
     def spying_build(settings, *, root):
-        service = real_build(settings, root=root)
-        for name in ("show", "list_memories", "search_all"):
-            monkeypatch.setattr(service, name, lambda *a, _n=name, **k: seen.append(_n))
-        real_delete = service.delete
+        services = real_build(settings, root=root)
+        for name in ("show", "list_memories", "search_all", "apply", "delete_global"):
+            monkeypatch.setattr(services.memory, name,
+                                lambda *a, _n=name, **k: seen.append(_n))
+        return services
 
-        def delete(*args, **kwargs):
-            seen.append(f"hard={kwargs.get('hard', False)}")
-            return real_delete(*args, **kwargs)
-
-        monkeypatch.setattr(service, "delete", delete)
-        return service
-
-    monkeypatch.setattr(server_module, "build_service", spying_build)
+    monkeypatch.setattr(server_module, "build_services", spying_build)
     server = build_server(root=world["store"], project_dir=world["dir"])
     written = await _call(server, "memory_write", content="c", type="project")
     for tool, arguments in (("memory_index", {}), ("memory_search", {"query": "c"}),
@@ -551,7 +559,7 @@ async def test_no_tool_reaches_the_management_reads_or_hard_delete(world, monkey
                             ("memory_delete", {"memory_id": written["id"],
                                                "expected_version": 2})):
         await _call(server, tool, **arguments)
-    assert seen == ["hard=False"]
+    assert seen == []
 
 
 def _hold_the_write_lock(db_path: Path, hold_seconds: float, ready: threading.Event) -> None:
@@ -644,15 +652,15 @@ async def test_an_unexpected_failure_logs_at_error_and_memriver_still_warns(
     from memriver import server as server_module
     from memriver_core import StorageFailure
 
-    real_build_service = server_module.build_service
+    real_build_services = server_module.build_services
 
-    def broken_build_service(settings, *, root):
-        service = real_build_service(settings, root=root)
+    def broken_build_services(settings, *, root):
+        services = real_build_services(settings, root=root)
         monkeypatch.setattr(
-            service, "read", lambda *a, **k: (_ for _ in ()).throw(StorageFailure()))
-        return service
+            services.memory, "read", lambda *a, **k: (_ for _ in ()).throw(StorageFailure()))
+        return services
 
-    monkeypatch.setattr(server_module, "build_service", broken_build_service)
+    monkeypatch.setattr(server_module, "build_services", broken_build_services)
     server = build_server(root=world["store"], project_dir=world["dir"])
     caplog.set_level(logging.DEBUG, logger="fastmcp.server.server")
     caplog.set_level(logging.DEBUG, logger="memriver")
@@ -679,13 +687,13 @@ def _codex_meta(session_id, base="root"):
 
 def _start(world, key, directory, source="startup"):
     """Start a session the way the SessionStart hook does, through the service."""
-    return _service(world["store"]).start_session(key, source=source,
+    return _services(world["store"]).session.start_session(key, source=source,
                                                   entry_dir=str(directory),
                                                   transcript_path=None)
 
 
 def _registered_header(world, directory) -> str:
-    return _service(world["store"]).open_project_context(str(directory)).header
+    return _services(world["store"]).project.open_project_context(str(directory)).header
 
 
 def _as_session(harness, session_id, monkeypatch):
@@ -710,7 +718,7 @@ async def test_a_session_answers_for_its_project_wherever_the_server_starts(
     written = await _call(first, "memory_write", meta=meta, content="fact", type="project")
     assert written["project_id"] == world["project"]
     read = await _call(first, "memory_read", meta=meta, memory_id=written["id"])
-    assert read["source"] == {"harness": harness, "method": "agent"}
+    assert read["source"] == {"harness": harness, "method": "mcp"}
     # a new server process for the same session answers the same
     second = build_server(root=world["store"], project_dir=world["dir"].parent / "other",
                           harness=harness)
@@ -900,7 +908,7 @@ async def test_directory_mode_answers_for_its_start_directory(world, monkeypatch
     written = await _call(server, "memory_write", content="fact", type="project")
     assert written["project_id"] == world["project"]
     read = await _call(server, "memory_read", memory_id=written["id"])
-    assert read["source"] == {"harness": harness or "unknown", "method": "agent"}
+    assert read["source"] == {"harness": harness or "unknown", "method": "mcp"}
     assert await _error(server, "session_search") == NOT_AVAILABLE
     assert await _error(server, "session_confirm") == NOT_AVAILABLE
     assert await _error(server, "session_register") == NOT_AVAILABLE
@@ -958,7 +966,7 @@ async def test_concurrent_calls_each_answer_for_their_own_session(world):
 
 
 def _observe(world, key, directory, prompt):
-    _service(world["store"]).observe_prompt(key, prompt=prompt, entry_dir=str(directory),
+    _services(world["store"]).session.observe_prompt(key, prompt=prompt, entry_dir=str(directory),
                                             transcript_path=None)
 
 
@@ -970,7 +978,7 @@ def _claude_meta(call_id):
 
 
 def _write_watermark(world, key) -> int:
-    return next(s for s in _service(world["store"]).list_sessions()
+    return next(s for s in _services(world["store"]).session.list_sessions()
                 if s.key == key).last_write_prompt_count
 
 
@@ -984,7 +992,7 @@ async def test_a_mapped_claude_code_call_answers_for_the_session_that_made_it(wo
     _start(world, current, other, source="clear")
     for number in range(3):
         _observe(world, current, other, f"task {number}")
-    _service(world["store"]).record_tool_call(current, "call-1")
+    _services(world["store"]).session.record_tool_call(current, "call-1")
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "s1")
     server = build_server(root=world["store"], project_dir=world["dir"], harness="claude-code")
 
@@ -1005,7 +1013,7 @@ async def test_a_mapped_claude_code_call_answers_for_the_session_that_made_it(wo
 async def test_a_codex_server_ignores_a_claude_code_call_id(world):
     _start(world, SessionKey("codex", CODEX_ID), world["dir"])
     _start(world, SessionKey("claude-code", "s2"), world["dir"].parent / "other")
-    _service(world["store"]).record_tool_call(SessionKey("claude-code", "s2"), "call-1")
+    _services(world["store"]).session.record_tool_call(SessionKey("claude-code", "s2"), "call-1")
     server = build_server(root=world["store"], project_dir=world["dir"], harness="codex")
     meta = _codex_meta(CODEX_ID) | _claude_meta("call-1")
     index = await _call(server, "memory_index", meta=meta)
@@ -1066,7 +1074,9 @@ async def test_session_search_is_limited_to_the_callers_project(world):
     item = next(s for s in found if s["harness"] == "claude-code")
     assert set(item) == {"harness", "session_id", "project", "branch", "entry_cwd",
                          "first_recorded", "last_active_at", "last_end_event_at",
-                         "first_prompt", "recent_prompts", "resume_command"}
+                         "first_prompt", "recent_prompts", "resume_command",
+                         "summary", "summary_at"}
+    assert (item["summary"], item["summary_at"]) == (None, None)
     assert item["project"] == world["project"]
     assert item["entry_cwd"] == str(world["dir"].resolve())
     assert item["last_end_event_at"] is None
@@ -1102,16 +1112,16 @@ async def test_a_store_failure_in_the_session_tools_is_a_fixed_message(
     from memriver import server as server_module
     from memriver_core import StorageFailure
 
-    real_build_service = server_module.build_service
+    real_build_services = server_module.build_services
 
-    def broken_build_service(settings, *, root):
-        service = real_build_service(settings, root=root)
+    def broken_build_services(settings, *, root):
+        services = real_build_services(settings, root=root)
         for name in ("search_sessions", "confirm_session", "register_session"):
-            monkeypatch.setattr(service, name,
+            monkeypatch.setattr(services.session, name,
                                 lambda *a, **k: (_ for _ in ()).throw(StorageFailure()))
-        return service
+        return services
 
-    monkeypatch.setattr(server_module, "build_service", broken_build_service)
+    monkeypatch.setattr(server_module, "build_services", broken_build_services)
     _start(world, SessionKey("codex", CODEX_ID), world["dir"])
     server = build_server(root=world["store"], project_dir=world["dir"], harness="codex")
     caplog.set_level(logging.DEBUG, logger="memriver")
@@ -1143,8 +1153,8 @@ async def test_session_register_binds_the_project_inited_where_the_session_start
     assert await _call(server, "session_register", meta=meta) == \
         {"header": SESSION_NONE_HEADER, "note": NOTHING_TO_REGISTER}
 
-    service = _service(world["store"])
-    project = service.init_project("later", service.plan_root(str(later)))
+    services = _services(world["store"])
+    project = services.project.init_project("later", services.project.plan_root(str(later)))
     registered = await _call(server, "session_register", meta=meta)
     assert registered == {"header": _registered_header(world, later)}
     assert f"[{project.id}]" in registered["header"]
@@ -1163,8 +1173,8 @@ async def test_a_pending_session_without_a_candidate_is_pointed_at_session_regis
     refusal = await _error(server, "memory_write", meta=meta, content="x", type="project")
     assert refusal == PENDING_NO_CANDIDATE
     assert "session_confirm" not in refusal
-    service = _service(world["store"])
-    project = service.init_project("later", service.plan_root(str(later)))
+    services = _services(world["store"])
+    project = services.project.init_project("later", services.project.plan_root(str(later)))
     assert await _call(server, "session_register", meta=meta) == \
         {"header": _registered_header(world, later)}
     written = await _call(server, "memory_write", meta=meta, content="fact", type="project")
@@ -1236,7 +1246,7 @@ async def test_a_claude_code_call_id_still_routes_when_meta_arrives_as_a_plain_d
     startup, current = SessionKey("claude-code", "s1"), SessionKey("claude-code", "s2")
     _start(world, startup, world["dir"])
     _start(world, current, other, source="clear")
-    _service(world["store"]).record_tool_call(current, "call-1")
+    _services(world["store"]).session.record_tool_call(current, "call-1")
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "s1")
     server = build_server(root=world["store"], project_dir=world["dir"], harness="claude-code")
     index = await _call(server, "memory_index", meta=_claude_meta("call-1"))
@@ -1262,3 +1272,40 @@ async def test_a_meta_value_of_the_wrong_shape_is_read_as_absent(world, monkeypa
     call_id_not_a_string = {"claudecode/toolUseId": 17}
     assert (await _call(claude_server, "memory_index", meta=call_id_not_a_string)) \
         .splitlines()[0] == _registered_header(world, world["dir"])
+
+
+@pytest.mark.parametrize(("harness", "changed_via"),
+                         [("cursor", "cursor"), (None, "unknown")])
+async def test_mcp_writes_are_changed_by_mcp_via_the_harness_and_reads_name_it(
+        world, monkeypatch, harness, changed_via):
+    read_harness = changed_via
+    # spec §3.4 / R6: changed_by and changed_via come from the entry point, never from a
+    # tool argument; a read records the harness it came through
+    from memriver import server as server_module
+
+    real_build = server_module.build_services
+    read_calls: list[dict] = []
+
+    def spying_build(*args, **kwargs):
+        services = real_build(*args, **kwargs)
+        real_read = services.memory.read
+
+        def read(memory_id, context, **read_kwargs):
+            read_calls.append(read_kwargs)
+            return real_read(memory_id, context, **read_kwargs)
+
+        monkeypatch.setattr(services.memory, "read", read)
+        return services
+
+    monkeypatch.setattr(server_module, "build_services", spying_build)
+    srv = build_server(root=world["store"], project_dir=world["dir"], harness=harness)
+    written = await _call(srv, "memory_write", content="v1", type="project")
+    await _call(srv, "memory_read", memory_id=written["id"])
+    await _call(srv, "memory_update", memory_id=written["id"], expected_version=1, content="v2")
+    await _call(srv, "memory_delete", memory_id=written["id"], expected_version=2)
+
+    assert read_calls == [{"harness": read_harness}]
+    services = build_services(Settings(root=world["store"]), root=world["store"])
+    versions = sorted(services.memory.versions(written["id"]), key=lambda v: v.version)
+    assert [v.change.changed_by for v in versions] == ["mcp", "mcp", "mcp"]
+    assert [v.change.changed_via for v in versions] == [changed_via, changed_via, changed_via]

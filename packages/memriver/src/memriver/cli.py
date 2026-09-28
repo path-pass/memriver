@@ -128,6 +128,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     _add_project_commands(commands)
     _add_view_commands(commands)
+    _add_memory_commands(commands)
     return parser
 
 
@@ -175,7 +176,7 @@ def _add_project_commands(commands) -> None:
 
 
 def _add_view_commands(commands) -> None:
-    """Human views of the store (read-only) and the one confirmed delete."""
+    """Human views of the store (read-only)."""
     def add(name: str, help_text: str) -> argparse.ArgumentParser:
         sub = commands.add_parser(name, help=help_text)
         sub.add_argument("--root", type=Path, default=None,
@@ -211,14 +212,49 @@ def _add_view_commands(commands) -> None:
                           help="emit the session_search item shape as JSON")
     sessions.set_defaults(handler=_view_sessions)
 
-    delete = add("delete", "delete one memory of the current directory's project")
+
+def _add_memory_commands(commands) -> None:
+    """Human management of memories: history, restore, undo and delete (never over MCP)."""
+    def add(name: str, help_text: str, *, confirmable: bool = True) -> argparse.ArgumentParser:
+        sub = commands.add_parser(name, help=help_text)
+        sub.add_argument("--root", type=Path, default=None,
+                         help="storage root (default: $MEMRIVER_ROOT or ~/agent-memory)")
+        if confirmable:
+            sub.add_argument("--yes", action="store_true", help="confirm without prompting")
+        return sub
+
+    history = add("history", "every version of one memory, global included",
+                  confirmable=False)
+    history.add_argument("memory_id")
+    history.add_argument("--show", type=_positive_int, default=None, metavar="N",
+                         help="print version N in full")
+    history.set_defaults(handler=_memory_history)
+
+    restore = add("restore", "make an earlier version's state the current one")
+    restore.add_argument("memory_id")
+    restore.add_argument("--to", dest="to_version", type=_positive_int, required=True,
+                         metavar="N", help="the version memriver history printed")
+    restore.set_defaults(handler=_memory_restore)
+
+    undo = add("undo", "undo one change, while none of its memories changed since")
+    undo.add_argument("change_id")
+    undo.set_defaults(handler=_memory_undo)
+
+    delete = add("delete", "delete one memory: soft (a global one by id, any other from its "
+                           "project's directory), or --hard with every memory citing it")
     delete.add_argument("memory_id")
-    delete.add_argument("--version", type=_positive_int, required=True,
-                        help="the version memriver show printed")
+    delete.add_argument("--version", type=_positive_int, default=None,
+                        help="the version memriver show printed (soft delete only)")
     delete.add_argument("--hard", action="store_true",
-                        help="remove the row itself, even one already deleted")
-    delete.add_argument("--yes", action="store_true", help="confirm without prompting")
-    delete.set_defaults(handler=_view_delete)
+                        help="remove the memory, every memory citing it and all their "
+                             "versions, sources and reads")
+    second_step = delete.add_mutually_exclusive_group()
+    second_step.add_argument("--dry-run", action="store_true",
+                             help="with --hard: print the plan and its --confirm command")
+    second_step.add_argument("--confirm", default=None, metavar="CODE",
+                             help="with --hard: delete the plan --dry-run printed, without "
+                                  "prompting")
+    delete.set_defaults(handler=_memory_delete, usage_error=delete.error)
 
 
 def _positive_int(value: str) -> int:
@@ -243,17 +279,13 @@ def _normalize_legacy_serve(argv: list[str]) -> list[str]:
 
 def _serve(args: argparse.Namespace) -> int:
     from memriver_core.settings import load_settings
-    from pydantic import ValidationError
 
     from .server import build_server
 
-    try:
-        settings = load_settings(root_override=args.root)
-    except ValidationError as err:
-        # an invalid settings *file* is warned about and ignored; only a bad
-        # MEMRIVER_* environment variable reaches here, and that is worth
-        # failing on -- but as a readable message, not a bare traceback
-        raise SystemExit(f"memriver: invalid MEMRIVER_* environment setting\n{err}")
+    # an unusable settings.toml or MEMRIVER_* value raises SettingsError, which
+    # main() turns into one stderr line -- what an MCP client shows for a server
+    # that failed to start
+    settings = load_settings(root_override=args.root)
     build_server(root=settings.root, project_dir=args.project_dir,
                  settings=settings, harness=args.harness).run()  # stdio
     return 0
@@ -288,7 +320,9 @@ def _install(args: argparse.Namespace) -> int:
     harnesses = [args.harness] if args.harness else list(HARNESSES)
     try:
         store_step = _store_step()
-    except Exception:  # noqa: BLE001 - any cause is one fixed, path-free line
+    except Exception as err:    # any other cause is one fixed, path-free line
+        if _is_settings_error(err) or _unsupported_store(err):
+            raise                       # main() names the file and field, or the refusal
         # a store that cannot even be read is not initialized behind the
         # user's back, and no harness is pointed at it
         sys.stderr.write("memriver install: the memory store could not be read; "
@@ -307,7 +341,7 @@ def _store_step():
     nothing to consent to). Built here because the installer package never
     imports memriver_core; building it reads the store and writes nothing.
     """
-    from memriver_core.bootstrap import build_service
+    from memriver_core.bootstrap import build_services
     from memriver_core.settings import load_settings
 
     from .core_logging import quiet_core_logging
@@ -316,14 +350,14 @@ def _store_step():
 
     with quiet_core_logging():
         settings = load_settings()
-        service = build_service(settings, root=settings.root)
-        if service.global_project_id() is not None:
+        project_service = build_services(settings, root=settings.root).project
+        if project_service.global_project_id() is not None:
             return None
     where = visible(str(settings.root))
 
     def apply() -> str:
         with quiet_core_logging():
-            return f"memory store: ready (global project {service.ensure_global()})"
+            return f"memory store: ready (global project {project_service.ensure_global()})"
 
     return StoreStep(summary=f"memory store (required): create the global project in {where}",
                      label=f"memory store in {where}", apply=apply)
@@ -408,10 +442,42 @@ def _view_sessions(args: argparse.Namespace) -> int:
                         json_output=args.json, stdout=sys.stdout, home=Path.home())
 
 
-def _view_delete(args: argparse.Namespace) -> int:
-    from .views import run_delete
+def _memory_history(args: argparse.Namespace) -> int:
+    from .memory_commands import run_history
 
-    return run_delete(args.memory_id, version=args.version, hard=args.hard, yes=args.yes,
+    return run_history(args.memory_id, show=args.show, root=args.root, stdout=sys.stdout,
+                       home=Path.home())
+
+
+def _memory_restore(args: argparse.Namespace) -> int:
+    from .memory_commands import run_restore
+
+    return run_restore(args.memory_id, to_version=args.to_version, yes=args.yes,
+                       root=args.root, stdin_is_tty=sys.stdin.isatty(), input_fn=input,
+                       stdout=sys.stdout, home=Path.home())
+
+
+def _memory_undo(args: argparse.Namespace) -> int:
+    from .memory_commands import run_undo
+
+    return run_undo(args.change_id, yes=args.yes, root=args.root,
+                    stdin_is_tty=sys.stdin.isatty(), input_fn=input, stdout=sys.stdout,
+                    home=Path.home())
+
+
+def _memory_delete(args: argparse.Namespace) -> int:
+    from .memory_commands import run_delete
+
+    # spec §8.2's flag matrix: --version belongs to the soft delete, --dry-run and
+    # --confirm to --hard (the parser's group keeps those two apart)
+    if args.hard and args.version is not None:
+        args.usage_error("--version is not accepted with --hard")
+    if not args.hard and (args.dry_run or args.confirm is not None):
+        args.usage_error("--dry-run and --confirm need --hard")
+    if not args.hard and args.version is None:
+        args.usage_error("--version is required without --hard")
+    return run_delete(args.memory_id, version=args.version, hard=args.hard,
+                      dry_run=args.dry_run, confirm_code=args.confirm, yes=args.yes,
                       root=args.root, stdin_is_tty=sys.stdin.isatty(), input_fn=input,
                       stdout=sys.stdout, cwd=Path.cwd(), home=Path.home())
 
@@ -428,9 +494,9 @@ def _configure_logging() -> None:
     """Pin memriver's own loggers to stderr, wherever the root logger points.
 
     Under stdio transport, stdout is the JSON-RPC/hook channel and stderr is
-    the only place a loader warning (an unreadable settings.toml, an unknown
-    key) can surface. `logging.basicConfig` cannot promise that: it is a no-op
-    once the root logger has a handler, so a process that embeds `main()`
+    the only place a core warning (a skipped entry, say) can surface.
+    `logging.basicConfig` cannot promise that: it is a no-op once the root
+    logger has a handler, so a process that embeds `main()`
     after configuring logging to stdout would leak those warnings into the
     protocol stream. Configuring the two memriver loggers directly, and taking
     them off propagation, makes the destination independent of the root.
@@ -453,12 +519,43 @@ def _configure_logging() -> None:
         logger.handlers[:] = [logging.StreamHandler(sys.stderr)]
 
 
+def _is_settings_error(err: BaseException) -> bool:
+    """True for core's SettingsError. Imported only once something failed, so a
+    command that never loads settings never pays for the settings stack."""
+    from memriver_core.settings import SettingsError
+
+    return isinstance(err, SettingsError)
+
+
+def _unsupported_store(err: BaseException) -> bool:
+    """True for core's StoreNeedsUpgrade: every command refuses a store below the
+    schema this memriver needs. Imported only once something failed."""
+    from memriver_core import StoreNeedsUpgrade
+
+    return isinstance(err, StoreNeedsUpgrade)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     # before any handler can reach load_settings
     _configure_logging()
     raw = list(sys.argv[1:] if argv is None else argv)
     args = _build_parser().parse_args(_normalize_legacy_serve(raw))
-    return args.handler(args)
+    try:
+        return args.handler(args)
+    except Exception as err:
+        if _unsupported_store(err):
+            # spec §9: one hint line and exit 1, from whichever handler read the store
+            from .views import unsupported_store
+
+            sys.stderr.write(f"memriver: {unsupported_store(err)}\n")
+            return 1
+        # an unusable settings.toml or MEMRIVER_* value stops every command the
+        # same way: one line naming the file and the field, exit 1, no traceback
+        if not _is_settings_error(err):
+            raise
+        # its str() names only the file (or variable) and the fields
+        sys.stderr.write(f"memriver: {err}\n")
+        return 1
 
 
 if __name__ == "__main__":

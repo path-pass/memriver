@@ -2,9 +2,8 @@
 
 The serving read paths skip what they cannot trust, which is right for an
 agent and wrong for a doctor. This inspector walks the same tables and keeps
-what reads drop, each finding with a fixed reason. It never creates the
-database; the one change it may make is the v1 -> v2 schema upgrade every
-opener runs first (`upgrade_if_needed`), after which it reads read-only.
+what reads drop, each finding with a fixed reason. It never creates or
+changes the database.
 """
 
 from __future__ import annotations
@@ -19,6 +18,7 @@ from memriver_core.models import (
     ID_RE,
     InspectedMemory,
     InspectedProject,
+    Memory,
     SessionKey,
     StoreFinding,
     StoreReport,
@@ -34,8 +34,8 @@ from .database import (
     _lenient_text,
     memory_from_row,
     project_from_row,
-    upgrade_if_needed,
 )
+from .memory_store import _decode_history_state
 from .session_store import SESSION_COLUMNS, session_from_row
 
 # the names the file store of earlier versions used at the store root
@@ -52,6 +52,11 @@ _REASONS = {
     "legacy-layout": "file-store layout from an earlier version; this version does not read it",
     "root-conflict": "two projects are bound to the same directory under different spellings",
     "session-orphan": "session refers to a project that does not exist",
+    "version-gap": "stored versions of this memory are not numbered 1 to its current version",
+    "version-mismatch": "memory row differs from its latest stored version",
+    "unrecorded-version": "a version names a change that holds no step for it",
+    "dangling-source": "a version cites a memory version that is not stored",
+    "source-cycle": "this memory's sources lead back to itself",
 }
 
 
@@ -85,9 +90,27 @@ def _session_location(harness: object, session_id: object) -> str:
     return "sessions"
 
 
+def _on_cycles(edges: dict[object, set[object]]) -> set[object]:
+    """The nodes a walk along `edges` can leave and come back to."""
+    # ponytail: one walk per node, quadratic in the worst case; fine at local-store
+    # scale, a strongly-connected-components pass if stores grow large
+    looped: set[object] = set()
+    for start, successors in edges.items():
+        seen: set[object] = set()
+        stack = list(successors)
+        while stack:
+            node = stack.pop()
+            if node == start:
+                looped.add(start)
+                break
+            if node not in seen:
+                seen.add(node)
+                stack.extend(edges.get(node, ()))
+    return looped
+
+
 class SqliteStoreInspector:
-    """`StoreInspector` over the SQLite store: every row, read-only once the
-    v1 -> v2 upgrade (if one is due) has run."""
+    """`StoreInspector` over the SQLite store: every row, read-only."""
 
     def __init__(self, root: Path, *, busy_timeout_ms: int) -> None:
         self.root = Path(root)
@@ -116,10 +139,6 @@ class SqliteStoreInspector:
             findings.append(_finding("unsafe-database", DATABASE_FILENAME))
             return StoreReport(initialized=True, entries=(), projects=(),
                                findings=_sorted_findings(findings))
-        try:
-            upgrade_if_needed(path, busy_timeout_ms=self._busy_timeout_ms)
-        except StorageFailure:
-            pass   # the v1 it leaves behind is reported below, by the ordinary version check
         try:
             # the same per-connection settings as Database's reads (mode=rw so a
             # hot journal left by a crashed writer can be rolled back; query_only
@@ -152,13 +171,15 @@ class SqliteStoreInspector:
             return snapshot
         # the directory checks stat the filesystem, so they run only after the
         # ROLLBACK: a hung network mount must not hold the read lock and block writers
-        initialized, entries, rows = snapshot
+        initialized, entries, rows, incomplete = snapshot
         projects = _classify_roots(rows, findings)
         return StoreReport(initialized=initialized, entries=tuple(entries),
-                           projects=tuple(projects), findings=_sorted_findings(findings))
+                           projects=tuple(projects), findings=_sorted_findings(findings),
+                           incomplete_changes=incomplete)
 
     def _inspect(self, conn: sqlite3.Connection, findings: list[StoreFinding]
-                 ) -> StoreReport | tuple[bool, list[InspectedMemory], list[InspectedProject]]:
+                 ) -> StoreReport | tuple[bool, list[InspectedMemory], list[InspectedProject],
+                                          tuple[str, ...]]:
         """A finished report for an empty or unknown store, else the snapshot's rows."""
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         tables = conn.execute("SELECT count(*) FROM sqlite_master").fetchone()[0]
@@ -182,6 +203,7 @@ class SqliteStoreInspector:
                                      memory_id=shaped))
         rows, initialized = self._projects(conn, findings)
         entries: list[InspectedMemory] = []
+        valid: list[Memory] = []
         # every row is validated, deleted ones too; only active valid rows are entries
         for row in conn.execute(f"SELECT {MEMORY_COLUMNS} FROM memories ORDER BY id"):
             memory_id = row[0]
@@ -195,11 +217,13 @@ class SqliteStoreInspector:
                                          f"memories/{shaped}" if shaped else "memories",
                                          memory_id=shaped))
                 continue
+            valid.append(memory)
             if memory.deleted_at is None:
                 entries.append(InspectedMemory(memory=memory,
                                                location_hint=f"memories/{memory.id}"))
         self._sessions(conn, findings)
-        return initialized, entries, rows
+        incomplete = self._history(conn, findings, valid)
+        return initialized, entries, rows, incomplete
 
     def _sessions(self, conn: sqlite3.Connection, findings: list[StoreFinding]) -> None:
         """Session-row findings only: `memriver sessions` reads sessions itself
@@ -225,6 +249,95 @@ class SqliteStoreInspector:
                 session_from_row(row)
             except ValueError:
                 findings.append(_finding("invalid-row", _session_location(*key)))
+
+    def _history(self, conn: sqlite3.Connection, findings: list[StoreFinding],
+                 memories: list[Memory]) -> tuple[str, ...]:
+        """History findings for every valid memory; the ids of incomplete changes.
+
+        Invalid and orphaned `memories` rows are already findings of their
+        own and are not compared again; every `memory_versions` row is still
+        decoded and checked, including history under a healthy current row.
+        """
+        # every memory's project, raw: used to attribute a source finding to
+        # the citing memory's project even when that memory is not (or not
+        # yet) one of the valid `memories` passed in
+        project_of = dict(conn.execute("SELECT id, project_id FROM memories"))
+        versions: dict[str, list[tuple]] = {}
+        for row in conn.execute("SELECT memory_id, version, type, trust, sync, description, "
+                                "body, deleted, change_id FROM memory_versions "
+                                "ORDER BY memory_id, version"):
+            versions.setdefault(row[0], []).append(row[1:])
+        change_ids = {row[0] for row in conn.execute("SELECT change_id FROM changes")}
+        steps = set(conn.execute("SELECT change_id, memory_id, after_version FROM change_steps"))
+        for memory in memories:
+            rows = versions.get(memory.id, [])
+            where = f"memories/{memory.id}"
+            # a gap is judged from the actual stored rows -- never by
+            # materializing a list sized by the memory's own (possibly
+            # corrupt, arbitrarily large) current version number
+            gap = not rows or rows[-1][0] != memory.version
+            if not gap:
+                for position, row in enumerate(rows, start=1):
+                    if row[0] != position:
+                        gap = True
+                        break
+            if gap:
+                findings.append(_finding("version-gap", where, project_id=memory.project_id,
+                                         memory_id=memory.id))
+                continue
+            try:
+                # every stored version -- not only the latest -- must still
+                # decode like a version `versions()`/`Restore` would accept
+                decoded = [_decode_history_state(row[1], row[2], row[3], row[4], row[5], row[6])
+                          for row in rows]
+            except StorageFailure:
+                findings.append(_finding("invalid-row", where, project_id=memory.project_id,
+                                         memory_id=memory.id))
+                continue
+            if decoded[-1] != (memory.type, memory.trust, memory.sync, memory.description,
+                               memory.body, memory.deleted_at is not None):
+                findings.append(_finding("version-mismatch", where,
+                                         project_id=memory.project_id, memory_id=memory.id))
+            # a non-migrated version (change_id set) needs both its change row
+            # and its step; either missing is unrecorded-version
+            if any(row[7] is not None and (row[7] not in change_ids or
+                                           (row[7], memory.id, row[0]) not in steps)
+                  for row in rows):
+                findings.append(_finding("unrecorded-version", where,
+                                         project_id=memory.project_id, memory_id=memory.id))
+        for (memory_id,) in conn.execute(
+                "SELECT DISTINCT s.memory_id FROM memory_sources s "
+                "LEFT JOIN memory_versions vc "
+                "ON vc.memory_id = s.memory_id AND vc.version = s.version "
+                "LEFT JOIN memory_versions vs "
+                "ON vs.memory_id = s.source_id AND vs.version = s.source_version "
+                "WHERE vc.memory_id IS NULL OR vs.memory_id IS NULL"):
+            shaped = _shaped_id(memory_id)
+            findings.append(_finding("dangling-source",
+                                     f"memories/{shaped}" if shaped else "memories",
+                                     project_id=_shaped_id(project_of.get(memory_id)),
+                                     memory_id=shaped))
+        edges: dict[object, set[object]] = {}
+        for citing, cited in conn.execute("SELECT DISTINCT memory_id, source_id "
+                                          "FROM memory_sources"):
+            edges.setdefault(citing, set()).add(cited)
+        for memory_id in sorted(_on_cycles(edges), key=repr):
+            shaped = _shaped_id(memory_id)
+            findings.append(_finding("source-cycle",
+                                     f"memories/{shaped}" if shaped else "memories",
+                                     project_id=_shaped_id(project_of.get(memory_id)),
+                                     memory_id=shaped))
+        incomplete: list[str] = []
+        for (change_id,) in conn.execute(
+                "SELECT c.change_id FROM changes c LEFT JOIN change_steps s "
+                "ON s.change_id = c.change_id GROUP BY c.change_id "
+                "HAVING count(s.change_id) < c.step_count ORDER BY c.change_id"):
+            shaped = _shaped_id(change_id)
+            if shaped is None:
+                findings.append(_finding("invalid-row", "changes"))
+                continue
+            incomplete.append(shaped)
+        return tuple(incomplete)
 
     def _projects(self, conn: sqlite3.Connection,
                   findings: list[StoreFinding]) -> tuple[list[InspectedProject], bool]:

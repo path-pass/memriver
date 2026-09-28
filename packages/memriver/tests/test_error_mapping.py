@@ -25,8 +25,9 @@ from memriver_core import (
     StorageFailure,
     VersionConflict,
 )
-from memriver_core.application.service import MemoryService
-from memriver_core.bootstrap import build_service
+from memriver_core.application.memory import MemoryService
+from memriver_core.application.projects import ProjectService
+from memriver_core.bootstrap import Services, build_services
 from memriver_core.content_policy.secret_scanner import SecretScanner
 from memriver_core.models import Project, Resolution
 from memriver_core.settings import (
@@ -211,15 +212,6 @@ class OtherBackend:
         raise self.error
 
     # MemoryStore
-    def record(self, memory, read_write_set):
-        raise self.error
-
-    def update(self, memory_id, read_write_set, *, expected_version, body, description):
-        raise self.error
-
-    def delete(self, memory_id, read_write_set, *, expected_version, hard):
-        raise self.error
-
     def read_any(self, memory_id, *, include_deleted):
         raise self.error
 
@@ -228,62 +220,50 @@ class OtherMemoryStore:
     def __init__(self, backend: OtherBackend) -> None:
         self.backend = backend
 
-    def record(self, memory, read_write_set):
+    def write(self, op, *, restriction, changed_by, changed_via, check):
+        raise self.backend.error
+
+    def delete_global(self, op, *, changed_by, changed_via, check):
         raise self.backend.error
 
     def read(self, memory_id, read_write_set):
-        raise self.backend.error
-
-    def update(self, memory_id, read_write_set, *, expected_version, body, description):
-        raise self.backend.error
-
-    def delete(self, memory_id, read_write_set, *, expected_version, hard):
         raise self.backend.error
 
     def read_any(self, memory_id, *, include_deleted):
         raise self.backend.error
 
 
-class _NoDiagnostics:
-    def run(self, **kw):
-        raise AssertionError
-
-
 @pytest.fixture
 def other_backend_server(tmp_path, monkeypatch):
     store, directory = tmp_path / "mem", tmp_path / "demo"
     directory.mkdir()
-    real = build_service(Settings(root=store), root=store)
-    global_id = real.ensure_global()
-    project_id = real.init_project("demo", real.plan_root(str(directory))).id
+    project_service = build_services(Settings(root=store), root=store).project
+    global_id = project_service.ensure_global()
+    project_id = project_service.init_project("demo",
+                                              project_service.plan_root(str(directory))).id
     project = Project(id=project_id, name="demo", root=str(directory.resolve()))
     settings = Settings()
 
     def build(error: Exception):
         backend = OtherBackend(error, project, global_id)
 
-        def build_service_over_other(_settings, *, root):
-            return MemoryService(OtherMemoryStore(backend), backend, SecretScanner,
-                                 _NoDiagnostics(),
-                                 max_body_chars=settings.max_body_chars,
-                                 metadata_max_chars=DEFAULT_MAX_BODY_CHARS,
-                                 search_limit_default=settings.search_limit_default,
-                                 search_limit_max=settings.search_limit_max,
-                                 index_budget_lines=settings.index_budget_lines,
-                                 index_cue_chars=INDEX_CUE_CHARS,
-                                 header_field_chars=HEADER_FIELD_CHARS,
-                                 project_name_max_chars=PROJECT_NAME_MAX_CHARS,
-                                 session_store=None, canonical_directory=None,
-                                 main_tree_path=None,
-                                 current_branch=None, root_is_intact=None,
-                                 session_prompt_chars=512, session_recent_prompts=5,
-                                 session_prompt_scan_max_bytes=65536,
-                                 stop_nudge_min_prompts=5, stop_nudge_interval_prompts=5,
-                                 session_search_limit_default=10,
-                                 session_search_limit_max=50,
-                                 tool_call_retention_s=3600)
+        def build_services_over_other(_settings, *, root):
+            # a directory-mode server: no session is ever pending or marked saved,
+            # and nothing reaches the session or maintenance service
+            memory = MemoryService(OtherMemoryStore(backend), backend, SecretScanner,
+                                   refuse_pending=lambda context: None,
+                                   mark_saved=lambda context: None,
+                                   max_body_chars=settings.max_body_chars,
+                                   metadata_max_chars=DEFAULT_MAX_BODY_CHARS,
+                                   search_limit_default=settings.search_limit_default,
+                                   search_limit_max=settings.search_limit_max,
+                                   index_budget_lines=settings.index_budget_lines,
+                                   index_cue_chars=INDEX_CUE_CHARS)
+            project = ProjectService(backend, header_field_chars=HEADER_FIELD_CHARS,
+                                     project_name_max_chars=PROJECT_NAME_MAX_CHARS)
+            return Services(memory=memory, project=project, session=None, maintenance=None)
 
-        monkeypatch.setattr(server_module, "build_service", build_service_over_other)
+        monkeypatch.setattr(server_module, "build_services", build_services_over_other)
         return build_server(root=store, project_dir=directory)
 
     return build

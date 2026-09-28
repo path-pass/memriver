@@ -43,6 +43,8 @@ class StoreReport:
     entries: tuple[InspectedMemory, ...]
     projects: tuple[InspectedProject, ...]
     findings: tuple[StoreFinding, ...]
+    # changes with fewer stored steps than they recorded: listed, never a finding
+    incomplete_changes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -65,3 +67,5 @@ class DiagnosticsReport:
     # the inspector's projects, passed through so doctor renders them from
     # the one diagnostics entry
     projects: tuple[InspectedProject, ...] = ()
+    # the inspector's incomplete changes (not undoable), passed through for doctor to list
+    incomplete_changes: tuple[str, ...] = ()

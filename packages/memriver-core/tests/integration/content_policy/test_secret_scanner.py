@@ -591,3 +591,16 @@ def test_entropy_all_low_candidates_still_pass(monkeypatch):
     # count alone
     _with_rules(monkeypatch, ("multi-candidate", r"ZQ-(\w+)", 1.0, 0))
     _SCANNER.check("marker ZQ-aaaaaaaa mid ZQ-bbbbbbbb end", BODY_LIMIT)
+
+
+@pytest.mark.parametrize(("text", "max_chars", "rule_id"), [
+    ("", BODY_LIMIT, "empty"),
+    ("\x01\x02", BODY_LIMIT, "empty"),
+    ("x" * 21, 20, "too-large"),
+    ("token ghp_" + "a" * 36, BODY_LIMIT, "github-pat"),
+    ("password: correcthorsebattery", BODY_LIMIT, "memriver-credential-assignment"),
+])
+def test_every_rejection_names_its_rule_in_a_field(text, max_chars, rule_id):
+    with pytest.raises(ContentRejected) as ei:
+        _SCANNER.check(text, max_chars)
+    assert (ei.value.rule_id, ei.value.memory_id) == (rule_id, None)

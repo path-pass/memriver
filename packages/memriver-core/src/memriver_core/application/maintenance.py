@@ -1,6 +1,6 @@
-"""Backend-neutral diagnostics policy over a `StoreInspector`.
+"""MaintenanceService: the store's real checks, backend-neutral over a `StoreInspector`.
 
-`DiagnosticsService` owns the checks no backend should have to reimplement --
+`diagnose` owns the checks no backend should have to reimplement --
 staleness, near-duplicate bodies -- and maps backend-reported findings into
 the same neutral shape. It never touches a file, a table, or any other
 storage detail; that all lives behind `StoreInspector`.
@@ -8,20 +8,26 @@ storage detail; that all lives behind `StoreInspector`.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from itertools import combinations
 from typing import TYPE_CHECKING
 
 from memriver_core.models import DiagnosticFinding, DiagnosticsReport
 from memriver_core.models import now as _default_now
+from memriver_core.models.errors import ContentRejected
 
 if TYPE_CHECKING:
+    from memriver_core.content_policy.protocol import ContentPolicy
     from memriver_core.models import (
         DiagnosticsState,
+        HardDeletePlan,
+        PolicyHit,
         StoreFinding,
         StoreReport,
     )
     from memriver_core.repository.inspection_protocol import StoreInspector
+    from memriver_core.repository.protocol import MemoryStore
 
 # Fixed, client-safe wording per backend finding kind (the concrete kinds the
 # SQLite inspector reports today; an unrecognized future kind still gets a
@@ -38,6 +44,11 @@ _BACKEND_SUGGESTIONS = {
     "legacy-layout": "migrate it, or remove it once migrated",
     "session-orphan": ("restore the missing project from a backup; until then the session's "
                        "project is unreachable"),
+    "version-gap": "restore the database from a backup",
+    "version-mismatch": "restore the database from a backup",
+    "unrecorded-version": "restore the database from a backup",
+    "dangling-source": "restore the database from a backup",
+    "source-cycle": "restore the database from a backup",
 }
 _DEFAULT_BACKEND_SUGGESTION = "inspect this entry manually; its finding kind is unrecognized"
 
@@ -147,12 +158,17 @@ def _derive_state(report: StoreReport,
     return "healthy"
 
 
-class DiagnosticsService:
-    def __init__(self, inspector: StoreInspector) -> None:
+class MaintenanceService:
+    def __init__(self, inspector: StoreInspector, *, memory_store: MemoryStore,
+                content_policy_factory: Callable[[], ContentPolicy]) -> None:
         self._inspector = inspector
+        self._memory_store = memory_store
+        # built on first use: a diagnosis alone never pays for loading the scanner
+        self._content_policy_factory = content_policy_factory
+        self._content_policy: ContentPolicy | None = None
 
-    def run(self, *, now: str | None = None, stale_days: int = 90,
-            jaccard_threshold: float = 0.6) -> DiagnosticsReport:
+    def diagnose(self, *, now: str | None = None, stale_days: int = 90,
+                 jaccard_threshold: float = 0.6) -> DiagnosticsReport:
         if stale_days <= 0:
             raise ValueError("stale_days must be a positive number of days")
         if not (0 < jaccard_threshold <= 1):
@@ -169,4 +185,35 @@ class DiagnosticsService:
 
         return DiagnosticsReport(state=_derive_state(report, findings),
                                  findings=tuple(findings), initialized=report.initialized,
-                                 projects=report.projects)
+                                 projects=report.projects,
+                                 incomplete_changes=report.incomplete_changes)
+
+    def _policy(self) -> ContentPolicy:
+        if self._content_policy is None:
+            self._content_policy = self._content_policy_factory()
+        return self._content_policy
+
+    def scan_policy(self) -> list[PolicyHit]:
+        """Every stored version of every memory against today's rules (spec §4.4); no side effect."""
+        return self._memory_store.scan(self.check_text)
+
+    def check_text(self, text: str) -> str | None:
+        """The content policy on text not stored yet: the matching rule id, or None.
+
+        No length rule applies here, and blank text has nothing to withhold.
+        """
+        try:
+            self._policy().check(text, len(text))
+        except ContentRejected as err:
+            return None if err.rule_id == "empty" else (err.rule_id or "rejected")
+        return None
+
+    def plan_hard_delete(self, memory_id: str) -> HardDeletePlan:
+        return self._memory_store.plan_hard_delete(memory_id)
+
+    def hard_delete(self, memory_id: str, *, expected: frozenset[tuple[str, int]] | None = None,
+                    code: str | None = None) -> list[str]:
+        """Delete the plan's every member, given exactly one of the set shown or its code."""
+        if (expected is None) == (code is None):
+            raise ValueError("pass exactly one of expected and code")
+        return self._memory_store.hard_delete(memory_id, expected=expected, code=code)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from typing import Protocol
 
 from memriver_core.models import (
@@ -13,49 +14,129 @@ from memriver_core.models import (
     SessionKey,
     UnbindPlan,
 )
+from memriver_core.models.changes import (
+    Change,
+    Citation,
+    HardDeletePlan,
+    MemoryVersion,
+    Op,
+    PolicyHit,
+    SoftDelete,
+    Usage,
+)
 
 
 class MemoryStore(Protocol):
-    """Single-memory actions: record, read, update, delete one memory.
+    """Memory state, its permanent history and the change log.
 
     Binding semantics (every backend):
 
-    - Authorization is decided on the stored row inside the operation's own
-      transaction; `read_write_set.readable()`/`writable()` are the only inputs.
-    - `record`: a global target raises `GlobalReadOnly`; a target outside
-      `writable()`, or a project that does not exist, raises
-      `ProjectUnavailable`; a taken id (deleted rows included) raises
-      `IdCollision`; nothing is written.
+    - `apply` (management) and `write` (agent): every op is checked and
+      written in one write transaction, as one change (`step_count =
+      len(ops)`) with one step and one new version per op; any refusal writes
+      nothing. `check(description, body)` is the content policy on each
+      resulting state, deleted ones included: a rule id refuses it with
+      `ContentRejected(rule_id=..., memory_id=...)` (memory_id None for a
+      create). A created memory's `source_harness` is `changed_via` or
+      "unknown", its `source_method` is `changed_by`. Every new version moves
+      `updated`; a soft delete sets `deleted_at = updated`. A new version
+      carries the current source set unless the op replaces it. The same
+      memory twice is a `ValueError`; a taken id is `IdCollision`. Nothing
+      here creates a store.
+      - `apply` is the management path (spec §4.1):
+        `BatchConflict(index, memory_id, reason)` for a missing target
+        ("missing"), another version ("version"), an update or soft delete of
+        a deleted memory ("deleted"), a result equal to the current state
+        ("same-state"), a read at or after `unread_since` ("read-since"); a
+        create in an unknown project is `ProjectNotFound`; global is an
+        ordinary target.
+      - `write` is the agent path: one op under a `ReadWriteSet`, decided on
+        the stored rows inside the transaction: a create outside `writable()`
+        or into a missing project → `ProjectUnavailable`, into global →
+        `GlobalReadOnly`; an absent, deleted, orphaned, unreadable or not
+        writable target → `MemoryNotFound`, a global one → `GlobalReadOnly`,
+        another version → `VersionConflict`; a removed store answers the same
+        and is never recreated. It returns the resulting memory as read in
+        that transaction; a result equal to the current state writes nothing
+        and returns the memory as checked (after every one of those checks
+        passed).
+    - `change`: a change with the steps still stored, or None. `undo`: in one
+      transaction, `UndoRefused("not-found")` for an unknown change,
+      `("hard-deleted")` when fewer steps are stored than `step_count`,
+      `("changed", ids)` when any touched memory's current version is not its
+      step's `after_version`; otherwise the inverse of every step (create →
+      SoftDelete, update/soft_delete/restore → Restore to `before_version`) is
+      applied as one new change with `undoes = change_id`, by the rules of
+      `apply` (a `ContentRejected` refuses it).
+    - `delete_global`: soft-deletes `op.memory_id` through the same kernel as
+      `apply`, but only after confirming, inside that write transaction, that
+      it is right now a live memory of the global project; a role change
+      between a caller's own check and this call is therefore still caught.
+      Anything else -- absent, malformed, already deleted, or an ordinary
+      project's memory -- is `MemoryNotFound(op.memory_id)`.
     - `read`: malformed, absent, soft-deleted, orphaned or another project's
       id raises `MemoryNotFound(memory_id)`; a row that fails validation
       raises `StorageFailure`.
-    - `update` / `delete(hard=False)`: absent, deleted, orphaned or outside
-      `read_write_set.readable()` → `MemoryNotFound`; a row that fails
-      validation → `StorageFailure`; global → `GlobalReadOnly`; not writable →
-      `MemoryNotFound`; a version other than `expected_version` →
-      `VersionConflict`. An update never revives a deleted row. A soft delete
-      sets `deleted_at` and moves the version on; it returns the new version.
-    - `delete(hard=True)`: the same checks, but a soft-deleted row of a
-      writable project is accepted at its current version; the row is removed
-      and 0 is returned.
     - `read_any`: the management read (human CLI only): any project, no
       read/write set; deleted rows only with `include_deleted`.
     - `touch_read`: best effort, after a successful `memory_read` (spec §3.3):
-      moves `last_read_at` to `max(stored, at)`, never backwards; `version`
-      and `updated` are untouched. An unknown id, a malformed `at`, and a
-      store that is absent or fails, are all no-ops -- nothing here creates a
-      store, and a failure never fails the read that asked for it.
+      moves `last_read_at` to `max(stored, at)`, never backwards, and records
+      one `memory_reads` row (the version handed out, the harness, the session
+      id); `version` and `updated` are untouched. An unknown or deleted id, a
+      malformed `at`, and a store that is absent or fails, are all no-ops --
+      nothing here creates a store, and a failure never fails the read.
+    - `apply` also takes `Restore` and explicit `sources` (spec §3.3): a
+      reference in the current set is carried; any other must be the source's
+      current, non-deleted version before the batch (else `BatchConflict(...,
+      "source")`); a restored set needs every cited version to exist; a cycle
+      through the source rows of any version is `BatchConflict(..., "cycle")`;
+      a state with sources gets the lowest trust and the conjunction of sync of
+      its previous state (updates) and every cited version; a restore takes the
+      restored version's recorded trust and sync.
+    - `versions`: every version of any memory, deleted ones included, with its
+      sources and change (`steps=()`; None for an imported version);
+      `MemoryNotFound` for an unknown id. `memories`: current states, one
+      project or all (`None`), deleted only with `include_deleted`; bad rows
+      are skipped. `citing`: every version of another memory citing any
+      version of this one. `usage`: reads count and `last_read_at` per known
+      id. `prune_reads(retention_days)`: drops older read facts, returns the
+      count; never creates a store.
+    - `scan(check)`: `check(text)` on the description and body of every stored
+      version of every memory (deleted ones and all history included); one
+      `PolicyHit` per hit version, never the text; no side effect.
+    - `plan_hard_delete`: the target plus every memory with a stored version
+      citing any version of a member, to a fixed point; referrers only.
+      `hard_delete`: recomputes the plan in one write transaction and compares
+      it exactly with `expected` or `code` (the other is None); a difference
+      raises `PlanChanged(plan)` and deletes nothing; otherwise every member
+      goes with its versions, sources, reads and steps, change rows stay.
+      Both raise `MemoryNotFound` for an unknown id.
     - Errors carry fields, never words (see `models.errors`).
     """
 
-    def record(self, memory: Memory, read_write_set: ReadWriteSet) -> None: ...
+    def apply(self, ops: Sequence[Op], *, changed_by: str, changed_via: str | None,
+              check: Callable[[str, str], str | None]) -> Change: ...
+    def change(self, change_id: str) -> Change | None: ...
+    def undo(self, change_id: str, *, changed_by: str, changed_via: str | None,
+             check: Callable[[str, str], str | None]) -> Change: ...
+    def delete_global(self, op: SoftDelete, *, changed_by: str, changed_via: str | None,
+                      check: Callable[[str, str], str | None]) -> Change: ...
+    def write(self, op: Op, *, restriction: ReadWriteSet, changed_by: str,
+              changed_via: str | None, check: Callable[[str, str], str | None]) -> Memory: ...
     def read(self, memory_id: str, read_write_set: ReadWriteSet) -> Memory: ...
-    def update(self, memory_id: str, read_write_set: ReadWriteSet, *, expected_version: int,
-               body: str, description: str | None) -> Memory: ...
-    def delete(self, memory_id: str, read_write_set: ReadWriteSet, *, expected_version: int,
-               hard: bool) -> int: ...
     def read_any(self, memory_id: str, *, include_deleted: bool) -> Memory: ...
-    def touch_read(self, memory_id: str, at: str) -> None: ...
+    def touch_read(self, memory_id: str, at: str, *, memory_version: int, harness: str,
+                   session_id: str | None) -> None: ...
+    def prune_reads(self, retention_days: int) -> int: ...
+    def usage(self, memory_ids: Sequence[str]) -> dict[str, Usage]: ...
+    def memories(self, project_id: str | None = None, *,
+                 include_deleted: bool = False) -> list[Memory]: ...
+    def versions(self, memory_id: str) -> list[MemoryVersion]: ...
+    def citing(self, memory_id: str) -> list[Citation]: ...
+    def scan(self, check: Callable[[str], str | None]) -> list[PolicyHit]: ...
+    def plan_hard_delete(self, memory_id: str) -> HardDeletePlan: ...
+    def hard_delete(self, memory_id: str, *, expected: frozenset[tuple[str, int]] | None,
+                    code: str | None) -> list[str]: ...
 
 
 class ProjectStore(Protocol):
@@ -142,7 +223,8 @@ class SessionStore(Protocol):
       unknown key.
     - `search`: `project_id=None` is every row (the human CLI); otherwise
       that project's registered rows. A case-insensitive substring of a
-      prompt text, `entry_cwd` or `branch`; newest `last_active_at` first.
+      prompt text, the published summary, `entry_cwd` or `branch`; newest
+      `last_active_at` first.
     - `record_call`: maps a harness's tool-call id to `key`'s session
       (replacing an earlier mapping of the same id), then drops every
       mapping recorded more than `retention_s` seconds before `at`, in the
@@ -152,6 +234,13 @@ class SessionStore(Protocol):
     - `session_for_call`: the session a call id was mapped to, or None --
       also for an impossible call id and for a stored row whose session id
       is invalid. Read-only.
+    - `bound`: registered rows whose project exists and is not global, newest
+      `last_active_at` first; bad rows skipped. Read-only.
+    - `publish_summary`: sets `summary = text`, `summary_at = at` on a bound
+      row whose `last_active_at` still equals `expected_last_active_at`,
+      leaving `last_active_at` alone; anything else -- an unknown, unbound,
+      pending or moved session, or no store -- is `SessionMoved` and nothing
+      is written. The other writes keep a published summary as it is.
     """
 
     def store_exists(self) -> bool: ...
@@ -171,3 +260,6 @@ class SessionStore(Protocol):
     def record_call(self, key: SessionKey, call_id: str, at: str, *,
                     retention_s: int) -> None: ...
     def session_for_call(self, harness: str, call_id: str) -> SessionKey | None: ...
+    def bound(self) -> list[Session]: ...
+    def publish_summary(self, key: SessionKey, text: str, *, expected_last_active_at: str,
+                        at: str) -> None: ...

@@ -4,18 +4,28 @@ Two kinds of error live here, and they differ in who owns the words:
 
 - **Storage-boundary errors** -- `MemoryNotFound`, `ProjectNotFound`,
   `IdCollision`, `StorageFailure`, `VersionConflict`, `BindingRefused`,
-  `ProjectUnavailable` -- carry structured *fields* only. Their `str()` is a
-  developer-facing line for logs and must never reach a client: a transport
-  composes client copy from the operation plus these fields, so a second
-  backend cannot change a byte of what a client sees, nor leak SQL, driver or
-  path detail through a message it happened to author.
+  `ProjectUnavailable`, `BatchConflict`, `StoreNeedsUpgrade`, `UndoRefused`,
+  `PlanChanged`, `SessionMoved`, `UpgradeRefused` -- carry structured *fields*
+  only. Their `str()` is a developer-facing line for logs and must never
+  reach a client: a transport composes client copy from the operation plus
+  these fields, so a second backend cannot change a byte of what a client
+  sees, nor leak SQL, driver or path detail through a message it happened to
+  author.
 - **Application/policy errors** -- `ContentRejected`, `GlobalReadOnly` --
   carry a message authored inside the core, where the wording *is* the rule
   being explained and is written to be client-safe (it never echoes the
-  rejected value). Transports may forward these verbatim.
+  rejected value). Transports may forward these verbatim. `ContentRejected`
+  may be raised with no message at all (the default composes one from
+  `rule_id` alone), so a caller must never assume `str()` is populated by
+  another caller's choice.
 """
 
 from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .changes import HardDeletePlan
 
 
 class MemoryError(Exception): ...            # base (namespaced; no builtins clash in-package)
@@ -46,9 +56,10 @@ class ProjectNotFound(MemoryError):
 class IdCollision(MemoryError):
     """A freshly generated id is already taken; nothing was written.
 
-    Raised by a store's atomic create and caught by the application facade,
-    which converts it to StorageFailure on this, its first occurrence: it
-    never reaches a transport, so it is not part of the public facade.
+    Raised by a store's atomic create and caught by the memory and project
+    services, which convert it to StorageFailure on this, its first
+    occurrence: it never reaches a transport, so it is not part of the
+    public facade.
     """
 
     def __init__(self, identifier: str) -> None:
@@ -56,7 +67,21 @@ class IdCollision(MemoryError):
         self.identifier = identifier
 
 
-class ContentRejected(MemoryError): ...      # from ContentPolicy; the message is the rule
+class ContentRejected(MemoryError):
+    """From the content policy; the message is the rule, the fields name it.
+
+    `rule_id` is the policy's id for what matched -- a vendored rule id, or
+    "empty", "too-large", "invalid-harness" -- never the matched text.
+    `memory_id` names the memory whose resulting state was refused (None for
+    a memory being created, or a text checked outside any memory). Raised
+    without a message, the message is composed from the rule id alone.
+    """
+
+    def __init__(self, message: str = "", *, rule_id: str = "",
+                 memory_id: str | None = None) -> None:
+        super().__init__(message or f"content rejected ({rule_id}); no change was made")
+        self.rule_id = rule_id
+        self.memory_id = memory_id
 
 
 class ProjectUnavailable(MemoryError):
@@ -122,3 +147,97 @@ class BindingRefused(MemoryError):
         super().__init__(f"binding refused: {reason}")
         self.reason = reason
         self.project_id = project_id
+
+
+BATCH_CONFLICT_REASONS = frozenset({
+    "version", "deleted", "same-state", "source", "cycle", "read-since", "missing",
+})
+
+
+class BatchConflict(MemoryError):
+    """One operation of an `apply` failed its check inside the transaction; nothing was written.
+
+    Fields only: `index` is the operation's position in the batch,
+    `memory_id` the memory it names (None for a create), `reason` one of
+    BATCH_CONFLICT_REASONS.
+    """
+
+    def __init__(self, index: int, memory_id: str | None, reason: str) -> None:
+        if reason not in BATCH_CONFLICT_REASONS:
+            raise ValueError(f"unknown batch conflict reason: {reason!r}")
+        super().__init__(f"batch conflict: {reason} at operation {index}")
+        self.index = index
+        self.memory_id = memory_id
+        self.reason = reason
+
+
+class StoreNeedsUpgrade(MemoryError):
+    """The store's schema is older than this version reads; nothing was read or written.
+
+    Fields only: `version` is the store's schema version. Only the offline
+    rebuild (`memriver upgrade`) changes such a file.
+    """
+
+    def __init__(self, version: int) -> None:
+        super().__init__(f"store needs upgrade: schema {version}")
+        self.version = version
+
+
+UNDO_REFUSED_REASONS = frozenset({"not-found", "hard-deleted", "changed"})
+
+
+class UndoRefused(MemoryError):
+    """A change cannot be undone; nothing was written.
+
+    Fields only: `reason` is one of UNDO_REFUSED_REASONS; `memory_ids` names
+    the memories that changed since, for "changed".
+    """
+
+    def __init__(self, reason: str, memory_ids: tuple[str, ...] = ()) -> None:
+        if reason not in UNDO_REFUSED_REASONS:
+            raise ValueError(f"unknown undo refusal: {reason!r}")
+        super().__init__(f"undo refused: {reason}")
+        self.reason = reason
+        self.memory_ids = memory_ids
+
+
+class PlanChanged(MemoryError):
+    """A hard delete's plan differs from the one confirmed; nothing was deleted.
+
+    Fields only: `plan` is the plan as it stands now, for the caller to show again.
+    """
+
+    def __init__(self, plan: HardDeletePlan) -> None:
+        super().__init__(f"plan changed: {plan.target}")
+        self.plan = plan
+
+
+class SessionMoved(MemoryError):
+    """The session is unknown, not bound to a project, or active since it was read.
+
+    Nothing was written; the caller reads the session again. Deliberately fieldless.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("session moved")
+
+
+UPGRADE_REASONS = frozenset({
+    "upgrade-running", "in-use", "counts", "invariant", "foreign-keys", "schema",
+})
+
+
+class UpgradeRefused(MemoryError):
+    """The store was not rebuilt as schema v4; the live file is exactly as it was.
+
+    Fields only: `reason` is one of UPGRADE_REASONS -- another upgrade holds the
+    upgrade lock ("upgrade-running"), the store looks still in use (WAL mode or
+    a live sidecar, "in-use"), or the new file failed one verification check
+    (the other four). The CLI owns every sentence.
+    """
+
+    def __init__(self, reason: str) -> None:
+        if reason not in UPGRADE_REASONS:
+            raise ValueError(f"unknown upgrade reason: {reason!r}")
+        super().__init__(f"upgrade refused: {reason}")
+        self.reason = reason
