@@ -273,6 +273,43 @@ def _supersede(raw: dict, project_id: str, sent: dict[str, Memory],
 _PLANS = {"merge": _merge, "rewrite": _rewrite, "supersede": _supersede}
 
 
+def _instruction_ids(raw: dict) -> list[str]:
+    """The id(s) a contradiction or instruction_like judgment names: instruction_like
+    names one memory in `id` (or, from a model that used `ids` instead, there); a
+    contradiction names two or more, in `ids`."""
+    return raw["ids"] if raw["kind"] == "contradiction" or not raw["id"] else [raw["id"]]
+
+
+def _flagged_ids(ctx: Context, judgments: Sequence[dict],
+                 sent: dict[str, Memory]) -> set[str]:
+    """The ids of every instruction_like judgment in `judgments` that validates -- the
+    same checks `_judge` applies to it (a bad reason or an id count/membership problem
+    refuses it silently here too; `_judge` still reports it, in its own turn). A merge,
+    rewrite or supersede naming one of these ids must not run (§10), whichever order
+    the answer gives the judgments in."""
+    flagged: set[str] = set()
+    for raw in judgments:
+        if raw["kind"] != "instruction_like":
+            continue
+        if reason_problem(ctx, raw["reason"]) is not None:
+            continue
+        ids = _instruction_ids(raw)
+        if ids_problem(ids, sent, 1, "ids") is None:
+            flagged.update(ids)
+    return flagged
+
+
+def _touched_ids(raw: dict) -> list[str]:
+    """The existing memories a merge, rewrite or supersede judgment names, as a target,
+    a source or evidence -- what `_flagged_ids` is checked against."""
+    kind = raw["kind"]
+    if kind == "merge":
+        return raw["ids"]
+    if kind == "rewrite":
+        return [raw["id"], *raw["evidence_ids"]]
+    return [raw["id"], raw["by"]]                     # supersede
+
+
 def _judge(ctx: Context, raw: dict, project_id: str, sent: dict[str, Memory],
            sources: dict[str, tuple[SourceRef, ...]]) -> bool:
     """One judgment validated and carried out; False when it keeps the pass from
@@ -288,7 +325,7 @@ def _judge(ctx: Context, raw: dict, project_id: str, sent: dict[str, Memory],
     if kind in ("contradiction", "instruction_like"):
         # an instruction-like entry is one memory, named in id; a model that puts it in
         # ids instead is taken at its word rather than failing the whole pass
-        ids = raw["ids"] if kind == "contradiction" or not raw["id"] else [raw["id"]]
+        ids = _instruction_ids(raw)
         if refusal := ids_problem(ids, sent, 2 if kind == "contradiction" else 1, "ids"):
             return refusal.report(ctx, kind)
         label = kind.replace("_", "-")
@@ -341,6 +378,13 @@ def run(ctx: Context, project_id: str, scope: str) -> PassResult:
     judgments, finished = split_no_change(ctx, result["judgments"])
     if not judgments and finished:
         ctx.report.line("no change")
+    # collected before any judgment runs, so a flagged id is left untouched whichever
+    # order the answer gives instruction_like and the judgment naming it in
+    flagged = _flagged_ids(ctx, judgments, sent)
     for raw in judgments:
+        if raw["kind"] in _PLANS and (touched := flagged.intersection(_touched_ids(raw))):
+            ctx.report.line(f"not carried out {raw['kind']}: instruction-like "
+                            f"{' '.join(sorted(touched))}")
+            continue
         finished = _judge(ctx, raw, project_id, sent, sources) and finished
     return PassResult(finished=finished, digest=digest)
