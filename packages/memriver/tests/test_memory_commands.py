@@ -467,6 +467,22 @@ def test_a_soft_delete_of_a_global_memory_whose_text_now_hits_the_policy_is_refu
     assert _versions(world, shared) == before
 
 
+def test_a_global_memory_hard_deleted_meanwhile_is_no_such_memory(world, tmp_path,
+                                                                   monkeypatch):
+    from memriver_core import BatchConflict
+    from memriver_core.application.memory import MemoryService  # tests may reach in
+
+    shared = _global_memory(world)
+
+    def gone(self, ops, **kwargs):
+        raise BatchConflict(0, ops[0].memory_id, "missing")
+
+    monkeypatch.setattr(MemoryService, "apply", gone)
+    code, out = _delete(world, shared, version=1, cwd=tmp_path)
+    assert code == 2
+    assert out.endswith(f"no such memory: {shared}\n")
+
+
 def test_soft_delete_declined_at_eof_or_without_a_terminal_changes_nothing(world):
     def eof(_prompt):
         raise EOFError

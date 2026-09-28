@@ -568,26 +568,6 @@ class SqliteMemoryStore:
             return apply_ops(conn, inverse, restriction=None, changed_by=changed_by,
                              changed_via=changed_via, check=check, undoes=change_id)
 
-    def delete_global(self, op: SoftDelete, *, changed_by: str, changed_via: str | None,
-                      check: Check) -> Change:
-        """`op.memory_id` soft-deleted only if it is, right now, a live memory of the
-        global project -- checked inside the same transaction as the delete, so a
-        project's role cannot change between the check and the write. `MemoryNotFound`
-        for anything else: absent, already deleted, or an ordinary project's memory.
-        """
-        if not _addressable(op.memory_id):
-            raise MemoryNotFound(op.memory_id)
-        if not self._database.exists():
-            raise MemoryNotFound(op.memory_id)
-        with self._database.write(create=False) as conn:
-            row = conn.execute(
-                "SELECT p.is_global FROM memories m JOIN projects p ON p.id = m.project_id "
-                "WHERE m.id = ? AND m.deleted_at IS NULL", (op.memory_id,)).fetchone()
-            if row is None or not row[0]:
-                raise MemoryNotFound(op.memory_id)
-            return apply_ops(conn, [op], restriction=None, changed_by=changed_by,
-                             changed_via=changed_via, check=check)
-
     def scan(self, check: Callable[[str], str | None]) -> list[PolicyHit]:
         """Every stored version of every memory against `check`: one hit per version, no text."""
         with self._database.read() as conn:

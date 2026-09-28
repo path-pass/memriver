@@ -559,7 +559,7 @@ async def test_no_tool_reaches_the_management_paths(world, monkeypatch):
 
     def spying_build(settings, *, root, classifier=None):
         services = real_build(settings, root=root, classifier=classifier)
-        for name in ("show", "list_memories", "search_all", "apply", "delete_global"):
+        for name in ("show", "list_memories", "search_all", "apply"):
             monkeypatch.setattr(services.memory, name,
                                 lambda *a, _n=name, **k: seen.append(_n))
         return services

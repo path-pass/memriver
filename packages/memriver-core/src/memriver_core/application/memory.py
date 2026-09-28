@@ -246,22 +246,6 @@ class MemoryService:
         except IdCollision as err:
             raise StorageFailure from err
 
-    def delete_global(self, memory_id: str, *, expected_version: int,
-                      changed_by: str = "human") -> int:
-        """Soft-delete a live global memory by id; the new version.
-
-        `MemoryNotFound` when the id is not, right now, a live global memory --
-        checked inside the same write transaction as the delete, so a
-        project's role cannot change between the check and the write.
-        """
-        try:
-            change = self._memory_store.delete_global(
-                SoftDelete(memory_id, expected_version), changed_by=changed_by, changed_via=None,
-                check=self._check_state)
-        except IdCollision as err:
-            raise StorageFailure from err
-        return change.steps[0].after_version
-
     def restore(self, memory_id: str, to_version: int, *, expected_version: int,
                 changed_by: str, changed_via: str | None = None) -> Change:
         """Make `to_version`'s recorded state the new current version (spec §4.1)."""
