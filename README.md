@@ -346,11 +346,11 @@ change log entries a hard delete touched stay, without the deleted memories'
 steps, and can no longer be undone -- but the hard delete itself adds no new
 one. This is how a secret already in the store is removed even once its text
 fails today's policy: a soft delete would be refused (above), but a hard
-delete runs no such check. It zeroes the text inside the store file itself; a
-copy made outside the store -- a backup, or the harness's own transcript the
-secret came from -- keeps its own text, and so can free disk blocks,
-including the ones the temporary journal SQLite writes during the delete
-leaves behind once it is removed.
+delete runs no such check. It zeroes the text inside the store file itself.
+It cannot reach a copy made outside the store -- a backup, or the harness's
+own transcript the secret came from -- or free disk blocks that still hold
+the text, such as the ones the temporary journal SQLite writes during the
+delete leaves behind once it is removed.
 
 ## Sessions
 
