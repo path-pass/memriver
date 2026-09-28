@@ -760,3 +760,22 @@ def test_an_input_above_70_percent_of_the_budget_is_named_in_needs_you(world):
         in _needs(text)
     _, text = _pass(world, budget_tokens=estimate * 2)      # 50%: nothing to say
     assert _needs(text) == ""
+
+
+def test_an_executor_refusal_under_the_budget_says_to_lower_it_and_skips_the_70_percent_line(
+        world):
+    # the input fits our own estimate (well under the budget, and again between 70%
+    # and 100% of it on the second pass) but the executor itself refuses it: advice is
+    # to lower the budget, and the 70% line must not also appear for the same call
+    world.create(world.project.id, "a project fact")
+    world.executor.default = _answer()
+    _pass(world)                                            # learn the exact input size
+    estimate = input_estimate(SYSTEM_PROMPT, world.executor.calls[0]["prompt"])
+    scope = f"project:{world.project.id}"
+    world.executor.default = ExecutorResult(error="too-large")
+    _, text = _pass(world, budget_tokens=estimate + 1)
+    needs = _needs(text)
+    assert f"{scope}: input at" not in needs
+    assert re.search(rf"^{scope}: the executor refused the input as too large "
+                     rf"\({estimate}/{estimate + 1} tokens\); not processed — lower "
+                     r"\[dream\] context_budget_tokens$", needs, re.MULTILINE)

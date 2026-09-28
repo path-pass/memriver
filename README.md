@@ -546,7 +546,10 @@ by project; the TTL decisions; skips and failures with their reasons; *Needs
 you* -- content-policy hits with their `memriver delete ID --hard` command,
 contradictions, instruction-like entries, overturned global entries and
 refused extractions, inputs too large for `context_budget_tokens` (each by
-scope or id, with its estimate and the room) and inputs above 70% of it; and
+scope or id, with its estimate and the room -- raise the setting when our own
+estimate rejected the input before any call, lower it when the executor
+itself refused an input that fit our estimate) and inputs above 70% of it (a
+call that itself ended too large never also gets this line); and
 how the run finished. `--list [N]` lists the last N
 runs (default 10) with time, trigger and status. A run that stopped without
 finishing is shown as interrupted, and the next run marks each of its changes
@@ -666,8 +669,10 @@ say so in `dream.log`.
 Known limits: token counts are a rough estimate (no tokenizer), kept inside a
 margin; one call's input may use `context_budget_tokens` less 20,000 tokens
 kept for the answer and the margin -- lower it for a model with a smaller
-context, raise it when *Needs you* reports inputs too large; a transcript file
-is read whole; the kind of an executor failure is
+context, and follow the direction *Needs you* names when it reports an input
+too large (raise the setting when our own estimate rejected the input before
+any call, lower it when the executor itself refused an input that fit our
+estimate); a transcript file is read whole; the kind of an executor failure is
 recognized from the wording of the harness's own error messages, and an
 unrecognized one is reported as `exit`; a pass whose own changes moved
 versions runs once more on the next run before it is skipped.

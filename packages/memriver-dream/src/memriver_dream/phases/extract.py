@@ -243,8 +243,9 @@ def run(ctx: Context) -> PassResult:
               project="global" if memory.project_id == global_id else memory.project_id)
         for memory in memories))
     estimate = input_estimate(SYSTEM_PROMPT, prompt)
-    near_budget(ctx, EXTRACTION_SCOPE, estimate)
     result = ask(ctx, SYSTEM_PROMPT, prompt, SCHEMA)
+    if result != "too-large":
+        near_budget(ctx, EXTRACTION_SCOPE, estimate)
     if isinstance(result, str):
         if result == "too-large":
             too_large(ctx, EXTRACTION_SCOPE, estimate, ctx.budget_tokens)

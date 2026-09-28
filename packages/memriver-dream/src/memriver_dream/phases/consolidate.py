@@ -138,9 +138,18 @@ def ask(ctx: Context, system_prompt: str, prompt: str, schema: dict) -> dict | s
 
 def too_large(ctx: Context, subject: str, estimate: int, room: int) -> None:
     """The Needs-you line for an input still too large once its phase gave up (after
-    any halving): the user's lever is the budget."""
-    ctx.report.needs_you(f"{subject}: input too large ({estimate}/{room} tokens); not "
-                         "processed — raise [dream] context_budget_tokens")
+    any halving). `estimate > room`: our own estimate rejected it before any call was
+    made, and the user's lever is to raise the budget. `estimate <= room`: the input
+    fit our estimate but the executor itself refused it -- raising the budget would
+    not help, so the advice is to lower it instead, closer to what the executor
+    actually accepts."""
+    if estimate > room:
+        ctx.report.needs_you(f"{subject}: input too large ({estimate}/{room} tokens); not "
+                             "processed — raise [dream] context_budget_tokens")
+    else:
+        ctx.report.needs_you(f"{subject}: the executor refused the input as too large "
+                             f"({estimate}/{room} tokens); not processed — lower [dream] "
+                             "context_budget_tokens")
 
 
 def near_budget(ctx: Context, scope: str, estimate: int) -> None:
@@ -402,8 +411,9 @@ def run(ctx: Context, project_id: str, scope: str) -> PassResult:
     prompt = PROMPT.format(entries="\n".join(entry(memory, sources[memory.id])
                                              for memory in memories))
     estimate = input_estimate(system_prompt, prompt)
-    near_budget(ctx, scope, estimate)
     result = ask(ctx, system_prompt, prompt, SCHEMA)
+    if result != "too-large":
+        near_budget(ctx, scope, estimate)
     if isinstance(result, str):
         if result == "too-large":
             too_large(ctx, scope, estimate, ctx.budget_tokens)
