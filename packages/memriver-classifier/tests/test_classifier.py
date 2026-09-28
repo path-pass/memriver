@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from memriver_classifier.backends import Classifier
+from memriver_classifier import build_classifier
+from memriver_classifier.backends import (
+    Classifier,
+    ClaudeBackend,
+    CodexBackend,
+    JevBackend,
+    backend_for,
+)
+from memriver_classifier.settings import check_classifier_table
 from memriver_core import Verdict
 
 
@@ -38,3 +46,29 @@ def test_a_source_no_switch_names_is_checked():
     classifier, seen = _classifier(agent_writes=False, dream_writes=False)
     assert classifier.classify("a", changed_by="test") == Verdict("instruction")
     assert seen == ["a"]
+
+
+def test_no_table_or_a_disabled_table_builds_no_classifier():
+    assert build_classifier(None, {}) is None
+    table = check_classifier_table({"backend": "jev", "enabled": False})
+    assert build_classifier(table, {}) is None
+
+
+def test_a_jev_table_builds_the_switched_jev_backend():
+    table = check_classifier_table({"backend": "jev", "api_key_env": "UNSET_FOR_TEST",
+                                    "agent_writes": False})
+    classifier = build_classifier(table, {})
+    # no key: an undecided verdict, and no request is made
+    assert classifier.classify("a fact", changed_by="dream") == Verdict("unavailable",
+                                                                       detail="no-key")
+    assert classifier.classify("a fact", changed_by="mcp") is None
+    assert classifier.classify("a fact", changed_by="human") is None
+
+
+def test_backend_for_picks_the_configured_backend():
+    claude = check_classifier_table({"backend": "claude", "executor_path": "/opt/bin/claude"})
+    codex = check_classifier_table({"backend": "codex", "executor_path": "/opt/bin/codex"})
+    jev = check_classifier_table({"backend": "jev"})
+    assert isinstance(backend_for(claude, {}), ClaudeBackend)
+    assert isinstance(backend_for(codex, {}), CodexBackend)
+    assert isinstance(backend_for(jev, {}), JevBackend)
