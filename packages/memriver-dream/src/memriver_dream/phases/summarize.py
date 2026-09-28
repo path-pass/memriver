@@ -136,6 +136,21 @@ def input_fingerprint(lines: list[str]) -> str:
     return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
 
 
+# below this, plan_chunks' own cut() gets a non-positive budget and degenerates into
+# splitting every line character by character: no room is left to hold even one
+# fixed marker, let alone content
+_MIN_CHUNK_ROOM = estimate_tokens(CUT_MARK) + 1
+
+
+def _whole_input_estimate(lines: list[str]) -> int:
+    """The complete formatted input's estimate for a room too small even to plan
+    chunks: the whole session as it would be sent in a single final call -- never
+    only the body, which alone can look small enough to fit while the fixed prompt
+    around it does not."""
+    return input_estimate(SYSTEM_PROMPT, FINAL_PROMPT.format(
+        limit=SESSION_SUMMARY_MAX_CHARS, tag="session", body="\n".join(lines)))
+
+
 class _Attempt:
     """One pass over a session's chunks at one room size, within one run's calls."""
 
@@ -192,8 +207,8 @@ class _Attempt:
         self.partials = [self._partial(MERGE_PROMPT, "\n".join(self.partials))]
 
     def summarize(self, lines: list[str]) -> dict:
-        if self.room <= 0:      # not even the fixed per-call overhead fits the budget
-            raise _Stop("too-large", estimate_tokens("\n".join(lines)), self.ctx.budget_tokens)
+        if self.room <= _MIN_CHUNK_ROOM:    # plan_chunks/cut cannot use this room at all
+            raise _Stop("too-large", _whole_input_estimate(lines), self.ctx.budget_tokens)
         chunks = plan_chunks(lines, self.room)
         if len(chunks) == 1:
             return self._final(chunks[0], "session")
