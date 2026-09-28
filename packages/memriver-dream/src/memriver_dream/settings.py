@@ -115,6 +115,8 @@ def _plain_url(text: str) -> bool:
             and "?" not in text and "#" not in text)
 
 
+# memriver_classifier.settings keeps a copy of this whitelist (that package may not
+# import this one): a fix to one is checked against the other
 def check_codex_overrides(value: object) -> dict[str, str | bool]:
     """The whitelisted Codex provider overrides, or ValueError naming the key and a
     fixed reason -- never the value, which could be a pasted secret."""
