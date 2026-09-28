@@ -409,8 +409,8 @@ still going is recorded as skipped. Each run, in order:
    count as evidence, and no change is preferred when in doubt.
 4. **Consolidates global** the way step 3 consolidates a project, before global
    memories are sent anywhere else: an entry this step flags as an instruction
-   addressed to an agent is excluded from every later step below, this run and
-   every run after, until it is edited or deleted.
+   addressed to an agent is excluded from every later step of the run, and the
+   step is not counted as finished, so the next run judges global again first.
 5. **Extracts shared principles into global**: a principle backed by memories
    of at least two projects becomes a global entry citing them, or supplements
    an existing one; what only one project says stays there. Principles, not
