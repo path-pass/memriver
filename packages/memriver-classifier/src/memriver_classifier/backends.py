@@ -136,7 +136,16 @@ def jev_opener(*handlers: urllib.request.BaseHandler) -> urllib.request.OpenerDi
     """urllib's opener for jev with automatic redirects off (the API address is fixed:
     a 3xx is the fixed "http-<status>" detail, never a second request carrying the
     key). `handlers` are added as they are (tests pass a proxy-less ProxyHandler); the
-    default proxy handling honours the user's proxy settings."""
+    default proxy handling honours the user's proxy settings.
+
+    Refuses a redirect handler: alongside `_NoRedirect`, urllib's opener falls
+    through a handler chain until one returns other than None, so a second
+    HTTPRedirectHandler could still follow the redirect `_NoRedirect` refused."""
+    for handler in handlers:
+        handler_type = handler if isinstance(handler, type) else type(handler)
+        if issubclass(handler_type, urllib.request.HTTPRedirectHandler):
+            raise TypeError(
+                "jev_opener never follows redirects; do not pass a redirect handler")
     return urllib.request.build_opener(_NoRedirect, *handlers)
 
 

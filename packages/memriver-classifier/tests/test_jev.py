@@ -197,3 +197,12 @@ def test_the_key_and_the_text_never_reach_logs_or_output(stub, caplog, capsys):
     out, err = capsys.readouterr()
     for text in (caplog.text, out, err):
         assert KEY not in text and secret_text not in text
+
+
+def test_jev_opener_refuses_a_redirect_handler():
+    with pytest.raises(TypeError):
+        jev_opener(urllib.request.HTTPRedirectHandler())
+
+
+def test_jev_opener_still_accepts_a_proxy_handler():
+    jev_opener(urllib.request.ProxyHandler({}))
