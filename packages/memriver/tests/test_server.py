@@ -556,8 +556,8 @@ async def test_no_tool_reaches_the_management_paths(world, monkeypatch):
     real_build = server_module.build_services
     seen: list[str] = []
 
-    def spying_build(settings, *, root):
-        services = real_build(settings, root=root)
+    def spying_build(settings, *, root, classifier=None):
+        services = real_build(settings, root=root, classifier=classifier)
         for name in ("show", "list_memories", "search_all", "apply", "delete_global"):
             monkeypatch.setattr(services.memory, name,
                                 lambda *a, _n=name, **k: seen.append(_n))
@@ -668,8 +668,8 @@ async def test_an_unexpected_failure_logs_at_error_and_memriver_still_warns(
 
     real_build_services = server_module.build_services
 
-    def broken_build_services(settings, *, root):
-        services = real_build_services(settings, root=root)
+    def broken_build_services(settings, *, root, classifier=None):
+        services = real_build_services(settings, root=root, classifier=classifier)
         monkeypatch.setattr(
             services.memory, "read", lambda *a, **k: (_ for _ in ()).throw(StorageFailure()))
         return services
@@ -1128,8 +1128,8 @@ async def test_a_store_failure_in_the_session_tools_is_a_fixed_message(
 
     real_build_services = server_module.build_services
 
-    def broken_build_services(settings, *, root):
-        services = real_build_services(settings, root=root)
+    def broken_build_services(settings, *, root, classifier=None):
+        services = real_build_services(settings, root=root, classifier=classifier)
         for name in ("search_sessions", "confirm_session", "register_session"):
             monkeypatch.setattr(services.session, name,
                                 lambda *a, **k: (_ for _ in ()).throw(StorageFailure()))
