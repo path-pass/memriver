@@ -213,7 +213,7 @@ def _judge(ctx: Context, raw: dict, global_id: str, sent: dict[str, Memory],
     count = len(projects)
     if count < 2:
         return _refuse(ctx, raw, f"traces to {count} project(s)", reason)
-    if apply_group(ctx, kind, items, ops) is None:
+    if apply_group(ctx, kind, items, ops, touches_global=True) is None:
         return False
     details(ctx, description, reason)
     return True

@@ -779,3 +779,23 @@ def test_an_executor_refusal_under_the_budget_says_to_lower_it_and_skips_the_70_
     assert re.search(rf"^{scope}: the executor refused the input as too large "
                      rf"\({estimate}/{estimate + 1} tokens\); not processed — lower "
                      r"\[dream\] context_budget_tokens$", needs, re.MULTILINE)
+
+
+def _change_line(world, text: str) -> tuple[str, str]:
+    change_id = re.search(r"-> change (\S+);", text).group(1)
+    ids = " ".join(step.memory_id for step in world.services.memory.change(change_id).steps)
+    return change_id, ids
+
+
+def test_a_change_to_global_is_listed_in_needs_you_and_a_project_change_is_not(world):
+    a = world.create(world.global_id, "prefer ripgrep over grep")
+    b = world.create(world.global_id, "use rg rather than grep")
+    world.executor.replies = [_answer(_merge(a, b))]
+    _, text = _pass(world, project_id=world.global_id, scope=GLOBAL_SCOPE)
+    change_id, ids = _change_line(world, text)
+    assert f"global changed: merge {ids} — undo: memriver undo {change_id}\n" in _needs(text)
+    c = world.create(world.project.id, "uv manages python")
+    d = world.create(world.project.id, "python tooling is uv")
+    world.executor.replies = [_answer(_merge(c, d))]
+    _, text = _pass(world)
+    assert _needs(text) == ""

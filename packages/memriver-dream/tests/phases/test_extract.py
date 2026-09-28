@@ -478,3 +478,15 @@ def test_an_extraction_over_the_budget_is_named_in_needs_you(world):
     assert re.search(r"^extraction: input too large \(\d+/200 tokens\); not processed — raise "
                      r"\[dream\] context_budget_tokens$", text.split("== Needs you ==\n")[1],
                      re.MULTILINE)
+
+
+def test_a_new_global_entry_is_listed_in_needs_you_with_its_undo(world):
+    second = _second(world)
+    a = world.create(world.project.id, "this repo runs pytest for its tests")
+    b = world.create(second, "tests here use pytest")
+    world.executor.replies = [_answer(_new(a, b))]
+    _, text = _pass(world)
+    (created,) = world.services.memory.memories(world.global_id)
+    change_id = re.search(r"-> change (\S+);", text).group(1)
+    assert (f"global changed: new {created.id} — undo: memriver undo {change_id}\n"
+            in text.split("== Needs you ==\n")[1])

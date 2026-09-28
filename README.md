@@ -538,14 +538,21 @@ report lists each change with its memories, their versions and a
 one-sentence reason, followed by the command that reverses it, `memriver undo
 <change_id>` -- refused once any memory the change touched has changed since,
 where `memriver restore` takes over (*Browsing and managing memories
-directly*). A session summary is not a memory change and has no undo.
+directly*). A session summary is not a memory change and has no undo. Every
+change to global -- a global consolidation, an extraction, a re-check, a global
+memory's retirement -- is also listed under *Needs you* with its undo command,
+so a change every project reads is never missed. A change the content
+classifier blocks (*Content classifier*) is not made; it is listed under
+*Needs you* and the step runs again next run.
 
 **Reports.** `memriver dream report` prints the latest run's report (or
 `RUN_ID`'s) as it was written: the run, its trigger and executor; each change,
 by project; the TTL decisions; skips and failures with their reasons; *Needs
 you* -- content-policy hits with their `memriver delete ID --hard` command,
 contradictions, instruction-like entries, overturned global entries and
-refused extractions, inputs too large for `context_budget_tokens` (each by
+refused extractions, every change to global with its undo command, and
+changes the content classifier blocked, inputs too large for
+`context_budget_tokens` (each by
 scope or id, with its estimate and the room -- raise the setting when our own
 estimate rejected the input before any call, lower it when the executor
 itself refused an input that fit our estimate) and inputs above 70% of it (a

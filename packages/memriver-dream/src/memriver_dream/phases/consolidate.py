@@ -337,7 +337,7 @@ def _touched_ids(raw: dict) -> list[str]:
 
 
 def _judge(ctx: Context, raw: dict, project_id: str, sent: dict[str, Memory],
-           sources: dict[str, tuple[SourceRef, ...]]) -> bool:
+           sources: dict[str, tuple[SourceRef, ...]], *, touches_global: bool) -> bool:
     """One judgment validated and carried out; False when it keeps the pass from
     finishing (§6.9): malformed output, a reason the policy hits, an apply that did
     not happen, or an instruction-like entry (excluded and judged again next run). A
@@ -386,7 +386,7 @@ def _judge(ctx: Context, raw: dict, project_id: str, sent: dict[str, Memory],
     if isinstance(plan, Problem):
         return plan.report(ctx, kind)
     items, ops, description = plan
-    if apply_group(ctx, kind, items, ops) is None:
+    if apply_group(ctx, kind, items, ops, touches_global=touches_global) is None:
         return False                    # group limit, conflict or policy: reported there
     details(ctx, description, reason)
     return True
@@ -430,5 +430,6 @@ def run(ctx: Context, project_id: str, scope: str) -> PassResult:
             ctx.report.line(f"not carried out {raw['kind']}: instruction-like "
                             f"{' '.join(sorted(touched))}")
             continue
-        finished = _judge(ctx, raw, project_id, sent, sources) and finished
+        finished = _judge(ctx, raw, project_id, sent, sources,
+                         touches_global=scope == GLOBAL_SCOPE) and finished
     return PassResult(finished=finished, digest=digest)

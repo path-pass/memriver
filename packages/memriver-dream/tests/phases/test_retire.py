@@ -467,3 +467,17 @@ def test_a_candidate_still_too_large_after_halving_is_named_in_needs_you_once(wo
     assert len(re.findall(rf"^{memory_id}: input too large \(\d+/10 tokens\); not processed "
                           r"— raise \[dream\] context_budget_tokens$", needs, re.MULTILINE)) == 1
     assert world.executor.calls == []
+
+
+@pytest.mark.parametrize("in_global", [True, False])
+def test_only_a_retired_global_memory_is_listed_in_needs_you(world, in_global):
+    memory_id = _aged(world, 200, project_id=world.global_id if in_global else None)
+    world.executor.replies = [_decision("delete")]
+    ctx = world.context()
+    retire.run(ctx)
+    ctx.report.footer(status="completed", finished_at=world.now)
+    text = ctx.report.path.read_text()
+    assert _deleted(world, memory_id)
+    listed = re.search(rf"^global changed: retire {memory_id} — undo: memriver undo \S+$",
+                       text, re.MULTILINE)
+    assert bool(listed) is in_global

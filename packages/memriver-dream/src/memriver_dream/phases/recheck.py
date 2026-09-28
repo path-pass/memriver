@@ -163,7 +163,7 @@ def _judge(ctx: Context, raw: dict, memory: Memory, sources: tuple[SourceRef, ..
                         description=raw["description"].strip(), body=raw["body"].strip(),
                         sources=refs)
         description = update.description
-    if apply_group(ctx, decision, [memory.id], [update]) is None:
+    if apply_group(ctx, decision, [memory.id], [update], touches_global=True) is None:
         return False
     details(ctx, description, reason)
     return True

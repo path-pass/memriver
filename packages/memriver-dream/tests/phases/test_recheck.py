@@ -377,3 +377,13 @@ def test_an_entry_whose_recheck_is_over_the_budget_is_named_in_needs_you(world):
     assert re.search(rf"^{entry}: input too large \(\d+/10 tokens\); not processed "
                      r"— raise \[dream\] context_budget_tokens$", text.split("== Needs you ==\n")[1],
                      re.MULTILINE)
+
+
+def test_a_refreshed_entry_is_listed_in_needs_you_with_its_undo(world):
+    a, _, entry = _setup(world)
+    _update(world, a, 1, "demo runs pytest -q")
+    world.executor.replies = [_decision("refresh", entry, replacements=[(a, a)])]
+    _, text = _pass(world)
+    change_id = re.search(r"-> change (\S+);", text).group(1)
+    assert (f"global changed: refresh {entry} — undo: memriver undo {change_id}\n"
+            in text.split("== Needs you ==\n")[1])

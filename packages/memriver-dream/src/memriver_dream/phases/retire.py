@@ -173,7 +173,10 @@ def review(ctx: Context, memory: Memory, listed_at: str, live: set[str],
     if decision == "delete":
         ops = [SoftDelete(memory_id=memory.id, expected_version=memory.version,
                           unread_since=listed_at)]
-        if apply_group(ctx, "retire", [memory.id], ops) is None:
+        # retire reviews every project and global: only a global memory's retirement
+        # is listed under Needs you
+        touches_global = memory.project_id == ctx.services.project.global_project_id()
+        if apply_group(ctx, "retire", [memory.id], ops, touches_global=touches_global) is None:
             return False                # read or changed since the listing: nothing recorded
         # a later candidate of this run must not see it as a live comparison or dependent
         live.discard(memory.id)
