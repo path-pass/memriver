@@ -2,10 +2,12 @@
 
 The run lock; runs a crash left `running` marked failed and their reports closed;
 the policy scan; with an executor, the session summaries, the project layer per
-ordinary project, the global layer (extraction, then the source re-check), the
-project layer for global and TTL; then prune_reads, report retention and the
-finish. Per-item failures stay inside their phase; whatever a phase raises is a
-store failure: the run is recorded as failed, its report closed, the error re-raised.
+ordinary project, the project layer for global, the global layer (extraction, then
+the source re-check) and TTL; then prune_reads, report retention and the finish.
+Global consolidate runs before extraction and the source re-check so an entry it
+flags instruction_like this run is already excluded from both, not just from TTL.
+Per-item failures stay inside their phase; whatever a phase raises is a store
+failure: the run is recorded as failed, its report closed, the error re-raised.
 """
 
 from __future__ import annotations
@@ -210,14 +212,14 @@ def _phases(ctx: Context, wanted: frozenset[str] | set[str]) -> None:
                 report.section(f"Project layer: {report.safe(project.name)} ({project.id})")
                 scope = f"project:{project.id}"
                 _passed(ctx, scope, consolidate.run(ctx, project.id, scope))
+    if "consolidate" in wanted and global_id is not None:
+        report.section("Project layer: global")
+        _passed(ctx, GLOBAL_SCOPE, consolidate.run(ctx, global_id, GLOBAL_SCOPE))
     if "extract" in wanted:
         report.section("Global layer: extraction")
         _passed(ctx, EXTRACTION_SCOPE, extract.run(ctx))
         report.section("Global layer: source re-check")
         recheck.run(ctx)
-    if "consolidate" in wanted and global_id is not None:
-        report.section("Project layer: global")
-        _passed(ctx, GLOBAL_SCOPE, consolidate.run(ctx, global_id, GLOBAL_SCOPE))
     if "retire" in wanted:
         report.section("TTL")
         retire.run(ctx)

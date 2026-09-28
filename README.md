@@ -407,14 +407,17 @@ still going is recorded as skipped. Each run, in order:
    contradictions and entries that are instructions addressed to an agent
    under *Needs you* without changing them. Only the project's own memories
    count as evidence, and no change is preferred when in doubt.
-4. **Extracts shared principles into global**: a principle backed by memories
+4. **Consolidates global** the way step 3 consolidates a project, before global
+   memories are sent anywhere else: an entry this step flags as an instruction
+   addressed to an agent is excluded from every later step below, this run and
+   every run after, until it is edited or deleted.
+5. **Extracts shared principles into global**: a principle backed by memories
    of at least two projects becomes a global entry citing them, or supplements
    an existing one; what only one project says stays there. Principles, not
    commands: "Python projects prefer pytest for tests", never "pytest -q". A
    global entry whose cited sources changed since is re-checked against their
    new versions: kept, pointed at the new versions, revised, or listed under
    *Needs you* as overturned.
-5. **Consolidates global** the way step 3 consolidates a project.
 6. **Retires memories unused past their TTL**, after asking the model whether
    there is reason enough to retire each one: a memory's last use is the
    latest of its creation, its last update and its last `memory_read`, and its
@@ -427,7 +430,7 @@ still going is recorded as skipped. Each run, in order:
    `report_retention_days`.
 
 `--phase` runs one step after the policy scan: `summarize` (2), `consolidate`
-(3 and 5), `extract` (4) or `retire` (6). A consolidation or extraction pass
+(3 and 4), `extract` (5) or `retire` (6). A consolidation or extraction pass
 is skipped while the memories it would read are unchanged since its last
 finished pass.
 
