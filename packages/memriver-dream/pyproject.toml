@@ -19,7 +19,7 @@ classifiers = [
 # beyond the pydantic/pydantic-settings baseline core already brings (the settings
 # module reads the [dream] table with them directly)
 dependencies = [
-    "memriver-core>=0.1.0",
+    "memriver-core==0.1.0",
     "pydantic>=2",
     # 2.15.0: the first release whose TomlConfigSettingsSource takes toml_table_header
     # and matches file keys case-insensitively, both relied on by the settings loaders

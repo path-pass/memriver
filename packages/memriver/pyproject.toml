@@ -17,8 +17,8 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "memriver-core>=0.1.0",
-    "memriver-dream>=0.1.0",
+    "memriver-core==0.1.0",
+    "memriver-dream==0.1.0",
     "fastmcp>=3.4.7,<4",
     "pydantic>=2",
     "tomlkit",
