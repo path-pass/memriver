@@ -32,12 +32,14 @@ from .phases import (
     scan,
     summarize,
 )
+from .protocols import ExecutorResult
 from .report import Report, mark_interrupted
 from .settings import (
     DEFAULT_DREAM_CONTEXT_BUDGET_TOKENS,
     DEFAULT_DREAM_REPORT_RETENTION_DAYS,
     DREAM_DB_FILENAME,
     DREAM_DIRECTORY,
+    DREAM_FAILURE_HINTS,
     DREAM_INPUT_MARGIN_TOKENS,
     DREAM_OUTPUT_RESERVE_TOKENS,
     DREAM_REPORTS_DIRECTORY,
@@ -52,6 +54,27 @@ if TYPE_CHECKING:
 
 # the phases `memriver dream run --phase` can name; the policy scan always runs
 PHASES = frozenset({"summarize", "consolidate", "extract", "retire"})
+
+
+class WatchedExecutor:
+    """The run's executor, noting under Needs you the first login and the first quota
+    failure of the run -- one line each, however many calls fail so. Every other kind
+    stays a section line; the run goes on and still completes."""
+
+    def __init__(self, executor: Executor, report: Report) -> None:
+        self._executor, self._report = executor, report
+        self.name, self.harness = executor.name, executor.harness
+        self._noted: set[str] = set()
+
+    def run(self, *, system_prompt: str, prompt: str, schema: dict,
+            timeout_s: int) -> ExecutorResult:
+        result = self._executor.run(system_prompt=system_prompt, prompt=prompt, schema=schema,
+                                    timeout_s=timeout_s)
+        hint = DREAM_FAILURE_HINTS.get(result.error or "")
+        if hint is not None and result.error not in self._noted:
+            self._noted.add(result.error)
+            self._report.needs_you(f"executor {self.name}: {result.error} failure — {hint}")
+        return result
 
 
 @dataclass
@@ -115,7 +138,9 @@ def run_dream(services: Services, executor: Executor | None,
                 report.line(f"run {row.run_id} was interrupted; marked failed")
             budget = (DEFAULT_DREAM_CONTEXT_BUDGET_TOKENS if settings is None
                       else settings.context_budget_tokens)
-            ctx = Context(services=services, executor=executor, transcripts=transcripts,
+            ctx = Context(services=services, transcripts=transcripts,
+                          executor=None if executor is None
+                          else WatchedExecutor(executor, report),
                           settings=settings, now=now, store=store, report=report,
                           excluded=set(), history_hits={},
                           budget_tokens=(budget - DREAM_OUTPUT_RESERVE_TOKENS

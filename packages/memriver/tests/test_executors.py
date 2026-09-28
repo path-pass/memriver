@@ -373,3 +373,23 @@ def test_a_run_whose_temporary_directory_cannot_be_made_is_a_start_failure(tmp_p
         assert executor.run(system_prompt="s", prompt="p", schema=SCHEMA,
                             timeout_s=5) == ExecutorResult(error="start")
     assert claude_runner.seen == {} and codex_runner.seen == {}
+
+
+def test_claude_settings_reach_the_argv_as_settings_which_restricted_still_honours():
+    runner = Runner(_ok({"summary": "s"}))
+    executor = ClaudeExecutor("/opt/bin/claude", env=BASE_ENV, runner=runner,
+                              settings_path="/etc/memriver/auth.json")
+    executor.run(system_prompt="SYS", prompt="P", schema=SCHEMA, timeout_s=5)
+    # appended last, as memriver_classifier.headless does it
+    assert runner.seen["argv"][-2:] == ["--settings", "/etc/memriver/auth.json"]
+
+
+def test_make_executor_passes_claude_settings():
+    dream = DreamSettings(executor="claude", executor_path="/opt/bin/claude",
+                          claude_settings="/etc/memriver/auth.json")
+    executor = make_executor(dream, env=BASE_ENV)
+    argv = executor.argv(system_prompt="SYS", schema=SCHEMA)
+    assert "--settings" in argv and "/etc/memriver/auth.json" in argv
+    plain = make_executor(DreamSettings(executor="claude", executor_path="/opt/bin/claude"),
+                          env=BASE_ENV)
+    assert "--settings" not in plain.argv(system_prompt="SYS", schema=SCHEMA)

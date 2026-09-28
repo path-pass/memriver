@@ -257,3 +257,18 @@ def test_the_context_budget_defaults_to_200k_and_must_exceed_the_reserve(tmp_pat
     table = load_dream_settings(_root(tmp_path / "b", DREAM_TABLE
                                       + "context_budget_tokens = 20001\n"))
     assert table.context_budget_tokens == 20_001
+
+
+def test_claude_settings_is_an_optional_absolute_path(tmp_path):
+    assert load_dream_settings(_root(tmp_path, DREAM_TABLE)).claude_settings is None
+    table = load_dream_settings(_root(tmp_path / "b", DREAM_TABLE
+                                      + 'claude_settings = "/etc/memriver/auth.json"\n'))
+    assert table.claude_settings == "/etc/memriver/auth.json"
+    with pytest.raises(SettingsError) as caught:
+        load_dream_settings(_root(tmp_path / "c", DREAM_TABLE + 'claude_settings = "auth.json"\n'))
+    assert caught.value.fields == ("dream.claude_settings",)
+
+
+def test_the_failure_hints_live_in_dream_settings():
+    assert set(dream_settings.DREAM_FAILURE_HINTS) == {"login", "quota"}
+    assert "DREAM_FAILURE_HINTS" in dream_settings.__all__

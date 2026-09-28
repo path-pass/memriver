@@ -549,7 +549,8 @@ refused extractions, inputs too large for `context_budget_tokens` (each by
 scope or id, with its estimate and the room -- raise the setting when our own
 estimate rejected the input before any call, lower it when the executor
 itself refused an input that fit our estimate) and inputs above 70% of it (a
-call that itself ended too large never also gets this line); and
+call that itself ended too large never also gets this line); the first login
+failure and the first quota failure of the run, with what to check; and
 how the run finished. `--list [N]` lists the last N
 runs (default 10) with time, trigger and status. A run that stopped without
 finishing is shown as interrupted, and the next run marks each of its changes
@@ -577,6 +578,14 @@ too large, unreadable answer, a harness that cannot be started) is retried by
 the next run; dream never switches executor. The executor's provider receives
 memory text and session transcripts; memories and transcript records that
 fail the content policy are left out.
+
+A login or quota failure is listed once under *Needs you* (the run goes on and still
+completes). For API-key, Bedrock or Vertex authentication, Claude Code's own settings
+files are ignored in an executor run, so give dream a settings file of its own with
+`claude_settings = "/absolute/path/to/auth-settings.json"`: it is passed as `--settings`,
+which `--restricted` still honours. Put only authentication in that file (an
+`apiKeyHelper`, the Bedrock or Vertex `env` block): hooks or MCP servers in it would run
+inside the executor. For Codex, give the provider in `[dream.codex_overrides]` (below).
 
 What an executor run can and cannot do:
 
@@ -636,6 +645,7 @@ max_sessions_per_run = 20             # sessions one run summarizes
 max_groups_per_run = 20               # changes one run may make
 max_candidates_per_run = 30           # TTL reviews one run may ask for
 context_budget_tokens = 200000        # tokens one executor call may use, input and output
+# claude_settings = "/absolute/path/to/auth-settings.json"   # passed to claude as --settings
 ```
 
 **A Codex provider from `config.toml`.** Dream's Codex runs skip your
