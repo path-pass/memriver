@@ -59,6 +59,15 @@ def _loaded(label: str, uid: int, launchctl: Launchctl) -> bool:
     return code == 0
 
 
+def is_loaded(label: str, uid: int, launchctl: Launchctl) -> bool:
+    """Whether launchd currently has ``label`` loaded; LaunchctlFailed when it
+    cannot say. The public name for ``_loaded``, for a caller outside this
+    module that needs the same answer without re-issuing the launchctl print
+    call itself -- a schedule can be loaded with its plist already gone, so
+    the plist alone never answers this question."""
+    return _loaded(label, uid, launchctl)
+
+
 def _unload(label: str, uid: int, launchctl: Launchctl) -> None:
     """Boot a loaded job out; LaunchctlFailed when launchd still has it afterwards. The
     service target names the job by label, so it works with the plist already gone."""

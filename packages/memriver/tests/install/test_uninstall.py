@@ -2204,7 +2204,7 @@ def test_uninstall_declining_the_dream_schedule_prompt_leaves_it_installed(home,
                             replies=["n"], launchctl=launchctl)
 
     assert result.exit_code == 0
-    assert launchctl.calls == []
+    assert all(call[0] != "bootout" for call in launchctl.calls)
     assert result.answers.prompts == [
         f"remove the dream schedule ({launch_agent.plist_path(home)})? [y/N] "]
     assert "the schedule was left in place" in result.stdout
@@ -2223,17 +2223,95 @@ def test_accepting_the_dream_schedule_prompt_removes_it(home, project):
     assert not launch_agent.plist_path(home).exists()
 
 
-def test_uninstall_of_every_harness_says_nothing_when_no_schedule_was_installed(
+def test_uninstall_says_nothing_when_the_schedule_is_neither_loaded_nor_on_disk(
         home, project):
+    """Not loaded and no plist file: silently skipped, with no bootout --
+    launchd is still asked (a schedule can be loaded with its plist already
+    gone, so the plist alone never answers this), just not told to unload
+    anything."""
     launchctl = FakeLaunchctl()
 
     result = full_uninstall(ALL_HARNESSES, home=home, cwd=project, yes=False,
                             launchctl=launchctl)
 
     assert result.exit_code == 0
-    assert launchctl.calls == []          # no plist -- never even asked launchd
-    assert result.answers.prompts == []   # -- nor the user
+    assert all(call[0] != "bootout" for call in launchctl.calls)
+    assert result.answers.prompts == []
     assert "schedule" not in result.stdout
+
+
+def test_uninstall_prompts_and_removes_a_loaded_schedule_with_no_plist_file(home,
+                                                                            project):
+    """The plist can be gone while launchd still has the job loaded; presence
+    is "on disk or loaded", not "on disk" alone."""
+    launchctl = FakeLaunchctl(loaded=True)
+
+    result = full_uninstall(ALL_HARNESSES, home=home, cwd=project, yes=False,
+                            replies=["y"], launchctl=launchctl)
+
+    assert result.exit_code == 0
+    assert result.answers.prompts == [
+        f"remove the dream schedule ({launch_agent.plist_path(home)})? [y/N] "]
+    assert "removed the schedule; settings and data are kept" in result.stdout
+    assert launchctl.loaded is False
+
+
+def test_uninstall_dry_run_reports_a_loaded_schedule_with_no_plist_file_and_never_boots_it_out(
+        home, project):
+    launchctl = FakeLaunchctl(loaded=True)
+
+    result = full_uninstall(ALL_HARNESSES, home=home, cwd=project, yes=True,
+                            dry_run=True, launchctl=launchctl)
+
+    assert result.exit_code == 0
+    assert "dry run: the dream schedule would be removed." in result.stdout
+    assert all(call[0] != "bootout" for call in launchctl.calls)
+    assert launchctl.loaded is True
+
+
+def test_uninstall_refuses_when_the_schedule_state_cannot_be_determined(home, project,
+                                                                        tmp_path,
+                                                                        monkeypatch):
+    """An lstat fault on the plist means "cannot tell", not "absent" -- refuse
+    rather than silently skip or wrongly claim there is nothing to remove, and
+    never reach the purge that follows."""
+    launchctl = FakeLaunchctl()
+    plist = launch_agent.plist_path(home)
+    real_lstat = os.lstat
+
+    def flaky_lstat(target, *args, **kwargs):
+        if str(target) == str(plist):
+            raise OSError(5, "Input/output error")
+        return real_lstat(target, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", flaky_lstat)
+    root = tmp_path / "agent-memory"
+    root.mkdir()
+    (root / "memriver.db").write_text("db")
+
+    result = full_uninstall(ALL_HARNESSES, home=home, cwd=project, yes=True,
+                            purge_data=True, env={"MEMRIVER_ROOT": str(root)},
+                            launchctl=launchctl)
+
+    assert result.exit_code != 0
+    assert "could not be checked" in result.stdout
+    assert "memory storage root" not in result.stdout
+    assert root.exists() and (root / "memriver.db").exists()
+    assert all(call[0] != "bootout" for call in launchctl.calls)
+
+
+def test_uninstall_refuses_when_launchd_cannot_say_whether_the_schedule_is_loaded(
+        home, project):
+    """launchd itself failing to answer is the same "cannot tell" refusal as
+    an lstat fault -- neither absent nor safe to treat as present-and-remove."""
+    launchctl = FakeLaunchctl(print_fails=True)
+
+    result = full_uninstall(ALL_HARNESSES, home=home, cwd=project, yes=True,
+                            launchctl=launchctl)
+
+    assert result.exit_code != 0
+    assert "could not be checked" in result.stdout
+    assert all(call[0] != "bootout" for call in launchctl.calls)
 
 
 def test_uninstall_dry_run_reports_it_would_remove_an_installed_schedule(home,

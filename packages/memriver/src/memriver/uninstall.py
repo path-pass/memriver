@@ -11,6 +11,7 @@ nothing else unless that exits clean.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -94,6 +95,16 @@ def _remove_dream_schedule(*, yes: bool, dry_run: bool, home: Path, stdout: Text
     config steps decided. Reuses ``memriver dream``'s own uninstall path for
     the actual removal so its refusal wording is never duplicated here; a
     platform dream never schedules on gets no output at all, not even a note.
+
+    "A schedule is present" is the plist file existing *or* launchd reporting
+    the job loaded -- not the plist alone: a job can still be loaded (and
+    still running daily) after its plist was deleted out from under it, the
+    exact case ``launch_agent.uninstall`` already targets by label rather
+    than by file. Both checks are read-only (``os.lstat``, `launchctl print`),
+    so a dry run can run them without risking a bootout. Either one failing
+    to answer -- an ``OSError`` other than "missing" from ``lstat``, or
+    launchd itself refusing to say -- means "cannot tell", not "absent", and
+    refuses rather than guessing either way.
     """
     if platform != "darwin":
         return 0
@@ -105,7 +116,28 @@ def _remove_dream_schedule(*, yes: bool, dry_run: bool, home: Path, stdout: Text
 
     label = dream_commands.DREAM_LAUNCH_AGENT_LABEL
     plist = launch_agent.plist_path(home, label)
-    if not plist.exists():
+    resolved_uid = os.getuid() if uid is None else uid
+    resolved_launchctl = launchctl or launch_agent.run_launchctl
+
+    try:
+        os.lstat(plist)
+        plist_present = True
+    except FileNotFoundError:
+        plist_present = False
+    except OSError as error:
+        stdout.write(f"memriver uninstall: the dream schedule could not be checked "
+                     f"({error.strerror or error}); nothing was removed.\n")
+        return 1
+
+    try:
+        loaded = launch_agent.is_loaded(label, resolved_uid, resolved_launchctl)
+    except launch_agent.LaunchctlFailed:
+        stdout.write("memriver uninstall: the dream schedule could not be checked "
+                     "(launchd could not say whether it is loaded); nothing was "
+                     "removed.\n")
+        return 1
+
+    if not plist_present and not loaded:
         return 0
     if dry_run:
         stdout.write("dry run: the dream schedule would be removed.\n")
@@ -124,8 +156,8 @@ def _remove_dream_schedule(*, yes: bool, dry_run: bool, home: Path, stdout: Text
                         "in place.\n")
             return 0
     return dream_commands.run_uninstall(
-        home=home, stdout=stdout, launchctl=launchctl or launch_agent.run_launchctl,
-        uid=uid, platform=platform, label=label,
+        home=home, stdout=stdout, launchctl=resolved_launchctl,
+        uid=resolved_uid, platform=platform, label=label,
     )
 
 
