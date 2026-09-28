@@ -715,6 +715,46 @@ def test_install_with_an_unreadable_store_stops_before_touching_any_harness(
                              "run memriver doctor\n")
 
 
+def test_install_warns_when_the_package_is_missing_and_a_classifier_table_is_set(
+        monkeypatch, tmp_path):
+    import memriver.install as install_module
+
+    monkeypatch.setitem(sys.modules, "memriver_classifier", None)
+    store = tmp_path / "store"
+    store.mkdir()
+    (store / "settings.toml").write_text('[classifier]\nbackend = "jev"\n', encoding="utf-8")
+    monkeypatch.setenv("MEMRIVER_ROOT", str(store))
+    monkeypatch.setattr(install_module, "run_install", lambda *a, **kw: 0)
+    result = invoke_main(["install", "--yes"], stdin="")
+    assert result.exit_code == 0
+    assert result.stderr == f"memriver install: {cli.CLASSIFIER_NOT_INSTALLED_WARNING}\n"
+
+
+def test_install_prints_no_classifier_warning_without_a_table(monkeypatch, tmp_path):
+    import memriver.install as install_module
+
+    monkeypatch.setitem(sys.modules, "memriver_classifier", None)
+    monkeypatch.setenv("MEMRIVER_ROOT", str(tmp_path / "store"))
+    monkeypatch.setattr(install_module, "run_install", lambda *a, **kw: 0)
+    result = invoke_main(["install", "--yes"], stdin="")
+    assert result.exit_code == 0
+    assert result.stderr == ""
+
+
+def test_install_prints_no_classifier_warning_when_the_package_is_installed(
+        monkeypatch, tmp_path):
+    import memriver.install as install_module
+
+    store = tmp_path / "store"
+    store.mkdir()
+    (store / "settings.toml").write_text('[classifier]\nbackend = "jev"\n', encoding="utf-8")
+    monkeypatch.setenv("MEMRIVER_ROOT", str(store))
+    monkeypatch.setattr(install_module, "run_install", lambda *a, **kw: 0)
+    result = invoke_main(["install", "--yes"], stdin="")
+    assert result.exit_code == 0
+    assert result.stderr == ""
+
+
 @pytest.mark.parametrize(("argv", "harness"), [
     (["serve"], None),
     (["--root", "ROOT"], None),
