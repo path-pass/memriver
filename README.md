@@ -327,6 +327,17 @@ installed, configured, off, or which backend it uses (it never calls a model).
 Latency: each checked write waits for the answer. A headless harness run takes
 seconds (a smaller `model` helps); TypeSafe documents 70-500 ms per `jev` request.
 
+**Scheduled dream runs.** `memriver dream run`'s LaunchAgent (*Dream*, Schedule) starts
+with only `HOME`, a `PATH` and `MEMRIVER_ROOT` -- no other environment variable reaches
+it. A `jev` backend's `api_key_env` variable, and a `codex` backend's own
+`codex_overrides` `env_key`, are invisible there too, so the 04:00 run finds no key,
+refuses every text-carrying dream change as classifier-unavailable, and tries again the
+next night for nothing (the executor still ran and was paid for). If you schedule
+`dream run` with a `jev` or `codex` classifier backend, make that variable visible to
+your login session yourself, the same way as for `[dream.codex_overrides]` (`launchctl
+setenv NAME value` after each login). A `claude` backend using your harness's
+subscription login needs nothing added.
+
 ```toml
 # ~/agent-memory/settings.toml -- [classifier], every key shown with its default
 # except backend and executor_path, which have none
@@ -586,7 +597,10 @@ holding the memriver and executor directories, and `MEMRIVER_ROOT` set to the
 store's absolute path; its output goes to `<root>/dream/dream.log`, one line
 per run naming the run and its status (read the report with `memriver dream
 report`), so the log never keeps report text past the retention. It runs
-only while you are logged in, and needs no sudo. The schedule needs a
+only while you are logged in, and needs no sudo. The same bare environment
+reaches the optional content classifier's own backend when one is configured
+(see *Content classifier*, Scheduled dream runs) -- a `jev` or `codex` backend
+needs the same `launchctl setenv` treatment as `[dream.codex_overrides]` below. The schedule needs a
 persistent memriver: `uvx` runs memriver from uv's cache, which uv may delete
 at any time, so `init` refuses there -- install it with `uv tool install
 memriver` and run `memriver dream init` from that installation (run it again
