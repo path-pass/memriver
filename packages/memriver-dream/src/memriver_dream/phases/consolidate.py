@@ -276,8 +276,9 @@ _PLANS = {"merge": _merge, "rewrite": _rewrite, "supersede": _supersede}
 def _judge(ctx: Context, raw: dict, project_id: str, sent: dict[str, Memory],
            sources: dict[str, tuple[SourceRef, ...]]) -> bool:
     """One judgment validated and carried out; False when it keeps the pass from
-    finishing (§6.9): malformed output, a reason the policy hits, or an apply that did
-    not happen. A judgment a counted rule refuses is reported and does not."""
+    finishing (§6.9): malformed output, a reason the policy hits, an apply that did
+    not happen, or an instruction-like entry (excluded and judged again next run). A
+    judgment a counted rule refuses is reported and does not."""
     report, kind = ctx.report, raw["kind"]
     problem = reason_problem(ctx, raw["reason"])
     if problem is not None:
@@ -291,13 +292,19 @@ def _judge(ctx: Context, raw: dict, project_id: str, sent: dict[str, Memory],
         if refusal := ids_problem(ids, sent, 2 if kind == "contradiction" else 1, "ids"):
             return refusal.report(ctx, kind)
         label = kind.replace("_", "-")
-        # the full entry, in the section line, at the moment it is judged: the scope
-        # digest is stored once this pass finishes, and a run killed before the
-        # footer is ever written must not lose it -- the footer's own Needs-you
-        # entry, below, is the summary collected there
+        # the full entry, in the section line, at the moment it is judged: for a
+        # contradiction the scope digest is stored once this pass finishes, and a
+        # run killed before the footer is ever written must not lose it -- the
+        # footer's own Needs-you entry, below, is the summary collected there.
+        # An instruction-like entry is excluded from every later model step of this
+        # run and the pass does not finish, so no digest is stored and the next run
+        # judges the scope again, re-flagging and re-excluding it until it is fixed.
         entry_line = f"{label} {' '.join(ids)}: {reason}"
         report.line(entry_line)
         report.needs_you(entry_line)
+        if kind == "instruction_like":
+            ctx.excluded.update(ids)
+            return False
         return True
     plan = _PLANS[kind](raw, project_id, sent, sources)
     if isinstance(plan, Problem):
