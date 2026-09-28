@@ -619,16 +619,20 @@ manages — hook entries, MCP registrations, the marker block — byte for byte
 around them; a container the removal empties is left as an empty container
 rather than guessed at, Kiro's steering file (memriver's own) is deleted, and
 shared files are never deleted. The harness's own memory setting is left as it
-is; the completion report says so and names any file left empty.
+is; the completion report says so and names any file left empty. Once the
+configuration is removed, `uninstall` also removes the dream schedule (see
+*Dream: offline maintenance*) if one is installed, so a scheduled dream does
+not keep sending memories to the model service on its own.
 
 `--purge-data` is the only thing that deletes the whole store rather than one
 memory (`memriver delete` removes a single memory; see *Browsing and managing
 memories directly*), and only with the explicit flag (`--yes` merely skips the
 prompts). The resolved, canonical path is shown before deletion; the
-filesystem root, your home, the current directory and anything that resolves
-onto them through a symlink are refused.
-`--clean-uv-cache` runs `uv cache clean` for both packages afterwards and is
-non-fatal if `uv` is missing or fails.
+filesystem root, your home, the current directory, anything that resolves onto
+them through a symlink, and a directory that is neither empty nor a memriver
+store (it holds no `memriver.db`) are refused.
+`--clean-uv-cache` runs `uv cache clean` for memriver's packages afterwards and
+is non-fatal if `uv` is missing or fails.
 
 ## Migrating existing Claude Code memory
 
