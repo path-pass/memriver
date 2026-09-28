@@ -2314,6 +2314,21 @@ def test_uninstall_refuses_when_launchd_cannot_say_whether_the_schedule_is_loade
     assert all(call[0] != "bootout" for call in launchctl.calls)
 
 
+def test_uninstall_refuses_when_launchctl_cannot_be_run_while_checking_the_schedule(
+        home, project):
+    """`run_launchctl`'s own subprocess.run raises OSError when the binary
+    itself cannot be started -- not LaunchctlFailed, which is only for a
+    launchctl that ran and answered something unusable."""
+    def unrunnable(args: list[str]) -> int:
+        raise OSError("launchctl not found")
+
+    result = full_uninstall(ALL_HARNESSES, home=home, cwd=project, yes=True,
+                            launchctl=unrunnable)
+
+    assert result.exit_code != 0
+    assert "could not be checked" in result.stdout
+
+
 def test_uninstall_dry_run_reports_it_would_remove_an_installed_schedule(home,
                                                                          project):
     launchctl = FakeLaunchctl()

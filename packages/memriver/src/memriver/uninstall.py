@@ -131,7 +131,11 @@ def _remove_dream_schedule(*, yes: bool, dry_run: bool, home: Path, stdout: Text
 
     try:
         loaded = launch_agent.is_loaded(label, resolved_uid, resolved_launchctl)
-    except launch_agent.LaunchctlFailed:
+    except (launch_agent.LaunchctlFailed, OSError):
+        # LaunchctlFailed: launchd ran and answered something unusable.
+        # OSError: launchctl itself could not be started at all (the same
+        # fault run_launchctl's own subprocess.run raises) -- both mean
+        # "cannot tell", not "absent", and must not escape as a traceback
         stdout.write("memriver uninstall: the dream schedule could not be checked "
                      "(launchd could not say whether it is loaded); nothing was "
                      "removed.\n")
