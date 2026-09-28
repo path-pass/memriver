@@ -3,6 +3,7 @@ import contextlib
 import copy
 import json
 import logging
+import re
 import sqlite3
 import threading
 import time
@@ -448,6 +449,19 @@ async def test_search_limit_stays_a_plain_integer_in_the_tool_schema(server):
         tool = next(t for t in await c.list_tools() if t.name == "memory_search")
     limit = tool.inputSchema["properties"]["limit"]
     assert {"type": "integer"} in limit.get("anyOf", [limit])
+
+
+async def test_the_migration_skill_only_names_memory_write_arguments_that_exist(server):
+    """skills/migrate-claude-memory/SKILL.md walks an agent through calling
+    memory_write by hand; every argument it tells the agent to pass must be
+    one memory_write actually takes."""
+    skill = (Path(__file__).resolve().parents[3] / "skills" / "migrate-claude-memory"
+             / "SKILL.md").read_text()
+    section = skill.split("One file = one `memory_write` call:")[1].split("\n\n")[0]
+    documented = set(re.findall(r"`(\w+)`:", section))
+    async with Client(server) as c:
+        tool = next(t for t in await c.list_tools() if t.name == "memory_write")
+    assert documented <= set(tool.inputSchema["properties"])
 
 
 async def test_explicit_root_wins_over_the_settings_root(tmp_path, world):

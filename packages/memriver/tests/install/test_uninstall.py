@@ -39,6 +39,7 @@ from pathlib import Path
 
 import pytest
 import tomlkit
+from memriver import launch_agent
 from memriver.install import (
     HARNESS_SETTING_TAKEOVER_NOTICE,
     PlanningError,
@@ -104,6 +105,32 @@ def refuse_to_read(prompt: str) -> str:
     raise EOFError(prompt)
 
 
+class FakeLaunchctl:
+    """launchd in miniature, the same fake ``test_launch_agent.py`` and
+    ``test_dream_commands.py`` use: one job, loaded or not; `print` can fail
+    to answer and bootout can fail. Standing in here keeps every uninstall
+    test off the real launchd."""
+
+    def __init__(self, *, loaded: bool = False, bootout_fails: bool = False,
+                 print_fails: bool = False) -> None:
+        self.loaded, self.bootout_fails, self.print_fails = loaded, bootout_fails, print_fails
+        self.calls: list[list[str]] = []
+
+    def __call__(self, args: list[str]) -> int:
+        self.calls.append(list(args))
+        if args[0] == "print":
+            if self.print_fails:
+                return 5                    # launchd could not say
+            return 0 if self.loaded else 113
+        if args[0] == "bootout":
+            if self.bootout_fails:
+                return 5
+            self.loaded = False
+            return 0
+        self.loaded = True
+        return 0
+
+
 class Run:
     def __init__(self, exit_code: int, stdout: str, answers: Answers | None,
                  replace: ReplaceSpy) -> None:
@@ -148,7 +175,8 @@ def full_uninstall(harnesses, *, home: Path, cwd: Path, yes: bool = True,
                    dry_run: bool = False, purge_data: bool = False,
                    clean_uv_cache: bool = False, env: dict | None = None,
                    root: Path | None = None,
-                   replies=None, input_fn=None) -> Run:
+                   replies=None, input_fn=None,
+                   launchctl=None, uid: int = 501, platform: str = "darwin") -> Run:
     out = io.StringIO()
     answers = None
     if input_fn is None:
@@ -159,6 +187,8 @@ def full_uninstall(harnesses, *, home: Path, cwd: Path, yes: bool = True,
         clean_uv_cache=clean_uv_cache, root=root, home=home, cwd=cwd,
         env=env if env is not None else {}, input_fn=input_fn, stdout=out,
         replace_file=lambda s, d: __import__("os").replace(s, d),
+        launchctl=launchctl if launchctl is not None else FakeLaunchctl(),
+        uid=uid, platform=platform,
     )
     return Run(exit_code, out.getvalue(), answers, None)
 
@@ -1376,6 +1406,15 @@ def test_cli_parses_every_uninstall_flag():
     assert args.root == Path("/tmp/store")
 
 
+def test_cli_clean_uv_cache_help_does_not_name_only_two_of_the_three_packages():
+    from memriver.cli import _build_parser
+
+    uninstall = _build_parser()._subparsers._group_actions[0].choices["uninstall"]
+    action = next(a for a in uninstall._actions if "--clean-uv-cache" in a.option_strings)
+
+    assert "memriver-core" not in action.help  # the help used to stop at two packages
+
+
 def test_cli_rejects_harness_and_all_together_for_uninstall():
     from memriver.cli import _build_parser
 
@@ -1403,6 +1442,7 @@ def test_purge_data_without_the_flag_leaves_the_store_untouched(home, project,
 def test_purge_data_with_yes_removes_the_resolved_root(home, project, tmp_path):
     root = tmp_path / "agent-memory"
     root.mkdir()
+    (root / "memriver.db").write_text("x")
     (root / "marker.txt").write_text("data")
 
     result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
@@ -1411,6 +1451,25 @@ def test_purge_data_with_yes_removes_the_resolved_root(home, project, tmp_path):
     assert result.exit_code == 0
     assert str(root) in result.stdout
     assert not root.exists()
+
+
+def test_purge_data_refuses_a_directory_holding_no_memriver_store(home, project,
+                                                                   tmp_path):
+    """`--root ~/Documents` (or a mistyped MEMRIVER_ROOT) must not wipe a
+    directory nobody ever asked memriver to own -- checked before any prompt,
+    so `--yes` cannot skip past it either."""
+    root = tmp_path / "documents"
+    root.mkdir()
+    (root / "notes.txt").write_text("mine")
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                            purge_data=True, env={"MEMRIVER_ROOT": str(root)})
+
+    assert result.exit_code != 0
+    assert "does not look like a memriver store" in result.stdout
+    assert "nothing was removed" in result.stdout
+    assert root.exists()
+    assert (root / "notes.txt").read_text() == "mine"
 
 
 def test_purge_data_declined_leaves_the_store_in_place(home, project, tmp_path):
@@ -1520,6 +1579,7 @@ def test_purge_data_reports_a_partial_removal_when_the_walk_fails(home, project,
     delete_tree = shutil.rmtree
     root = tmp_path / "agent-memory"
     (root / "sessions").mkdir(parents=True)
+    (root / "memriver.db").write_text("db")
     (root / "sessions" / "one.json").write_text("gone")
     (root / "index.db").write_text("still here")
 
@@ -1746,6 +1806,7 @@ def test_purge_data_refuses_a_replacement_directory_at_the_confirmed_path(
     one the user confirmed. Deleting it would destroy a tree nobody agreed to."""
     root = tmp_path / "agent-memory"
     root.mkdir()
+    (root / "memriver.db").write_text("db")
     (root / "confirmed.txt").write_text("the object the user saw")
     moved = tmp_path / "moved-away"
 
@@ -1774,6 +1835,7 @@ def test_purge_data_deletes_the_confirmed_directory_when_a_parent_is_swapped_las
     parent = tmp_path / "parent"
     store = parent / "agent-memory"
     (store / "sessions").mkdir(parents=True)
+    (store / "memriver.db").write_text("db")
     (store / "sessions" / "one.json").write_text("memriver's own")
     victim_parent = tmp_path / "victim-parent"
     victim = victim_parent / "agent-memory"
@@ -1807,6 +1869,7 @@ def test_purge_data_leaves_a_replacement_swapped_in_after_the_confirmed_open(
     checked once more before the emptied root itself is detached."""
     root = tmp_path / "agent-memory"
     (root / "sessions").mkdir(parents=True)
+    (root / "memriver.db").write_text("db")
     (root / "sessions" / "one.json").write_text("the object the user saw")
     moved = tmp_path / "moved-away"
 
@@ -1841,6 +1904,7 @@ def test_purge_data_leaves_a_replacement_swapped_in_under_the_confirmed_root(
     is checked once more first, and the stranger is left standing and named."""
     root = tmp_path / "agent-memory"
     (root / "sessions").mkdir(parents=True)
+    (root / "memriver.db").write_text("db")
     (root / "sessions" / "one.json").write_text("the object the walk opened")
     moved = tmp_path / "moved-away"
 
@@ -1872,6 +1936,7 @@ def test_purge_data_leaves_a_replacement_that_reuses_the_freed_child_inode(
     of reach of the ``mkdir``."""
     root = tmp_path / "agent-memory"
     (root / "sessions").mkdir(parents=True)
+    (root / "memriver.db").write_text("db")
     (root / "sessions" / "one.json").write_text("the object the walk opened")
     moved = tmp_path / "moved-away"
 
@@ -1904,6 +1969,7 @@ def test_purge_data_removes_a_nested_tree_through_the_confirmed_directory(
     root = tmp_path / "agent-memory"
     (root / "sessions" / "2026" / "09").mkdir(parents=True)
     (root / "sessions" / "2026" / "09" / "one.json").write_text("{}")
+    (root / "memriver.db").write_text("db")
     (root / "index.db").write_text("db")
     (root / "elsewhere").symlink_to(outside, target_is_directory=True)
 
@@ -1998,6 +2064,7 @@ def test_purge_data_removes_the_canonical_target_not_the_given_spelling(
         home, project, tmp_path):
     outside = tmp_path / "outside"
     (outside / "store").mkdir(parents=True)
+    (outside / "store" / "memriver.db").write_text("db")
     (outside / "store" / "marker.txt").write_text("data")
     alias = tmp_path / "alias"
     alias.symlink_to(outside, target_is_directory=True)
@@ -2046,6 +2113,7 @@ def test_purge_data_refuses_an_ancestor_swapped_for_a_symlink_before_the_confirm
     safe_parent = tmp_path / "safe-parent"
     store = safe_parent / "store"
     (store / "sessions").mkdir(parents=True)
+    (store / "memriver.db").write_text("db")
     (store / "sessions" / "one.json").write_text("memriver's own")
     victim_parent = tmp_path / "victim-parent"
     victim = victim_parent / "store"
@@ -2078,6 +2146,7 @@ def test_purge_data_refuses_a_symlinked_ancestor_anywhere_in_the_target_path(
     grand = tmp_path / "grand"
     store = grand / "mid" / "store"
     (store / "sessions").mkdir(parents=True)
+    (store / "memriver.db").write_text("db")
     (store / "sessions" / "one.json").write_text("memriver's own")
     victim_grand = tmp_path / "victim-grand"
     victim = victim_grand / "mid" / "store"
@@ -2101,6 +2170,254 @@ def test_purge_data_refuses_a_symlinked_ancestor_anywhere_in_the_target_path(
     assert victim.is_dir()
 
 
+# --- uninstall also removes the dream schedule ------------------------------
+
+
+def _install_dream_schedule(home: Path, launchctl) -> None:
+    plist = launch_agent.render(
+        program=["/opt/memriver", "dream", "run", "--trigger", "schedule"],
+        schedule_at="04:30", env={}, log_path=home / "dream.log")
+    launch_agent.install(home=home, plist=plist, uid=501, launchctl=launchctl)
+
+
+def test_uninstall_removes_an_installed_dream_schedule_with_yes_and_no_prompt(
+        home, project):
+    launchctl = FakeLaunchctl()
+    _install_dream_schedule(home, launchctl)
+
+    result = full_uninstall(ALL_HARNESSES, home=home, cwd=project, yes=True,
+                            launchctl=launchctl)
+
+    assert result.exit_code == 0
+    assert result.answers.prompts == []  # --yes never asks
+    assert "removed the schedule; settings and data are kept" in result.stdout
+    assert not launch_agent.plist_path(home).exists()
+
+
+def test_uninstall_declining_the_dream_schedule_prompt_leaves_it_installed(home,
+                                                                           project):
+    launchctl = FakeLaunchctl()
+    _install_dream_schedule(home, launchctl)
+    launchctl.calls.clear()
+
+    result = full_uninstall(ALL_HARNESSES, home=home, cwd=project, yes=False,
+                            replies=["n"], launchctl=launchctl)
+
+    assert result.exit_code == 0
+    assert all(call[0] != "bootout" for call in launchctl.calls)
+    assert result.answers.prompts == [
+        f"remove the dream schedule ({launch_agent.plist_path(home)})? [y/N] "]
+    assert "the schedule was left in place" in result.stdout
+    assert launch_agent.plist_path(home).exists()
+
+
+def test_accepting_the_dream_schedule_prompt_removes_it(home, project):
+    launchctl = FakeLaunchctl()
+    _install_dream_schedule(home, launchctl)
+
+    result = full_uninstall(ALL_HARNESSES, home=home, cwd=project, yes=False,
+                            replies=["y"], launchctl=launchctl)
+
+    assert result.exit_code == 0
+    assert "removed the schedule; settings and data are kept" in result.stdout
+    assert not launch_agent.plist_path(home).exists()
+
+
+def test_uninstall_says_nothing_when_the_schedule_is_neither_loaded_nor_on_disk(
+        home, project):
+    """Not loaded and no plist file: silently skipped, with no bootout --
+    launchd is still asked (a schedule can be loaded with its plist already
+    gone, so the plist alone never answers this), just not told to unload
+    anything."""
+    launchctl = FakeLaunchctl()
+
+    result = full_uninstall(ALL_HARNESSES, home=home, cwd=project, yes=False,
+                            launchctl=launchctl)
+
+    assert result.exit_code == 0
+    assert all(call[0] != "bootout" for call in launchctl.calls)
+    assert result.answers.prompts == []
+    assert "schedule" not in result.stdout
+
+
+def test_uninstall_prompts_and_removes_a_loaded_schedule_with_no_plist_file(home,
+                                                                            project):
+    """The plist can be gone while launchd still has the job loaded; presence
+    is "on disk or loaded", not "on disk" alone."""
+    launchctl = FakeLaunchctl(loaded=True)
+
+    result = full_uninstall(ALL_HARNESSES, home=home, cwd=project, yes=False,
+                            replies=["y"], launchctl=launchctl)
+
+    assert result.exit_code == 0
+    assert result.answers.prompts == [
+        f"remove the dream schedule ({launch_agent.plist_path(home)})? [y/N] "]
+    assert "removed the schedule; settings and data are kept" in result.stdout
+    assert launchctl.loaded is False
+
+
+def test_uninstall_dry_run_reports_a_loaded_schedule_with_no_plist_file_and_never_boots_it_out(
+        home, project):
+    launchctl = FakeLaunchctl(loaded=True)
+
+    result = full_uninstall(ALL_HARNESSES, home=home, cwd=project, yes=True,
+                            dry_run=True, launchctl=launchctl)
+
+    assert result.exit_code == 0
+    assert "dry run: the dream schedule would be removed." in result.stdout
+    assert all(call[0] != "bootout" for call in launchctl.calls)
+    assert launchctl.loaded is True
+
+
+def test_uninstall_refuses_when_the_schedule_state_cannot_be_determined(home, project,
+                                                                        tmp_path,
+                                                                        monkeypatch):
+    """An lstat fault on the plist means "cannot tell", not "absent" -- refuse
+    rather than silently skip or wrongly claim there is nothing to remove, and
+    never reach the purge that follows."""
+    launchctl = FakeLaunchctl()
+    plist = launch_agent.plist_path(home)
+    real_lstat = os.lstat
+
+    def flaky_lstat(target, *args, **kwargs):
+        if str(target) == str(plist):
+            raise OSError(5, "Input/output error")
+        return real_lstat(target, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", flaky_lstat)
+    root = tmp_path / "agent-memory"
+    root.mkdir()
+    (root / "memriver.db").write_text("db")
+
+    result = full_uninstall(ALL_HARNESSES, home=home, cwd=project, yes=True,
+                            purge_data=True, env={"MEMRIVER_ROOT": str(root)},
+                            launchctl=launchctl)
+
+    assert result.exit_code != 0
+    assert "could not be checked" in result.stdout
+    assert "memory storage root" not in result.stdout
+    assert root.exists() and (root / "memriver.db").exists()
+    assert all(call[0] != "bootout" for call in launchctl.calls)
+
+
+def test_uninstall_refuses_when_launchd_cannot_say_whether_the_schedule_is_loaded(
+        home, project):
+    """launchd itself failing to answer is the same "cannot tell" refusal as
+    an lstat fault -- neither absent nor safe to treat as present-and-remove."""
+    launchctl = FakeLaunchctl(print_fails=True)
+
+    result = full_uninstall(ALL_HARNESSES, home=home, cwd=project, yes=True,
+                            launchctl=launchctl)
+
+    assert result.exit_code != 0
+    assert "could not be checked" in result.stdout
+    assert all(call[0] != "bootout" for call in launchctl.calls)
+
+
+def test_uninstall_refuses_when_launchctl_cannot_be_run_while_checking_the_schedule(
+        home, project):
+    """`run_launchctl`'s own subprocess.run raises OSError when the binary
+    itself cannot be started -- not LaunchctlFailed, which is only for a
+    launchctl that ran and answered something unusable."""
+    def unrunnable(args: list[str]) -> int:
+        raise OSError("launchctl not found")
+
+    result = full_uninstall(ALL_HARNESSES, home=home, cwd=project, yes=True,
+                            launchctl=unrunnable)
+
+    assert result.exit_code != 0
+    assert "could not be checked" in result.stdout
+
+
+def test_uninstall_dry_run_reports_it_would_remove_an_installed_schedule(home,
+                                                                         project):
+    launchctl = FakeLaunchctl()
+    _install_dream_schedule(home, launchctl)
+
+    result = full_uninstall(ALL_HARNESSES, home=home, cwd=project, yes=True,
+                            dry_run=True, launchctl=launchctl)
+
+    assert result.exit_code == 0
+    assert "dry run: the dream schedule would be removed." in result.stdout
+    assert launch_agent.plist_path(home).exists()  # dry run touches nothing
+
+
+def test_uninstall_dry_run_says_nothing_about_an_absent_schedule(home, project):
+    result = full_uninstall(ALL_HARNESSES, home=home, cwd=project, yes=True,
+                            dry_run=True)
+
+    assert result.exit_code == 0
+    assert "schedule" not in result.stdout
+
+
+def test_uninstall_says_nothing_extra_about_dream_on_a_non_darwin_platform(home,
+                                                                           project):
+    result = full_uninstall(ALL_HARNESSES, home=home, cwd=project, yes=True,
+                            platform="linux")
+
+    assert result.exit_code == 0
+    assert "schedule" not in result.stdout
+
+
+def test_uninstall_of_a_single_harness_leaves_the_dream_schedule_alone(home,
+                                                                       project):
+    """Only a slice of what install manages is being removed -- memriver
+    stays installed for the other harnesses -- so the schedule, shared across
+    all of them, is left alone too, and nothing is said about it."""
+    launchctl = FakeLaunchctl()
+    _install_dream_schedule(home, launchctl)
+    launchctl.calls.clear()  # only calls uninstall itself makes count here
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                            launchctl=launchctl)
+
+    assert result.exit_code == 0
+    assert launchctl.calls == []
+    assert "schedule" not in result.stdout
+    assert launch_agent.plist_path(home).exists()
+
+
+def test_uninstall_of_a_single_harness_with_purge_data_still_removes_the_schedule(
+        home, project, tmp_path):
+    """`--purge-data` deletes the one memory store every harness shares, so it
+    removes the schedule too even when only one harness is being uninstalled --
+    and does so before the store itself is purged."""
+    launchctl = FakeLaunchctl()
+    _install_dream_schedule(home, launchctl)
+    root = tmp_path / "agent-memory"
+    root.mkdir()
+    (root / "memriver.db").write_text("db")
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                            purge_data=True, env={"MEMRIVER_ROOT": str(root)},
+                            launchctl=launchctl)
+
+    assert result.exit_code == 0
+    assert not launch_agent.plist_path(home).exists()
+    assert not root.exists()
+    schedule_at = result.stdout.index("removed the schedule")
+    purge_at = result.stdout.index("memory storage root")
+    assert schedule_at < purge_at
+
+
+def test_a_dream_schedule_removal_failure_is_non_zero_and_skips_the_purge(
+        home, project, tmp_path):
+    launchctl = FakeLaunchctl(bootout_fails=True)
+    _install_dream_schedule(home, launchctl)
+    root = tmp_path / "agent-memory"
+    root.mkdir()
+    (root / "memriver.db").write_text("db")
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                            purge_data=True, env={"MEMRIVER_ROOT": str(root)},
+                            launchctl=launchctl)
+
+    assert result.exit_code != 0
+    assert "refused: launchd did not confirm the schedule is unloaded" in result.stdout
+    assert "memory storage root" not in result.stdout
+    assert root.exists() and (root / "memriver.db").exists()
+
+
 def test_clean_uv_cache_invokes_uv_with_the_exact_arguments(home, project,
                                                              monkeypatch):
     calls = []
@@ -2118,6 +2435,7 @@ def test_clean_uv_cache_invokes_uv_with_the_exact_arguments(home, project,
     assert calls == [
         ["uv", "cache", "clean", "memriver"],
         ["uv", "cache", "clean", "memriver-core"],
+        ["uv", "cache", "clean", "memriver-dream"],
     ]
 
 

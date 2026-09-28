@@ -37,6 +37,96 @@ def test_a_confirmed_store_is_removed(places):
     assert plan.fd is None                       # the context manager closed it
 
 
+def test_a_nonempty_directory_without_a_store_is_refused(places, tmp_path):
+    home, cwd, _ = places
+    target = tmp_path / "documents"
+    target.mkdir()
+    (target / "notes.txt").write_text("mine")
+
+    refusal = plan_purge(target, home=home, cwd=cwd)
+
+    assert isinstance(refusal, PurgeRefusal) and refusal.kind == "not-a-store"
+    assert refusal.canonical == target.resolve()
+    assert (target / "notes.txt").read_text() == "mine"
+
+
+def test_an_empty_directory_is_still_purged(places, tmp_path):
+    home, cwd, _ = places
+    target = tmp_path / "empty"
+    target.mkdir()
+
+    with plan_purge(target, home=home, cwd=cwd) as plan:
+        assert isinstance(plan, PurgePlan) and plan.exists and plan.fd is not None
+        result = purge(plan)
+
+    assert (result.outcome, result.path) == ("removed", target.resolve())
+    assert not target.exists()
+
+
+def test_an_unlistable_target_is_refused_not_purged_on_a_dry_run(places, tmp_path,
+                                                                  monkeypatch):
+    home, cwd, _ = places
+    target = tmp_path / "locked"
+    target.mkdir()
+    (target / "keep.txt").write_text("mine")
+
+    def denied(path):
+        raise PermissionError(13, "denied")
+
+    monkeypatch.setattr(os, "scandir", denied)
+
+    refusal = plan_purge(target, home=home, cwd=cwd, dry_run=True)
+
+    assert isinstance(refusal, PurgeRefusal) and refusal.kind == "unopenable"
+    assert "denied" in refusal.detail.lower()
+    assert (target / "keep.txt").read_text() == "mine"
+
+
+def test_an_unlistable_target_is_refused_not_purged_on_a_real_run(places, tmp_path,
+                                                                   monkeypatch):
+    home, cwd, _ = places
+    target = tmp_path / "locked"
+    target.mkdir()
+    (target / "keep.txt").write_text("mine")
+
+    def denied(path):
+        raise PermissionError(13, "denied")
+
+    monkeypatch.setattr(os, "scandir", denied)
+
+    refusal = plan_purge(target, home=home, cwd=cwd)
+
+    assert isinstance(refusal, PurgeRefusal) and refusal.kind == "unopenable"
+    assert "denied" in refusal.detail.lower()
+    assert (target / "keep.txt").read_text() == "mine"
+
+
+def test_a_directory_swapped_in_before_the_open_is_refused_not_purged(places, tmp_path,
+                                                                      monkeypatch):
+    """The name-based store check alone would run on the path before the open
+    -- a directory swapped in between passes unchecked. The check has to run
+    on the object the open actually returns."""
+    home, cwd, store = places
+    moved = tmp_path / "moved-away"
+    real_open = directories._open_directory_without_following_symlinks
+
+    def swap_then_open(path):
+        if path == store.resolve():
+            store.rename(moved)
+            store.mkdir()
+            (store / "decoy.txt").write_text("not memriver's")
+        return real_open(path)
+
+    monkeypatch.setattr(directories, "_open_directory_without_following_symlinks",
+                        swap_then_open)
+
+    refusal = plan_purge(store, home=home, cwd=cwd)
+
+    assert isinstance(refusal, PurgeRefusal) and refusal.kind == "not-a-store"
+    assert (store / "decoy.txt").read_text() == "not memriver's"
+    assert (moved / "memriver.db").exists()  # the real store, untouched
+
+
 def test_a_missing_store_is_a_plan_with_nothing_to_remove(places):
     home, cwd, store = places
     plan = plan_purge(store.parent / "absent", home=home, cwd=cwd)

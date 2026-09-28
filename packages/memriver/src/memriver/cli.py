@@ -111,8 +111,7 @@ def _build_parser() -> argparse.ArgumentParser:
                            help="storage root to purge with --purge-data "
                                 "(default: $MEMRIVER_ROOT or ~/agent-memory)")
     uninstall.add_argument("--clean-uv-cache", action="store_true",
-                           help="also run 'uv cache clean' for memriver and "
-                                "memriver-core")
+                           help="also run 'uv cache clean' for memriver's packages")
     uninstall.set_defaults(handler=_uninstall)
 
     doctor = commands.add_parser(

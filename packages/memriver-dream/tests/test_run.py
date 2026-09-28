@@ -62,15 +62,15 @@ def test_the_phases_run_in_spec_order_projects_before_global(world, calls):
     assert calls == [("summarize",),
                      ("consolidate", demo, f"project:{demo}"),
                      ("consolidate", second.id, f"project:{second.id}"),
-                     ("extract",), ("recheck",),
                      ("consolidate", glob, "global"),
+                     ("extract",), ("recheck",),
                      ("retire",), ("prune_reads",)]
     text = world.report_text(row)
     assert [line for line in text.splitlines() if line.startswith("== ")] == [
         "== Policy scan ==", "== Session summaries ==",
         f"== Project layer: demo ({demo}) ==", f"== Project layer: second ({second.id}) ==",
-        "== Global layer: extraction ==", "== Global layer: source re-check ==",
-        "== Project layer: global ==", "== TTL ==", "== Maintenance =="]
+        "== Project layer: global ==", "== Global layer: extraction ==",
+        "== Global layer: source re-check ==", "== TTL ==", "== Maintenance =="]
     assert text.startswith(f"memriver dream run {row.run_id}\nstarted: {world.now}\n"
                            "trigger: manual\nexecutor: fake\n")
     assert text.splitlines()[-2:] == ["status: completed", f"finished: {row.finished_at}"]

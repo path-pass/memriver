@@ -346,7 +346,11 @@ change log entries a hard delete touched stay, without the deleted memories'
 steps, and can no longer be undone -- but the hard delete itself adds no new
 one. This is how a secret already in the store is removed even once its text
 fails today's policy: a soft delete would be refused (above), but a hard
-delete runs no such check.
+delete runs no such check. It zeroes the text inside the store file itself.
+It cannot reach a copy made outside the store -- a backup, or the harness's
+own transcript the secret came from -- or free disk blocks that still hold
+the text, such as the ones the temporary journal SQLite writes during the
+delete leaves behind once it is removed.
 
 ## Sessions
 
@@ -403,14 +407,17 @@ still going is recorded as skipped. Each run, in order:
    contradictions and entries that are instructions addressed to an agent
    under *Needs you* without changing them. Only the project's own memories
    count as evidence, and no change is preferred when in doubt.
-4. **Extracts shared principles into global**: a principle backed by memories
+4. **Consolidates global** the way step 3 consolidates a project, before global
+   memories are sent anywhere else: an entry this step flags as an instruction
+   addressed to an agent is excluded from every later step of the run, and the
+   step is not counted as finished, so the next run judges global again first.
+5. **Extracts shared principles into global**: a principle backed by memories
    of at least two projects becomes a global entry citing them, or supplements
    an existing one; what only one project says stays there. Principles, not
    commands: "Python projects prefer pytest for tests", never "pytest -q". A
    global entry whose cited sources changed since is re-checked against their
    new versions: kept, pointed at the new versions, revised, or listed under
    *Needs you* as overturned.
-5. **Consolidates global** the way step 3 consolidates a project.
 6. **Retires memories unused past their TTL**, after asking the model whether
    there is reason enough to retire each one: a memory's last use is the
    latest of its creation, its last update and its last `memory_read`, and its
@@ -423,7 +430,7 @@ still going is recorded as skipped. Each run, in order:
    `report_retention_days`.
 
 `--phase` runs one step after the policy scan: `summarize` (2), `consolidate`
-(3 and 5), `extract` (4) or `retire` (6). A consolidation or extraction pass
+(3 and 4), `extract` (5) or `retire` (6). A consolidation or extraction pass
 is skipped while the memories it would read are unchanged since its last
 finished pass.
 
@@ -615,16 +622,23 @@ manages — hook entries, MCP registrations, the marker block — byte for byte
 around them; a container the removal empties is left as an empty container
 rather than guessed at, Kiro's steering file (memriver's own) is deleted, and
 shared files are never deleted. The harness's own memory setting is left as it
-is; the completion report says so and names any file left empty.
+is; the completion report says so and names any file left empty. Once the
+configuration is removed, `uninstall` also removes the dream schedule (see
+*Dream: offline maintenance*) when every harness is uninstalled (or with
+`--purge-data`), after its own confirmation (or with `--yes`), so a scheduled
+dream does not keep sending memories to the model service after memriver
+itself is gone; uninstalling a single harness leaves memriver, and the
+schedule, running for the others.
 
 `--purge-data` is the only thing that deletes the whole store rather than one
 memory (`memriver delete` removes a single memory; see *Browsing and managing
 memories directly*), and only with the explicit flag (`--yes` merely skips the
 prompts). The resolved, canonical path is shown before deletion; the
-filesystem root, your home, the current directory and anything that resolves
-onto them through a symlink are refused.
-`--clean-uv-cache` runs `uv cache clean` for both packages afterwards and is
-non-fatal if `uv` is missing or fails.
+filesystem root, your home, the current directory, anything that resolves onto
+them through a symlink, and a directory that is neither empty nor a memriver
+store (it holds no `memriver.db`) are refused.
+`--clean-uv-cache` runs `uv cache clean` for memriver's packages afterwards and
+is non-fatal if `uv` is missing or fails.
 
 ## Migrating existing Claude Code memory
 

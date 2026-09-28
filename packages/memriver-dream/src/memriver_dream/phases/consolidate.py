@@ -273,29 +273,82 @@ def _supersede(raw: dict, project_id: str, sent: dict[str, Memory],
 _PLANS = {"merge": _merge, "rewrite": _rewrite, "supersede": _supersede}
 
 
+def _instruction_ids(raw: dict) -> list[str]:
+    """The id an instruction_like judgment names, in `id` (or, from a model that used
+    `ids` instead, there)."""
+    return raw["ids"] if not raw["id"] else [raw["id"]]
+
+
+def _flagged_ids(judgments: Sequence[dict], sent: dict[str, Memory]) -> set[str]:
+    """The ids of every instruction_like judgment in `judgments` whose ids validate --
+    the same `ids_problem` check `_judge` applies to it. A bad reason never drops the
+    flag (§10): only the ids are load-bearing here, exactly as in `_judge`. A merge,
+    rewrite or supersede naming one of these ids must not run, whichever order the
+    answer gives the judgments in."""
+    flagged: set[str] = set()
+    for raw in judgments:
+        if raw["kind"] != "instruction_like":
+            continue
+        ids = _instruction_ids(raw)
+        if ids_problem(ids, sent, 1, "ids") is None:
+            flagged.update(ids)
+    return flagged
+
+
+def _touched_ids(raw: dict) -> list[str]:
+    """The existing memories a merge, rewrite or supersede judgment names, as a target,
+    a source or evidence -- what `_flagged_ids` is checked against."""
+    kind = raw["kind"]
+    if kind == "merge":
+        return raw["ids"]
+    if kind == "rewrite":
+        return [raw["id"], *raw["evidence_ids"]]
+    return [raw["id"], raw["by"]]                     # supersede
+
+
 def _judge(ctx: Context, raw: dict, project_id: str, sent: dict[str, Memory],
            sources: dict[str, tuple[SourceRef, ...]]) -> bool:
     """One judgment validated and carried out; False when it keeps the pass from
-    finishing (§6.9): malformed output, a reason the policy hits, or an apply that did
-    not happen. A judgment a counted rule refuses is reported and does not."""
+    finishing (§6.9): malformed output, a reason the policy hits, an apply that did
+    not happen, or an instruction-like entry (excluded and judged again next run). A
+    judgment a counted rule refuses is reported and does not.
+
+    instruction_like flags and excludes on its ids alone (§10): a reason the policy
+    hits must not fail it open, so it is withheld from the report rather than
+    dropping the flag along with it -- unlike every other kind, whose reason is
+    checked before anything else about it is."""
     report, kind = ctx.report, raw["kind"]
     problem = reason_problem(ctx, raw["reason"])
+    if kind == "instruction_like":
+        ids = _instruction_ids(raw)
+        refusal = ids_problem(ids, sent, 1, "ids")
+        if refusal is not None:
+            if problem is not None:              # neither the ids nor the reason flag it
+                report.line(f"{problem} {kind}: reason")
+                return False
+            return refusal.report(ctx, kind)
+        reason = shown(raw["reason"]) if problem is None else f"(reason withheld: {problem})"
+        # the full entry, in the section line, at the moment it is judged: it is
+        # excluded from every later model step of this run and the pass does not
+        # finish, so no digest is stored and the next run judges the scope again,
+        # re-flagging and re-excluding it until it is fixed
+        entry_line = f"instruction-like {' '.join(ids)}: {reason}"
+        report.line(entry_line)
+        report.needs_you(entry_line)
+        ctx.excluded.update(ids)
+        return False
     if problem is not None:
         report.line(f"{problem} {kind}: reason")
         return False
     reason = shown(raw["reason"])
-    if kind in ("contradiction", "instruction_like"):
-        # an instruction-like entry is one memory, named in id; a model that puts it in
-        # ids instead is taken at its word rather than failing the whole pass
-        ids = raw["ids"] if kind == "contradiction" or not raw["id"] else [raw["id"]]
-        if refusal := ids_problem(ids, sent, 2 if kind == "contradiction" else 1, "ids"):
+    if kind == "contradiction":
+        ids = raw["ids"]
+        if refusal := ids_problem(ids, sent, 2, "ids"):
             return refusal.report(ctx, kind)
-        label = kind.replace("_", "-")
-        # the full entry, in the section line, at the moment it is judged: the scope
-        # digest is stored once this pass finishes, and a run killed before the
-        # footer is ever written must not lose it -- the footer's own Needs-you
-        # entry, below, is the summary collected there
-        entry_line = f"{label} {' '.join(ids)}: {reason}"
+        # the scope digest is stored once this pass finishes, and a run killed
+        # before the footer is ever written must not lose this line -- the footer's
+        # own Needs-you entry, below, is the summary collected there
+        entry_line = f"contradiction {' '.join(ids)}: {reason}"
         report.line(entry_line)
         report.needs_you(entry_line)
         return True
@@ -334,6 +387,13 @@ def run(ctx: Context, project_id: str, scope: str) -> PassResult:
     judgments, finished = split_no_change(ctx, result["judgments"])
     if not judgments and finished:
         ctx.report.line("no change")
+    # collected before any judgment runs, so a flagged id is left untouched whichever
+    # order the answer gives instruction_like and the judgment naming it in
+    flagged = _flagged_ids(judgments, sent)
     for raw in judgments:
+        if raw["kind"] in _PLANS and (touched := flagged.intersection(_touched_ids(raw))):
+            ctx.report.line(f"not carried out {raw['kind']}: instruction-like "
+                            f"{' '.join(sorted(touched))}")
+            continue
         finished = _judge(ctx, raw, project_id, sent, sources) and finished
     return PassResult(finished=finished, digest=digest)

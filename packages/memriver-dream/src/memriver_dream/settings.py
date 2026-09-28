@@ -88,7 +88,7 @@ DREAM_LOCK_FILENAME = ".lock"
 DREAM_LOG_FILENAME = "dream.log"
 DREAM_DB_FILENAME = "dream.db"          # dream's own records (runs, reviews, passes)
 DREAM_REPORTS_DIRECTORY = "reports"     # <root>/dream/reports/<run_id>.txt
-PROMPT_VERSION = "dream-3"              # in every input digest; bump it when a prompt changes
+PROMPT_VERSION = "dream-4"              # in every input digest; bump it when a prompt changes
 DREAM_LAUNCH_AGENT_LABEL = "io.github.path-pass.memriver.dream"
 
 _SCHEDULE_AT_RE = re.compile(r"([01][0-9]|2[0-3]):[0-5][0-9]")

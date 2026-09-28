@@ -11,16 +11,18 @@ nothing else unless that exits clean.
 
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TextIO
 
-from .install import run_config_uninstall
+from .install import HARNESSES, run_config_uninstall
 
-# the two packages memriver's own install ever populates in uv's cache; `uv
+# the packages memriver's own install ever populates in uv's cache; `uv
 # cache clean` takes one package name at a time
-_UV_CACHE_PACKAGES = ("memriver", "memriver-core")
+_UV_CACHE_PACKAGES = ("memriver", "memriver-core", "memriver-dream")
 
 # a wedged `uv` must not hang uninstall after config removal already committed
 _UV_CACHE_CLEAN_TIMEOUT_SECONDS = 30
@@ -31,13 +33,26 @@ def run_uninstall(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
                   home: Path, cwd: Path, env: Mapping[str, str],
                   input_fn: Callable[[str], str], stdout: TextIO,
                   replace_file: Callable[[Path, Path], None],
-                  root: Path | None = None) -> int:
-    """Config removal, then -- only once that succeeds -- the data root and cache.
+                  root: Path | None = None,
+                  launchctl: Callable[[list[str]], int] | None = None,
+                  uid: int | None = None,
+                  platform: str = sys.platform) -> int:
+    """Config removal, then -- only once that succeeds -- the schedule, the data
+    root and the cache.
 
     ``root``, when given, is the ``--purge-data`` target outright -- it wins
     over both the injected ``env``'s ``MEMRIVER_ROOT`` and the injected
     ``home``'s default, the same precedence ``doctor --root`` already gives
-    its own root override.
+    its own root override. ``launchctl``, ``uid`` and ``platform`` are the same
+    seams ``memriver dream``'s own commands take, so a test can stand in for
+    launchd without ever calling it.
+
+    The dream schedule is shared by every harness, not owned by any one of
+    them, so removing it is skipped when ``harnesses`` is a strict subset of
+    ``install.HARNESSES``: memriver still runs for whichever harnesses are
+    left, and a scheduled dream is still theirs to keep. ``--purge-data``
+    deletes the one memory store every harness shares regardless, so it takes
+    the schedule with it even for a single-harness uninstall.
     """
     exit_code = run_config_uninstall(
         harnesses, yes=yes, dry_run=dry_run, home=home, cwd=cwd, env=env,
@@ -45,6 +60,13 @@ def run_uninstall(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
     )
     if exit_code != 0:
         return exit_code
+
+    if purge_data or set(harnesses) == set(HARNESSES):
+        exit_code = _remove_dream_schedule(yes=yes, dry_run=dry_run, home=home,
+                                           stdout=stdout, input_fn=input_fn,
+                                           launchctl=launchctl, uid=uid, platform=platform)
+        if exit_code != 0:
+            return exit_code
 
     if purge_data:
         exit_code = _purge_data(yes=yes, dry_run=dry_run, input_fn=input_fn,
@@ -57,6 +79,90 @@ def run_uninstall(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
         _clean_uv_cache(stdout)
 
     return 0
+
+
+def _remove_dream_schedule(*, yes: bool, dry_run: bool, home: Path, stdout: TextIO,
+                           input_fn: Callable[[str], str],
+                           launchctl: Callable[[list[str]], int] | None,
+                           uid: int | None, platform: str) -> int:
+    """Stop the daily dream run config removal alone leaves behind.
+
+    Without this, a scheduled dream keeps sending memories to the model
+    service every day after uninstall. Nothing is asked, or said, when there
+    is no schedule to remove; otherwise this is its own confirmed step --
+    declining every config change above must not also boot out and delete the
+    schedule, so it asks its own question rather than riding on whatever the
+    config steps decided. Reuses ``memriver dream``'s own uninstall path for
+    the actual removal so its refusal wording is never duplicated here; a
+    platform dream never schedules on gets no output at all, not even a note.
+
+    "A schedule is present" is the plist file existing *or* launchd reporting
+    the job loaded -- not the plist alone: a job can still be loaded (and
+    still running daily) after its plist was deleted out from under it, the
+    exact case ``launch_agent.uninstall`` already targets by label rather
+    than by file. Both checks are read-only (``os.lstat``, `launchctl print`),
+    so a dry run can run them without risking a bootout. Either one failing
+    to answer -- an ``OSError`` other than "missing" from ``lstat``, or
+    launchd itself refusing to say -- means "cannot tell", not "absent", and
+    refuses rather than guessing either way.
+    """
+    if platform != "darwin":
+        return 0
+    # imported here, not at module scope, for the same reason memriver_core is:
+    # dream_commands pulls in memriver_dream and pydantic, which a plain
+    # uninstall on a platform without a schedule (or one that fails before
+    # this point) never needs to pay for
+    from . import dream_commands, launch_agent
+
+    label = dream_commands.DREAM_LAUNCH_AGENT_LABEL
+    plist = launch_agent.plist_path(home, label)
+    resolved_uid = os.getuid() if uid is None else uid
+    resolved_launchctl = launchctl or launch_agent.run_launchctl
+
+    try:
+        os.lstat(plist)
+        plist_present = True
+    except FileNotFoundError:
+        plist_present = False
+    except OSError as error:
+        stdout.write(f"memriver uninstall: the dream schedule could not be checked "
+                     f"({error.strerror or error}); nothing was removed.\n")
+        return 1
+
+    try:
+        loaded = launch_agent.is_loaded(label, resolved_uid, resolved_launchctl)
+    except (launch_agent.LaunchctlFailed, OSError):
+        # LaunchctlFailed: launchd ran and answered something unusable.
+        # OSError: launchctl itself could not be started at all (the same
+        # fault run_launchctl's own subprocess.run raises) -- both mean
+        # "cannot tell", not "absent", and must not escape as a traceback
+        stdout.write("memriver uninstall: the dream schedule could not be checked "
+                     "(launchd could not say whether it is loaded); nothing was "
+                     "removed.\n")
+        return 1
+
+    if not plist_present and not loaded:
+        return 0
+    if dry_run:
+        stdout.write("dry run: the dream schedule would be removed.\n")
+        return 0
+    if not yes:
+        try:
+            answer = input_fn(f"remove the dream schedule ({plist})? [y/N] ")
+        except EOFError:
+            stdout.write(
+                "memriver uninstall: stdin is not interactive and no answer can "
+                "be read; re-run with --yes to remove the dream schedule shown "
+                "above.\n")
+            return 1
+        if answer.strip().lower() not in ("y", "yes"):
+            stdout.write("dream schedule removal declined; the schedule was left "
+                        "in place.\n")
+            return 0
+    return dream_commands.run_uninstall(
+        home=home, stdout=stdout, launchctl=resolved_launchctl,
+        uid=resolved_uid, platform=platform, label=label,
+    )
 
 
 def _resolve_storage_root(root_override: Path | None, env: Mapping[str, str],
@@ -102,6 +208,11 @@ def _refusal_text(refusal) -> str:
                 "store itself and run uninstall --purge-data again.\n")
     if refusal.kind == "not-directory":
         return f"memriver uninstall: {refusal.path} is not a directory; nothing was removed.\n"
+    if refusal.kind == "not-a-store":
+        return (f"memriver uninstall: {refusal.path} does not look like a memriver store "
+                "-- it is not empty and holds no memriver.db; nothing was removed. Point "
+                "--root (or MEMRIVER_ROOT) at the memriver store itself and run uninstall "
+                "--purge-data again.\n")
     return (f"memriver uninstall: {refusal.path} could not be opened as a directory "
             f"({refusal.detail}); nothing was removed.\n")
 

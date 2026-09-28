@@ -34,7 +34,8 @@ from memriver_core.models import (
 )
 from memriver_core.models.errors import StorageFailure, StoreNeedsUpgrade
 
-DATABASE_FILENAME = "memriver.db"
+from ..directories import DATABASE_FILENAME
+
 SCHEMA_VERSION = 4
 
 # spec §3.5: the session rows of v2, plus the published summary
@@ -374,6 +375,9 @@ class Database:
         conn.text_factory = _lenient_text
         try:
             conn.execute("PRAGMA foreign_keys = ON")
+            # a hard delete's freed pages are overwritten with zeros instead of left
+            # holding the plaintext until something else reuses them
+            conn.execute("PRAGMA secure_delete = ON")
             if read_only:
                 conn.execute("PRAGMA query_only = ON")
         except BaseException:

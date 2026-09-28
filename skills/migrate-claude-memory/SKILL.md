@@ -35,7 +35,7 @@ markdown file per fact with YAML frontmatter (`name`, `description`,
      strips its leading and trailing whitespace too).
    - `type`: `metadata.type` when it is one of user/feedback/project/reference;
      anything else falls back to `project` — note the fallback in the report.
-   - `harness`: `"claude-code"`. Leave `sync` at its default.
+   - Leave `sync` at its default.
 
    memriver assigns every memory a new id, so the source file's `name` is not
    kept and `[[name]]` cross-references between source files will not resolve

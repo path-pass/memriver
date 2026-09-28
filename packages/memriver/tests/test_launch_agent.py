@@ -11,6 +11,7 @@ from memriver.launch_agent import (
     LaunchctlFailed,
     RestoreFailed,
     install,
+    is_loaded,
     plist_path,
     render,
     uninstall,
@@ -254,3 +255,16 @@ def test_a_restore_whose_bootstrap_cannot_run_says_so(tmp_path):
     with pytest.raises(RestoreFailed):
         install(home=tmp_path, plist=_plist(tmp_path, "05:00"), uid=501, launchctl=launchctl)
     assert plist_path(tmp_path).read_bytes() == old
+
+
+def test_is_loaded_answers_via_the_same_print_call_loaded_uses(tmp_path):
+    launchctl = Launchctl()
+    assert is_loaded("test.dream", 501, launchctl) is False
+    install(home=tmp_path, plist=_plist(tmp_path), uid=501, launchctl=launchctl)
+    assert is_loaded("io.github.path-pass.memriver.dream", 501, launchctl) is True
+
+
+def test_is_loaded_raises_when_launchd_cannot_say(tmp_path):
+    launchctl = Launchctl(print_fails=True)
+    with pytest.raises(LaunchctlFailed):
+        is_loaded("io.github.path-pass.memriver.dream", 501, launchctl)
