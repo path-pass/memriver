@@ -44,6 +44,11 @@ if TYPE_CHECKING:
 # look like credentials. Neither error echoes the rejected value.
 _HARNESS_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 
+# a plugin's Verdict.category/detail: a short ascii label only, never a word carried
+# over from the checked content or from a model's answer -- one that fails this becomes
+# a fixed placeholder instead of being echoed into the error
+_VERDICT_LABEL_RE = re.compile(r"[a-z0-9-]{1,32}")
+
 # What MemoryService.index returns when nothing is visible -- the single
 # source transports compare against.
 EMPTY_INDEX = "(no memories yet)"
@@ -177,6 +182,17 @@ class MemoryService:
         if description is not None and description.strip():
             policy.check(description, self._metadata_max_chars)
 
+    def _precheck_text(self, op: Create | Update) -> None:
+        """`_check_text`, outside the kernel transaction, reshaped to the kernel's own
+        exception (`_write_version`): the same rule id, and the memory_id of an
+        Update's target -- None for a Create, same as the kernel gives one -- so a
+        policy refusal reads the same whether or not a classifier runs this pre-check."""
+        try:
+            self._check_text(op.description, op.body)
+        except ContentRejected as err:
+            memory_id = op.memory_id if isinstance(op, Update) else None
+            raise ContentRejected(rule_id=err.rule_id, memory_id=memory_id) from err
+
     def _classify(self, description: str | None, body: str | None, *,
                   changed_by: str) -> None:
         """The content classifier on a write's new text, outside any transaction: a call
@@ -190,11 +206,15 @@ class MemoryService:
         verdict = self._classifier.classify(text, changed_by=changed_by)
         if verdict is None:
             return
-        if verdict.category == "unavailable":
-            raise ContentRejected(_CLASSIFIER_UNAVAILABLE.format(detail=verdict.detail),
+        category = verdict.category if _VERDICT_LABEL_RE.fullmatch(verdict.category) \
+            else "invalid"
+        if category == "unavailable":
+            detail = verdict.detail if _VERDICT_LABEL_RE.fullmatch(verdict.detail) \
+                else "unknown"
+            raise ContentRejected(_CLASSIFIER_UNAVAILABLE.format(detail=detail),
                                   rule_id="classifier-unavailable")
-        raise ContentRejected(_CLASSIFIER_BLOCKED.format(category=verdict.category),
-                              rule_id=f"classifier-{verdict.category}")
+        raise ContentRejected(_CLASSIFIER_BLOCKED.format(category=category),
+                              rule_id=f"classifier-{category}")
 
     def _check_state(self, description: str, body: str) -> str | None:
         """The content policy on one resulting state (the kernel's `check`): a rule id or None."""
@@ -218,7 +238,7 @@ class MemoryService:
             for op in ops:
                 if isinstance(op, Create | Update) \
                         and (op.description is not None or op.body is not None):
-                    self._check_text(op.description, op.body)
+                    self._precheck_text(op)
                     self._classify(op.description, op.body, changed_by=changed_by)
         try:
             return self._memory_store.apply(ops, changed_by=changed_by, changed_via=changed_via,

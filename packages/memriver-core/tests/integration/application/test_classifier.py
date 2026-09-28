@@ -145,6 +145,42 @@ def test_a_secret_is_refused_by_the_policy_before_the_classifier_sees_it(classif
     assert recorder.calls == []
 
 
+def test_a_policy_refusal_in_apply_has_the_same_shape_with_or_without_a_classifier(classified,
+                                                                                   world):
+    """`apply`'s pre-check (run only when a classifier is configured) must not change
+    what a policy refusal looks like: the same rule id, the same memory_id, the same
+    message as the kernel's own refusal (the path taken when there is no classifier)."""
+    services, _, recorder = classified()
+    memory_id = world["create"]("old fact")
+    with pytest.raises(ContentRejected) as with_classifier:
+        services.memory.apply([Update(memory_id, 1, body=SECRET)], changed_by="test")
+    with pytest.raises(ContentRejected) as without_classifier:
+        world["memory"].apply([Update(memory_id, 1, body=SECRET)], changed_by="test")
+    assert (with_classifier.value.rule_id, with_classifier.value.memory_id) == \
+           (without_classifier.value.rule_id, memory_id)
+    assert str(with_classifier.value) == str(without_classifier.value)
+    assert recorder.calls == []
+
+
+def test_a_malformed_category_from_the_classifier_reads_as_invalid(classified):
+    services, context, _ = classified(lambda text: Verdict("Bad Câtégory!"))
+    with pytest.raises(ContentRejected) as caught:
+        _record(services, context)
+    assert (str(caught.value), caught.value.rule_id) == (
+        "content rejected by the content classifier (invalid); no change was made",
+        "classifier-invalid")
+
+
+def test_an_empty_detail_from_the_classifier_reads_as_unknown(classified):
+    services, context, _ = classified(lambda text: Verdict("unavailable", detail=""))
+    with pytest.raises(ContentRejected) as caught:
+        _record(services, context)
+    assert (str(caught.value), caught.value.rule_id) == (
+        ("the content classifier could not check this text (unknown); no change was "
+         "made; see memriver doctor"),
+        "classifier-unavailable")
+
+
 def test_an_exception_from_the_classifier_is_a_bug_and_propagates(classified):
     def broken(text):
         raise RuntimeError("classifier bug")
