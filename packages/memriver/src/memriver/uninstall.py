@@ -17,7 +17,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TextIO
 
-from .install import run_config_uninstall
+from .install import HARNESSES, run_config_uninstall
 
 # the packages memriver's own install ever populates in uv's cache; `uv
 # cache clean` takes one package name at a time
@@ -45,6 +45,13 @@ def run_uninstall(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
     its own root override. ``launchctl``, ``uid`` and ``platform`` are the same
     seams ``memriver dream``'s own commands take, so a test can stand in for
     launchd without ever calling it.
+
+    The dream schedule is shared by every harness, not owned by any one of
+    them, so removing it is skipped when ``harnesses`` is a strict subset of
+    ``install.HARNESSES``: memriver still runs for whichever harnesses are
+    left, and a scheduled dream is still theirs to keep. ``--purge-data``
+    deletes the one memory store every harness shares regardless, so it takes
+    the schedule with it even for a single-harness uninstall.
     """
     exit_code = run_config_uninstall(
         harnesses, yes=yes, dry_run=dry_run, home=home, cwd=cwd, env=env,
@@ -53,10 +60,11 @@ def run_uninstall(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
     if exit_code != 0:
         return exit_code
 
-    exit_code = _remove_dream_schedule(dry_run=dry_run, home=home, stdout=stdout,
-                                       launchctl=launchctl, uid=uid, platform=platform)
-    if exit_code != 0:
-        return exit_code
+    if purge_data or set(harnesses) == set(HARNESSES):
+        exit_code = _remove_dream_schedule(dry_run=dry_run, home=home, stdout=stdout,
+                                           launchctl=launchctl, uid=uid, platform=platform)
+        if exit_code != 0:
+            return exit_code
 
     if purge_data:
         exit_code = _purge_data(yes=yes, dry_run=dry_run, input_fn=input_fn,

@@ -1406,6 +1406,15 @@ def test_cli_parses_every_uninstall_flag():
     assert args.root == Path("/tmp/store")
 
 
+def test_cli_clean_uv_cache_help_does_not_name_only_two_of_the_three_packages():
+    from memriver.cli import _build_parser
+
+    uninstall = _build_parser()._subparsers._group_actions[0].choices["uninstall"]
+    action = next(a for a in uninstall._actions if "--clean-uv-cache" in a.option_strings)
+
+    assert "memriver-core" not in action.help  # the help used to stop at two packages
+
+
 def test_cli_rejects_harness_and_all_together_for_uninstall():
     from memriver.cli import _build_parser
 
@@ -2171,11 +2180,12 @@ def _install_dream_schedule(home: Path, launchctl) -> None:
     launch_agent.install(home=home, plist=plist, uid=501, launchctl=launchctl)
 
 
-def test_uninstall_removes_an_installed_dream_schedule(home, project):
+def test_uninstall_of_every_harness_removes_an_installed_dream_schedule(home,
+                                                                         project):
     launchctl = FakeLaunchctl()
     _install_dream_schedule(home, launchctl)
 
-    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+    result = full_uninstall(ALL_HARNESSES, home=home, cwd=project, yes=True,
                             launchctl=launchctl)
 
     assert result.exit_code == 0
@@ -2183,8 +2193,9 @@ def test_uninstall_removes_an_installed_dream_schedule(home, project):
     assert not launch_agent.plist_path(home).exists()
 
 
-def test_uninstall_reports_no_schedule_when_none_was_installed(home, project):
-    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True)
+def test_uninstall_of_every_harness_reports_no_schedule_when_none_was_installed(
+        home, project):
+    result = full_uninstall(ALL_HARNESSES, home=home, cwd=project, yes=True)
 
     assert result.exit_code == 0
     assert "no schedule installed" in result.stdout
@@ -2195,7 +2206,7 @@ def test_uninstall_dry_run_reports_it_would_remove_an_installed_schedule(home,
     launchctl = FakeLaunchctl()
     _install_dream_schedule(home, launchctl)
 
-    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+    result = full_uninstall(ALL_HARNESSES, home=home, cwd=project, yes=True,
                             dry_run=True, launchctl=launchctl)
 
     assert result.exit_code == 0
@@ -2204,7 +2215,7 @@ def test_uninstall_dry_run_reports_it_would_remove_an_installed_schedule(home,
 
 
 def test_uninstall_dry_run_says_nothing_about_an_absent_schedule(home, project):
-    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+    result = full_uninstall(ALL_HARNESSES, home=home, cwd=project, yes=True,
                             dry_run=True)
 
     assert result.exit_code == 0
@@ -2213,11 +2224,52 @@ def test_uninstall_dry_run_says_nothing_about_an_absent_schedule(home, project):
 
 def test_uninstall_says_nothing_extra_about_dream_on_a_non_darwin_platform(home,
                                                                            project):
-    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+    result = full_uninstall(ALL_HARNESSES, home=home, cwd=project, yes=True,
                             platform="linux")
 
     assert result.exit_code == 0
     assert "schedule" not in result.stdout
+
+
+def test_uninstall_of_a_single_harness_leaves_the_dream_schedule_alone(home,
+                                                                       project):
+    """Only a slice of what install manages is being removed -- memriver
+    stays installed for the other harnesses -- so the schedule, shared across
+    all of them, is left alone too, and nothing is said about it."""
+    launchctl = FakeLaunchctl()
+    _install_dream_schedule(home, launchctl)
+    launchctl.calls.clear()  # only calls uninstall itself makes count here
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                            launchctl=launchctl)
+
+    assert result.exit_code == 0
+    assert launchctl.calls == []
+    assert "schedule" not in result.stdout
+    assert launch_agent.plist_path(home).exists()
+
+
+def test_uninstall_of_a_single_harness_with_purge_data_still_removes_the_schedule(
+        home, project, tmp_path):
+    """`--purge-data` deletes the one memory store every harness shares, so it
+    removes the schedule too even when only one harness is being uninstalled --
+    and does so before the store itself is purged."""
+    launchctl = FakeLaunchctl()
+    _install_dream_schedule(home, launchctl)
+    root = tmp_path / "agent-memory"
+    root.mkdir()
+    (root / "memriver.db").write_text("db")
+
+    result = full_uninstall(["claude-code"], home=home, cwd=project, yes=True,
+                            purge_data=True, env={"MEMRIVER_ROOT": str(root)},
+                            launchctl=launchctl)
+
+    assert result.exit_code == 0
+    assert not launch_agent.plist_path(home).exists()
+    assert not root.exists()
+    schedule_at = result.stdout.index("removed the schedule")
+    purge_at = result.stdout.index("memory storage root")
+    assert schedule_at < purge_at
 
 
 def test_a_dream_schedule_removal_failure_is_non_zero_and_skips_the_purge(
