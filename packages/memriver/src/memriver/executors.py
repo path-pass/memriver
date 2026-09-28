@@ -7,6 +7,10 @@ does not exist (memriver's own hooks inside the run then find no store and do
 nothing), and a process group of its own, killed whole on timeout. Only the
 kind of a failure comes back, never the output: it may repeat the material
 that was sent.
+
+memriver_classifier.headless keeps a copy of the runner, the environment, the failure
+wording and the argv for the optional content classifier: a fix here is checked
+against it.
 """
 
 from __future__ import annotations
