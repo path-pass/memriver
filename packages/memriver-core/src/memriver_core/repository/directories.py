@@ -330,19 +330,28 @@ def _open_directory_without_following_symlinks(path: Path) -> int:
     return fd
 
 
-def _holds_no_store(canonical: Path) -> bool:
-    """Whether ``canonical`` is neither empty nor holds ``memriver.db`` directly.
+def _store_refusal(target: Path | int, canonical: Path) -> PurgeRefusal | None:
+    """Refuse unless ``target`` -- a path for a dry run, the open directory fd
+    for a real purge -- is empty or holds ``memriver.db`` directly.
 
-    A directory this narrow a check cannot read (permission, I/O) is not
-    refused here: the later open-for-real step already turns that into its
-    own refusal, with the right error text.
+    Fails closed: a directory this cannot even list (permission, I/O) is
+    refused with the OS reason text, the same as the other "could not open"
+    refusal, rather than treated as safe to delete.
+
+    Checking the fd rather than the path for a real purge matters: the name
+    guards above all run before the directory is opened, so a target swapped
+    out for something else in between would otherwise be purged unchecked.
+    Running this on the fd `_open_directory_without_following_symlinks`
+    returns means it inspects the very object the walk will delete.
     """
     try:
-        with os.scandir(canonical) as entries:
+        with os.scandir(target) as entries:
             names = [entry.name for entry in entries]
-    except OSError:
-        return False
-    return bool(names) and DATABASE_FILENAME not in names
+    except OSError as error:
+        return PurgeRefusal("unopenable", canonical, canonical, error.strerror or str(error))
+    if names and DATABASE_FILENAME not in names:
+        return PurgeRefusal("not-a-store", canonical, canonical)
+    return None
 
 
 def plan_purge(given: Path, *, home: Path, cwd: Path,
@@ -372,9 +381,12 @@ def plan_purge(given: Path, *, home: Path, cwd: Path,
         return PurgeRefusal("unresolvable", canonical, canonical, str(error))
     if not stat.S_ISDIR(mode):
         return PurgeRefusal("not-directory", canonical, canonical)
-    if _holds_no_store(canonical):
-        return PurgeRefusal("not-a-store", canonical, canonical)
     if dry_run:
+        # nothing is opened on a dry run, so this is the only check the path
+        # itself gets -- still fail-closed, per `_store_refusal`
+        refusal = _store_refusal(canonical, canonical)
+        if refusal is not None:
+            return refusal
         return PurgePlan(given, canonical, home, cwd, exists=True)
     try:
         fd = _open_directory_without_following_symlinks(canonical)
@@ -383,6 +395,10 @@ def plan_purge(given: Path, *, home: Path, cwd: Path,
         # turned into a symlink between the guards above and here fail closed
         # rather than redirect the open onto a different real directory
         return PurgeRefusal("unopenable", canonical, canonical, error.strerror or str(error))
+    refusal = _store_refusal(fd, canonical)
+    if refusal is not None:
+        os.close(fd)
+        return refusal
     try:
         confirmed = os.fstat(fd)
     except BaseException:
