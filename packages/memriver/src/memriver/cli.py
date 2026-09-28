@@ -332,16 +332,20 @@ def _normalize_legacy_serve(argv: list[str]) -> list[str]:
 
 
 def _serve(args: argparse.Namespace) -> int:
+    import os
+
     from memriver_core.settings import load_settings
 
+    from .classifier_loader import load_classifier
     from .server import build_server
 
-    # an unusable settings.toml or MEMRIVER_* value raises SettingsError, which
-    # main() turns into one stderr line -- what an MCP client shows for a server
-    # that failed to start
+    # an unusable settings.toml, [classifier] table or MEMRIVER_* value raises
+    # SettingsError, which main() turns into one stderr line -- what an MCP client
+    # shows for a server that failed to start
     settings = load_settings(root_override=args.root)
-    build_server(root=settings.root, project_dir=args.project_dir,
-                 settings=settings, harness=args.harness).run()  # stdio
+    classifier = load_classifier(settings.root, env=os.environ)
+    build_server(root=settings.root, project_dir=args.project_dir, settings=settings,
+                 harness=args.harness, classifier=classifier).run()  # stdio
     return 0
 
 

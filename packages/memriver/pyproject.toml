@@ -29,6 +29,7 @@ memriver = "memriver.cli:main"
 
 [project.optional-dependencies]
 # Filled in Phase 3+: vector = ["memriver-vector"], dream = [...], sync = [...], all = [...]
+classifier = ["memriver-classifier==0.1.0"]
 
 [project.urls]
 Homepage = "https://github.com/path-pass/memriver"
@@ -38,6 +39,7 @@ Issues = "https://github.com/path-pass/memriver/issues"
 [tool.uv.sources]
 memriver-core = { workspace = true }
 memriver-dream = { workspace = true }
+memriver-classifier = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

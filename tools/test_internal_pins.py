@@ -34,3 +34,9 @@ def test_memriver_dream_pins_memriver_core_to_its_released_version():
 def test_memriver_classifier_pins_memriver_core_to_its_released_version():
     deps = _pyproject("memriver-classifier")["project"]["dependencies"]
     assert f"memriver-core=={_version('memriver-core')}" in deps
+
+
+def test_the_classifier_extra_pins_memriver_classifier_to_its_released_version():
+    extras = _pyproject("memriver")["project"]["optional-dependencies"]
+    assert extras["classifier"] == [f"memriver-classifier=={_version('memriver-classifier')}"]
+    assert "memriver-classifier" not in " ".join(_pyproject("memriver")["project"]["dependencies"])

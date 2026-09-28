@@ -51,6 +51,7 @@ from memriver_dream.store import DreamStore, RunRow
 from pydantic import ValidationError
 
 from . import launch_agent
+from .classifier_loader import load_classifier
 from .executors import make_executor, missing_env
 from .install import replace_atomically
 from .project_commands import _confirm
@@ -349,6 +350,8 @@ def run_run(*, phase: str | None, trigger: str, root: Path | None, stdout: IO[st
     # SettingsError: cli.main prints its one line
     settings = load_settings(root_override=root)
     dream = load_dream_settings(settings.root)
+    # dream's changes carry model-written text: checked when the classifier is configured
+    classifier = load_classifier(settings.root, env=os.environ)
     if phase is not None and dream is None:
         stderr.write("memriver dream: --phase needs an executor; run memriver dream init\n")
         return 1
@@ -361,7 +364,7 @@ def run_run(*, phase: str | None, trigger: str, root: Path | None, stdout: IO[st
                          f"needs {', '.join(missing)} in the environment; nothing was run\n")
             return 1
     try:
-        services = build_services(settings, root=settings.root)
+        services = build_services(settings, root=settings.root, classifier=classifier)
         if services.project.global_project_id() is None:
             stderr.write("memriver dream: the memory store is not initialized; run memriver "
                          "install\n")

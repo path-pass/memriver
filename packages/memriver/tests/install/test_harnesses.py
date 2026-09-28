@@ -293,3 +293,24 @@ def test_planning_performs_no_filesystem_writes(tmp_path, monkeypatch):
 
     kiro_mcp, kiro_instructions = kiro.targets(HOME, tmp_path, "install")
     kiro.operations((_snapshot(kiro_mcp), _snapshot(kiro_instructions)), {})
+
+
+def test_the_mcp_registration_carries_the_classifier_extra_only_when_installed(monkeypatch):
+    from memriver.install import editors
+
+    assert editors.mcp_server_payload("codex") == mcp_payload("codex")
+    monkeypatch.setattr(editors, "classifier_installed", lambda: True)
+    assert editors.mcp_server_payload("codex") == {
+        "command": "uvx",
+        "args": ["--from", "memriver[classifier]", "memriver", "serve", "--harness", "codex"]}
+
+
+def test_classifier_installed_looks_the_package_up_without_importing_it(monkeypatch):
+    import sys
+
+    from memriver.install import editors
+
+    monkeypatch.undo()          # the autouse stand-in: this test checks the real lookup
+    assert editors.classifier_installed() is True          # a workspace member
+    monkeypatch.setitem(sys.modules, "memriver_classifier", None)
+    assert editors.classifier_installed() is False

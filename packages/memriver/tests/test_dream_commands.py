@@ -1000,3 +1000,33 @@ def test_an_invalid_dream_table_stops_dream_run_naming_the_field(world, capsys):
     captured = capsys.readouterr()
     assert (code, captured.out) == (1, "")
     assert captured.err == "memriver: settings.toml is invalid: field dream.ttl_days\n"
+
+
+def _spy_services(monkeypatch) -> list:
+    seen: list = []
+    real = dream_commands.build_services
+
+    def spy(settings, *, root=None, home=None, classifier=None):
+        seen.append(classifier)
+        return real(settings, root=root, home=home, classifier=classifier)
+
+    monkeypatch.setattr(dream_commands, "build_services", spy)
+    return seen
+
+
+def test_dream_run_builds_the_configured_classifier(world, monkeypatch):
+    (world["store"] / "settings.toml").write_text(
+        'max_body_chars = 4000\n[classifier]\nbackend = "jev"\n'
+        'api_key_env = "MEMRIVER_TEST_UNSET_KEY"\n', encoding="utf-8")
+    seen = _spy_services(monkeypatch)
+    code, _, _ = _run(world)
+    assert code == 0 and seen and seen[0] is not None
+
+
+def test_dream_run_without_the_package_builds_no_classifier(world, monkeypatch):
+    monkeypatch.setitem(sys.modules, "memriver_classifier", None)
+    (world["store"] / "settings.toml").write_text(
+        'max_body_chars = 4000\n[classifier]\nbackend = "jev"\n', encoding="utf-8")
+    seen = _spy_services(monkeypatch)
+    code, _, _ = _run(world)
+    assert code == 0 and seen == [None]

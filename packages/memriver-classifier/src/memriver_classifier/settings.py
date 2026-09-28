@@ -134,7 +134,9 @@ class ClassifierSettings(BaseModel):
     # declared after backend: its validator reads the backend already validated
     executor_path: str | None = Field(None, validate_default=True)
     model: str | None = None            # claude/codex
-    claude_settings: str | None = None  # passed to claude as --settings
+    # passed to claude as --settings, reloaded whole into the call (hooks and
+    # environment included): authentication only, never a hook
+    claude_settings: str | None = None
     timeout_s: int | None = Field(None, gt=0)
     codex_overrides: dict[str, str | bool] = Field(default_factory=dict)
     jev_model: str = DEFAULT_JEV_MODEL

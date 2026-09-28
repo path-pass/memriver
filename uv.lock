@@ -663,14 +663,21 @@ dependencies = [
     { name = "tomlkit" },
 ]
 
+[package.optional-dependencies]
+classifier = [
+    { name = "memriver-classifier" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "fastmcp", specifier = ">=3.4.7,<4" },
+    { name = "memriver-classifier", marker = "extra == 'classifier'", editable = "packages/memriver-classifier" },
     { name = "memriver-core", editable = "packages/memriver-core" },
     { name = "memriver-dream", editable = "packages/memriver-dream" },
     { name = "pydantic", specifier = ">=2" },
     { name = "tomlkit" },
 ]
+provides-extras = ["classifier"]
 
 [[package]]
 name = "memriver-classifier"

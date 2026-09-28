@@ -338,6 +338,17 @@ rather than writing a new state, which is how a secret already in the store
 is removed once a soft delete would be refused. `memriver doctor` and the
 next dream run list any stored version that fails today's rules.
 
+When the optional memriver-classifier package is installed and a `[classifier]` table
+configures it, a second step follows the content policy for every write that carries
+new text -- a create, or an update with a new description or body: the new text alone
+(description and body, nothing else) goes to the configured classifier before the
+write transaction opens, never inside it, so a slow answer never holds the store's
+write lock. Which writes it sees is switched by the caller (`changed_by`): agent
+writes (`mcp`) and dream's (`dream`) each have a switch, and a person's (`human`) are
+never sent. A block, or a classifier that cannot decide, refuses the write and nothing
+is written. Unlike the content policy this step is not LLM-free and, with a hosted
+backend, not local; without the package memriver calls no classifier at all.
+
 ## How harnesses learn the protocol
 
 External harnesses know nothing about this taxonomy up front, and never need
