@@ -2180,8 +2180,8 @@ def _install_dream_schedule(home: Path, launchctl) -> None:
     launch_agent.install(home=home, plist=plist, uid=501, launchctl=launchctl)
 
 
-def test_uninstall_of_every_harness_removes_an_installed_dream_schedule(home,
-                                                                         project):
+def test_uninstall_removes_an_installed_dream_schedule_with_yes_and_no_prompt(
+        home, project):
     launchctl = FakeLaunchctl()
     _install_dream_schedule(home, launchctl)
 
@@ -2189,16 +2189,51 @@ def test_uninstall_of_every_harness_removes_an_installed_dream_schedule(home,
                             launchctl=launchctl)
 
     assert result.exit_code == 0
+    assert result.answers.prompts == []  # --yes never asks
     assert "removed the schedule; settings and data are kept" in result.stdout
     assert not launch_agent.plist_path(home).exists()
 
 
-def test_uninstall_of_every_harness_reports_no_schedule_when_none_was_installed(
-        home, project):
-    result = full_uninstall(ALL_HARNESSES, home=home, cwd=project, yes=True)
+def test_uninstall_declining_the_dream_schedule_prompt_leaves_it_installed(home,
+                                                                           project):
+    launchctl = FakeLaunchctl()
+    _install_dream_schedule(home, launchctl)
+    launchctl.calls.clear()
+
+    result = full_uninstall(ALL_HARNESSES, home=home, cwd=project, yes=False,
+                            replies=["n"], launchctl=launchctl)
 
     assert result.exit_code == 0
-    assert "no schedule installed" in result.stdout
+    assert launchctl.calls == []
+    assert result.answers.prompts == [
+        f"remove the dream schedule ({launch_agent.plist_path(home)})? [y/N] "]
+    assert "the schedule was left in place" in result.stdout
+    assert launch_agent.plist_path(home).exists()
+
+
+def test_accepting_the_dream_schedule_prompt_removes_it(home, project):
+    launchctl = FakeLaunchctl()
+    _install_dream_schedule(home, launchctl)
+
+    result = full_uninstall(ALL_HARNESSES, home=home, cwd=project, yes=False,
+                            replies=["y"], launchctl=launchctl)
+
+    assert result.exit_code == 0
+    assert "removed the schedule; settings and data are kept" in result.stdout
+    assert not launch_agent.plist_path(home).exists()
+
+
+def test_uninstall_of_every_harness_says_nothing_when_no_schedule_was_installed(
+        home, project):
+    launchctl = FakeLaunchctl()
+
+    result = full_uninstall(ALL_HARNESSES, home=home, cwd=project, yes=False,
+                            launchctl=launchctl)
+
+    assert result.exit_code == 0
+    assert launchctl.calls == []          # no plist -- never even asked launchd
+    assert result.answers.prompts == []   # -- nor the user
+    assert "schedule" not in result.stdout
 
 
 def test_uninstall_dry_run_reports_it_would_remove_an_installed_schedule(home,

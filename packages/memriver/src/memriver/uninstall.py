@@ -61,7 +61,8 @@ def run_uninstall(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
         return exit_code
 
     if purge_data or set(harnesses) == set(HARNESSES):
-        exit_code = _remove_dream_schedule(dry_run=dry_run, home=home, stdout=stdout,
+        exit_code = _remove_dream_schedule(yes=yes, dry_run=dry_run, home=home,
+                                           stdout=stdout, input_fn=input_fn,
                                            launchctl=launchctl, uid=uid, platform=platform)
         if exit_code != 0:
             return exit_code
@@ -79,15 +80,20 @@ def run_uninstall(harnesses: Sequence[str], *, yes: bool, dry_run: bool,
     return 0
 
 
-def _remove_dream_schedule(*, dry_run: bool, home: Path, stdout: TextIO,
+def _remove_dream_schedule(*, yes: bool, dry_run: bool, home: Path, stdout: TextIO,
+                           input_fn: Callable[[str], str],
                            launchctl: Callable[[list[str]], int] | None,
                            uid: int | None, platform: str) -> int:
     """Stop the daily dream run config removal alone leaves behind.
 
     Without this, a scheduled dream keeps sending memories to the model
-    service every day after uninstall. This reuses ``memriver dream``'s own
-    uninstall path so its refusal wording is never duplicated here; a platform
-    dream never schedules on gets no output at all, not even a note.
+    service every day after uninstall. Nothing is asked, or said, when there
+    is no schedule to remove; otherwise this is its own confirmed step --
+    declining every config change above must not also boot out and delete the
+    schedule, so it asks its own question rather than riding on whatever the
+    config steps decided. Reuses ``memriver dream``'s own uninstall path for
+    the actual removal so its refusal wording is never duplicated here; a
+    platform dream never schedules on gets no output at all, not even a note.
     """
     if platform != "darwin":
         return 0
@@ -98,10 +104,25 @@ def _remove_dream_schedule(*, dry_run: bool, home: Path, stdout: TextIO,
     from . import dream_commands, launch_agent
 
     label = dream_commands.DREAM_LAUNCH_AGENT_LABEL
-    if dry_run:
-        if launch_agent.plist_path(home, label).exists():
-            stdout.write("dry run: the dream schedule would be removed.\n")
+    plist = launch_agent.plist_path(home, label)
+    if not plist.exists():
         return 0
+    if dry_run:
+        stdout.write("dry run: the dream schedule would be removed.\n")
+        return 0
+    if not yes:
+        try:
+            answer = input_fn(f"remove the dream schedule ({plist})? [y/N] ")
+        except EOFError:
+            stdout.write(
+                "memriver uninstall: stdin is not interactive and no answer can "
+                "be read; re-run with --yes to remove the dream schedule shown "
+                "above.\n")
+            return 1
+        if answer.strip().lower() not in ("y", "yes"):
+            stdout.write("dream schedule removal declined; the schedule was left "
+                        "in place.\n")
+            return 0
     return dream_commands.run_uninstall(
         home=home, stdout=stdout, launchctl=launchctl or launch_agent.run_launchctl,
         uid=uid, platform=platform, label=label,

@@ -622,9 +622,10 @@ shared files are never deleted. The harness's own memory setting is left as it
 is; the completion report says so and names any file left empty. Once the
 configuration is removed, `uninstall` also removes the dream schedule (see
 *Dream: offline maintenance*) when every harness is uninstalled (or with
-`--purge-data`), so a scheduled dream does not keep sending memories to the
-model service after memriver itself is gone; uninstalling a single harness
-leaves memriver, and the schedule, running for the others.
+`--purge-data`), after its own confirmation (or with `--yes`), so a scheduled
+dream does not keep sending memories to the model service after memriver
+itself is gone; uninstalling a single harness leaves memriver, and the
+schedule, running for the others.
 
 `--purge-data` is the only thing that deletes the whole store rather than one
 memory (`memriver delete` removes a single memory; see *Browsing and managing
