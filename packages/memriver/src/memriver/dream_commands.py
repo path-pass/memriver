@@ -31,23 +31,21 @@ from memriver_core.settings import (
     load_settings,
     validation_fields,
 )
-from memriver_dream import run_dream
-from memriver_dream.lock import run_lock
-from memriver_dream.run import prune_reports
-from memriver_dream.settings import (
+from memriver_dream import (
     DEFAULT_DREAM_REPORT_RETENTION_DAYS,
     DEFAULT_DREAM_SCHEDULE_AT,
     DEFAULT_DREAM_TTL_DAYS,
-    DREAM_DB_FILENAME,
     DREAM_DIRECTORY,
     DREAM_LAUNCH_AGENT_LABEL,
     DREAM_LOG_FILENAME,
     DREAM_REPORTS_DIRECTORY,
     DREAM_TOOL_OUTPUT_CHARS,
     check_dream_table,
+    find_run,
     load_dream_settings,
+    recent_runs,
+    run_dream,
 )
-from memriver_dream.store import DreamStore, RunRow
 from pydantic import ValidationError
 
 from . import launch_agent
@@ -317,14 +315,10 @@ def run_init(*, executor: str | None, ttl_days: int | None, at: str | None, yes:
     return 0
 
 
-def _reports(root: Path) -> Path:
-    return Path(root) / DREAM_DIRECTORY / DREAM_REPORTS_DIRECTORY
-
-
-def _report_path(root: Path, run: RunRow) -> Path:
+def _report_path(root: Path, report_file: str) -> Path:
     # the file name only, as memriver_dream reads it: a hand-edited row never points
     # the read elsewhere
-    return _reports(root) / Path(run.report_file).name
+    return Path(root) / DREAM_DIRECTORY / DREAM_REPORTS_DIRECTORY / Path(report_file).name
 
 
 def _print_report(path: Path, stdout: IO[str]) -> bool:
@@ -395,18 +389,13 @@ def run_run(*, phase: str | None, trigger: str, root: Path | None, stdout: IO[st
         # so the report text stays under report_retention_days (and a hard delete)
         stdout.write(f"run {run.run_id} {run.status}; memriver dream report {run.run_id}\n")
         return 0
-    if not _print_report(_report_path(settings.root, run), stdout):
+    if not _print_report(_report_path(settings.root, run.report_file), stdout):
         # the run itself is not undone -- its row and report file stand as they are --
         # only the final read-back failed; the same fixed line as any other dream-file
         # fault, never the exception's text
         stderr.write(DREAM_FAILURE)
         return 1
     return 0
-
-
-def _status(run: RunRow, lock_free: bool) -> str:
-    # a "running" row nobody holds the lock for was interrupted; the next run marks it
-    return "interrupted" if run.status == "running" and lock_free else run.status
 
 
 def run_report(run_id: str | None, *, list_count: int | None, root: Path | None,
@@ -424,27 +413,22 @@ def run_report(run_id: str | None, *, list_count: int | None, root: Path | None,
     except StoreNeedsUpgrade as err:
         stdout.write(f"memriver dream: {unsupported_store(err)}\n")
         return 1
+    days = (DEFAULT_DREAM_REPORT_RETENTION_DAYS if dream is None
+            else dream.report_retention_days)
     try:
         # retention runs before a report, under the run lock; while a run holds the
         # lock nothing is deleted, and a "running" row is that live run
-        with run_lock(store_root) as lock_free:
-            store = DreamStore(store_root / DREAM_DIRECTORY / DREAM_DB_FILENAME)
-            if lock_free:
-                prune_reports(store, _reports(store_root), now=_now(),
-                              days=DEFAULT_DREAM_REPORT_RETENTION_DAYS if dream is None
-                              else dream.report_retention_days)
-            if list_count is not None:
-                runs, run = store.runs(list_count), None
-            else:
-                runs = []
-                run = store.run(run_id) if run_id else next(iter(store.runs(1)), None)
+        if list_count is not None:
+            runs, run = recent_runs(store_root, limit=list_count, retention_days=days), None
+        else:
+            runs, run = [], find_run(store_root, run_id, retention_days=days)
     except (sqlite3.Error, OSError):
         stdout.write(DREAM_FAILURE)
         return 1
     if list_count is not None:
         for listed in runs:
             stdout.write(visible(f"{listed.run_id}  {listed.started_at}  {listed.trigger}  "
-                                 f"{_status(listed, lock_free)}") + "\n")
+                                 f"{listed.status}") + "\n")
         if not runs:
             stdout.write("(no dream runs yet)\n")
         return 0
@@ -454,8 +438,8 @@ def run_report(run_id: str | None, *, list_count: int | None, root: Path | None,
             return 2
         stdout.write("(no dream runs yet)\n")
         return 0
-    code = 0 if _print_report(_report_path(store_root, run), stdout) else 2
-    if _status(run, lock_free) == "interrupted":
+    code = 0 if _print_report(run.report_path, stdout) else 2
+    if run.status == "interrupted":
         stdout.write(INTERRUPTED)
     return code
 

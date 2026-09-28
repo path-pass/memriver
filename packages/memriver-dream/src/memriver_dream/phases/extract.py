@@ -20,12 +20,13 @@ from memriver_core.models.errors import MemoryNotFound
 
 from ..changes import apply_group
 from ..store import input_digest
-from . import EXTRACTION_SCOPE, PassResult
-from .consolidate import (
+from . import (
+    EXTRACTION_SCOPE,
     INPUT_CHANGED,
     INVALID,
     REFUSED,
     TYPES,
+    PassResult,
     Problem,
     ask,
     current_sources,

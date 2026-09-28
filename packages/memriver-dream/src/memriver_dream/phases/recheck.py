@@ -23,11 +23,11 @@ from memriver_core.models.errors import MemoryNotFound
 
 from ..changes import apply_group
 from ..store import input_digest
-from . import PassResult
-from .consolidate import (
+from . import (
     INPUT_CHANGED,
     INVALID,
     REFUSED,
+    PassResult,
     Problem,
     ask,
     current_sources,

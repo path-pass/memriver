@@ -24,9 +24,9 @@ from memriver_core.models.errors import MemoryNotFound
 from ..calls import sendable_time
 from ..changes import apply_group
 from ..store import ReviewRow, shift_days
-from . import PassResult
-from .consolidate import (
+from . import (
     INPUT_CHANGED,
+    PassResult,
     ask,
     current_sources,
     details,

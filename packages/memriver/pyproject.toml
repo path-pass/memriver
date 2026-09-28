@@ -28,7 +28,7 @@ dependencies = [
 memriver = "memriver.cli:main"
 
 [project.optional-dependencies]
-# Filled in Phase 3+: vector = ["memriver-vector"], dream = [...], sync = [...], all = [...]
+# planned: vector = ["memriver-vector"], sync = ["memriver-sync"]
 classifier = ["memriver-classifier==0.1.0"]
 
 [project.urls]

@@ -29,8 +29,7 @@ from ..settings import (
     PROMPT_VERSION,
 )
 from ..store import SummaryRow
-from . import PassResult
-from .consolidate import input_estimate, too_large
+from . import PassResult, input_estimate, too_large
 
 if TYPE_CHECKING:
     from memriver_core.models import Session

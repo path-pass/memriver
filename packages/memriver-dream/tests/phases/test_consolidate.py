@@ -9,12 +9,14 @@ import re
 
 import pytest
 from memriver_core.models.changes import Create, SourceRef, Update
-from memriver_dream.phases import GLOBAL_SCOPE, PassResult, consolidate, extract
-from memriver_dream.phases.consolidate import (
-    GLOBAL_SYSTEM_PROMPT,
-    SYSTEM_PROMPT,
+from memriver_dream.phases import (
+    GLOBAL_SCOPE,
+    PassResult,
+    consolidate,
+    extract,
     input_estimate,
 )
+from memriver_dream.phases.consolidate import GLOBAL_SYSTEM_PROMPT, SYSTEM_PROMPT
 from memriver_dream.protocols import ExecutorResult
 from memriver_dream.store import DreamStore, input_digest, shift_days
 

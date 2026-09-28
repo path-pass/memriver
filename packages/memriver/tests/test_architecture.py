@@ -275,3 +275,15 @@ def test_memriver_classifier_itself_loads_no_memriver_dream():
     result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
                             check=True)
     assert result.stdout.strip() == "[]"
+
+
+# spec §6.5: the umbrella reaches memriver_dream through its facade (the package root)
+DREAM_INTERNALS = tuple(f"memriver_dream.{name}" for name in (
+    "store", "lock", "calls", "phases", "run", "report", "changes"))
+
+
+def test_the_umbrella_uses_memriver_dream_through_its_facade_only():
+    for module in SOURCES:
+        offenders = [target for target in _imported_modules(module)
+                     if any(_under(target, internal) for internal in DREAM_INTERNALS)]
+        assert not offenders, f"{module} reaches into memriver_dream: {offenders}"

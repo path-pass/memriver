@@ -25,8 +25,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from memriver_dream.protocols import ExecutorResult
-from memriver_dream.settings import DREAM_KILL_GRACE_S, DreamSettings
+from memriver_dream import DREAM_KILL_GRACE_S, DreamSettings, ExecutorResult
 
 # ponytail: failure kinds are read from the wording of the harness's own error
 # fields (never from output that may repeat the prompt); an unknown wording is

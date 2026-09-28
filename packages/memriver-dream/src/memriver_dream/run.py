@@ -13,6 +13,7 @@ failure: the run is recorded as failed, its report closed, the error re-raised.
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -194,6 +195,50 @@ def prune_reports(store: DreamStore, reports: Path, *, now: str, days: int) -> l
         store.delete_run(row.run_id)
         removed.append(row)
     return removed
+
+
+@dataclass(frozen=True)
+class RunRecord:
+    """One run as `memriver dream report` shows it."""
+
+    run_id: str
+    started_at: str
+    trigger: str
+    status: str             # as stored, or "interrupted": running while nobody holds the lock
+    report_path: Path
+
+
+def _records(root: Path, retention_days: int,
+             read: Callable[[DreamStore], list[RunRow]]) -> list[RunRecord]:
+    """`read`'s rows as records, under the run lock; retention first, and only while no
+    run holds the lock (a "running" row is then that live run, never interrupted)."""
+    directory = Path(root) / DREAM_DIRECTORY
+    reports = directory / DREAM_REPORTS_DIRECTORY
+    with run_lock(root) as free:
+        store = DreamStore(directory / DREAM_DB_FILENAME)
+        if free:
+            prune_reports(store, reports, now=clock(), days=retention_days)
+        rows = read(store)
+    # the file name only: a hand-edited row never points a read elsewhere
+    return [RunRecord(row.run_id, row.started_at, row.trigger,
+                      "interrupted" if row.status == "running" and free else row.status,
+                      reports / Path(row.report_file).name) for row in rows]
+
+
+def recent_runs(root: Path, *, limit: int, retention_days: int) -> list[RunRecord]:
+    """The last `limit` runs, newest first. A dream.db or report-file failure raises
+    sqlite3.Error or OSError as it is: the caller names it without its text."""
+    return _records(root, retention_days, lambda store: store.runs(limit))
+
+
+def find_run(root: Path, run_id: str | None, *, retention_days: int) -> RunRecord | None:
+    """`run_id`'s run, the latest run when `run_id` is None or empty, or None."""
+    def read(store: DreamStore) -> list[RunRow]:
+        row = store.run(run_id) if run_id else next(iter(store.runs(1)), None)
+        return [] if row is None else [row]
+
+    records = _records(root, retention_days, read)
+    return records[0] if records else None
 
 
 def _skipped(store: DreamStore, report: Report, run: RunRow,
