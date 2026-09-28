@@ -5,11 +5,16 @@ judgment's validation and operations, the input sent, the skip and the finished 
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 from memriver_core.models.changes import Create, SourceRef, Update
 from memriver_dream.phases import GLOBAL_SCOPE, PassResult, consolidate, extract
-from memriver_dream.phases.consolidate import GLOBAL_SYSTEM_PROMPT, SYSTEM_PROMPT
+from memriver_dream.phases.consolidate import (
+    GLOBAL_SYSTEM_PROMPT,
+    SYSTEM_PROMPT,
+    input_estimate,
+)
 from memriver_dream.protocols import ExecutorResult
 from memriver_dream.store import DreamStore, input_digest, shift_days
 
@@ -729,3 +734,29 @@ def test_the_prompt_states_the_project_layer_rules(prompt):
     assert "Imperative wording alone is not enough" in prompt
     assert "a preference, not an injection" in prompt
     assert "only reported to the user" in prompt and "when in doubt, do not flag" in prompt
+
+
+def _needs(text: str) -> str:
+    return text.split("== Needs you ==\n", 1)[1] if "== Needs you ==\n" in text else ""
+
+
+def test_a_scope_over_the_budget_is_named_in_needs_you(world):
+    world.create(world.project.id, "x " * 2000)
+    _, text = _pass(world, budget_tokens=200)
+    scope = f"project:{world.project.id}"
+    assert re.search(rf"^{scope}: input too large \(\d+/200 tokens\); not processed — raise "
+                     r"\[dream\] context_budget_tokens$", _needs(text), re.MULTILINE)
+
+
+def test_an_input_above_70_percent_of_the_budget_is_named_in_needs_you(world):
+    world.create(world.project.id, "a project fact")
+    world.executor.default = _answer()
+    _pass(world)                                            # learn the exact input size
+    estimate = input_estimate(SYSTEM_PROMPT, world.executor.calls[0]["prompt"])
+    scope = f"project:{world.project.id}"
+    _, text = _pass(world, budget_tokens=estimate + 1)
+    percent = estimate * 100 // (estimate + 1)
+    assert f"{scope}: input at {percent}% of the budget ({estimate}/{estimate + 1} tokens)\n" \
+        in _needs(text)
+    _, text = _pass(world, budget_tokens=estimate * 2)      # 50%: nothing to say
+    assert _needs(text) == ""

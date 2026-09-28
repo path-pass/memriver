@@ -6,6 +6,7 @@ independence from the extraction skip."""
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 from memriver_core.models.changes import Create, SoftDelete, SourceRef, Update
@@ -366,3 +367,13 @@ def test_the_prompt_states_the_recheck_rules():   # spec §6.6
     assert "must be supported by the new versions or successors given" in prompt
     assert "When in doubt, answer keep or overturned" in prompt
     assert "write principles, not concrete commands" in prompt
+
+
+def test_an_entry_whose_recheck_is_over_the_budget_is_named_in_needs_you(world):
+    a, _, entry = _setup(world)
+    _update(world, a, 1, "demo runs pytest -q")
+    result, text = _pass(world, budget_tokens=10)
+    assert world.executor.calls == [] and not result.finished
+    assert re.search(rf"^{entry}: input too large \(\d+/10 tokens\); not processed "
+                     r"— raise \[dream\] context_budget_tokens$", text.split("== Needs you ==\n")[1],
+                     re.MULTILINE)

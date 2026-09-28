@@ -6,6 +6,7 @@ The model phases are replaced by recorders: their own behavior is tested with th
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
@@ -513,3 +514,18 @@ def test_an_uncaught_apply_group_failure_still_marks_its_line_unknown_end_to_end
     assert (f"applying rewrite {memory_id} -> outcome unknown — see memriver history "
             f"{memory_id}\n") in text
     assert [version.version for version in world.services.memory.versions(memory_id)] == [1, 2]
+
+
+def test_the_budget_setting_sizes_every_call_and_too_large_scopes_go_to_needs_you(world):
+    world.create(world.project.id, "a project fact")
+    room = 1                                   # 20_001 less the 20_000 reserve and margin
+    row = world.run(settings=world.dream.model_copy(update={"context_budget_tokens": 20_001}))
+    needs = world.report_text(row).split("== Needs you ==\n", 1)[1]
+    for subject in (f"project:{world.project.id}", "extraction"):
+        assert re.search(rf"^{subject}: input too large \(\d+/{room} tokens\); not processed "
+                         r"— raise \[dream\] context_budget_tokens$", needs, re.MULTILINE), subject
+    assert world.executor.calls == []
+
+
+def test_the_default_budget_leaves_180k_tokens_of_input_room(world):
+    assert world.context().budget_tokens == 200_000 - 20_000

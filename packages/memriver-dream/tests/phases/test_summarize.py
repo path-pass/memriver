@@ -693,3 +693,16 @@ def test_run_dream_runs_the_phase_under_its_section(world):
     assert row.status == "completed"
     assert "== Session summaries ==\ncodex s1: ok\n" in world.report_text(row)
     assert _core(world, key).summary == "Did the work"
+
+
+def test_a_session_still_too_large_after_every_halving_is_named_in_needs_you(world):
+    _session(world)
+    world.transcripts.by_session["s1"] = _transcript(*LONG[:4])
+    world.executor.default = ExecutorResult(error="too-large")
+    ctx = world.context()
+    summarize.run(ctx)
+    ctx.report.footer(status="completed", finished_at=world.now)
+    room = input_room(ctx.budget_tokens)
+    assert re.search(rf"^codex s1: input too large \(\d+/{room} tokens\); not processed — "
+                     r"raise \[dream\] context_budget_tokens$",
+                     ctx.report.path.read_text().split("== Needs you ==\n")[1], re.MULTILINE)

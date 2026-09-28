@@ -24,7 +24,7 @@ def _clear_memriver_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _root(tmp_path, text: str | None = None) -> Path:
     root = tmp_path / "mem"
-    root.mkdir()
+    root.mkdir(parents=True)
     if text is not None:
         (root / "settings.toml").write_text(text, encoding="utf-8")
     return root
@@ -86,6 +86,8 @@ def test_the_dream_table_has_no_environment_layer(tmp_path, monkeypatch):
      "dream.codex_overrides"),
     ('[dream]\nexecutor_path = "/opt/bin/codex"\n', "dream.executor"),
     ("dream = 5\n", "dream"),
+    (DREAM_TABLE + "context_budget_tokens = 20000\n", "dream.context_budget_tokens"),
+    (DREAM_TABLE + "context_budget_tokens = true\n", "dream.context_budget_tokens"),
 ])
 def test_an_invalid_dream_table_raises_naming_only_the_file_and_the_field(tmp_path, table,
                                                                           field):
@@ -216,7 +218,7 @@ def test_codex_overrides_outside_the_whitelist_are_refused_without_echoing_value
 
 
 DREAM_CONSTANTS = {
-    "DREAM_CONTEXT_BUDGET_TOKENS": 100_000, "DREAM_OUTPUT_RESERVE_TOKENS": 4_000,
+    "DEFAULT_DREAM_CONTEXT_BUDGET_TOKENS": 200_000, "DREAM_OUTPUT_RESERVE_TOKENS": 4_000,
     "DREAM_INPUT_MARGIN_TOKENS": 16_000, "DREAM_CHUNK_SUMMARY_CHARS": 1_500,
     "DREAM_TOOL_OUTPUT_CHARS": 2_000, "DREAM_MAX_CALLS_PER_SESSION": 12,
     "DREAM_CALL_TIMEOUT_S": 300, "DREAM_KILL_GRACE_S": 2,
@@ -226,7 +228,7 @@ DREAM_CONSTANTS = {
     "DREAM_REPORTS_DIRECTORY": "reports", "PROMPT_VERSION": "dream-4",
     "DREAM_LAUNCH_AGENT_LABEL": "io.github.path-pass.memriver.dream",
 }
-REMOVED = ("DEFAULT_DREAM_IDLE_MINUTES", "DREAM_MAX_QUARANTINE_PER_RUN")
+REMOVED = ("DEFAULT_DREAM_IDLE_MINUTES", "DREAM_MAX_QUARANTINE_PER_RUN", "DREAM_CONTEXT_BUDGET_TOKENS")
 
 
 def test_the_dream_constants_live_in_dream_settings():
@@ -246,3 +248,12 @@ def test_the_dream_defaults_back_the_table_fields():
                         fields["report_retention_days"].default,
                         fields["schedule_at"].default)
     assert defaults == (30, 3, 30, "04:00")
+
+
+def test_the_context_budget_defaults_to_200k_and_must_exceed_the_reserve(tmp_path):
+    assert load_dream_settings(_root(tmp_path, DREAM_TABLE)).context_budget_tokens == 200_000
+    assert DreamSettings.model_fields["context_budget_tokens"].default == \
+        dream_settings.DEFAULT_DREAM_CONTEXT_BUDGET_TOKENS
+    table = load_dream_settings(_root(tmp_path / "b", DREAM_TABLE
+                                      + "context_budget_tokens = 20001\n"))
+    assert table.context_budget_tokens == 20_001

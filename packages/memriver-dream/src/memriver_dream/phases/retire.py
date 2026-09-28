@@ -30,8 +30,10 @@ from .consolidate import (
     ask,
     current_sources,
     details,
+    input_estimate,
     reason_problem,
     shown,
+    too_large,
     usable,
 )
 
@@ -149,6 +151,9 @@ def review(ctx: Context, memory: Memory, listed_at: str, live: set[str],
             break
         others = others[:len(others) // 2]
     if isinstance(result, str):
+        if result == "too-large":           # final: after the halved retry
+            too_large(ctx, memory.id, input_estimate(SYSTEM_PROMPT, prompt),
+                      ctx.budget_tokens)
         report.line(f"{memory.id}: not processed: {result}")
         return False
     # evidence is neither stored nor acted on: only the candidate, at the version sent, is

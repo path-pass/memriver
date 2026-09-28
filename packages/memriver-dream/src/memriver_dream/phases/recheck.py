@@ -32,9 +32,11 @@ from .consolidate import (
     ask,
     current_sources,
     details,
+    input_estimate,
     reason_problem,
     shown,
     text_problem,
+    too_large,
 )
 
 if TYPE_CHECKING:
@@ -231,6 +233,8 @@ def _recheck(ctx: Context, memory: Memory, everything: dict[str, Memory]) -> boo
                            changes="\n".join(lines))
     result = ask(ctx, SYSTEM_PROMPT, prompt, SCHEMA)
     if isinstance(result, str):
+        if result == "too-large":
+            too_large(ctx, memory.id, input_estimate(SYSTEM_PROMPT, prompt), ctx.budget_tokens)
         report.line(f"{memory.id}: not processed: {result}")
         return False
     return _judge(ctx, result, memory, sources, changed_ids, allowed, everything, digest)

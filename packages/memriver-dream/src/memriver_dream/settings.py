@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from pydantic_settings import InitSettingsSource, TomlConfigSettingsSource
 
 __all__ = [
+    "DEFAULT_DREAM_CONTEXT_BUDGET_TOKENS",
     "DEFAULT_DREAM_MAX_CANDIDATES_PER_RUN",
     "DEFAULT_DREAM_MAX_GROUPS_PER_RUN",
     "DEFAULT_DREAM_MAX_SESSIONS_PER_RUN",
@@ -36,7 +37,6 @@ __all__ = [
     "DEFAULT_DREAM_UNCERTAIN_LIMIT",
     "DREAM_CALL_TIMEOUT_S",
     "DREAM_CHUNK_SUMMARY_CHARS",
-    "DREAM_CONTEXT_BUDGET_TOKENS",
     "DREAM_DB_FILENAME",
     "DREAM_DIRECTORY",
     "DREAM_INPUT_MARGIN_TOKENS",
@@ -69,9 +69,9 @@ DEFAULT_DREAM_SCHEDULE_AT = "04:00"
 DEFAULT_DREAM_MAX_SESSIONS_PER_RUN = 20
 DEFAULT_DREAM_MAX_GROUPS_PER_RUN = 20
 DEFAULT_DREAM_MAX_CANDIDATES_PER_RUN = 30
+DEFAULT_DREAM_CONTEXT_BUDGET_TOKENS = 200_000   # one executor call, input and output
 
 # fixed values (spec §10): initial values, revisited after a real-transcript run
-DREAM_CONTEXT_BUDGET_TOKENS = 100_000   # one executor call, input and output
 DREAM_OUTPUT_RESERVE_TOKENS = 4_000     # kept free for the answer
 # the estimate is rough and sees neither the schema, the harness's own prompt nor
 # a global AGENTS.md: this much input room is kept unused on top of the reserve
@@ -174,6 +174,11 @@ class DreamSettings(BaseModel):
     max_sessions_per_run: int = Field(DEFAULT_DREAM_MAX_SESSIONS_PER_RUN, gt=0)
     max_groups_per_run: int = Field(DEFAULT_DREAM_MAX_GROUPS_PER_RUN, gt=0)
     max_candidates_per_run: int = Field(DEFAULT_DREAM_MAX_CANDIDATES_PER_RUN, gt=0)
+    # one executor call's tokens, input and output; must leave room after the answer's
+    # reserve and the estimate's margin
+    context_budget_tokens: int = Field(
+        DEFAULT_DREAM_CONTEXT_BUDGET_TOKENS,
+        gt=DREAM_OUTPUT_RESERVE_TOKENS + DREAM_INPUT_MARGIN_TOKENS)
     # provider settings the Codex executor passes as -c overrides (spec §9.2): the
     # executor skips config.toml, so a provider defined only there is given here
     codex_overrides: dict[str, str | bool] = Field(default_factory=dict)
@@ -185,7 +190,7 @@ class DreamSettings(BaseModel):
 
     @field_validator("ttl_days", "ttl_read_multiplier_max", "uncertain_limit",
                      "report_retention_days", "max_sessions_per_run", "max_groups_per_run",
-                     "max_candidates_per_run", mode="before")
+                     "max_candidates_per_run", "context_budget_tokens", mode="before")
     @classmethod
     def _no_booleans(cls, value: object) -> object:
         return reject_boolean(value)

@@ -30,6 +30,7 @@ from ..settings import (
 )
 from ..store import SummaryRow
 from . import PassResult
+from .consolidate import too_large
 
 if TYPE_CHECKING:
     from memriver_core.models import Session
@@ -337,6 +338,9 @@ def summarize_session(ctx: Context, session: Session, row: SummaryRow | None) ->
     result = _summarize(ctx, row, lines, fingerprint)
     row = ctx.store.summary(key.harness, key.session_id)     # a checkpoint may have moved it
     if isinstance(result, str):
+        if result == "too-large":           # final: after every halving of the room
+            too_large(ctx, f"{key.harness} {ctx.report.safe(key.session_id)}",
+                      estimate_tokens("\n".join(lines)), input_room(ctx.budget_tokens))
         return _pending(ctx, row, result)
     if result["status"] == "empty":
         return _final(ctx, row, observed, "empty", *snapshot)

@@ -123,12 +123,33 @@ def entry(memory: Memory, sources: Sequence[SourceRef], **extra: object) -> str:
                       ensure_ascii=False)
 
 
+def input_estimate(system_prompt: str, prompt: str) -> int:
+    """The estimated tokens one call's input takes, as ask() measures it."""
+    return estimate_tokens(system_prompt + DATA_RULE + prompt)
+
+
 def ask(ctx: Context, system_prompt: str, prompt: str, schema: dict) -> dict | str:
     """The parsed answer, or the kind of failure; input over the room is "too-large"
     without a call (spec §5.4: the input is never cut to fit)."""
-    if estimate_tokens(system_prompt + DATA_RULE + prompt) > ctx.budget_tokens:
+    if input_estimate(system_prompt, prompt) > ctx.budget_tokens:
         return "too-large"
     return call(ctx.executor, system_prompt=system_prompt, prompt=prompt, schema=schema)
+
+
+def too_large(ctx: Context, subject: str, estimate: int, room: int) -> None:
+    """The Needs-you line for an input still too large once its phase gave up (after
+    any halving): the user's lever is the budget."""
+    ctx.report.needs_you(f"{subject}: input too large ({estimate}/{room} tokens); not "
+                         "processed — raise [dream] context_budget_tokens")
+
+
+def near_budget(ctx: Context, scope: str, estimate: int) -> None:
+    """The Needs-you line for a sent input above 70% of the room: the next growth of
+    this scope may not fit."""
+    room = ctx.budget_tokens
+    if room * 7 < estimate * 10 <= room * 10:
+        ctx.report.needs_you(f"{scope}: input at {estimate * 100 // room}% of the budget "
+                             f"({estimate}/{room} tokens)")
 
 
 @dataclass(frozen=True)
@@ -380,8 +401,12 @@ def run(ctx: Context, project_id: str, scope: str) -> PassResult:
     system_prompt = GLOBAL_SYSTEM_PROMPT if scope == GLOBAL_SCOPE else SYSTEM_PROMPT
     prompt = PROMPT.format(entries="\n".join(entry(memory, sources[memory.id])
                                              for memory in memories))
+    estimate = input_estimate(system_prompt, prompt)
+    near_budget(ctx, scope, estimate)
     result = ask(ctx, system_prompt, prompt, SCHEMA)
     if isinstance(result, str):
+        if result == "too-large":
+            too_large(ctx, scope, estimate, ctx.budget_tokens)
         ctx.report.line(f"not processed: {result}")
         return PassResult(finished=False, digest=digest)
     judgments, finished = split_no_change(ctx, result["judgments"])

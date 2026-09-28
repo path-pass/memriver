@@ -34,8 +34,8 @@ from .phases import (
 )
 from .report import Report, mark_interrupted
 from .settings import (
+    DEFAULT_DREAM_CONTEXT_BUDGET_TOKENS,
     DEFAULT_DREAM_REPORT_RETENTION_DAYS,
-    DREAM_CONTEXT_BUDGET_TOKENS,
     DREAM_DB_FILENAME,
     DREAM_DIRECTORY,
     DREAM_INPUT_MARGIN_TOKENS,
@@ -69,7 +69,8 @@ class Context:
     history_hits: dict[str, set[int]]     # memory id -> hit versions (history only)
     groups_used: int = 0                  # changes applied this run (max_groups_per_run)
     # one call's input room: the context budget less the answer's reserve and the margin
-    budget_tokens: int = (DREAM_CONTEXT_BUDGET_TOKENS - DREAM_OUTPUT_RESERVE_TOKENS
+    # (run_dream sets it from [dream] context_budget_tokens; this default serves tests)
+    budget_tokens: int = (DEFAULT_DREAM_CONTEXT_BUDGET_TOKENS - DREAM_OUTPUT_RESERVE_TOKENS
                           - DREAM_INPUT_MARGIN_TOKENS)
 
 
@@ -112,9 +113,13 @@ def run_dream(services: Services, executor: Executor | None,
                           executor=executor_name)
             for row in interrupted:
                 report.line(f"run {row.run_id} was interrupted; marked failed")
+            budget = (DEFAULT_DREAM_CONTEXT_BUDGET_TOKENS if settings is None
+                      else settings.context_budget_tokens)
             ctx = Context(services=services, executor=executor, transcripts=transcripts,
                           settings=settings, now=now, store=store, report=report,
-                          excluded=set(), history_hits={})
+                          excluded=set(), history_hits={},
+                          budget_tokens=(budget - DREAM_OUTPUT_RESERVE_TOKENS
+                                         - DREAM_INPUT_MARGIN_TOKENS))
             _phases(ctx, PHASES if phases is None else phases)
             report.section("Maintenance")
             report.line(f"reads pruned: {services.memory.prune_reads()}")

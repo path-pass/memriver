@@ -3,6 +3,8 @@ C4 tracing, every judgment's validation, the skip (§6.9) and the prompt rules."
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from memriver_core import MemoryNotFound
 from memriver_core.models.changes import Create, SourceRef, Update
@@ -467,3 +469,12 @@ def test_the_prompt_states_the_extraction_rules():   # spec §6.5
     assert "Prefer supplementing" in prompt
     assert "never reword an entry without new evidence" in prompt
     assert "When in doubt, answer no_change" in prompt
+
+
+def test_an_extraction_over_the_budget_is_named_in_needs_you(world):
+    world.create(world.project.id, "x " * 2000)
+    result, text = _pass(world, budget_tokens=200)
+    assert world.executor.calls == [] and not result.finished
+    assert re.search(r"^extraction: input too large \(\d+/200 tokens\); not processed — raise "
+                     r"\[dream\] context_budget_tokens$", text.split("== Needs you ==\n")[1],
+                     re.MULTILINE)

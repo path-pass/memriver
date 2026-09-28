@@ -4,6 +4,8 @@ time."""
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from memriver_core.models.changes import Create, SoftDelete, SourceRef, Update, Usage
 from memriver_dream.phases import PassResult, retire
@@ -454,3 +456,14 @@ def test_run_dream_runs_the_review_under_its_section(world):
     world.executor.replies = [_decision("keep")]
     row = world.run(phases={"retire"})
     assert f"== TTL ==\nkeep {memory_id}: nothing contradicts it\n" in world.report_text(row)
+
+
+def test_a_candidate_still_too_large_after_halving_is_named_in_needs_you_once(world):
+    memory_id = _aged(world, 200)
+    ctx = world.context(budget_tokens=10)
+    retire.run(ctx)
+    ctx.report.footer(status="completed", finished_at=world.now)
+    needs = ctx.report.path.read_text().split("== Needs you ==\n")[1]
+    assert len(re.findall(rf"^{memory_id}: input too large \(\d+/10 tokens\); not processed "
+                          r"— raise \[dream\] context_budget_tokens$", needs, re.MULTILINE)) == 1
+    assert world.executor.calls == []
