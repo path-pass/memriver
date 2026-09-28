@@ -6,6 +6,12 @@ hooks inside the run find no store and do nothing), the isolation switches memri
 dream's executors use, and a process group of its own, killed whole on timeout. Only
 the kind of a failure comes back, never the output: it may repeat the memory text.
 
+The claude run loads no user, project or local settings -- except, when the caller
+names one, the single file `claude_settings` points `--settings` at. That file's
+hooks, MCP servers and environment do run inside the classification call, so it must
+hold authentication only (apiKeyHelper, a Bedrock/Vertex env block): a hook in it
+would receive the memory text being classified.
+
 The runner, the environment, the failure wording and the argv are a copy of the
 umbrella's memriver.executors: memriver dream is required and this package is
 optional, so neither may depend on the other. A fix to one is checked against the
@@ -149,8 +155,11 @@ def claude_argv(executable: str, *, system_prompt: str, schema: dict,
                 model: str | None = None, settings_path: str | None = None) -> list[str]:
     # --system-prompt replaces the default system prompt; --tools "" and
     # --strict-mcp-config leave the model no tool and no MCP server; --restricted
-    # ignores the user, project and local settings files, hooks included, and still
-    # honours --settings (the auth file the user names); the prompt arrives on stdin
+    # ignores the user, project and local settings files, hooks included, but still
+    # honours --settings: the one file the caller names there is loaded whole, its
+    # hooks, MCP servers and environment included, so it must hold authentication
+    # only (apiKeyHelper, a Bedrock/Vertex env block) -- never a hook that would see
+    # the memory text; the prompt itself arrives on stdin
     argv = [executable, "-p", "--system-prompt", system_prompt, "--restricted",
             "--strict-mcp-config", "--tools", "", "--no-session-persistence",
             "--output-format", "json", "--json-schema", json.dumps(schema)]
