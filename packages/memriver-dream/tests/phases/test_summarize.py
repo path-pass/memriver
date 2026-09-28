@@ -758,7 +758,7 @@ def test_a_short_session_under_a_tiny_budget_reports_a_local_rejection_not_a_ref
     # the fixed prompt alone (about 270 tokens) does not fit a 200-token budget even
     # though the session's own content ("hello") looks tiny enough by itself: the
     # report must use the complete formatted input's estimate, never just the body,
-    # or a room this small is wrongly reported as an executor refusal (R2-N1)
+    # or a room this small is wrongly reported as an executor refusal
     key = _session(world, "short-budget")
     world.transcripts.by_session["short-budget"] = _transcript("hello")
     ctx = world.context(budget_tokens=200)
