@@ -13,7 +13,7 @@ failure: the run is recorded as failed, its report closed, the error re-raised.
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -40,7 +40,6 @@ from .settings import (
     DEFAULT_DREAM_REPORT_RETENTION_DAYS,
     DREAM_DB_FILENAME,
     DREAM_DIRECTORY,
-    DREAM_FAILURE_HINTS,
     DREAM_INPUT_MARGIN_TOKENS,
     DREAM_OUTPUT_RESERVE_TOKENS,
     DREAM_REPORTS_DIRECTORY,
@@ -59,11 +58,12 @@ PHASES = frozenset({"summarize", "consolidate", "extract", "retire"})
 
 class WatchedExecutor:
     """The run's executor, noting under Needs you the first login and the first quota
-    failure of the run -- one line each, however many calls fail so. Every other kind
-    stays a section line; the run goes on and still completes."""
+    failure of the run -- one line each, however many calls fail so, with the caller's
+    hint for that kind when it gave one. Every other kind stays a section line; the run
+    goes on and still completes."""
 
-    def __init__(self, executor: Executor, report: Report) -> None:
-        self._executor, self._report = executor, report
+    def __init__(self, executor: Executor, report: Report, hints: Mapping[str, str]) -> None:
+        self._executor, self._report, self._hints = executor, report, hints
         self.name, self.harness = executor.name, executor.harness
         self._noted: set[str] = set()
 
@@ -71,10 +71,11 @@ class WatchedExecutor:
             timeout_s: int) -> ExecutorResult:
         result = self._executor.run(system_prompt=system_prompt, prompt=prompt, schema=schema,
                                     timeout_s=timeout_s)
-        hint = DREAM_FAILURE_HINTS.get(result.error or "")
-        if hint is not None and result.error not in self._noted:
+        if result.error in ("login", "quota") and result.error not in self._noted:
             self._noted.add(result.error)
-            self._report.needs_you(f"executor {self.name}: {result.error} failure — {hint}")
+            line = f"executor {self.name}: {result.error} failure"
+            hint = self._hints.get(result.error)
+            self._report.needs_you(line if hint is None else f"{line} — {hint}")
         return result
 
 
@@ -100,10 +101,13 @@ class Context:
 
 def run_dream(services: Services, executor: Executor | None,
               transcripts: TranscriptSource | None, settings: DreamSettings | None, *,
-              root: Path, now: str, trigger: str, phases: set[str] | None = None) -> RunRow:
+              root: Path, now: str, trigger: str, phases: set[str] | None = None,
+              failure_hints: Mapping[str, str] = {}) -> RunRow:
     """One run over the store at `root`; `settings` is the [dream] table, None when it is
     not configured. `phases` limits the model phases (None: all of them); the policy
-    scan always runs. Returns the run's final row.
+    scan always runs. `failure_hints` gives the Needs-you hint for a login or quota
+    failure (the caller's wording: it may name the caller's settings). Returns the
+    run's final row.
 
     Once the run's row exists, any exception -- core's StorageFailure, a dream.db
     `sqlite3.Error`, a report `OSError`, anything else -- marks the run failed (best
@@ -141,7 +145,7 @@ def run_dream(services: Services, executor: Executor | None,
                       else settings.context_budget_tokens)
             ctx = Context(services=services, transcripts=transcripts,
                           executor=None if executor is None
-                          else WatchedExecutor(executor, report),
+                          else WatchedExecutor(executor, report, failure_hints),
                           settings=settings, now=now, store=store, report=report,
                           excluded=set(), history_hits={},
                           budget_tokens=(budget - DREAM_OUTPUT_RESERVE_TOKENS

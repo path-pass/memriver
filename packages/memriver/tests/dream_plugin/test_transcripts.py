@@ -8,7 +8,11 @@ import json
 import os
 
 import pytest
-from memriver.transcripts import ClaudeTranscripts, CodexTranscripts, HarnessTranscripts
+from memriver.dream_plugin.transcripts import (
+    ClaudeTranscripts,
+    CodexTranscripts,
+    HarnessTranscripts,
+)
 from memriver_core.models import Session, SessionKey
 
 AT = "2026-09-25T10:00:00.000Z"

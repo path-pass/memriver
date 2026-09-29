@@ -570,7 +570,7 @@ def _dream_label(args: argparse.Namespace) -> dict:
 def _dream_init(args: argparse.Namespace) -> int:
     import os
 
-    from .dream_commands import run_init
+    from .dream_plugin.commands import run_init
 
     return run_init(executor=args.executor, ttl_days=args.ttl_days, at=args.at, yes=args.yes,
                     root=args.root, stdin_is_tty=sys.stdin.isatty(), input_fn=input,
@@ -578,21 +578,21 @@ def _dream_init(args: argparse.Namespace) -> int:
 
 
 def _dream_run(args: argparse.Namespace) -> int:
-    from .dream_commands import run_run
+    from .dream_plugin.commands import run_run
 
     return run_run(phase=args.phase, trigger=args.trigger, root=args.root, stdout=sys.stdout,
                    stderr=sys.stderr)
 
 
 def _dream_report(args: argparse.Namespace) -> int:
-    from .dream_commands import run_report
+    from .dream_plugin.commands import run_report
 
     return run_report(args.run_id, list_count=args.list_count, root=args.root,
                       stdout=sys.stdout)
 
 
 def _dream_uninstall(args: argparse.Namespace) -> int:
-    from .dream_commands import run_uninstall
+    from .dream_plugin.commands import run_uninstall
 
     return run_uninstall(home=Path.home(), stdout=sys.stdout, **_dream_label(args))
 

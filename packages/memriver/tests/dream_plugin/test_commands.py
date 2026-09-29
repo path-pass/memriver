@@ -23,21 +23,24 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from memriver import cli, dream_commands
-from memriver.executors import make_executor
-from memriver.launch_agent import plist_path
-from memriver.transcripts import HarnessTranscripts
+from memriver import cli
+from memriver.dream_plugin import commands as dream_commands
+from memriver.dream_plugin.adapter import FAILURE_HINTS
+from memriver.dream_plugin.commands import DreamTable
+from memriver.dream_plugin.schedule import plist_path
+from memriver.dream_plugin.transcripts import HarnessTranscripts
+from memriver.executor import make_executor
+from memriver.settings import DREAM_LAUNCH_AGENT_LABEL, DREAM_SCRATCH_PREFIX
 from memriver.views import unsupported_store
 from memriver_core import StorageFailure, StoreNeedsUpgrade
 from memriver_core.bootstrap import build_services
-from memriver_core.models import new_id, now
+from memriver_core.models import Create, new_id, now
 from memriver_core.settings import Settings, SettingsError
 from memriver_dream.lock import run_lock
 from memriver_dream.protocols import ExecutorResult
 from memriver_dream.settings import (
     DREAM_DB_FILENAME,
     DREAM_DIRECTORY,
-    DREAM_LAUNCH_AGENT_LABEL,
     DREAM_REPORTS_DIRECTORY,
     load_dream_settings,
 )
@@ -263,7 +266,7 @@ def test_init_replaces_every_case_variant_of_the_keys_it_owns(world):
         "TTL_DAYS = 90\nSchedule_At = '04:00'\nnot_a_key = 1\n", encoding="utf-8")
     code, _ = _init(world, executor="codex", ttl_days=30, at="05:30")
     assert code == 0
-    dream = load_dream_settings(world["store"])
+    dream = load_dream_settings(world["store"], model=DreamTable)
     assert (dream.executor, dream.executor_path, dream.ttl_days, dream.schedule_at) == (
         "codex", str(world["bin"] / "codex"), 30, "05:30")
     assert set(_settings(world)["dream"]) == {"executor", "executor_path", "ttl_days",
@@ -276,9 +279,9 @@ def test_init_replaces_an_invalid_upper_case_key_it_owns(world):
     (world["store"] / "settings.toml").write_text(
         "max_body_chars = 4000\n[dream]\nEXECUTOR = 'gpt'\n", encoding="utf-8")
     with pytest.raises(SettingsError, match="field dream.executor"):
-        load_dream_settings(world["store"])
+        load_dream_settings(world["store"], model=DreamTable)
     assert _init(world)[0] == 0
-    assert load_dream_settings(world["store"]).executor == "claude"
+    assert load_dream_settings(world["store"], model=DreamTable).executor == "claude"
     assert "EXECUTOR" not in _settings(world)["dream"]
 
 
@@ -289,9 +292,9 @@ def test_init_salvages_a_valid_owned_key_when_the_table_fails_to_load(world):
         "max_body_chars = 4000\n[dream]\nEXECUTOR = 'gpt'\nttl_days = 30\n",
         encoding="utf-8")
     with pytest.raises(SettingsError):
-        load_dream_settings(world["store"])
+        load_dream_settings(world["store"], model=DreamTable)
     assert _init(world)[0] == 0
-    dream = load_dream_settings(world["store"])
+    dream = load_dream_settings(world["store"], model=DreamTable)
     assert (dream.executor, dream.ttl_days) == ("claude", 30)
 
 
@@ -300,9 +303,9 @@ def test_init_salvages_owned_keys_across_case_with_yes(world):
         "max_body_chars = 4000\n[dream]\nexecutor = 'codex'\nTTL_DAYS = 30\n"
         "schedule_at = 'bad'\n", encoding="utf-8")
     with pytest.raises(SettingsError):
-        load_dream_settings(world["store"])
+        load_dream_settings(world["store"], model=DreamTable)
     assert _init(world, yes=True)[0] == 0
-    dream = load_dream_settings(world["store"])
+    dream = load_dream_settings(world["store"], model=DreamTable)
     assert (dream.executor, dream.ttl_days, dream.schedule_at) == ("codex", 30, "04:00")
 
 
@@ -311,7 +314,7 @@ def test_init_keeps_an_unknown_key_which_every_reader_ignores(world):
         "max_body_chars = 4000\n[dream]\nnot_a_key = 1\n", encoding="utf-8")
     assert _init(world)[0] == 0
     assert _settings(world)["dream"]["not_a_key"] == 1
-    assert load_dream_settings(world["store"]).executor == "claude"
+    assert load_dream_settings(world["store"], model=DreamTable).executor == "claude"
 
 
 def test_init_repairs_an_invalid_key_it_owns(world):
@@ -319,9 +322,9 @@ def test_init_repairs_an_invalid_key_it_owns(world):
     (world["store"] / "settings.toml").write_text(
         'max_body_chars = 4000\n[dream]\nexecutor_path = "relative"\n', encoding="utf-8")
     with pytest.raises(SettingsError):
-        load_dream_settings(world["store"])
+        load_dream_settings(world["store"], model=DreamTable)
     assert _init(world)[0] == 0
-    assert load_dream_settings(world["store"]).executor_path == str(world["bin"] / "claude")
+    assert load_dream_settings(world["store"], model=DreamTable).executor_path == str(world["bin"] / "claude")
 
 
 def test_after_init_the_table_loads_and_a_run_works(world):
@@ -330,7 +333,7 @@ def test_after_init_the_table_loads_and_a_run_works(world):
     (world["store"] / "settings.toml").write_text(
         "max_body_chars = 4000\n[dream]\nidle_minutes = 30\n", encoding="utf-8")
     assert _init(world)[0] == 0
-    dream = load_dream_settings(world["store"])
+    dream = load_dream_settings(world["store"], model=DreamTable)
     assert dream.executor == "claude" and not hasattr(dream, "idle_minutes")
     assert _settings(world)["dream"]["idle_minutes"] == 30
     assert _run(world)[0] == 0
@@ -394,8 +397,8 @@ def test_init_with_codex_refuses_a_provider_variable_missing_here_then_keeps_the
         "HOME": str(world["home"]), "PATH": f"{world['bin']}:/usr/bin:/bin",
         "MEMRIVER_ROOT": str(world["store"])}
     # settings -> executor factory -> argv, the real path a run takes
-    dream = load_dream_settings(world["store"])
-    argv = make_executor(dream, env={}).argv(files=Path("/files"))
+    dream = load_dream_settings(world["store"], model=DreamTable)
+    argv = make_executor(dream, env={}, scratch_prefix=DREAM_SCRATCH_PREFIX).argv(files=Path("/files"))
     assert 'model_providers.foundry.env_key="DREAM_TEST_PROVIDER_KEY"' in argv
     assert "synthetic" not in " ".join(argv)
 
@@ -538,9 +541,10 @@ def test_run_hands_the_settings_the_phase_and_the_trigger_to_run_dream(world, mo
     seen: list[dict] = []
 
     def fake_run_dream(services, executor, transcripts, settings, *, root, now, trigger,
-                       phases):
+                       phases, failure_hints):
         seen.append({"executor": executor, "transcripts": transcripts, "settings": settings,
                      "root": root, "trigger": trigger, "phases": phases,
+                     "failure_hints": failure_hints,
                      "global": services.project.global_project_id()})
         return _skipped("r", now, trigger)
 
@@ -555,6 +559,7 @@ def test_run_hands_the_settings_the_phase_and_the_trigger_to_run_dream(world, mo
     assert isinstance(first["executor"], Executor)
     assert isinstance(first["transcripts"], HarnessTranscripts)
     assert first["settings"].executor == "claude" and first["root"] == world["store"]
+    assert first["failure_hints"] is FAILURE_HINTS
     assert first["global"] is not None
 
 
@@ -898,7 +903,7 @@ def test_init_writes_through_a_symlinked_settings_toml_and_keeps_the_link(world)
     assert settings_path.is_symlink() and settings_path.resolve() == real.resolve()
     written = tomllib.loads(real.read_text(encoding="utf-8"))
     assert written["max_body_chars"] == 4000 and written["dream"]["executor"] == "claude"
-    assert load_dream_settings(world["store"]).executor == "claude"
+    assert load_dream_settings(world["store"], model=DreamTable).executor == "claude"
 
 
 def test_init_that_cannot_make_the_dream_directory_says_the_settings_were_written(world):
@@ -1030,3 +1035,148 @@ def test_dream_run_without_the_package_builds_no_classifier(world, monkeypatch):
     seen = _spy_services(monkeypatch)
     code, _, _ = _run(world)
     assert code == 0 and seen == [None]
+
+
+# --- the composed [dream] table (DreamTable) --------------------------------------
+
+# refused by the whitelist, by the shape (1 is no boolean), and by the whitelist again
+# for a well-shaped value
+BAD_OVERRIDES = [
+    '\n[dream.codex_overrides]\n"features.hooks" = "sk-synthetic"\n',
+    ('\n[dream.codex_overrides]\n"model_provider" = "foundry"\n'
+     '"model_providers.foundry.requires_openai_auth" = 1\n'),
+    '\n[dream.codex_overrides]\n"model" = " "\n',
+]
+
+
+@pytest.mark.parametrize("text", BAD_OVERRIDES)
+def test_a_refused_codex_override_stops_init_run_and_report_naming_only_the_field(world,
+                                                                                  text):
+    _init(world, executor="codex")
+    _add_overrides(world, text)
+    before = _settings(world)
+    for call in (lambda: _init(world, executor="codex"), lambda: _run(world),
+                 lambda: _report(world)):
+        with pytest.raises(SettingsError) as caught:
+            call()
+        assert str(caught.value) == "settings.toml is invalid: field dream.codex_overrides"
+        assert caught.value.__cause__ is None and "sk-synthetic" not in str(caught.value)
+    assert _settings(world) == before
+
+
+OVERRIDE = '[dream.codex_overrides]\n"features.hooks" = false\n'
+
+
+def _write_dream(world, lines: str = "", overrides: str = OVERRIDE) -> None:
+    """A [dream] table written by hand: codex at the fake executable, `lines`, then the
+    overrides subtable."""
+    (world["store"] / "settings.toml").write_text(
+        f'max_body_chars = 4000\n[dream]\nexecutor = "codex"\n'
+        f'executor_path = "{world["bin"] / "codex"}"\n{lines}{overrides}', encoding="utf-8")
+
+
+# A declared change (spec §9, item 6): the executor keys now come first in the line,
+# so a refused override is named before dream's own keys (c005153 named it after
+# context_budget_tokens, before claude_settings). The field set, the channel and the
+# exit code are c005153's. init rewrites the keys it owns (ttl_days here), so only the
+# others remain for it.
+@pytest.mark.parametrize(("lines", "load_fields", "init_fields"), [
+    ("", "dream.codex_overrides", "dream.codex_overrides"),
+    ("ttl_days = -1\n", "dream.codex_overrides, dream.ttl_days", "dream.codex_overrides"),
+    ("report_retention_days = 0\n", "dream.codex_overrides, dream.report_retention_days",
+     "dream.codex_overrides, dream.report_retention_days"),
+    ('report_retention_days = 0\ncontext_budget_tokens = 5\nclaude_settings = "rel"\n',
+     ("dream.claude_settings, dream.codex_overrides, dream.report_retention_days, "
+      "dream.context_budget_tokens"),
+     ("dream.claude_settings, dream.codex_overrides, dream.report_retention_days, "
+      "dream.context_budget_tokens")),
+])
+def test_a_refused_override_is_named_with_every_other_bad_field_in_one_line(
+        world, lines, load_fields, init_fields):
+    _write_dream(world, lines)
+    before = _settings(world)
+    for call, fields in ((lambda: _run(world), load_fields),
+                         (lambda: _report(world), load_fields),
+                         (lambda: _init(world, executor="codex"), init_fields)):
+        with pytest.raises(SettingsError) as caught:
+            call()
+        assert str(caught.value) == f"settings.toml is invalid: field {fields}"
+    assert _settings(world) == before
+
+
+@pytest.mark.parametrize(("options", "lines", "overrides", "expected"), [
+    ({"ttl_days": -1}, "", OVERRIDE,
+     "settings.toml is invalid: field dream.codex_overrides"),
+    ({"at": "25:00"}, "", OVERRIDE,
+     "settings.toml is invalid: field dream.codex_overrides"),
+    # the declared order change again: c005153 printed
+    # "dream.report_retention_days, dream.codex_overrides"
+    ({"at": "25:00"}, "report_retention_days = 0\n", OVERRIDE,
+     "settings.toml is invalid: field dream.codex_overrides, dream.report_retention_days"),
+    ({"at": "25:00"}, "", "",                       # no bad file value: the given one is named
+     (2, "refused: invalid value given for schedule_at; nothing was written\n")),
+])
+def test_init_names_a_bad_file_value_before_a_bad_given_one(world, options, lines, overrides,
+                                                            expected):
+    _write_dream(world, lines, overrides)
+    before = _settings(world)
+    if isinstance(expected, str):
+        # the settings error cli.main prints (exit 1), never init's own refusal on stdout
+        with pytest.raises(SettingsError) as caught:
+            _init(world, executor="codex", **options)
+        assert str(caught.value) == expected
+    else:
+        assert _init(world, executor="codex", **options) == expected
+    assert _settings(world) == before
+
+
+def test_the_cli_prints_the_whole_line_and_exits_1(world, capsys):
+    _write_dream(world, "ttl_days = -1\n")
+    code = cli.main(["dream", "run", "--root", str(world["store"])])
+    captured = capsys.readouterr()
+    assert (code, captured.out, captured.err) == (
+        1, "", ("memriver: settings.toml is invalid: field dream.codex_overrides, "
+               "dream.ttl_days\n"))
+
+
+def test_a_jev_executor_in_the_dream_table_is_refused(world, capsys):
+    # dream needs generated text: jev answers only bounded decisions
+    (world["store"] / "settings.toml").write_text(
+        '[dream]\nexecutor = "jev"\nexecutor_path = "/opt/bin/jev"\n', encoding="utf-8")
+    code = cli.main(["dream", "run", "--root", str(world["store"])])
+    captured = capsys.readouterr()
+    assert (code, captured.out, captured.err) == (
+        1, "", "memriver: settings.toml is invalid: field dream.executor\n")
+
+
+def test_the_dream_model_reaches_the_executor_argv(world):
+    (world["store"] / "settings.toml").write_text(
+        f'[dream]\nexecutor = "claude"\nexecutor_path = "{world["bin"] / "claude"}"\n'
+        'model = "haiku"\n', encoding="utf-8")
+    dream = load_dream_settings(world["store"], model=DreamTable)
+    executor = make_executor(dream, env={}, scratch_prefix=DREAM_SCRATCH_PREFIX)
+    assert executor.argv(system_prompt="S", schema={"type": "object"})[-2:] == [
+        "--model", "haiku"]
+
+
+class NotLoggedIn:
+    """Every call fails the way a harness that is not logged in does."""
+
+    name, harness = "fake", "fake-harness"
+
+    def run(self, *, system_prompt, prompt, schema, timeout_s):
+        return ExecutorResult(error="login")
+
+
+def test_the_first_login_failure_of_a_run_carries_memrivers_hint(world):
+    second = world["tmp"] / "second"
+    second.mkdir()
+    services = world["services"]
+    other = services.project.init_project("second", services.project.plan_root(str(second)))
+    for project_id, body in ((world["project"].id, "a demo fact"), (other.id, "a second fact")):
+        services.memory.apply([Create(project_id=project_id, type="project",
+                                      description="cue", body=body)], changed_by="test")
+    _init(world)
+    code, out, _ = _run(world, executor_factory=lambda dream: NotLoggedIn())
+    line = "executor fake: login failure — " + FAILURE_HINTS["login"]
+    assert code == 0 and out.count(line + "\n") == 1

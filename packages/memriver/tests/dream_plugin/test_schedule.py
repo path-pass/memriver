@@ -6,8 +6,8 @@ import stat
 from pathlib import Path
 
 import pytest
-from memriver import launch_agent
-from memriver.launch_agent import (
+from memriver.dream_plugin import schedule as launch_agent
+from memriver.dream_plugin.schedule import (
     LaunchctlFailed,
     RestoreFailed,
     install,

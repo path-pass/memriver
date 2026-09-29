@@ -15,9 +15,8 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from memriver_dream import DREAM_LAUNCH_AGENT_LABEL
-
-from .install import replace_atomically
+from ..install import replace_atomically
+from ..settings import DREAM_LAUNCH_AGENT_LABEL
 
 Launchctl = Callable[[list[str]], int]
 _ABSENT = 113                               # `launchctl print`: could not find service

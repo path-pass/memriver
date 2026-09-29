@@ -1,5 +1,6 @@
-"""The [dream] table: load_dream_settings, the Codex override whitelist, and the
-dream constants living in memriver_dream.settings."""
+"""The [dream] table as memriver-dream reads it: load_dream_settings and
+check_dream_table, dream's own policy keys, the model a caller validates the table
+with, and the dream constants living in memriver_dream.settings."""
 
 from __future__ import annotations
 
@@ -7,11 +8,16 @@ import os
 from pathlib import Path
 
 import pytest
-from memriver_core.settings import SettingsError, load_settings
+from memriver_core.settings import SettingsError, load_settings, validation_fields
 from memriver_dream import settings as dream_settings
-from memriver_dream.settings import DreamSettings, load_dream_settings
-from pydantic import ValidationError
+from memriver_dream.settings import (
+    DreamSettings,
+    check_dream_table,
+    load_dream_settings,
+)
+from pydantic import ValidationError, field_validator
 
+# the executor keys are the caller's: to dream they are keys it does not know, ignored
 DREAM_TABLE = '[dream]\nexecutor = "codex"\nexecutor_path = "/opt/bin/codex"\n'
 PASTED = "sk-" + "q" * 24                  # what a pasted credential could look like
 
@@ -40,22 +46,29 @@ def test_no_dream_table_means_no_dream_settings(tmp_path):
 
 def test_a_dream_table_is_read_with_its_defaults(tmp_path):
     dream = load_dream_settings(_root(tmp_path, DREAM_TABLE + "ttl_days = 7\n"))
-    assert (dream.executor, dream.executor_path, dream.ttl_days) == ("codex", "/opt/bin/codex", 7)
-    assert (dream.ttl_read_multiplier_max, dream.uncertain_limit, dream.report_retention_days,
-            dream.schedule_at, dream.max_sessions_per_run, dream.max_groups_per_run,
-            dream.max_candidates_per_run) == (3, 2, 30, "04:00", 20, 20, 30)
+    assert (dream.ttl_days, dream.ttl_read_multiplier_max, dream.uncertain_limit,
+            dream.report_retention_days, dream.max_sessions_per_run, dream.max_groups_per_run,
+            dream.max_candidates_per_run) == (7, 3, 2, 30, 20, 20, 30)
+
+
+def test_the_executor_keys_and_the_schedule_are_not_dreams(tmp_path):
+    dream = load_dream_settings(_root(tmp_path, DREAM_TABLE + 'schedule_at = "04:00"\n'
+                                                              'model = "m"\n'))
+    for key in ("executor", "executor_path", "model", "claude_settings", "codex_overrides",
+                "api_key_env", "schedule_at"):
+        assert key not in DreamSettings.model_fields and not hasattr(dream, key), key
 
 
 def test_an_unknown_key_in_the_dream_table_is_ignored(tmp_path):
     dream = load_dream_settings(_root(tmp_path, DREAM_TABLE + "unknown_key = 1\n"))
-    assert dream.executor == "codex" and not hasattr(dream, "unknown_key")
+    assert dream.ttl_days == 30 and not hasattr(dream, "unknown_key")
 
 
 def test_a_table_key_never_reaches_the_settings_constructor_options(tmp_path, monkeypatch):
     # a [dream] key spelled like a BaseSettings constructor option is just an unknown key
-    monkeypatch.setattr("sys.argv", ["memriver", "--executor", "claude"])
+    monkeypatch.setattr("sys.argv", ["memriver", "--ttl-days", "7"])
     text = DREAM_TABLE + "_cli_parse_args = true\n_secrets_dir = \"/nowhere\"\n"
-    assert load_dream_settings(_root(tmp_path, text)).executor == "codex"
+    assert load_dream_settings(_root(tmp_path, text)).ttl_days == 30
 
 
 def test_idle_minutes_is_no_longer_a_setting(tmp_path):
@@ -66,25 +79,20 @@ def test_idle_minutes_is_no_longer_a_setting(tmp_path):
 
 
 def test_the_dream_table_has_no_environment_layer(tmp_path, monkeypatch):
-    monkeypatch.setenv("EXECUTOR", "claude")
     monkeypatch.setenv("TTL_DAYS", "7")
+    monkeypatch.setenv("UNCERTAIN_LIMIT", "9")
     dream = load_dream_settings(_root(tmp_path, DREAM_TABLE))
-    assert (dream.executor, dream.ttl_days) == ("codex", 30)
-    direct = DreamSettings(executor="codex", executor_path="/opt/bin/codex")
-    assert (direct.executor, direct.ttl_days) == ("codex", 30)
+    assert (dream.ttl_days, dream.uncertain_limit) == (30, 2)
+    direct = DreamSettings()
+    assert (direct.ttl_days, direct.uncertain_limit) == (30, 2)
 
 
 @pytest.mark.parametrize(("table", "field"), [
-    ('[dream]\nexecutor = "gpt"\nexecutor_path = "/opt/bin/codex"\n', "dream.executor"),
-    ('[dream]\nexecutor = "codex"\nexecutor_path = "relative/codex"\n', "dream.executor_path"),
     (DREAM_TABLE + "ttl_days = 0\n", "dream.ttl_days"),
     (DREAM_TABLE + "ttl_days = true\n", "dream.ttl_days"),
     (DREAM_TABLE + "report_retention_days = 0\n", "dream.report_retention_days"),
     (DREAM_TABLE + "report_retention_days = true\n", "dream.report_retention_days"),
-    (DREAM_TABLE + 'schedule_at = "25:00"\n', "dream.schedule_at"),
-    (DREAM_TABLE + f'[dream.codex_overrides]\n"features.hooks" = "{PASTED}"\n',
-     "dream.codex_overrides"),
-    ('[dream]\nexecutor_path = "/opt/bin/codex"\n', "dream.executor"),
+    (DREAM_TABLE + f'uncertain_limit = "{PASTED}"\n', "dream.uncertain_limit"),
     ("dream = 5\n", "dream"),
     (DREAM_TABLE + "context_budget_tokens = 20000\n", "dream.context_budget_tokens"),
     (DREAM_TABLE + "context_budget_tokens = true\n", "dream.context_budget_tokens"),
@@ -151,84 +159,55 @@ def test_a_root_that_cannot_be_searched_is_an_error_not_no_table(tmp_path):
 
 
 def test_table_keys_match_fields_in_any_case(tmp_path):
-    text = '[dream]\nEXECUTOR = "codex"\nExecutor_Path = "/opt/bin/codex"\nTTL_DAYS = 7\n'
+    text = "[dream]\nTTL_DAYS = 7\nReport_Retention_Days = 9\n"
     dream = load_dream_settings(_root(tmp_path, text))
-    assert (dream.executor, dream.executor_path, dream.ttl_days) == ("codex", "/opt/bin/codex", 7)
+    assert (dream.ttl_days, dream.report_retention_days) == (7, 9)
 
 
-CODEX_PROVIDER = (
-    '[dream.codex_overrides]\n"model_provider" = "foundry"\n"model" = "deployment-a"\n'
-    '"model_providers.foundry.name" = "Foundry"\n'
-    '"model_providers.foundry.base_url" = "https://example.invalid/openai/v1"\n'
-    '"model_providers.foundry.env_key" = "FOUNDRY_API_KEY"\n'
-    '"model_providers.foundry.wire_api" = "responses"\n'
-    '"model_providers.foundry.requires_openai_auth" = false\n')
+class _Caller(DreamSettings):
+    """A caller's own [dream] table: one more key, with a validator of its own."""
+
+    executor: str = "unset"
+
+    @field_validator("executor")
+    @classmethod
+    def _known(cls, value: str) -> str:
+        if value not in ("unset", "a", "b"):
+            raise ValueError("executor must be a or b")
+        return value
 
 
-def test_codex_overrides_default_to_empty(tmp_path):
-    assert load_dream_settings(_root(tmp_path, DREAM_TABLE)).codex_overrides == {}
-
-
-def test_a_whitelisted_codex_provider_is_read_with_its_types(tmp_path):
-    overrides = load_dream_settings(_root(tmp_path, DREAM_TABLE + CODEX_PROVIDER)).codex_overrides
-    assert (overrides["model_provider"], overrides["model_providers.foundry.env_key"]) == (
-        "foundry", "FOUNDRY_API_KEY")
-    assert overrides["model_providers.foundry.requires_openai_auth"] is False
-    assert len(overrides) == 7
-
-
-@pytest.mark.parametrize("overrides", [
-    {"features.hooks": False},
-    {"mcp_servers.sentinel.command": "sh"},
-    {"web_search": "live"},
-    {"model_instructions_file": "/tmp/other.md"},
-    {"project_doc_max_bytes": "1000"},
-    {"model_providers": {"foundry": {"name": "Foundry"}}},            # a whole table
-    {"model_provider": "foundry", "model_providers.foundry": {"name": "Foundry"}},
-    {"model_provider": "foundry", "model_providers.foundry.name.extra": "x"},  # prefix only
-    {"model_provider": "foundry", "model_providers.foundry.experimental_bearer_token": PASTED},
-    {"model_provider": "foundry", "model_providers.foundry.http_headers.api-key": PASTED},
-    {"model_provider": "foundry", "model_providers.foundry.query_params.key": PASTED},
-    {"model": True},
-    {"model": "two\nlines"},
-    {"model": " "},
-    {"model_provider": "foundry", "model_providers.foundry.env_key": PASTED},
-    {"model_provider": "foundry", "model_providers.foundry.requires_openai_auth": "false"},
-    {"model_provider": "foundry", "model_providers.foundry.wire_api": "chat"},
-    {"model_provider": "foundry",
-     "model_providers.foundry.base_url": f"https://u:{PASTED}@example.invalid/v1"},
-    {"model_provider": "foundry",
-     "model_providers.foundry.base_url": f"https://example.invalid/v1?key={PASTED}"},
-    {"model_provider": "foundry", "model_providers.foundry.base_url": "https://example.invalid/#x"},
-    {"model_provider": "foundry", "model_providers.foundry.base_url": "file:///etc/hosts"},
-    {"model_provider": "a", "model_providers.b.name": "B"},           # not the selected one
-    {"model_provider": "a", "model_providers.a.name": "A", "model_providers.b.name": "B"},
-    {"model_providers.a.name": "A"},                                  # nothing selects it
-    ["model", "x"],
-])
-def test_codex_overrides_outside_the_whitelist_are_refused_without_echoing_values(
-        overrides):
+def test_a_caller_model_validates_the_table_in_the_same_pass(tmp_path):
+    text = '[dream]\nreport_retention_days = 0\nEXECUTOR = "c"\n'
+    with pytest.raises(SettingsError) as caught:
+        load_dream_settings(_root(tmp_path, text), model=_Caller)
+    # one line, every bad key of the table, in the model's field order
+    assert caught.value.fields == ("dream.report_retention_days", "dream.executor")
     with pytest.raises(ValidationError) as caught:
-        DreamSettings(executor="codex", executor_path="/opt/bin/codex",
-                      codex_overrides=overrides)
-    reasons = [str(error["ctx"]["error"]) for error in caught.value.errors()
-               if error["type"] == "value_error"]
-    assert reasons and all(reason.startswith("codex_overrides") for reason in reasons)
-    assert not any(PASTED in reason for reason in reasons)
+        check_dream_table({"Executor": "c", "ttl_days": 0}, model=_Caller)
+    assert validation_fields(caught.value) == ("ttl_days", "executor")
+    good = load_dream_settings(_root(tmp_path / "b", '[dream]\nexecutor = "a"\n'), model=_Caller)
+    assert type(good) is _Caller and good.executor == "a"
+    # the default model: the caller's key is just an unknown key
+    plain = load_dream_settings(_root(tmp_path / "c", '[dream]\nEXECUTOR = "c"\n'))
+    assert type(plain) is DreamSettings and not hasattr(plain, "executor")
 
 
 DREAM_CONSTANTS = {
     "DEFAULT_DREAM_CONTEXT_BUDGET_TOKENS": 200_000, "DREAM_OUTPUT_RESERVE_TOKENS": 4_000,
     "DREAM_INPUT_MARGIN_TOKENS": 16_000, "DREAM_CHUNK_SUMMARY_CHARS": 1_500,
     "DREAM_TOOL_OUTPUT_CHARS": 2_000, "DREAM_MAX_CALLS_PER_SESSION": 12,
-    "DREAM_CALL_TIMEOUT_S": 300, "DREAM_KILL_GRACE_S": 2,
-    "DREAM_MAX_ROOM_HALVINGS": 3, "DREAM_REASON_CHARS": 300,
+    "DREAM_CALL_TIMEOUT_S": 300, "DREAM_MAX_ROOM_HALVINGS": 3, "DREAM_REASON_CHARS": 300,
     "DREAM_DIRECTORY": "dream", "DREAM_LOCK_FILENAME": ".lock",
     "DREAM_LOG_FILENAME": "dream.log", "DREAM_DB_FILENAME": "dream.db",
     "DREAM_REPORTS_DIRECTORY": "reports", "PROMPT_VERSION": "dream-4",
-    "DREAM_LAUNCH_AGENT_LABEL": "io.github.path-pass.memriver.dream",
 }
-REMOVED = ("DEFAULT_DREAM_IDLE_MINUTES", "DREAM_MAX_QUARANTINE_PER_RUN", "DREAM_CONTEXT_BUDGET_TOKENS")
+# gone from dream: the executor's keys, the schedule, the kill grace and the hints are
+# the caller's
+REMOVED = ("DEFAULT_DREAM_IDLE_MINUTES", "DREAM_MAX_QUARANTINE_PER_RUN",
+           "DREAM_CONTEXT_BUDGET_TOKENS", "DREAM_KILL_GRACE_S", "DEFAULT_DREAM_SCHEDULE_AT",
+           "DREAM_LAUNCH_AGENT_LABEL", "DREAM_FAILURE_HINTS", "check_codex_overrides",
+           "_CODEX_TOP_KEYS", "_CODEX_PROVIDER_KEY_RE", "_plain_url", "_SCHEDULE_AT_RE")
 
 
 def test_the_dream_constants_live_in_dream_settings():
@@ -242,12 +221,10 @@ def test_the_dream_defaults_back_the_table_fields():
     fields = DreamSettings.model_fields
     defaults = (dream_settings.DEFAULT_DREAM_TTL_DAYS,
                 dream_settings.DEFAULT_DREAM_TTL_READ_MULTIPLIER_MAX,
-                dream_settings.DEFAULT_DREAM_REPORT_RETENTION_DAYS,
-                dream_settings.DEFAULT_DREAM_SCHEDULE_AT)
+                dream_settings.DEFAULT_DREAM_REPORT_RETENTION_DAYS)
     assert defaults == (fields["ttl_days"].default, fields["ttl_read_multiplier_max"].default,
-                        fields["report_retention_days"].default,
-                        fields["schedule_at"].default)
-    assert defaults == (30, 3, 30, "04:00")
+                        fields["report_retention_days"].default)
+    assert defaults == (30, 3, 30)
 
 
 def test_the_context_budget_defaults_to_200k_and_must_exceed_the_reserve(tmp_path):
@@ -257,18 +234,3 @@ def test_the_context_budget_defaults_to_200k_and_must_exceed_the_reserve(tmp_pat
     table = load_dream_settings(_root(tmp_path / "b", DREAM_TABLE
                                       + "context_budget_tokens = 20001\n"))
     assert table.context_budget_tokens == 20_001
-
-
-def test_claude_settings_is_an_optional_absolute_path(tmp_path):
-    assert load_dream_settings(_root(tmp_path, DREAM_TABLE)).claude_settings is None
-    table = load_dream_settings(_root(tmp_path / "b", DREAM_TABLE
-                                      + 'claude_settings = "/etc/memriver/auth.json"\n'))
-    assert table.claude_settings == "/etc/memriver/auth.json"
-    with pytest.raises(SettingsError) as caught:
-        load_dream_settings(_root(tmp_path / "c", DREAM_TABLE + 'claude_settings = "auth.json"\n'))
-    assert caught.value.fields == ("dream.claude_settings",)
-
-
-def test_the_failure_hints_live_in_dream_settings():
-    assert set(dream_settings.DREAM_FAILURE_HINTS) == {"login", "quota"}
-    assert "DREAM_FAILURE_HINTS" in dream_settings.__all__

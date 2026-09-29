@@ -13,9 +13,8 @@ FACADE = {
     "run_dream", "recent_runs", "find_run", "RunRecord", "storable", "Executor",
     "ExecutorResult", "FailureKind", "Record", "Transcript", "TranscriptSource",
     "DreamSettings", "check_dream_table", "load_dream_settings",
-    "DEFAULT_DREAM_REPORT_RETENTION_DAYS", "DEFAULT_DREAM_SCHEDULE_AT",
-    "DEFAULT_DREAM_TTL_DAYS", "DREAM_DIRECTORY", "DREAM_KILL_GRACE_S",
-    "DREAM_LAUNCH_AGENT_LABEL", "DREAM_LOG_FILENAME", "DREAM_REPORTS_DIRECTORY",
+    "DEFAULT_DREAM_REPORT_RETENTION_DAYS", "DEFAULT_DREAM_TTL_DAYS", "DREAM_DIRECTORY",
+    "DREAM_LOG_FILENAME", "DREAM_REPORTS_DIRECTORY",
     "DREAM_TOOL_OUTPUT_CHARS",
 }
 OLD = "2000-01-01T04:00:00.000000Z"
@@ -24,6 +23,11 @@ OLD = "2000-01-01T04:00:00.000000Z"
 def test_the_facade_exports_every_name_the_umbrella_uses():
     assert FACADE <= set(memriver_dream.__all__)
     assert all(hasattr(memriver_dream, name) for name in FACADE)
+
+
+def test_the_schedule_label_and_kill_grace_are_no_longer_dreams():
+    for name in ("DEFAULT_DREAM_SCHEDULE_AT", "DREAM_KILL_GRACE_S", "DREAM_LAUNCH_AGENT_LABEL"):
+        assert name not in memriver_dream.__all__ and not hasattr(memriver_dream, name), name
 
 
 def test_find_run_returns_the_latest_or_the_named_run_with_its_report_path(world):

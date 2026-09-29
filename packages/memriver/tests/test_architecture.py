@@ -289,12 +289,9 @@ def test_the_umbrella_uses_memriver_dream_through_its_facade_only():
         assert not offenders, f"{module} reaches into memriver_dream: {offenders}"
 
 
-# spec §8: memriver's settings and the executor layer import no memriver_dream
-NO_DREAM = ("memriver.settings", "memriver.executor")
-
-
-def test_the_settings_and_the_executor_layer_import_no_memriver_dream():
+def test_only_the_dream_plugin_imports_memriver_dream():
+    # spec §8: memriver.settings, memriver.executor and the classifier among the rest
     for module in SOURCES:
-        if any(_under(module, package) for package in NO_DREAM):
+        if not _under(module, "memriver.dream_plugin"):
             roots = {target.split(".", 1)[0] for target in _imported_modules(module)}
             assert "memriver_dream" not in roots, f"{module} imports memriver_dream"

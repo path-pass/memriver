@@ -19,10 +19,13 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 __all__ = [
     "CLASSIFIER_SCRATCH_PREFIX",
     "DEFAULT_API_KEY_ENV",
+    "DEFAULT_DREAM_SCHEDULE_AT",
     "DEFAULT_JEV_MODEL",
+    "DREAM_LAUNCH_AGENT_LABEL",
     "DREAM_SCRATCH_PREFIX",
     "JEV_BASE_URL",
     "KILL_GRACE_S",
+    "SCHEDULE_AT_RE",
     "ExecutorSettings",
     "check_codex_overrides",
 ]
@@ -34,6 +37,11 @@ CLASSIFIER_SCRATCH_PREFIX = "memriver-classifier-"  # a classification's
 JEV_BASE_URL = "https://api.typesafe.ai"            # fixed: never read from the environment
 DEFAULT_JEV_MODEL = "jev-latest"
 DEFAULT_API_KEY_ENV = "TYPESAFE_API_KEY"            # jev: the variable the key is read from
+
+# [dream]: the keys memriver adds to memriver-dream's own
+DEFAULT_DREAM_SCHEDULE_AT = "04:00"
+DREAM_LAUNCH_AGENT_LABEL = "io.github.path-pass.memriver.dream"
+SCHEDULE_AT_RE = re.compile(r"([01][0-9]|2[0-3]):[0-5][0-9]")
 
 _ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 # [dream.codex_overrides], [classifier.codex_overrides]: the Codex provider keys a user

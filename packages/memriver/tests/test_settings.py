@@ -126,3 +126,11 @@ def test_the_executor_keys_are_read_with_their_defaults():
 ])
 def test_every_bad_executor_key_is_named_together_in_field_order(table, fields):
     assert _fields(table) == fields
+
+
+def test_the_dream_keys_memriver_adds_have_their_values_here():
+    assert (memriver_settings.DEFAULT_DREAM_SCHEDULE_AT,
+            memriver_settings.DREAM_LAUNCH_AGENT_LABEL) == (
+        "04:00", "io.github.path-pass.memriver.dream")
+    assert memriver_settings.SCHEDULE_AT_RE.fullmatch("23:59")
+    assert not memriver_settings.SCHEDULE_AT_RE.fullmatch("24:00")
