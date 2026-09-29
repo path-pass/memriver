@@ -119,6 +119,24 @@ def test_a_jev_classifier_without_its_key_sends_nothing(jev):
     assert jev.requests == []
 
 
+def test_the_built_classifier_carries_the_tables_agent_writes_switch():
+    # no JEV_KEY in env: a checked source would be "unavailable" (login), never a
+    # request -- so seeing None for "mcp" proves the switch, not a lucky success
+    classifier = build_classifier(check_classifier_table(
+        {"executor": "jev", "api_key_env": "JEV_KEY", "agent_writes": False}), {})
+    assert classifier.classify("a note", changed_by="mcp") is None
+    assert classifier.classify("a note", changed_by="dream") == Verdict("unavailable",
+                                                                        detail="login")
+
+
+def test_the_built_classifier_carries_the_tables_dream_writes_switch():
+    classifier = build_classifier(check_classifier_table(
+        {"executor": "jev", "api_key_env": "JEV_KEY", "dream_writes": False}), {})
+    assert classifier.classify("a note", changed_by="dream") is None
+    assert classifier.classify("a note", changed_by="mcp") == Verdict("unavailable",
+                                                                      detail="login")
+
+
 async def test_a_jev_classifier_refuses_a_write_through_the_mcp_server(jev, tmp_path):
     store, directory = tmp_path / "mem", tmp_path / "demo"
     directory.mkdir()
