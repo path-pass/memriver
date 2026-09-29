@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import logging.config
 import os
 import socket
 import subprocess
@@ -171,6 +172,28 @@ def test_the_sdk_log_would_carry_the_prompt_were_it_not_disabled(jev, caplog, mo
     jev.answer(0.3)
     _run()
     assert PROMPT in caplog.text
+
+
+def test_the_sdk_log_stays_silent_through_a_later_logging_configuration(jev, caplog):
+    # disable_existing_loggers=False is meant to leave configured loggers alone, but it
+    # still resets .disabled on every logger dictConfig does not name -- level and
+    # propagate must carry the silence on their own once that happens
+    sdk_logger = logging.getLogger("typesafe_sdk")
+    root = logging.getLogger()
+    saved = (sdk_logger.disabled, sdk_logger.level, sdk_logger.propagate, root.level)
+    try:
+        logging.config.dictConfig(
+            {"version": 1, "disable_existing_loggers": False, "root": {"level": "DEBUG"}})
+        assert sdk_logger.disabled is False          # dictConfig did reset it
+        root.addHandler(caplog.handler)              # dictConfig just cleared root's handlers
+        caplog.set_level(logging.DEBUG)
+        jev.reply = (401, json.dumps({"echo": KEY}).encode(), {})
+        assert _run() == Result(error="login")
+        assert KEY not in caplog.text and PROMPT not in caplog.text
+    finally:
+        root.removeHandler(caplog.handler)
+        sdk_logger.disabled, sdk_logger.level, sdk_logger.propagate, level = saved
+        root.setLevel(level)
 
 
 def _banner_run(jev, setting: str) -> subprocess.CompletedProcess:

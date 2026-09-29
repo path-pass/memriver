@@ -39,7 +39,12 @@ from . import Executor, Result
 
 # the SDK's DEBUG wire log carries the prompt and the response body: off for the whole
 # process, never lowered and restored around one call (calls may overlap)
-logging.getLogger("typesafe_sdk").disabled = True
+_sdk_logger = logging.getLogger("typesafe_sdk")
+_sdk_logger.disabled = True
+# a later logging configuration may re-enable existing loggers; it leaves level and
+# propagate alone, so those two carry the silence on their own
+_sdk_logger.setLevel(logging.CRITICAL + 1)
+_sdk_logger.propagate = False
 # memriver owns its stderr (an MCP server's, a scheduled run's)
 pydantic_ai.BANNER_ENABLED = False
 

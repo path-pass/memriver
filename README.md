@@ -650,7 +650,8 @@ max_groups_per_run = 20               # changes one run may make
 max_candidates_per_run = 30           # TTL reviews one run may ask for
 context_budget_tokens = 200000        # tokens one executor call may use, input and output
 # claude_settings = "/absolute/path/to/auth-settings.json"   # passed to claude as --settings
-# model = "your-model"                 # passed to claude as --model, to codex as -c model=
+# model = "your-model"                # passed to claude as --model, to codex as -c model=
+# api_key_env = "TYPESAFE_API_KEY"   # validated as a variable name; unused (dream never runs jev)
 ```
 
 **A Codex provider from `config.toml`.** Dream's Codex runs skip your

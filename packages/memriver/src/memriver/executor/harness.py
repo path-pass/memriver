@@ -295,7 +295,7 @@ class CodexExecutor(Executor):
                  runner: Runner = run_process) -> None:
         self._executable, self._env, self._prefix = executable, env, scratch_prefix
         self._model, self._runner = model, runner
-        self._overrides = dict(overrides or {})     # copied at construction (D8)
+        self._overrides = dict(overrides or {})     # copied at construction
 
     def argv(self, *, files: Path) -> list[str]:
         return codex_argv(self._executable, files=files, model=self._model,
