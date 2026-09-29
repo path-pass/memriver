@@ -287,3 +287,14 @@ def test_the_umbrella_uses_memriver_dream_through_its_facade_only():
         offenders = [target for target in _imported_modules(module)
                      if any(_under(target, internal) for internal in DREAM_INTERNALS)]
         assert not offenders, f"{module} reaches into memriver_dream: {offenders}"
+
+
+# spec §8: memriver's settings and the executor layer import no memriver_dream
+NO_DREAM = ("memriver.settings", "memriver.executor")
+
+
+def test_the_settings_and_the_executor_layer_import_no_memriver_dream():
+    for module in SOURCES:
+        if any(_under(module, package) for package in NO_DREAM):
+            roots = {target.split(".", 1)[0] for target in _imported_modules(module)}
+            assert "memriver_dream" not in roots, f"{module} imports memriver_dream"
