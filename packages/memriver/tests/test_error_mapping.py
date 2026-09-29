@@ -223,9 +223,6 @@ class OtherMemoryStore:
     def write(self, op, *, restriction, changed_by, changed_via, check):
         raise self.backend.error
 
-    def delete_global(self, op, *, changed_by, changed_via, check):
-        raise self.backend.error
-
     def read(self, memory_id, read_write_set):
         raise self.backend.error
 
@@ -247,7 +244,7 @@ def other_backend_server(tmp_path, monkeypatch):
     def build(error: Exception):
         backend = OtherBackend(error, project, global_id)
 
-        def build_services_over_other(_settings, *, root):
+        def build_services_over_other(_settings, *, root, classifier=None):
             # a directory-mode server: no session is ever pending or marked saved,
             # and nothing reaches the session or maintenance service
             memory = MemoryService(OtherMemoryStore(backend), backend, SecretScanner,
@@ -258,7 +255,8 @@ def other_backend_server(tmp_path, monkeypatch):
                                    search_limit_default=settings.search_limit_default,
                                    search_limit_max=settings.search_limit_max,
                                    index_budget_lines=settings.index_budget_lines,
-                                   index_cue_chars=INDEX_CUE_CHARS)
+                                   index_cue_chars=INDEX_CUE_CHARS,
+                                   classifier=classifier)
             project = ProjectService(backend, header_field_chars=HEADER_FIELD_CHARS,
                                      project_name_max_chars=PROJECT_NAME_MAX_CHARS)
             return Services(memory=memory, project=project, session=None, maintenance=None)

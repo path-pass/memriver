@@ -8,37 +8,49 @@ against what was sent and carried out through apply_group at the versions sent, 
 memory that moved meanwhile is a conflict, never an overwrite. Contradictions and
 instruction-like entries only go to "Needs you".
 
-The input and output helpers below are shared with the global layer and TTL.
+The input and output helpers it shares with the global layer and TTL live in the
+phases package.
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from memriver_core.models import is_timestamp, single_line
+from memriver_core.models import is_timestamp
 from memriver_core.models.changes import Create, SoftDelete, SourceRef, Update
 from memriver_core.models.errors import MemoryNotFound
 
-from ..calls import DATA_RULE, call, estimate_tokens, sendable_time, storable
 from ..changes import apply_group
-from ..settings import DREAM_REASON_CHARS
 from ..store import input_digest
-from . import GLOBAL_SCOPE, PassResult
+from . import (
+    GLOBAL_SCOPE,
+    INPUT_CHANGED,
+    INVALID,
+    REFUSED,
+    TYPES,
+    PassResult,
+    Problem,
+    ask,
+    current_sources,
+    details,
+    entry,
+    ids_problem,
+    input_estimate,
+    near_budget,
+    reason_problem,
+    shown,
+    split_no_change,
+    text_problem,
+    too_large,
+    usable,
+)
 
 if TYPE_CHECKING:
     from memriver_core.models import Memory
     from memriver_core.models.changes import Op
 
     from ..run import Context
-
-TYPES = ("user", "feedback", "project", "reference")
-INVALID, REFUSED = "invalid", "refused"
-# a memory listed for this input was hard-deleted before the rest of the input was read
-# (a human may, during a run): the item is left unfinished, with no digest, for the next run
-INPUT_CHANGED = "input changed; not processed"
 
 _RULES = (
     "Only the memories given are evidence; never state a fact that is not in them. Answer "
@@ -92,121 +104,6 @@ _JUDGMENT = {
         "reason": {"type": "string"}}}
 SCHEMA = {"type": "object", "additionalProperties": False, "required": ["judgments"],
           "properties": {"judgments": {"type": "array", "items": _JUDGMENT}}}
-
-
-# --- helpers shared with the global layer and TTL --------------------------------
-
-def usable(ctx: Context, project_id: str | None) -> list[Memory]:
-    """The current, non-deleted memories of `project_id` (None: every project and global)
-    that the policy scan did not exclude (§6.2)."""
-    return [memory for memory in ctx.services.memory.memories(project_id)
-            if memory.id not in ctx.excluded]
-
-
-def current_sources(ctx: Context, memory: Memory) -> tuple[SourceRef, ...]:
-    """The source set of `memory` at the version it was read at. Raises MemoryNotFound
-    when it was hard-deleted since it was listed; callers treat that as INPUT_CHANGED,
-    never as an empty source set."""
-    by_version = {version.version: version.sources
-                  for version in ctx.services.memory.versions(memory.id)}
-    return by_version.get(memory.version, ())
-
-
-def entry(memory: Memory, sources: Sequence[SourceRef], **extra: object) -> str:
-    """One memory as it is sent: one JSON line. Times the policy does not check go
-    through sendable_time."""
-    return json.dumps({"id": memory.id, "version": memory.version, "type": memory.type,
-                       "description": memory.description, "body": memory.body,
-                       "created": sendable_time(memory.created),
-                       "updated": sendable_time(memory.updated), **extra,
-                       "sources": sorted({source.memory_id for source in sources})},
-                      ensure_ascii=False)
-
-
-def ask(ctx: Context, system_prompt: str, prompt: str, schema: dict) -> dict | str:
-    """The parsed answer, or the kind of failure; input over the room is "too-large"
-    without a call (spec §5.4: the input is never cut to fit)."""
-    if estimate_tokens(system_prompt + DATA_RULE + prompt) > ctx.budget_tokens:
-        return "too-large"
-    return call(ctx.executor, system_prompt=system_prompt, prompt=prompt, schema=schema)
-
-
-@dataclass(frozen=True)
-class Problem:
-    """Why a judgment is not carried out. INVALID: malformed output -- an id that was not
-    sent, text no UTF-8 column takes -- so the pass does not finish (§6.9). REFUSED:
-    well-formed, but a counted rule refuses it; the same input would be refused again,
-    so it is reported and the pass may still finish."""
-
-    outcome: str
-    field: str
-
-    def report(self, ctx: Context, kind: str, subject: str = "") -> bool:
-        """Reported in the scope's section; True when the pass may still finish."""
-        ctx.report.line(f"{self.outcome} {kind}{subject}: {self.field}")
-        return self.outcome == REFUSED
-
-
-def ids_problem(ids: Sequence[str], sent: dict[str, Memory], minimum: int,
-                field: str) -> Problem | None:
-    """An id that was not sent is invalid output; fewer than `minimum` ids, or one
-    named twice, is refused."""
-    if not all(memory_id in sent for memory_id in ids):
-        return Problem(INVALID, field)
-    if len(ids) < minimum or len(set(ids)) != len(ids):
-        return Problem(REFUSED, field)
-    return None
-
-
-def reason_problem(ctx: Context, raw: str) -> str | None:
-    """Why a model reason may not be used: "invalid" when no UTF-8 file takes it,
-    "rejected" when the content policy hits it -- checked whole, before any cut, so a
-    cut can never hide a secret from the check."""
-    if not storable(raw):
-        return "invalid"
-    if ctx.services.maintenance.check_text(raw) is not None:
-        return "rejected"
-    return None
-
-
-def shown(raw: str) -> str:
-    """A reason reason_problem let through, as reported and stored: one line, cut."""
-    return single_line(raw)[:DREAM_REASON_CHARS] or "no reason given"
-
-
-def text_problem(raw: dict) -> Problem | None:
-    """A description or body no UTF-8 column takes is invalid; a blank one is refused."""
-    texts = (raw["description"], raw["body"])
-    if not all(storable(text) for text in texts):
-        return Problem(INVALID, "text")
-    if not all(text.strip() for text in texts):
-        return Problem(REFUSED, "text")
-    return None
-
-
-def details(ctx: Context, description: str, reason: str) -> None:
-    """The lines under an applied change: the entry's description and the reason."""
-    ctx.report.line(f'  description: "{ctx.report.safe(description)}"')
-    ctx.report.line(f"  reason: {reason}")
-
-
-def split_no_change(ctx: Context, judgments: list[dict]) -> tuple[list[dict], bool]:
-    """`judgments` without its no_change entries, and whether the pass may still
-    finish. no_change is dropped, not judged, but its reason is checked exactly like
-    every other kind's (§6.9): a malformed or policy-hit reason must not let the pass
-    finish and the scope's digest get stored unnoticed. Shared by consolidate and
-    extract."""
-    finished = True
-    kept = []
-    for raw in judgments:
-        if raw["kind"] != "no_change":
-            kept.append(raw)
-            continue
-        problem = reason_problem(ctx, raw["reason"])
-        if problem is not None:
-            ctx.report.line(f"{problem} no_change: reason")
-            finished = False
-    return kept, finished
 
 
 # --- the project layer -------------------------------------------------------------
@@ -307,7 +204,7 @@ def _touched_ids(raw: dict) -> list[str]:
 
 
 def _judge(ctx: Context, raw: dict, project_id: str, sent: dict[str, Memory],
-           sources: dict[str, tuple[SourceRef, ...]]) -> bool:
+           sources: dict[str, tuple[SourceRef, ...]], *, touches_global: bool) -> bool:
     """One judgment validated and carried out; False when it keeps the pass from
     finishing (§6.9): malformed output, a reason the policy hits, an apply that did
     not happen, or an instruction-like entry (excluded and judged again next run). A
@@ -356,7 +253,7 @@ def _judge(ctx: Context, raw: dict, project_id: str, sent: dict[str, Memory],
     if isinstance(plan, Problem):
         return plan.report(ctx, kind)
     items, ops, description = plan
-    if apply_group(ctx, kind, items, ops) is None:
+    if apply_group(ctx, kind, items, ops, touches_global=touches_global) is None:
         return False                    # group limit, conflict or policy: reported there
     details(ctx, description, reason)
     return True
@@ -380,8 +277,13 @@ def run(ctx: Context, project_id: str, scope: str) -> PassResult:
     system_prompt = GLOBAL_SYSTEM_PROMPT if scope == GLOBAL_SCOPE else SYSTEM_PROMPT
     prompt = PROMPT.format(entries="\n".join(entry(memory, sources[memory.id])
                                              for memory in memories))
+    estimate = input_estimate(system_prompt, prompt)
     result = ask(ctx, system_prompt, prompt, SCHEMA)
+    if result != "too-large":
+        near_budget(ctx, scope, estimate)
     if isinstance(result, str):
+        if result == "too-large":
+            too_large(ctx, scope, estimate, ctx.budget_tokens)
         ctx.report.line(f"not processed: {result}")
         return PassResult(finished=False, digest=digest)
     judgments, finished = split_no_change(ctx, result["judgments"])
@@ -395,5 +297,6 @@ def run(ctx: Context, project_id: str, scope: str) -> PassResult:
             ctx.report.line(f"not carried out {raw['kind']}: instruction-like "
                             f"{' '.join(sorted(touched))}")
             continue
-        finished = _judge(ctx, raw, project_id, sent, sources) and finished
+        finished = _judge(ctx, raw, project_id, sent, sources,
+                         touches_global=scope == GLOBAL_SCOPE) and finished
     return PassResult(finished=finished, digest=digest)

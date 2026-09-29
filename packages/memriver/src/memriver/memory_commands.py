@@ -30,6 +30,7 @@ from memriver_core.models import (
     Change,
     HardDeletePlan,
     MemoryVersion,
+    SoftDelete,
     Step,
     single_line,
 )
@@ -348,19 +349,27 @@ def _soft_delete(services, memory_id: str, *, version: int, cwd: Path, yes: bool
         return refused
     try:
         if is_global:
-            services.memory.delete_global(memory.id, expected_version=version,
-                                          changed_by="human")
+            # a management delete, like restore and undo: the is-global check above is
+            # this command's own; apply's version check still decides at write time
+            services.memory.apply([SoftDelete(memory.id, version)], changed_by="human")
         else:
             services.memory.delete(memory.id, project_context, expected_version=version,
                                    changed_by="human")
     except MemoryNotFound:
         return _no_such_memory(memory_id, stdout)
     except (GlobalReadOnly, ProjectUnavailable):
-        # the entry changed role between the plan and the write
+        # an ordinary project's entry whose project changed role between the plan and
+        # the write (the global path never raises these)
         stdout.write("refused: the memory's project changed while waiting; run the command "
                      "again\n")
         return 2
-    except (VersionConflict, BatchConflict):
+    except BatchConflict as err:
+        if err.reason == "missing":             # hard-deleted meanwhile
+            return _no_such_memory(memory_id, stdout)
+        stdout.write(f"refused: {memory.id} changed since version {version}; run memriver "
+                     f"show {memory.id} and retry\n")
+        return 2
+    except VersionConflict:
         stdout.write(f"refused: {memory.id} changed since version {version}; run memriver "
                      f"show {memory.id} and retry\n")
         return 2

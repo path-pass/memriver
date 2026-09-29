@@ -13,6 +13,7 @@ from contextlib import closing
 import pytest
 from memriver_core.models import SessionKey
 from memriver_core.settings import SESSION_SUMMARY_MAX_CHARS
+from memriver_dream.calls import estimate_tokens
 from memriver_dream.phases import PassResult, summarize
 from memriver_dream.phases.summarize import (
     CUT_MARK,
@@ -693,3 +694,97 @@ def test_run_dream_runs_the_phase_under_its_section(world):
     assert row.status == "completed"
     assert "== Session summaries ==\ncodex s1: ok\n" in world.report_text(row)
     assert _core(world, key).summary == "Did the work"
+
+
+def test_a_session_still_too_large_after_every_halving_is_named_in_needs_you(world):
+    # the executor refuses every call even though each fits our own estimate (it is
+    # well under ctx.budget_tokens): the advice is to lower the budget, not raise it
+    _session(world)
+    world.transcripts.by_session["s1"] = _transcript(*LONG[:4])
+    world.executor.default = ExecutorResult(error="too-large")
+    ctx = world.context()
+    summarize.run(ctx)
+    ctx.report.footer(status="completed", finished_at=world.now)
+    assert re.search(rf"^codex s1: the executor refused the input as too large "
+                     rf"\(\d+/{ctx.budget_tokens} tokens\); not processed — lower "
+                     r"\[dream\] context_budget_tokens$",
+                     ctx.report.path.read_text().split("== Needs you ==\n")[1], re.MULTILINE)
+
+
+def test_a_budget_too_small_for_the_fixed_overhead_ends_too_large_with_no_calls(world):
+    # room (the chunk-content budget) is negative before any chunking starts: too-large
+    # without ever building a prompt or spending a call
+    _session(world)
+    world.transcripts.by_session["s1"] = _transcript(*LONG[:4])
+    ctx = world.context(budget_tokens=1)
+    summarize.run(ctx)
+    ctx.report.footer(status="completed", finished_at=world.now)
+    assert world.executor.calls == []
+    needs = ctx.report.path.read_text().split("== Needs you ==\n")[1]
+    assert len(re.findall(r"^codex s1: input too large \(\d+/1 tokens\); not processed — "
+                          r"raise \[dream\] context_budget_tokens$", needs, re.MULTILINE)) == 1
+
+
+@pytest.mark.parametrize("budget", [20_001, 20_400])
+def test_the_configured_budget_bounds_every_summarize_call(world, budget):
+    _session(world)
+    world.transcripts.by_session["s1"] = _transcript(
+        *[f"please inspect module.py {'x ' * 200}" for _ in range(5)])
+
+    def reply(prompt, schema):
+        if "status" in schema["properties"]:
+            return {"status": "ok", "summary": "Useful result"}
+        return {"summary": "x " * 700}
+
+    world.executor.default = reply
+    settings = world.dream.model_copy(update={"context_budget_tokens": budget})
+    row = world.run(settings=settings, phases={"summarize"})
+    room = budget - 20_000
+    costs = [estimate_tokens(call["system_prompt"] + call["prompt"])
+            for call in world.executor.calls]
+    assert all(cost <= room for cost in costs), (room, costs)
+    needs = world.report_text(row).split("== Needs you ==\n", 1)[1]
+    matches = re.findall(r"^codex s1: .*not processed — \w+ \[dream\] context_budget_tokens$",
+                         needs, re.MULTILINE)
+    if room == 1:
+        assert world.executor.calls == []
+        assert len(matches) == 1 and "input too large" in matches[0]
+    else:                                   # 20_400: a legitimate call still ends too-large
+        assert "codex s1: too-large" in world.report_text(row)
+        assert len(matches) == 1
+
+
+def test_a_short_session_under_a_tiny_budget_reports_a_local_rejection_not_a_refusal(world):
+    # the fixed prompt alone (about 270 tokens) does not fit a 200-token budget even
+    # though the session's own content ("hello") looks tiny enough by itself: the
+    # report must use the complete formatted input's estimate, never just the body,
+    # or a room this small is wrongly reported as an executor refusal
+    key = _session(world, "short-budget")
+    world.transcripts.by_session["short-budget"] = _transcript("hello")
+    ctx = world.context(budget_tokens=200)
+    summarize.run(ctx)
+    ctx.report.footer(status="completed", finished_at=world.now)
+    assert world.executor.calls == []
+    needs = ctx.report.path.read_text().split("== Needs you ==\n")[1]
+    assert len(re.findall(r"^codex short-budget: input too large \(\d+/200 tokens\); not "
+                          r"processed — raise \[dream\] context_budget_tokens$", needs,
+                          re.MULTILINE)) == 1
+    assert _row(world, key).progress is None
+
+
+def test_a_room_too_small_for_plan_chunks_own_cut_is_too_large_with_no_checkpoint(world):
+    # input_room(275) == 3, exactly at plan_chunks'/cut()'s floor: below this, cut()
+    # gets a non-positive budget and degenerates into splitting every character into
+    # its own tiny chunk, each of which our own overhead alone can still fit inside
+    # the (much larger) call budget -- burning every call as "partial" with a
+    # negative-room checkpoint and never reporting Needs you at all
+    key = _session(world)
+    world.transcripts.by_session["s1"] = _transcript(*LONG[:4])
+    ctx = world.context(budget_tokens=275)
+    summarize.run(ctx)
+    ctx.report.footer(status="completed", finished_at=world.now)
+    assert world.executor.calls == []
+    needs = ctx.report.path.read_text().split("== Needs you ==\n")[1]
+    assert len(re.findall(r"^codex s1: input too large \(\d+/275 tokens\); not processed — "
+                          r"raise \[dream\] context_budget_tokens$", needs, re.MULTILINE)) == 1
+    assert _row(world, key).progress is None

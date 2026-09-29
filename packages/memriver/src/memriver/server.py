@@ -9,6 +9,7 @@ from typing import Any, Literal, NoReturn
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 from memriver_core import (
+    ContentClassifier,
     ContentRejected,
     GlobalReadOnly,
     MemoryNotFound,
@@ -274,7 +275,8 @@ _SESSION_SEARCH_DESCRIPTION = (
 
 
 def build_server(root: Path, project_dir: Path, settings: Settings | None = None, *,
-                 harness: str | None = None) -> FastMCP:
+                 harness: str | None = None,
+                 classifier: ContentClassifier | None = None) -> FastMCP:
     """Build the MCP server for one harness registration.
 
     `harness` "claude-code" or "codex" routes every call through the calling
@@ -286,9 +288,12 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
     CLI, the tests) must not have it re-read from the environment here. Only
     the behaviour knobs come from `settings`; when it is None a bare
     `Settings()` supplies them from the environment and the built-in defaults.
+
+    `classifier` is the content classifier `memriver serve` built (None: none); the
+    server hands it to build_services and never builds one itself.
     """
     settings = settings if settings is not None else Settings()
-    services = build_services(settings, root=root)
+    services = build_services(settings, root=root, classifier=classifier)
     memory_service = services.memory
     session_service = services.session
     source_harness = harness or "unknown"

@@ -22,10 +22,18 @@ from memriver_core.settings import (
     settings_file,
     validation_fields,
 )
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+)
 from pydantic_settings import InitSettingsSource, TomlConfigSettingsSource
 
 __all__ = [
+    "DEFAULT_DREAM_CONTEXT_BUDGET_TOKENS",
     "DEFAULT_DREAM_MAX_CANDIDATES_PER_RUN",
     "DEFAULT_DREAM_MAX_GROUPS_PER_RUN",
     "DEFAULT_DREAM_MAX_SESSIONS_PER_RUN",
@@ -36,9 +44,9 @@ __all__ = [
     "DEFAULT_DREAM_UNCERTAIN_LIMIT",
     "DREAM_CALL_TIMEOUT_S",
     "DREAM_CHUNK_SUMMARY_CHARS",
-    "DREAM_CONTEXT_BUDGET_TOKENS",
     "DREAM_DB_FILENAME",
     "DREAM_DIRECTORY",
+    "DREAM_FAILURE_HINTS",
     "DREAM_INPUT_MARGIN_TOKENS",
     "DREAM_KILL_GRACE_S",
     "DREAM_LAUNCH_AGENT_LABEL",
@@ -69,9 +77,9 @@ DEFAULT_DREAM_SCHEDULE_AT = "04:00"
 DEFAULT_DREAM_MAX_SESSIONS_PER_RUN = 20
 DEFAULT_DREAM_MAX_GROUPS_PER_RUN = 20
 DEFAULT_DREAM_MAX_CANDIDATES_PER_RUN = 30
+DEFAULT_DREAM_CONTEXT_BUDGET_TOKENS = 200_000   # one executor call, input and output
 
 # fixed values (spec §10): initial values, revisited after a real-transcript run
-DREAM_CONTEXT_BUDGET_TOKENS = 100_000   # one executor call, input and output
 DREAM_OUTPUT_RESERVE_TOKENS = 4_000     # kept free for the answer
 # the estimate is rough and sees neither the schema, the harness's own prompt nor
 # a global AGENTS.md: this much input room is kept unused on top of the reserve
@@ -90,6 +98,15 @@ DREAM_DB_FILENAME = "dream.db"          # dream's own records (runs, reviews, pa
 DREAM_REPORTS_DIRECTORY = "reports"     # <root>/dream/reports/<run_id>.txt
 PROMPT_VERSION = "dream-4"              # in every input digest; bump it when a prompt changes
 DREAM_LAUNCH_AGENT_LABEL = "io.github.path-pass.memriver.dream"
+
+# the Needs-you hint for the first login and the first quota failure of a run (spec
+# §6.2); kept here because they name the claude_settings and codex_overrides keys,
+# and only this module may name an executor
+DREAM_FAILURE_HINTS = {
+    "login": ("check the executor's login; for API-key, Bedrock or Vertex auth see "
+              "[dream] claude_settings / codex_overrides"),
+    "quota": "the executor's usage limit was hit",
+}
 
 _SCHEDULE_AT_RE = re.compile(r"([01][0-9]|2[0-3]):[0-5][0-9]")
 # [dream.codex_overrides] (spec §9.2): the Codex provider keys a user may set, each
@@ -115,6 +132,8 @@ def _plain_url(text: str) -> bool:
             and "?" not in text and "#" not in text)
 
 
+# memriver_classifier.settings keeps a copy of this whitelist (that package may not
+# import this one): a fix to one is checked against the other
 def check_codex_overrides(value: object) -> dict[str, str | bool]:
     """The whitelisted Codex provider overrides, or ValueError naming the key and a
     fixed reason -- never the value, which could be a pasted secret."""
@@ -172,9 +191,17 @@ class DreamSettings(BaseModel):
     max_sessions_per_run: int = Field(DEFAULT_DREAM_MAX_SESSIONS_PER_RUN, gt=0)
     max_groups_per_run: int = Field(DEFAULT_DREAM_MAX_GROUPS_PER_RUN, gt=0)
     max_candidates_per_run: int = Field(DEFAULT_DREAM_MAX_CANDIDATES_PER_RUN, gt=0)
+    # one executor call's tokens, input and output; must leave room after the answer's
+    # reserve and the estimate's margin
+    context_budget_tokens: int = Field(
+        DEFAULT_DREAM_CONTEXT_BUDGET_TOKENS,
+        gt=DREAM_OUTPUT_RESERVE_TOKENS + DREAM_INPUT_MARGIN_TOKENS)
     # provider settings the Codex executor passes as -c overrides (spec §9.2): the
     # executor skips config.toml, so a provider defined only there is given here
     codex_overrides: dict[str, str | bool] = Field(default_factory=dict)
+    # a settings file the Claude executor passes as --settings (auth only: an
+    # apiKeyHelper, a Bedrock/Vertex env block); --restricted still honours it
+    claude_settings: str | None = None
 
     @field_validator("codex_overrides", mode="before")
     @classmethod
@@ -183,16 +210,16 @@ class DreamSettings(BaseModel):
 
     @field_validator("ttl_days", "ttl_read_multiplier_max", "uncertain_limit",
                      "report_retention_days", "max_sessions_per_run", "max_groups_per_run",
-                     "max_candidates_per_run", mode="before")
+                     "max_candidates_per_run", "context_budget_tokens", mode="before")
     @classmethod
     def _no_booleans(cls, value: object) -> object:
         return reject_boolean(value)
 
-    @field_validator("executor_path")
+    @field_validator("executor_path", "claude_settings")
     @classmethod
-    def _absolute(cls, value: str) -> str:
-        if not os.path.isabs(value):
-            raise ValueError("executor_path must be absolute")
+    def _absolute(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is not None and not os.path.isabs(value):
+            raise ValueError(f"{info.field_name} must be absolute")
         return value
 
     @field_validator("schedule_at")

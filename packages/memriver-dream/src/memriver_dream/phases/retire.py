@@ -24,14 +24,16 @@ from memriver_core.models.errors import MemoryNotFound
 from ..calls import sendable_time
 from ..changes import apply_group
 from ..store import ReviewRow, shift_days
-from . import PassResult
-from .consolidate import (
+from . import (
     INPUT_CHANGED,
+    PassResult,
     ask,
     current_sources,
     details,
+    input_estimate,
     reason_problem,
     shown,
+    too_large,
     usable,
 )
 
@@ -149,6 +151,9 @@ def review(ctx: Context, memory: Memory, listed_at: str, live: set[str],
             break
         others = others[:len(others) // 2]
     if isinstance(result, str):
+        if result == "too-large":           # final: after the halved retry
+            too_large(ctx, memory.id, input_estimate(SYSTEM_PROMPT, prompt),
+                      ctx.budget_tokens)
         report.line(f"{memory.id}: not processed: {result}")
         return False
     # evidence is neither stored nor acted on: only the candidate, at the version sent, is
@@ -168,7 +173,10 @@ def review(ctx: Context, memory: Memory, listed_at: str, live: set[str],
     if decision == "delete":
         ops = [SoftDelete(memory_id=memory.id, expected_version=memory.version,
                           unread_since=listed_at)]
-        if apply_group(ctx, "retire", [memory.id], ops) is None:
+        # retire reviews every project and global: only a global memory's retirement
+        # is listed under Needs you
+        touches_global = memory.project_id == ctx.services.project.global_project_id()
+        if apply_group(ctx, "retire", [memory.id], ops, touches_global=touches_global) is None:
             return False                # read or changed since the listing: nothing recorded
         # a later candidate of this run must not see it as a live comparison or dependent
         live.discard(memory.id)

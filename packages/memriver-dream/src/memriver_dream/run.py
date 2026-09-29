@@ -13,6 +13,7 @@ failure: the run is recorded as failed, its report closed, the error re-raised.
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -32,12 +33,14 @@ from .phases import (
     scan,
     summarize,
 )
+from .protocols import ExecutorResult
 from .report import Report, mark_interrupted
 from .settings import (
+    DEFAULT_DREAM_CONTEXT_BUDGET_TOKENS,
     DEFAULT_DREAM_REPORT_RETENTION_DAYS,
-    DREAM_CONTEXT_BUDGET_TOKENS,
     DREAM_DB_FILENAME,
     DREAM_DIRECTORY,
+    DREAM_FAILURE_HINTS,
     DREAM_INPUT_MARGIN_TOKENS,
     DREAM_OUTPUT_RESERVE_TOKENS,
     DREAM_REPORTS_DIRECTORY,
@@ -52,6 +55,27 @@ if TYPE_CHECKING:
 
 # the phases `memriver dream run --phase` can name; the policy scan always runs
 PHASES = frozenset({"summarize", "consolidate", "extract", "retire"})
+
+
+class WatchedExecutor:
+    """The run's executor, noting under Needs you the first login and the first quota
+    failure of the run -- one line each, however many calls fail so. Every other kind
+    stays a section line; the run goes on and still completes."""
+
+    def __init__(self, executor: Executor, report: Report) -> None:
+        self._executor, self._report = executor, report
+        self.name, self.harness = executor.name, executor.harness
+        self._noted: set[str] = set()
+
+    def run(self, *, system_prompt: str, prompt: str, schema: dict,
+            timeout_s: int) -> ExecutorResult:
+        result = self._executor.run(system_prompt=system_prompt, prompt=prompt, schema=schema,
+                                    timeout_s=timeout_s)
+        hint = DREAM_FAILURE_HINTS.get(result.error or "")
+        if hint is not None and result.error not in self._noted:
+            self._noted.add(result.error)
+            self._report.needs_you(f"executor {self.name}: {result.error} failure — {hint}")
+        return result
 
 
 @dataclass
@@ -69,7 +93,8 @@ class Context:
     history_hits: dict[str, set[int]]     # memory id -> hit versions (history only)
     groups_used: int = 0                  # changes applied this run (max_groups_per_run)
     # one call's input room: the context budget less the answer's reserve and the margin
-    budget_tokens: int = (DREAM_CONTEXT_BUDGET_TOKENS - DREAM_OUTPUT_RESERVE_TOKENS
+    # (run_dream sets it from [dream] context_budget_tokens; this default serves tests)
+    budget_tokens: int = (DEFAULT_DREAM_CONTEXT_BUDGET_TOKENS - DREAM_OUTPUT_RESERVE_TOKENS
                           - DREAM_INPUT_MARGIN_TOKENS)
 
 
@@ -112,9 +137,15 @@ def run_dream(services: Services, executor: Executor | None,
                           executor=executor_name)
             for row in interrupted:
                 report.line(f"run {row.run_id} was interrupted; marked failed")
-            ctx = Context(services=services, executor=executor, transcripts=transcripts,
+            budget = (DEFAULT_DREAM_CONTEXT_BUDGET_TOKENS if settings is None
+                      else settings.context_budget_tokens)
+            ctx = Context(services=services, transcripts=transcripts,
+                          executor=None if executor is None
+                          else WatchedExecutor(executor, report),
                           settings=settings, now=now, store=store, report=report,
-                          excluded=set(), history_hits={})
+                          excluded=set(), history_hits={},
+                          budget_tokens=(budget - DREAM_OUTPUT_RESERVE_TOKENS
+                                         - DREAM_INPUT_MARGIN_TOKENS))
             _phases(ctx, PHASES if phases is None else phases)
             report.section("Maintenance")
             report.line(f"reads pruned: {services.memory.prune_reads()}")
@@ -164,6 +195,50 @@ def prune_reports(store: DreamStore, reports: Path, *, now: str, days: int) -> l
         store.delete_run(row.run_id)
         removed.append(row)
     return removed
+
+
+@dataclass(frozen=True)
+class RunRecord:
+    """One run as `memriver dream report` shows it."""
+
+    run_id: str
+    started_at: str
+    trigger: str
+    status: str             # as stored, or "interrupted": running while nobody holds the lock
+    report_path: Path
+
+
+def _records(root: Path, retention_days: int,
+             read: Callable[[DreamStore], list[RunRow]]) -> list[RunRecord]:
+    """`read`'s rows as records, under the run lock; retention first, and only while no
+    run holds the lock (a "running" row is then that live run, never interrupted)."""
+    directory = Path(root) / DREAM_DIRECTORY
+    reports = directory / DREAM_REPORTS_DIRECTORY
+    with run_lock(root) as free:
+        store = DreamStore(directory / DREAM_DB_FILENAME)
+        if free:
+            prune_reports(store, reports, now=clock(), days=retention_days)
+        rows = read(store)
+    # the file name only: a hand-edited row never points a read elsewhere
+    return [RunRecord(row.run_id, row.started_at, row.trigger,
+                      "interrupted" if row.status == "running" and free else row.status,
+                      reports / Path(row.report_file).name) for row in rows]
+
+
+def recent_runs(root: Path, *, limit: int, retention_days: int) -> list[RunRecord]:
+    """The last `limit` runs, newest first. A dream.db or report-file failure raises
+    sqlite3.Error or OSError as it is: the caller names it without its text."""
+    return _records(root, retention_days, lambda store: store.runs(limit))
+
+
+def find_run(root: Path, run_id: str | None, *, retention_days: int) -> RunRecord | None:
+    """`run_id`'s run, the latest run when `run_id` is None or empty, or None."""
+    def read(store: DreamStore) -> list[RunRow]:
+        row = store.run(run_id) if run_id else next(iter(store.runs(1)), None)
+        return [] if row is None else [row]
+
+    records = _records(root, retention_days, read)
+    return records[0] if records else None
 
 
 def _skipped(store: DreamStore, report: Report, run: RunRow,

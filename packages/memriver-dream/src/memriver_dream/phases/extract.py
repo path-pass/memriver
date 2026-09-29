@@ -20,22 +20,26 @@ from memriver_core.models.errors import MemoryNotFound
 
 from ..changes import apply_group
 from ..store import input_digest
-from . import EXTRACTION_SCOPE, PassResult
-from .consolidate import (
+from . import (
+    EXTRACTION_SCOPE,
     INPUT_CHANGED,
     INVALID,
     REFUSED,
     TYPES,
+    PassResult,
     Problem,
     ask,
     current_sources,
     details,
     entry,
     ids_problem,
+    input_estimate,
+    near_budget,
     reason_problem,
     shown,
     split_no_change,
     text_problem,
+    too_large,
     usable,
 )
 
@@ -210,7 +214,7 @@ def _judge(ctx: Context, raw: dict, global_id: str, sent: dict[str, Memory],
     count = len(projects)
     if count < 2:
         return _refuse(ctx, raw, f"traces to {count} project(s)", reason)
-    if apply_group(ctx, kind, items, ops) is None:
+    if apply_group(ctx, kind, items, ops, touches_global=True) is None:
         return False
     details(ctx, description, reason)
     return True
@@ -239,8 +243,13 @@ def run(ctx: Context) -> PassResult:
         entry(memory, sources[memory.id],
               project="global" if memory.project_id == global_id else memory.project_id)
         for memory in memories))
+    estimate = input_estimate(SYSTEM_PROMPT, prompt)
     result = ask(ctx, SYSTEM_PROMPT, prompt, SCHEMA)
+    if result != "too-large":
+        near_budget(ctx, EXTRACTION_SCOPE, estimate)
     if isinstance(result, str):
+        if result == "too-large":
+            too_large(ctx, EXTRACTION_SCOPE, estimate, ctx.budget_tokens)
         ctx.report.line(f"not processed: {result}")
         return PassResult(finished=False, digest=digest)
     # one read of every memory's project, shared by every judgment's C4 trace this run

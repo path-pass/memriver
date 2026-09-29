@@ -29,7 +29,7 @@ from ..settings import (
     PROMPT_VERSION,
 )
 from ..store import SummaryRow
-from . import PassResult
+from . import PassResult, input_estimate, too_large
 
 if TYPE_CHECKING:
     from memriver_core.models import Session
@@ -74,11 +74,16 @@ FINAL_SCHEMA = {"type": "object", "additionalProperties": False,
 
 
 class _Stop(Exception):
-    """Ends one session's attempt with an outcome; nothing final is stored."""
+    """Ends one session's attempt with an outcome; nothing final is stored. `estimate`
+    and `room` are set only for "too-large" (§6.1's Needs-you line): the input's
+    estimate and the budget it was checked against, whichever call rejected it."""
 
-    def __init__(self, outcome: str) -> None:
+    def __init__(self, outcome: str, estimate: int | None = None,
+                room: int | None = None) -> None:
         super().__init__(outcome)
         self.outcome = outcome
+        self.estimate = estimate
+        self.room = room
 
 
 def input_room(budget_tokens: int) -> int:
@@ -130,6 +135,21 @@ def input_fingerprint(lines: list[str]) -> str:
     return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
 
 
+# below this, plan_chunks' own cut() gets a non-positive budget and degenerates into
+# splitting every line character by character: no room is left to hold even one
+# fixed marker, let alone content
+_MIN_CHUNK_ROOM = estimate_tokens(CUT_MARK) + 1
+
+
+def _whole_input_estimate(lines: list[str]) -> int:
+    """The complete formatted input's estimate for a room too small even to plan
+    chunks: the whole session as it would be sent in a single final call -- never
+    only the body, which alone can look small enough to fit while the fixed prompt
+    around it does not."""
+    return input_estimate(SYSTEM_PROMPT, FINAL_PROMPT.format(
+        limit=SESSION_SUMMARY_MAX_CHARS, tag="session", body="\n".join(lines)))
+
+
 class _Attempt:
     """One pass over a session's chunks at one room size, within one run's calls."""
 
@@ -159,12 +179,15 @@ class _Attempt:
     def _partial(self, template: str, body: str, *, may_be_empty: bool = False) -> str:
         """One partial summary; empty only where `may_be_empty` (a chunk with nothing
         worth keeping)."""
+        prompt = template.format(limit=DREAM_CHUNK_SUMMARY_CHARS, body=body)
+        estimate = input_estimate(SYSTEM_PROMPT, prompt)
+        if estimate > self.ctx.budget_tokens:
+            raise _Stop("too-large", estimate, self.ctx.budget_tokens)
         self._spend()
-        result = call(self.ctx.executor, system_prompt=SYSTEM_PROMPT,
-                      prompt=template.format(limit=DREAM_CHUNK_SUMMARY_CHARS, body=body),
+        result = call(self.ctx.executor, system_prompt=SYSTEM_PROMPT, prompt=prompt,
                       schema=CHUNK_SCHEMA)
         if isinstance(result, str):
-            raise _Stop(result)
+            raise _Stop(result, estimate, self.ctx.budget_tokens)
         text = result["summary"]
         if not text.strip() and may_be_empty:
             return ""
@@ -183,6 +206,8 @@ class _Attempt:
         self.partials = [self._partial(MERGE_PROMPT, "\n".join(self.partials))]
 
     def summarize(self, lines: list[str]) -> dict:
+        if self.room <= _MIN_CHUNK_ROOM:    # plan_chunks/cut cannot use this room at all
+            raise _Stop("too-large", _whole_input_estimate(lines), self.ctx.budget_tokens)
         chunks = plan_chunks(lines, self.room)
         if len(chunks) == 1:
             return self._final(chunks[0], "session")
@@ -209,13 +234,15 @@ class _Attempt:
         return self._final(rounds[0], "partial-summaries")
 
     def _final(self, body: str, tag: str) -> dict:
+        prompt = FINAL_PROMPT.format(limit=SESSION_SUMMARY_MAX_CHARS, tag=tag, body=body)
+        estimate = input_estimate(SYSTEM_PROMPT, prompt)
+        if estimate > self.ctx.budget_tokens:
+            raise _Stop("too-large", estimate, self.ctx.budget_tokens)
         self._spend()
-        result = call(self.ctx.executor, system_prompt=SYSTEM_PROMPT,
-                      prompt=FINAL_PROMPT.format(limit=SESSION_SUMMARY_MAX_CHARS, tag=tag,
-                                                 body=body),
+        result = call(self.ctx.executor, system_prompt=SYSTEM_PROMPT, prompt=prompt,
                       schema=FINAL_SCHEMA)
         if isinstance(result, str):
-            raise _Stop(result)
+            raise _Stop(result, estimate, self.ctx.budget_tokens)
         if result["status"] == "ok":
             text = result["summary"].strip()
             if not 0 < len(text) <= SESSION_SUMMARY_MAX_CHARS:
@@ -263,10 +290,14 @@ def _resumable(ctx: Context, progress: dict, fingerprint: str) -> bool:
             and all(_passes(ctx, p) for p in progress["partials"]))
 
 
-def _summarize(ctx: Context, row: SummaryRow, lines: list[str],
-               fingerprint: str) -> dict | str:
+def _summarize(ctx: Context, row: SummaryRow, lines: list[str], fingerprint: str,
+               subject: str) -> dict | str:
     """The final {status, summary}, or the outcome of an attempt that ended without one
-    ("partial" after keeping a checkpoint)."""
+    ("partial" after keeping a checkpoint). A "too-large" that survives every halving
+    is reported here, once, with the estimate and the budget of whichever call (map,
+    merge or final) it was that would not fit -- never a call is made whose formatted
+    input exceeds ctx.budget_tokens (§6.1: the budget bounds every call, not only the
+    chunk-planning room)."""
     progress = row.progress
     # discarded, not only ignored, when it can never be resumed: other input or prompt,
     # or a partial the current policy refuses (it would be sent again); a checkpoint
@@ -276,13 +307,16 @@ def _summarize(ctx: Context, row: SummaryRow, lines: list[str],
         row = replace(row, progress=None)
         ctx.store.put_summary(row)
     room, calls = input_room(ctx.budget_tokens), [0]
+    stop = None
     for _ in range(DREAM_MAX_ROOM_HALVINGS + 1):
         try:
             return _Attempt(ctx, row, fingerprint, room, calls).summarize(lines)
-        except _Stop as stop:
+        except _Stop as caught:
+            stop = caught
             if stop.outcome != "too-large":
                 return stop.outcome
             room //= 2                      # the estimate fell short: a smaller room
+    too_large(ctx, subject, stop.estimate, stop.room)
     return "too-large"
 
 
@@ -334,7 +368,8 @@ def summarize_session(ctx: Context, session: Session, row: SummaryRow | None) ->
     snapshot = (fingerprint, len(transcript.records), transcript.complete)
     if not lines:
         return _final(ctx, row, observed, "empty", *snapshot)
-    result = _summarize(ctx, row, lines, fingerprint)
+    subject = f"{key.harness} {ctx.report.safe(key.session_id)}"
+    result = _summarize(ctx, row, lines, fingerprint, subject)
     row = ctx.store.summary(key.harness, key.session_id)     # a checkpoint may have moved it
     if isinstance(result, str):
         return _pending(ctx, row, result)

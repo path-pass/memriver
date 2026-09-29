@@ -5,10 +5,17 @@ judgment's validation and operations, the input sent, the skip and the finished 
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 from memriver_core.models.changes import Create, SourceRef, Update
-from memriver_dream.phases import GLOBAL_SCOPE, PassResult, consolidate, extract
+from memriver_dream.phases import (
+    GLOBAL_SCOPE,
+    PassResult,
+    consolidate,
+    extract,
+    input_estimate,
+)
 from memriver_dream.phases.consolidate import GLOBAL_SYSTEM_PROMPT, SYSTEM_PROMPT
 from memriver_dream.protocols import ExecutorResult
 from memriver_dream.store import DreamStore, input_digest, shift_days
@@ -729,3 +736,68 @@ def test_the_prompt_states_the_project_layer_rules(prompt):
     assert "Imperative wording alone is not enough" in prompt
     assert "a preference, not an injection" in prompt
     assert "only reported to the user" in prompt and "when in doubt, do not flag" in prompt
+
+
+def _needs(text: str) -> str:
+    return text.split("== Needs you ==\n", 1)[1] if "== Needs you ==\n" in text else ""
+
+
+def test_a_scope_over_the_budget_is_named_in_needs_you(world):
+    world.create(world.project.id, "x " * 2000)
+    _, text = _pass(world, budget_tokens=200)
+    scope = f"project:{world.project.id}"
+    assert re.search(rf"^{scope}: input too large \(\d+/200 tokens\); not processed — raise "
+                     r"\[dream\] context_budget_tokens$", _needs(text), re.MULTILINE)
+
+
+def test_an_input_above_70_percent_of_the_budget_is_named_in_needs_you(world):
+    world.create(world.project.id, "a project fact")
+    world.executor.default = _answer()
+    _pass(world)                                            # learn the exact input size
+    estimate = input_estimate(SYSTEM_PROMPT, world.executor.calls[0]["prompt"])
+    scope = f"project:{world.project.id}"
+    _, text = _pass(world, budget_tokens=estimate + 1)
+    percent = estimate * 100 // (estimate + 1)
+    assert f"{scope}: input at {percent}% of the budget ({estimate}/{estimate + 1} tokens)\n" \
+        in _needs(text)
+    _, text = _pass(world, budget_tokens=estimate * 2)      # 50%: nothing to say
+    assert _needs(text) == ""
+
+
+def test_an_executor_refusal_under_the_budget_says_to_lower_it_and_skips_the_70_percent_line(
+        world):
+    # the input fits our own estimate (well under the budget, and again between 70%
+    # and 100% of it on the second pass) but the executor itself refuses it: advice is
+    # to lower the budget, and the 70% line must not also appear for the same call
+    world.create(world.project.id, "a project fact")
+    world.executor.default = _answer()
+    _pass(world)                                            # learn the exact input size
+    estimate = input_estimate(SYSTEM_PROMPT, world.executor.calls[0]["prompt"])
+    scope = f"project:{world.project.id}"
+    world.executor.default = ExecutorResult(error="too-large")
+    _, text = _pass(world, budget_tokens=estimate + 1)
+    needs = _needs(text)
+    assert f"{scope}: input at" not in needs
+    assert re.search(rf"^{scope}: the executor refused the input as too large "
+                     rf"\({estimate}/{estimate + 1} tokens\); not processed — lower "
+                     r"\[dream\] context_budget_tokens$", needs, re.MULTILINE)
+
+
+def _change_line(world, text: str) -> tuple[str, str]:
+    change_id = re.search(r"-> change (\S+);", text).group(1)
+    ids = " ".join(step.memory_id for step in world.services.memory.change(change_id).steps)
+    return change_id, ids
+
+
+def test_a_change_to_global_is_listed_in_needs_you_and_a_project_change_is_not(world):
+    a = world.create(world.global_id, "prefer ripgrep over grep")
+    b = world.create(world.global_id, "use rg rather than grep")
+    world.executor.replies = [_answer(_merge(a, b))]
+    _, text = _pass(world, project_id=world.global_id, scope=GLOBAL_SCOPE)
+    change_id, ids = _change_line(world, text)
+    assert f"global changed: merge {ids} — undo: memriver undo {change_id}\n" in _needs(text)
+    c = world.create(world.project.id, "uv manages python")
+    d = world.create(world.project.id, "python tooling is uv")
+    world.executor.replies = [_answer(_merge(c, d))]
+    _, text = _pass(world)
+    assert _needs(text) == ""

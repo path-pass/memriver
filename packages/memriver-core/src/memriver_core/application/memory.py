@@ -34,7 +34,7 @@ from memriver_core.models.errors import (
 )
 
 if TYPE_CHECKING:
-    from memriver_core.content_policy.protocol import ContentPolicy
+    from memriver_core.content_policy.protocol import ContentClassifier, ContentPolicy
     from memriver_core.models import ReadWriteSet
     from memriver_core.repository.protocol import MemoryStore, ProjectStore
 
@@ -44,9 +44,21 @@ if TYPE_CHECKING:
 # look like credentials. Neither error echoes the rejected value.
 _HARNESS_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 
+# a plugin's Verdict.category/detail: a short ascii label only, never a word carried
+# over from the checked content or from a model's answer -- one that fails this becomes
+# a fixed placeholder instead of being echoed into the error
+_VERDICT_LABEL_RE = re.compile(r"[a-z0-9-]{1,32}")
+
 # What MemoryService.index returns when nothing is visible -- the single
 # source transports compare against.
 EMPTY_INDEX = "(no memories yet)"
+
+# the classifier's two refusals: the category and the detail come from the
+# implementation, which keeps them to short fixed labels
+_CLASSIFIER_BLOCKED = ("content rejected by the content classifier ({category}); no change "
+                       "was made")
+_CLASSIFIER_UNAVAILABLE = ("the content classifier could not check this text ({detail}); no "
+                           "change was made; see memriver doctor")
 
 
 class MemoryService:
@@ -56,7 +68,8 @@ class MemoryService:
                  mark_saved: Callable[[ProjectContext], None], max_body_chars: int,
                  metadata_max_chars: int, search_limit_default: int, search_limit_max: int,
                  index_budget_lines: int, index_cue_chars: int,
-                 memory_reads_retention_days: int | None = None) -> None:
+                 memory_reads_retention_days: int | None = None,
+                 classifier: ContentClassifier | None = None) -> None:
         self._memory_store = memory_store
         self._project_store = project_store
         # built on first use: a read-only caller (the Stop hook, doctor, the
@@ -77,6 +90,9 @@ class MemoryService:
         self._index_cue_chars = index_cue_chars
         # unset keeps every read fact
         self._memory_reads_retention_days = memory_reads_retention_days
+        # None: no classifier (the optional package absent, a read-only caller, a
+        # test); asked about new text before any write transaction opens
+        self._classifier = classifier
 
     def _policy(self) -> ContentPolicy:
         if self._content_policy is None:
@@ -103,6 +119,7 @@ class MemoryService:
         # checked here first so an agent reads the policy's own words; the
         # kernel checks the resulting state again inside its transaction
         self._check_text(description, content)
+        self._classify(description, content, changed_by=changed_by)
         create = Create(read_write_set.project_id, type, description, content, sync=sync)
         memory = self._write(create, restriction=read_write_set, changed_by=changed_by,
                              changed_via=harness)
@@ -129,6 +146,7 @@ class MemoryService:
         no version or change."""
         self._refuse_pending(context)
         self._check_text(description, content)
+        self._classify(description, content, changed_by=changed_by)
         edit = Update(memory_id, expected_version, description=description, body=content)
         memory = self._write(edit, restriction=context.read_write_set, changed_by=changed_by,
                              changed_via=changed_via)
@@ -154,14 +172,49 @@ class MemoryService:
         except IdCollision as err:
             raise StorageFailure from err
 
-    def _check_text(self, description: str | None, body: str) -> None:
+    def _check_text(self, description: str | None, body: str | None) -> None:
         """Body against the body budget; description, when given and non-empty, against
-        metadata's -- the one copy, raised with the policy's own wording. `description`
-        is None only from `update`, meaning "keep the current value" (nothing new to check)."""
+        metadata's -- the one copy, raised with the policy's own wording. None means
+        "keep the current value" (nothing new to check)."""
         policy = self._policy()
-        policy.check(body, self._max_body_chars)
+        if body is not None:
+            policy.check(body, self._max_body_chars)
         if description is not None and description.strip():
             policy.check(description, self._metadata_max_chars)
+
+    def _precheck_text(self, op: Create | Update) -> None:
+        """`_check_text`, outside the kernel transaction, reshaped to the kernel's own
+        exception (`_write_version`): the same rule id, and the memory_id of an
+        Update's target -- None for a Create, same as the kernel gives one -- so a
+        policy refusal reads the same whether or not a classifier runs this pre-check."""
+        try:
+            self._check_text(op.description, op.body)
+        except ContentRejected as err:
+            memory_id = op.memory_id if isinstance(op, Update) else None
+            raise ContentRejected(rule_id=err.rule_id, memory_id=memory_id) from err
+
+    def _classify(self, description: str | None, body: str | None, *,
+                  changed_by: str) -> None:
+        """The content classifier on a write's new text, outside any transaction: a call
+        can take seconds, and the store's write lock must never wait on it. Only the
+        candidate text is sent -- its non-blank description and body joined by a blank
+        line -- never another memory, a project or an id."""
+        if self._classifier is None:
+            return
+        text = "\n\n".join(part for part in (description, body)
+                           if part is not None and part.strip())
+        verdict = self._classifier.classify(text, changed_by=changed_by)
+        if verdict is None:
+            return
+        category = verdict.category if _VERDICT_LABEL_RE.fullmatch(verdict.category) \
+            else "invalid"
+        if category == "unavailable":
+            detail = verdict.detail if _VERDICT_LABEL_RE.fullmatch(verdict.detail) \
+                else "unknown"
+            raise ContentRejected(_CLASSIFIER_UNAVAILABLE.format(detail=detail),
+                                  rule_id="classifier-unavailable")
+        raise ContentRejected(_CLASSIFIER_BLOCKED.format(category=category),
+                              rule_id=f"classifier-{category}")
 
     def _check_state(self, description: str, body: str) -> str | None:
         """The content policy on one resulting state (the kernel's `check`): a rule id or None."""
@@ -179,27 +232,19 @@ class MemoryService:
         and `changed_via` come from the calling entry point, never from a
         model's output.
         """
+        if self._classifier is not None:
+            # every op that carries new text, in op order, before the transaction; the
+            # policy first, so a secret is refused here and never reaches the classifier
+            for op in ops:
+                if isinstance(op, Create | Update) \
+                        and (op.description is not None or op.body is not None):
+                    self._precheck_text(op)
+                    self._classify(op.description, op.body, changed_by=changed_by)
         try:
             return self._memory_store.apply(ops, changed_by=changed_by, changed_via=changed_via,
                                             check=self._check_state)
         except IdCollision as err:
             raise StorageFailure from err
-
-    def delete_global(self, memory_id: str, *, expected_version: int,
-                      changed_by: str = "human") -> int:
-        """Soft-delete a live global memory by id; the new version.
-
-        `MemoryNotFound` when the id is not, right now, a live global memory --
-        checked inside the same write transaction as the delete, so a
-        project's role cannot change between the check and the write.
-        """
-        try:
-            change = self._memory_store.delete_global(
-                SoftDelete(memory_id, expected_version), changed_by=changed_by, changed_via=None,
-                check=self._check_state)
-        except IdCollision as err:
-            raise StorageFailure from err
-        return change.steps[0].after_version
 
     def restore(self, memory_id: str, to_version: int, *, expected_version: int,
                 changed_by: str, changed_via: str | None = None) -> Change:

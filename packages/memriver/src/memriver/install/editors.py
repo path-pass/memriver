@@ -32,6 +32,7 @@ so a reinstall rewrites nothing and reformats nothing.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import math
 import shlex
@@ -65,18 +66,31 @@ class PlanningError(Exception):
     """A file cannot be edited safely; the whole plan aborts, nothing is written."""
 
 
+def classifier_installed() -> bool:
+    """Whether this environment has the optional memriver-classifier package. Looked up,
+    never imported: the installer imports nothing of memriver's core stack."""
+    try:
+        return importlib.util.find_spec("memriver_classifier") is not None
+    except ValueError:              # a module whose spec is unset counts as absent
+        return False
+
+
 def mcp_server_payload(harness: str) -> dict:
     """The memriver MCP server registration for ``harness``.
 
     ``serve --harness <harness>`` selects session-routed serving for
     claude-code/codex and directory-mode serving for cursor/kiro (spec 11).
-    The key the payload lives under (``mcpServers.memriver`` /
+    When this environment has memriver-classifier, uvx is told to start the server
+    with the ``memriver[classifier]`` extra, so the server it starts has the package
+    too. The key the payload lives under (``mcpServers.memriver`` /
     ``mcp_servers.memriver``) is memriver's own namespace, so a reinstall
     replaces whatever is there in place -- including an old-style entry whose
     args were just ``["memriver"]`` -- rather than needing its own identity
     check the way a hook array (shared with other handlers) does.
     """
-    return {"command": "uvx", "args": ["memriver", "serve", "--harness", harness]}
+    source = (["--from", "memriver[classifier]", "memriver"] if classifier_installed()
+              else ["memriver"])
+    return {"command": "uvx", "args": [*source, "serve", "--harness", harness]}
 
 
 def hook_identity(verb: str) -> tuple[str, ...]:

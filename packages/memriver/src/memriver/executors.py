@@ -7,6 +7,10 @@ does not exist (memriver's own hooks inside the run then find no store and do
 nothing), and a process group of its own, killed whole on timeout. Only the
 kind of a failure comes back, never the output: it may repeat the material
 that was sent.
+
+memriver_classifier.headless keeps a copy of the runner, the environment, the failure
+wording and the argv for the optional content classifier: a fix here is checked
+against it.
 """
 
 from __future__ import annotations
@@ -21,8 +25,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from memriver_dream.protocols import ExecutorResult
-from memriver_dream.settings import DREAM_KILL_GRACE_S, DreamSettings
+from memriver_dream import DREAM_KILL_GRACE_S, DreamSettings, ExecutorResult
 
 # ponytail: failure kinds are read from the wording of the harness's own error
 # fields (never from output that may repeat the prompt); an unknown wording is
@@ -163,17 +166,20 @@ class ClaudeExecutor:
     harness = "claude-code"
 
     def __init__(self, executable: str, *, env: Mapping[str, str],
-                 runner: Runner = run_process) -> None:
+                 settings_path: str | None = None, runner: Runner = run_process) -> None:
         self._executable, self._env, self._runner = executable, env, runner
+        self._settings_path = settings_path
 
     def argv(self, *, system_prompt: str, schema: dict) -> list[str]:
         # --system-prompt replaces the default system prompt; --tools "" and
         # --strict-mcp-config leave the model no tool and no MCP server;
         # --restricted also ignores the user, project and local settings files,
-        # hooks included; the prompt itself arrives on stdin
+        # hooks included, but honours --settings: the auth file [dream]
+        # claude_settings names; the prompt itself arrives on stdin
+        chosen = [] if self._settings_path is None else ["--settings", self._settings_path]
         return [self._executable, "-p", "--system-prompt", system_prompt, "--restricted",
                 "--strict-mcp-config", "--tools", "", "--no-session-persistence",
-                "--output-format", "json", "--json-schema", json.dumps(schema)]
+                "--output-format", "json", "--json-schema", json.dumps(schema), *chosen]
 
     def run(self, *, system_prompt: str, prompt: str, schema: dict,
             timeout_s: int) -> ExecutorResult:
@@ -256,5 +262,6 @@ class CodexExecutor:
 def make_executor(dream: DreamSettings, *,
                   env: Mapping[str, str]) -> ClaudeExecutor | CodexExecutor:
     if dream.executor == "claude":
-        return ClaudeExecutor(dream.executor_path, env=env)
+        return ClaudeExecutor(dream.executor_path, env=env,
+                              settings_path=dream.claude_settings)
     return CodexExecutor(dream.executor_path, env=env, overrides=dream.codex_overrides)

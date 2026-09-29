@@ -13,6 +13,7 @@ from .application.maintenance import MaintenanceService
 from .application.memory import EMPTY_INDEX, MemoryService
 from .application.projects import ProjectService
 from .application.sessions import SessionService
+from .content_policy.protocol import ContentClassifier
 
 # The store purge is the one data operation outside the four services (the user's
 # choice): it destroys the whole storage directory rather than records.
@@ -76,7 +77,10 @@ class Services:
 
 
 def build_services(settings: Settings, *, root: Path | None = None,
-                   home: Path | None = None) -> Services:
+                   home: Path | None = None,
+                   classifier: ContentClassifier | None = None) -> Services:
+    # `classifier`: the optional content classifier the umbrella built (None: none);
+    # core never builds one
     # an explicit root is authoritative: callers that already resolved it (the
     # CLI, the tests) must not have it replaced by the environment or settings
     store_root = settings.root if root is None else root
@@ -120,6 +124,7 @@ def build_services(settings: Settings, *, root: Path | None = None,
         index_budget_lines=settings.index_budget_lines,
         index_cue_chars=INDEX_CUE_CHARS,
         memory_reads_retention_days=settings.memory_reads_retention_days,
+        classifier=classifier,
     )
     return Services(
         memory=memory,

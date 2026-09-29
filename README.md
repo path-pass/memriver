@@ -251,6 +251,12 @@ never as a raw exception through the transport; a call that does not match a
 tool's schema — an unknown argument, a missing one, a wrong type — is
 rejected by the MCP layer before the tool runs.
 
+When the optional content classifier is configured (*Content classifier*), a
+`memory_write` or `memory_update` it blocks is refused with `content rejected by the
+content classifier (<category>); no change was made`, and one it could not check with
+`the content classifier could not check this text (<reason>); no change was made; see
+memriver doctor`. `memory_delete` carries no new text and is never checked.
+
 Every successful `memory_write`, `memory_update` or `memory_delete` is one
 change in the store's change log, recorded as made by `mcp` through the
 server's `--harness`; an update that changes nothing records nothing. Agents
@@ -260,6 +266,97 @@ and `memriver undo` (*Browsing and managing memories directly*).
 The memory model — its fields, the four types, id rules, the strict boolean
 and timestamp formats — is specified in
 [`docs/memory-model.md`](docs/memory-model.md).
+
+## Content classifier
+
+Optional. Every write already passes the content policy (*Tools*); the content
+classifier adds a model's judgment before memriver stores new memory text: would
+storing it plant instructions in a future agent's context -- a command addressed to an
+agent beyond recording a fact or preference, text that tries to steer the model that
+reads it, a request to send data, credentials or files anywhere? Such text is refused.
+
+```bash
+uv tool install "memriver[classifier]"
+# or, for one command: uvx --from "memriver[classifier]" memriver ...
+```
+
+It lives in its own package, `memriver-classifier`, installed only with the
+`classifier` extra. **Without it, memriver calls no classifier at all, so no model
+outside your harness ever sees a memory.** Installed, it stays off until
+`settings.toml` has a `[classifier]` table naming a backend: memriver never picks one
+for you. `memriver install`, run from an environment that has the package, registers
+the MCP server as `uvx --from "memriver[classifier]" memriver serve ...`, so the server
+uvx starts has it too; otherwise the registration is unchanged.
+
+What is checked: the new description and body of every agent write (`memory_write`,
+`memory_update`) and of every dream change that carries new text (a merge, a rewrite,
+a new or supplemented global entry) -- after the content policy, before the write, and
+nothing else: no other memory, no project, no id. Deletes, restores and undos carry no
+new text and are never checked, and neither is anything you do with memriver's own
+commands.
+
+Backends:
+
+- `claude` / `codex`: a clean headless run of your harness -- `claude -p` or `codex
+  exec` with the isolation dream's executors use (no tools, no MCP servers, none of
+  your settings, an empty temporary directory, memriver's own hooks inert) -- that
+  answers allow, or block with a category (`instruction`, `injection`,
+  `exfiltration`). It uses your harness's login. `model` picks the model (a small one,
+  such as `model = "haiku"`, answers faster); `claude_settings` names a settings file
+  that is reloaded whole into that call -- its hooks, MCP servers and environment run
+  there too, so it must hold authentication only (`apiKeyHelper`, a Bedrock/Vertex
+  environment block) and never a hook, which would see the memory text being
+  classified (put only auth there, as for dream: *Dream*, Executors).
+- `jev`: TypeSafe's hosted classifier (`https://api.typesafe.ai/v1/systemone`, early
+  access, a key from their waitlist), asked one yes/no question; the text is blocked
+  (category `unsafe`) when the probability that it plants instructions is at least
+  `block_threshold`. The key is read at each call from the environment variable
+  `api_key_env` names -- `settings.toml` holds only the variable's name -- and memriver
+  never logs or prints the key or the request. **With `jev`, every checked memory text
+  is sent to TypeSafe's servers**; their retention terms are not published in their
+  documentation, and language coverage (for example Chinese) is not documented.
+
+Fail closed: when the classifier cannot decide -- a timeout, a harness that is not
+logged in or over its quota, an answer that does not fit, a missing key, an HTTP
+error -- the write is refused, with the reason, and nothing is written. Dream lists its
+blocked changes under *Needs you* and tries again next run. `enabled = false` turns
+the classifier off and keeps the table; `agent_writes = false` or `dream_writes =
+false` stops checking one source. `memriver doctor` states whether the classifier is
+installed, configured, off, or which backend it uses (it never calls a model).
+
+Latency: each checked write waits for the answer. A headless harness run takes
+seconds (a smaller `model` helps); TypeSafe documents 70-500 ms per `jev` request.
+
+**Scheduled dream runs.** `memriver dream run`'s LaunchAgent (*Dream*, Schedule) starts
+with only `HOME`, a `PATH` and `MEMRIVER_ROOT` -- no other environment variable reaches
+it. A `jev` backend's `api_key_env` variable, and a `codex` backend's own
+`codex_overrides` `env_key`, are invisible there too, so the 04:00 run finds no key,
+refuses every text-carrying dream change as classifier-unavailable, and tries again the
+next night for nothing (the executor still ran and was paid for). If you schedule
+`dream run` with a `jev` or `codex` classifier backend, make that variable visible to
+your login session yourself, the same way as for `[dream.codex_overrides]` (`launchctl
+setenv NAME value` after each login). A `claude` backend using your harness's
+subscription login needs nothing added.
+
+```toml
+# ~/agent-memory/settings.toml -- [classifier], every key shown with its default
+# except backend and executor_path, which have none
+[classifier]
+backend = "claude"                    # "claude", "codex" or "jev"
+executor_path = "/absolute/path/to/claude"   # required for claude and codex
+enabled = true                        # false: off, the table kept
+agent_writes = true                   # check memory_write and memory_update
+dream_writes = true                   # check dream's changes
+# model = "haiku"                     # claude/codex: the model to ask
+# claude_settings = "/absolute/path/to/auth-settings.json"
+# timeout_s = 60                      # per call; the default is 60 (claude/codex), 10 (jev)
+jev_model = "jev-latest"
+api_key_env = "TYPESAFE_API_KEY"      # the variable that holds the jev key, never the key
+block_threshold = 0.7                 # jev: block at or above this probability
+
+# codex only: the same keys and rules as [dream.codex_overrides] (see Dream)
+# [classifier.codex_overrides]
+```
 
 ## Browsing and managing memories directly
 
@@ -441,14 +538,27 @@ report lists each change with its memories, their versions and a
 one-sentence reason, followed by the command that reverses it, `memriver undo
 <change_id>` -- refused once any memory the change touched has changed since,
 where `memriver restore` takes over (*Browsing and managing memories
-directly*). A session summary is not a memory change and has no undo.
+directly*). A session summary is not a memory change and has no undo. Every
+change to global -- a global consolidation, an extraction, a re-check, a global
+memory's retirement -- is also listed under *Needs you* with its undo command,
+so a change every project reads is never missed. A change the content
+classifier blocks (*Content classifier*) is not made; it is listed under
+*Needs you* and the step runs again next run.
 
 **Reports.** `memriver dream report` prints the latest run's report (or
 `RUN_ID`'s) as it was written: the run, its trigger and executor; each change,
 by project; the TTL decisions; skips and failures with their reasons; *Needs
 you* -- content-policy hits with their `memriver delete ID --hard` command,
 contradictions, instruction-like entries, overturned global entries and
-refused extractions; and how the run finished. `--list [N]` lists the last N
+refused extractions, every change to global with its undo command, and
+changes the content classifier blocked, inputs too large for
+`context_budget_tokens` (each by
+scope or id, with its estimate and the room -- raise the setting when our own
+estimate rejected the input before any call, lower it when the executor
+itself refused an input that fit our estimate) and inputs above 70% of it (a
+call that itself ended too large never also gets this line); the first login
+failure and the first quota failure of the run, with what to check; and
+how the run finished. `--list [N]` lists the last N
 runs (default 10) with time, trigger and status. A run that stopped without
 finishing is shown as interrupted, and the next run marks each of its changes
 whose outcome is unknown with the `memriver history` command that settles it.
@@ -476,6 +586,14 @@ the next run; dream never switches executor. The executor's provider receives
 memory text and session transcripts; memories and transcript records that
 fail the content policy are left out.
 
+A login or quota failure is listed once under *Needs you* (the run goes on and still
+completes). For API-key, Bedrock or Vertex authentication, Claude Code's own settings
+files are ignored in an executor run, so give dream a settings file of its own with
+`claude_settings = "/absolute/path/to/auth-settings.json"`: it is passed as `--settings`,
+which `--restricted` still honours. Put only authentication in that file (an
+`apiKeyHelper`, the Bedrock or Vertex `env` block): hooks or MCP servers in it would run
+inside the executor. For Codex, give the provider in `[dream.codex_overrides]` (below).
+
 What an executor run can and cannot do:
 
 - Claude Code runs with `--tools ""`, `--strict-mcp-config` and
@@ -500,7 +618,10 @@ holding the memriver and executor directories, and `MEMRIVER_ROOT` set to the
 store's absolute path; its output goes to `<root>/dream/dream.log`, one line
 per run naming the run and its status (read the report with `memriver dream
 report`), so the log never keeps report text past the retention. It runs
-only while you are logged in, and needs no sudo. The schedule needs a
+only while you are logged in, and needs no sudo. The same bare environment
+reaches the optional content classifier's own backend when one is configured
+(see *Content classifier*, Scheduled dream runs) -- a `jev` or `codex` backend
+needs the same `launchctl setenv` treatment as `[dream.codex_overrides]` below. The schedule needs a
 persistent memriver: `uvx` runs memriver from uv's cache, which uv may delete
 at any time, so `init` refuses there -- install it with `uv tool install
 memriver` and run `memriver dream init` from that installation (run it again
@@ -530,6 +651,8 @@ schedule_at = "04:00"
 max_sessions_per_run = 20             # sessions one run summarizes
 max_groups_per_run = 20               # changes one run may make
 max_candidates_per_run = 30           # TTL reviews one run may ask for
+context_budget_tokens = 200000        # tokens one executor call may use, input and output
+# claude_settings = "/absolute/path/to/auth-settings.json"   # passed to claude as --settings
 ```
 
 **A Codex provider from `config.toml`.** Dream's Codex runs skip your
@@ -561,7 +684,12 @@ the LaunchAgent: make it visible to your login session yourself (for example
 say so in `dream.log`.
 
 Known limits: token counts are a rough estimate (no tokenizer), kept inside a
-margin; a transcript file is read whole; the kind of an executor failure is
+margin; one call's input may use `context_budget_tokens` less 20,000 tokens
+kept for the answer and the margin -- lower it for a model with a smaller
+context, and follow the direction *Needs you* names when it reports an input
+too large (raise the setting when our own estimate rejected the input before
+any call, lower it when the executor itself refused an input that fit our
+estimate); a transcript file is read whole; the kind of an executor failure is
 recognized from the wording of the harness's own error messages, and an
 unrecognized one is reported as `exit`; a pass whose own changes moved
 versions runs once more on the next run before it is skipped.
@@ -605,6 +733,11 @@ findings use store-relative location hints such as `projects/<id>` or
 every bound project's `root`, printed for a person and, with `--json`,
 returned as a plain field. An inaccessible store exits with status 2 (with
 `--json`, a `{"error": ...}` object is still emitted on stdout).
+
+One more line states the optional content classifier: `classifier: not installed`
+(with a warning when a `[classifier]` table is set anyway), `installed, not
+configured`, `off (enabled = false)`, or the backend and its executable or model; with
+`--json` the same text is the `classifier` field.
 
 ## Uninstall
 
@@ -786,6 +919,12 @@ lengthens a memory's TTL). The `[dream]` table belongs to `memriver dream` (see
 stops `memriver dream init`, `run` and `report` with the same one-line error
 (`field dream.<key>`), never the server or the other commands, and `memriver
 dream init` repairs an invalid key it owns instead of refusing.
+
+The `[classifier]` table belongs to memriver-classifier (see *Content classifier*) and
+is read by `memriver serve`, `memriver dream run` and `memriver doctor`: an invalid key
+there stops them with the same one-line error (`field classifier.<key>`). A
+`[classifier]` table while memriver-classifier is not installed turns nothing on:
+`memriver doctor` reports it and the server logs one warning line when it starts.
 
 `search_limit_default` may not exceed `search_limit_max`. The root itself is
 set with `--root` or `MEMRIVER_ROOT`, not in this file: it is what locates the

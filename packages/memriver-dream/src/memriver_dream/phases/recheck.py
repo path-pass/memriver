@@ -23,18 +23,20 @@ from memriver_core.models.errors import MemoryNotFound
 
 from ..changes import apply_group
 from ..store import input_digest
-from . import PassResult
-from .consolidate import (
+from . import (
     INPUT_CHANGED,
     INVALID,
     REFUSED,
+    PassResult,
     Problem,
     ask,
     current_sources,
     details,
+    input_estimate,
     reason_problem,
     shown,
     text_problem,
+    too_large,
 )
 
 if TYPE_CHECKING:
@@ -161,7 +163,7 @@ def _judge(ctx: Context, raw: dict, memory: Memory, sources: tuple[SourceRef, ..
                         description=raw["description"].strip(), body=raw["body"].strip(),
                         sources=refs)
         description = update.description
-    if apply_group(ctx, decision, [memory.id], [update]) is None:
+    if apply_group(ctx, decision, [memory.id], [update], touches_global=True) is None:
         return False
     details(ctx, description, reason)
     return True
@@ -231,6 +233,8 @@ def _recheck(ctx: Context, memory: Memory, everything: dict[str, Memory]) -> boo
                            changes="\n".join(lines))
     result = ask(ctx, SYSTEM_PROMPT, prompt, SCHEMA)
     if isinstance(result, str):
+        if result == "too-large":
+            too_large(ctx, memory.id, input_estimate(SYSTEM_PROMPT, prompt), ctx.budget_tokens)
         report.line(f"{memory.id}: not processed: {result}")
         return False
     return _judge(ctx, result, memory, sources, changed_ids, allowed, everything, digest)

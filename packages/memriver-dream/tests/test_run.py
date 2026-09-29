@@ -6,6 +6,7 @@ The model phases are replaced by recorders: their own behavior is tested with th
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
@@ -24,6 +25,7 @@ from memriver_dream.phases import (
     retire,
     summarize,
 )
+from memriver_dream.protocols import ExecutorResult
 from memriver_dream.report import INTERRUPTED, WITHHELD, Report
 from memriver_dream.run import prune_reports
 from memriver_dream.store import DreamStore, ReviewRow, RunRow, SummaryRow, shift_days
@@ -513,3 +515,56 @@ def test_an_uncaught_apply_group_failure_still_marks_its_line_unknown_end_to_end
     assert (f"applying rewrite {memory_id} -> outcome unknown — see memriver history "
             f"{memory_id}\n") in text
     assert [version.version for version in world.services.memory.versions(memory_id)] == [1, 2]
+
+
+def test_the_budget_setting_sizes_every_call_and_too_large_scopes_go_to_needs_you(world):
+    world.create(world.project.id, "a project fact")
+    room = 1                                   # 20_001 less the 20_000 reserve and margin
+    row = world.run(settings=world.dream.model_copy(update={"context_budget_tokens": 20_001}))
+    needs = world.report_text(row).split("== Needs you ==\n", 1)[1]
+    for subject in (f"project:{world.project.id}", "extraction"):
+        assert re.search(rf"^{subject}: input too large \(\d+/{room} tokens\); not processed "
+                         r"— raise \[dream\] context_budget_tokens$", needs, re.MULTILINE), subject
+    assert world.executor.calls == []
+
+
+def test_the_default_budget_leaves_180k_tokens_of_input_room(world):
+    assert world.context().budget_tokens == 200_000 - 20_000
+
+
+LOGIN = ("executor fake: login failure — check the executor's login; for API-key, Bedrock "
+         "or Vertex auth see [dream] claude_settings / codex_overrides")
+QUOTA = "executor fake: quota failure — the executor's usage limit was hit"
+
+
+def _second_project(world) -> str:
+    directory = world.root.parent / "second"
+    directory.mkdir()
+    return world.services.project.init_project(
+        "second", world.services.project.plan_root(str(directory))).id
+
+
+def _needs(world, row) -> list[str]:
+    text = world.report_text(row)
+    return text.split("== Needs you ==\n", 1)[1].split("\n\nstatus:")[0].splitlines()
+
+
+def test_the_first_login_failure_of_a_run_is_one_needs_you_line(world):
+    world.create(world.project.id, "a demo fact")
+    world.create(_second_project(world), "a second fact")
+    world.executor.default = ExecutorResult(error="login")
+    row = world.run()
+    assert len(world.executor.calls) >= 3                   # two scopes and the extraction
+    assert _needs(world, row).count(LOGIN) == 1
+    assert row.status == "completed"
+
+
+def test_login_and_quota_each_get_their_own_line_and_other_kinds_none(world):
+    world.create(world.project.id, "a demo fact")
+    world.create(_second_project(world), "a second fact")
+    world.executor.replies = [ExecutorResult(error="quota"), ExecutorResult(error="timeout"),
+                              ExecutorResult(error="login"), ExecutorResult(error="quota")]
+    row = world.run()
+    needs = _needs(world, row)
+    assert (needs.count(LOGIN), needs.count(QUOTA)) == (1, 1)
+    assert not [line for line in needs if "timeout" in line]
