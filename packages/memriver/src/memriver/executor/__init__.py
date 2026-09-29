@@ -3,9 +3,9 @@
 An Executor answers one request -- a system prompt, a prompt and the JSON schema the
 answer must fit -- with the answer object or the kind of a failure (FAILURE_KINDS),
 never any of the output: it may repeat the text that was sent. harness.py runs the
-user's own claude -p / codex exec; each backend module is imported only when chosen,
-so a caller that builds no executor loads none. Nothing here knows memory writes,
-source switches, thresholds or dream.
+user's own claude -p / codex exec, api.py asks a model API (jev) through Pydantic AI;
+each is imported only when chosen, so a caller that builds no executor loads none.
+Nothing here knows memory writes, source switches, thresholds or dream.
 """
 
 from __future__ import annotations
@@ -48,14 +48,18 @@ class Executor(ABC):
 def make_executor(settings: ExecutorSettings, *, env: Mapping[str, str],
                   scratch_prefix: str) -> Executor:
     """The executor `settings.executor` names, built from the table's executor keys.
-    `env` is what a harness run gets; `scratch_prefix` names its temporary directories
-    (each caller its own)."""
+    `env` is what a harness run gets and the jev key is read from; `scratch_prefix`
+    names a harness run's temporary directories (each caller its own)."""
+    if settings.executor == "jev":
+        from ..settings import DEFAULT_JEV_MODEL
+        from .api import JevExecutor
+
+        return JevExecutor(model=settings.model or DEFAULT_JEV_MODEL,
+                           api_key_env=settings.api_key_env, env=env)
     from .harness import ClaudeExecutor, CodexExecutor
 
     if settings.executor == "claude":
         return ClaudeExecutor(settings.executor_path, env=env, scratch_prefix=scratch_prefix,
                               model=settings.model, settings_path=settings.claude_settings)
-    if settings.executor == "codex":
-        return CodexExecutor(settings.executor_path, env=env, scratch_prefix=scratch_prefix,
-                             model=settings.model, overrides=settings.codex_overrides)
-    raise ValueError(f"no executor named {settings.executor}")
+    return CodexExecutor(settings.executor_path, env=env, scratch_prefix=scratch_prefix,
+                         model=settings.model, overrides=settings.codex_overrides)

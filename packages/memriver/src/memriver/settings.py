@@ -19,7 +19,9 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 __all__ = [
     "CLASSIFIER_SCRATCH_PREFIX",
     "DEFAULT_API_KEY_ENV",
+    "DEFAULT_JEV_MODEL",
     "DREAM_SCRATCH_PREFIX",
+    "JEV_BASE_URL",
     "KILL_GRACE_S",
     "ExecutorSettings",
     "check_codex_overrides",
@@ -29,6 +31,8 @@ __all__ = [
 KILL_GRACE_S = 2                        # draining a timed-out run's pipes after the kill
 DREAM_SCRATCH_PREFIX = "memriver-dream-"            # a dream run's temporary directories
 CLASSIFIER_SCRATCH_PREFIX = "memriver-classifier-"  # a classification's
+JEV_BASE_URL = "https://api.typesafe.ai"            # fixed: never read from the environment
+DEFAULT_JEV_MODEL = "jev-latest"
 DEFAULT_API_KEY_ENV = "TYPESAFE_API_KEY"            # jev: the variable the key is read from
 
 _ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")

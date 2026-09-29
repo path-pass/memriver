@@ -147,3 +147,38 @@ def test_importing_the_layer_loads_neither_executor_module():
     result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
                             check=True)
     assert result.stdout.strip() == "[]"
+
+
+JEV_SCHEMA = {"type": "object", "required": ["plants"],
+              "properties": {"plants": {"type": "number", "minimum": 0, "maximum": 1,
+                                        "description": "d"}}}
+
+
+def test_make_executor_builds_jev_with_its_model_and_key_variable(jev):
+    from memriver.settings import DEFAULT_JEV_MODEL
+
+    jev.answer(0.3)
+    env = {"JEV_KEY": "k" * 20}
+    default = make_executor(ExecutorSettings(executor="jev", api_key_env="JEV_KEY"), env=env,
+                            scratch_prefix=PREFIX)
+    assert default.name == "jev"
+    assert default.run(system_prompt="", prompt="P", schema=JEV_SCHEMA,
+                       timeout_s=5) == Result(value={"plants": 0.3})
+    assert jev.requests[-1]["body"]["model"] == DEFAULT_JEV_MODEL == "jev-latest"
+    chosen = make_executor(ExecutorSettings(executor="jev", model="jev-1", api_key_env="JEV_KEY"),
+                           env=env, scratch_prefix=PREFIX)
+    chosen.run(system_prompt="", prompt="P", schema=JEV_SCHEMA, timeout_s=5)
+    assert jev.requests[-1]["body"]["model"] == "jev-1"
+
+
+def test_a_harness_executor_never_loads_pydantic_ai():
+    probe = ("import sys\n"
+             "from memriver.executor import make_executor\n"
+             "from memriver.settings import ExecutorSettings\n"
+             "make_executor(ExecutorSettings(executor='codex', executor_path='/opt/bin/codex'),\n"
+             "              env={}, scratch_prefix='x-')\n"
+             "print(sorted(m for m in sys.modules\n"
+             "             if m.startswith(('memriver.executor.api', 'pydantic_ai'))))")
+    result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
+                            check=True)
+    assert result.stdout.strip() == "[]"
