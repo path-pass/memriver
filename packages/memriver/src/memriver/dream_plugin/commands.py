@@ -47,7 +47,7 @@ from memriver_dream import (
 )
 from pydantic import ValidationError, field_validator
 
-from ..classifier_loader import load_classifier
+from ..classifier_plugin import build_classifier
 from ..executor import make_executor
 from ..executor.harness import missing_env
 from ..install import replace_atomically
@@ -59,6 +59,7 @@ from ..settings import (
     DREAM_SCRATCH_PREFIX,
     SCHEDULE_AT_RE,
     ExecutorSettings,
+    load_classifier_settings,
 )
 from ..views import unsupported_store
 from . import schedule as launch_agent
@@ -372,8 +373,11 @@ def run_run(*, phase: str | None, trigger: str, root: Path | None, stdout: IO[st
     # SettingsError: cli.main prints its one line
     settings = load_settings(root_override=root)
     dream = load_dream_settings(settings.root, model=DreamTable)
-    # dream's changes carry model-written text: checked when the classifier is configured
-    classifier = load_classifier(settings.root, env=os.environ)
+    # dream's changes are checked only when [classifier] checks dream writes; otherwise no
+    # executor is built for dream at all (spec §8)
+    table = load_classifier_settings(settings.root)
+    classifier = (build_classifier(table, os.environ)
+                  if table is not None and table.dream_writes else None)
     if phase is not None and dream is None:
         stderr.write("memriver dream: --phase needs an executor; run memriver dream init\n")
         return 1

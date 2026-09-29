@@ -1021,20 +1021,11 @@ def _spy_services(monkeypatch) -> list:
 
 def test_dream_run_builds_the_configured_classifier(world, monkeypatch):
     (world["store"] / "settings.toml").write_text(
-        'max_body_chars = 4000\n[classifier]\nbackend = "jev"\n'
+        'max_body_chars = 4000\n[classifier]\nexecutor = "jev"\n'
         'api_key_env = "MEMRIVER_TEST_UNSET_KEY"\n', encoding="utf-8")
     seen = _spy_services(monkeypatch)
     code, _, _ = _run(world)
     assert code == 0 and seen and seen[0] is not None
-
-
-def test_dream_run_without_the_package_builds_no_classifier(world, monkeypatch):
-    monkeypatch.setitem(sys.modules, "memriver_classifier", None)
-    (world["store"] / "settings.toml").write_text(
-        'max_body_chars = 4000\n[classifier]\nbackend = "jev"\n', encoding="utf-8")
-    seen = _spy_services(monkeypatch)
-    code, _, _ = _run(world)
-    assert code == 0 and seen == [None]
 
 
 # --- the composed [dream] table (DreamTable) --------------------------------------

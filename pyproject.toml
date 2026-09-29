@@ -10,5 +10,5 @@ dev = ["pytest>=8", "pytest-asyncio>=0.25", "ruff"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["packages/memriver-core/tests", "packages/memriver-dream/tests",
-             "packages/memriver-classifier/tests", "packages/memriver/tests", "tools"]
+             "packages/memriver/tests", "tools"]
 addopts = "--import-mode=importlib"

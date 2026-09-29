@@ -19,6 +19,8 @@ no test edit needed.
 from __future__ import annotations
 
 import ast
+import contextlib
+import io
 import json
 import os
 import re
@@ -153,24 +155,31 @@ def test_agent_paths_never_reach_the_maintenance_service(module):
 # them may load memriver_dream, directly or through anything they import
 HOT_PATH_MODULES = ("memriver.cli", "memriver.hooks", "memriver.server", "memriver.install")
 
+# spec §8: the module groups the load rules name, as a probe prints them
+LOAD_GROUPS = ("memriver_dream", "memriver.dream_plugin", "memriver.executor",
+               "memriver.classifier_plugin", "pydantic_ai")
+LOADED = ("sorted(g for g in " + repr(LOAD_GROUPS)
+          + " if any(m == g or m.startswith(g + '.') for m in sys.modules))")
 
-def test_the_hot_paths_never_load_memriver_dream():
+
+def test_the_hot_paths_never_load_dream_the_executor_or_the_classifier():
     probe = (f"import sys\nfor name in {HOT_PATH_MODULES!r}:\n    __import__(name)\n"
-             "print(sorted(m for m in sys.modules if m.split('.')[0] == 'memriver_dream'))")
+             f"print({LOADED})")
     result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
                             check=True)
     assert result.stdout.strip() == "[]"
 
 
-def test_running_the_hot_paths_never_loads_memriver_dream(tmp_path):
+def test_running_the_hot_paths_never_loads_dream_the_executor_or_the_classifier(tmp_path):
     """The guard above only proves the four modules import clean; it never calls
     anything in them, so a handler that imports memriver_dream lazily, inside a
     function body reached only once that branch actually runs, would sail
     through it. This drives the two things an agent's turn actually triggers --
     a SessionStart followed by a nudge-due Stop through the hook entry point,
     and building the MCP server -- against a throwaway store and HOME, in a
-    clean subprocess, and checks the same thing: memriver_dream never enters
-    sys.modules.
+    clean subprocess, and checks the same thing: none of
+    memriver_dream, the dream plugin, the executor layer, the classifier or pydantic_ai
+    enters sys.modules.
     """
     store, directory, home = tmp_path / "mem", tmp_path / "demo", tmp_path / "home"
     directory.mkdir()
@@ -201,7 +210,7 @@ def test_running_the_hot_paths_never_loads_memriver_dream(tmp_path):
         "build_server(root=store, project_dir=directory)\n"
         "print(json.dumps({\n"
         "    'nudged': bool(stop_result.stdout),\n"
-        "    'dream_modules': sorted(m for m in sys.modules if m.split('.')[0] == 'memriver_dream'),\n"
+        "    'loaded': " + LOADED + ",\n"
         "}))\n"
     )
     env = os.environ | {"HOME": str(home)}
@@ -209,14 +218,14 @@ def test_running_the_hot_paths_never_loads_memriver_dream(tmp_path):
                             check=True, env=env, cwd=str(tmp_path))
     outcome = json.loads(result.stdout.strip().splitlines()[-1])
     # the Stop branch really nudged: a hook that silently did nothing would
-    # also report no dream modules, and pass this test for the wrong reason
+    # also report nothing loaded, and pass this test for the wrong reason
     assert outcome["nudged"] is True
-    assert outcome["dream_modules"] == []
+    assert outcome["loaded"] == []
 
 
 def test_a_classified_write_through_the_mcp_server_never_loads_memriver_dream(tmp_path):
     """The hot-path guards above never write through a tool with a classifier wired:
-    this loads the real memriver-classifier package as `memriver serve` does, builds the
+    this builds the real classifier as `memriver serve` does, builds the
     server with a classifier, calls memory_write twice (allowed, then blocked) in a
     clean subprocess, and checks memriver_dream never enters sys.modules."""
     store, directory = tmp_path / "mem", tmp_path / "demo"
@@ -228,7 +237,7 @@ def test_a_classified_write_through_the_mcp_server_never_loads_memriver_dream(tm
         from memriver_core import Verdict
         from memriver_core.bootstrap import build_services
         from memriver_core.settings import Settings
-        from memriver.classifier_loader import load_classifier
+        from memriver.classifier_plugin import load_classifier
         from memriver.server import build_server
 
         store, directory = Path({str(store)!r}), Path({str(directory)!r})
@@ -236,7 +245,7 @@ def test_a_classified_write_through_the_mcp_server_never_loads_memriver_dream(tm
         services.project.ensure_global()
         services.project.init_project("demo", services.project.plan_root(str(directory)))
         (store / "settings.toml").write_text(
-            '[classifier]\\nbackend = "jev"\\napi_key_env = "MEMRIVER_TEST_UNSET_KEY"\\n')
+            '[classifier]\\nexecutor = "jev"\\napi_key_env = "MEMRIVER_TEST_UNSET_KEY"\\n')
         built = load_classifier(store, env={{}})
 
         class Blocker:
@@ -268,15 +277,6 @@ def test_a_classified_write_through_the_mcp_server_never_loads_memriver_dream(tm
     assert outcome["dream_modules"] == []
 
 
-def test_memriver_classifier_itself_loads_no_memriver_dream():
-    probe = ("import sys, memriver_classifier\n"
-             "print(sorted(m for m in sys.modules if m.split('.')[0] in "
-             "('memriver_dream', 'memriver')))")
-    result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
-                            check=True)
-    assert result.stdout.strip() == "[]"
-
-
 # spec §6.5: the umbrella reaches memriver_dream through its facade (the package root)
 DREAM_INTERNALS = tuple(f"memriver_dream.{name}" for name in (
     "store", "lock", "calls", "phases", "run", "report", "changes"))
@@ -295,3 +295,96 @@ def test_only_the_dream_plugin_imports_memriver_dream():
         if not _under(module, "memriver.dream_plugin"):
             roots = {target.split(".", 1)[0] for target in _imported_modules(module)}
             assert "memriver_dream" not in roots, f"{module} imports memriver_dream"
+
+
+@pytest.mark.parametrize(("table", "loaded"), [
+    (None, []),
+    ('[classifier]\nexecutor = "codex"\nexecutor_path = "/opt/bin/codex"\nenabled = false\n',
+     []),
+    ('[classifier]\nexecutor = "codex"\nexecutor_path = "/opt/bin/codex"\n',
+     ["memriver.classifier_plugin", "memriver.executor"]),
+    ('[classifier]\nexecutor = "jev"\n',
+     ["memriver.classifier_plugin", "memriver.executor", "pydantic_ai"]),
+])
+def test_serve_loads_the_classifier_and_its_executor_only_as_configured(tmp_path, table,
+                                                                        loaded):
+    if table is not None:
+        (tmp_path / "settings.toml").write_text(table, encoding="utf-8")
+    script = ("import json, sys\n"
+              "import memriver.server\n"
+              "class Stub:\n"
+              "    def run(self):\n"
+              "        pass\n"
+              "memriver.server.build_server = lambda **kwargs: Stub()\n"
+              "from memriver import cli\n"
+              f"code = cli.main(['serve', '--root', {str(tmp_path)!r}])\n"
+              f"print(json.dumps({{'code': code, 'loaded': {LOADED}}}))\n")
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                            check=True, env=os.environ | {"HOME": str(tmp_path)},
+                            cwd=str(tmp_path))
+    assert json.loads(result.stdout.strip().splitlines()[-1]) == {"code": 0,
+                                                                  "loaded": loaded}
+
+
+def test_dream_run_loads_dream_and_never_pydantic_ai(tmp_path):
+    store = tmp_path / "mem"
+    settings = ('[dream]\nexecutor = "claude"\nexecutor_path = "/usr/bin/false"\n'
+                '[classifier]\nexecutor = "codex"\nexecutor_path = "/opt/bin/codex"\n')
+    script = textwrap.dedent(f"""
+        import json, sys
+        from pathlib import Path
+        from memriver_core.bootstrap import build_services
+        from memriver_core.settings import Settings
+        store = Path({str(store)!r})
+        build_services(Settings(root=store), root=store).project.ensure_global()
+        (store / "settings.toml").write_text({settings!r})
+        from memriver import cli
+        code = cli.main(["dream", "run", "--root", str(store)])
+        print(json.dumps({{"code": code, "loaded": {LOADED}}}))
+    """)
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                            check=True, env=os.environ | {"HOME": str(tmp_path)},
+                            cwd=str(tmp_path))
+    assert json.loads(result.stdout.strip().splitlines()[-1]) == {
+        "code": 0, "loaded": ["memriver.classifier_plugin", "memriver.dream_plugin",
+                              "memriver.executor", "memriver_dream"]}
+
+
+@pytest.mark.parametrize(("dream_writes", "jev_loaded"), [(False, False), (True, True)])
+def test_dream_run_builds_a_jev_classifier_only_when_it_checks_dream_writes(
+        tmp_path, dream_writes, jev_loaded):
+    store = tmp_path / "mem"
+    settings = ('[classifier]\nexecutor = "jev"\napi_key_env = "MEMRIVER_TEST_UNSET_KEY"\n'
+                f'dream_writes = {"true" if dream_writes else "false"}\n')
+    script = textwrap.dedent(f"""
+        import json, sys
+        from pathlib import Path
+        from memriver_core.bootstrap import build_services
+        from memriver_core.settings import Settings
+        store = Path({str(store)!r})
+        build_services(Settings(root=store), root=store).project.ensure_global()
+        (store / "settings.toml").write_text({settings!r})
+        from memriver import cli
+        code = cli.main(["dream", "run", "--root", str(store)])
+        print(json.dumps({{"code": code, "api": "memriver.executor.api" in sys.modules,
+                          "pydantic_ai": "pydantic_ai" in sys.modules}}))
+    """)
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                            check=True, env=os.environ | {"HOME": str(tmp_path)},
+                            cwd=str(tmp_path))
+    assert json.loads(result.stdout.strip().splitlines()[-1]) == {
+        "code": 0, "api": jev_loaded, "pydantic_ai": jev_loaded}
+
+
+def test_dream_run_still_refuses_a_bad_classifier_table_that_skips_dream_writes(tmp_path):
+    store = tmp_path / "mem"
+    store.mkdir()
+    (store / "settings.toml").write_text(
+        '[classifier]\nexecutor = "jev"\ndream_writes = false\nblock_threshold = 2\n')
+    from memriver import cli
+    stderr = io.StringIO()
+    with contextlib.redirect_stderr(stderr):
+        code = cli.main(["dream", "run", "--root", str(store)])
+    assert code == 1
+    assert stderr.getvalue() == ("memriver: settings.toml is invalid: field "
+                                 "classifier.block_threshold\n")

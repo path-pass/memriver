@@ -336,14 +336,20 @@ def _serve(args: argparse.Namespace) -> int:
 
     from memriver_core.settings import load_settings
 
-    from .classifier_loader import load_classifier
     from .server import build_server
+    from .settings import load_classifier_settings
 
     # an unusable settings.toml, [classifier] table or MEMRIVER_* value raises
     # SettingsError, which main() turns into one stderr line -- what an MCP client
     # shows for a server that failed to start
     settings = load_settings(root_override=args.root)
-    classifier = load_classifier(settings.root, env=os.environ)
+    table = load_classifier_settings(settings.root)
+    classifier = None
+    if table is not None and table.enabled:
+        # the classifier and its executor are loaded only when configured
+        from .classifier_plugin import build_classifier
+
+        classifier = build_classifier(table, os.environ)
     build_server(root=settings.root, project_dir=args.project_dir, settings=settings,
                  harness=args.harness, classifier=classifier).run()  # stdio
     return 0
@@ -368,26 +374,6 @@ def _hook(args: argparse.Namespace) -> int:
     return result.exit_code
 
 
-# memriver.install never imports memriver_core (tests/test_architecture.py), so this
-# check -- and the settings read behind it -- stays here, run once before the plan is
-# printed: the one moment a user running install is actually looking.
-CLASSIFIER_NOT_INSTALLED_WARNING = (
-    "a [classifier] table is set but memriver-classifier is not installed here; this "
-    "registration will not classify writes -- install with memriver[classifier]"
-)
-
-
-def _classifier_registration_warning() -> str | None:
-    from memriver_core.settings import load_settings
-
-    from .classifier_loader import _has_table
-    from .install.editors import classifier_installed
-
-    if classifier_installed():
-        return None
-    return CLASSIFIER_NOT_INSTALLED_WARNING if _has_table(load_settings().root) else None
-
-
 def _install(args: argparse.Namespace) -> int:
     import os
 
@@ -398,7 +384,6 @@ def _install(args: argparse.Namespace) -> int:
     harnesses = [args.harness] if args.harness else list(HARNESSES)
     try:
         store_step = _store_step()
-        warning = _classifier_registration_warning()
     except Exception as err:    # any other cause is one fixed, path-free line
         if _is_settings_error(err) or _unsupported_store(err):
             raise                       # main() names the file and field, or the refusal
@@ -407,8 +392,6 @@ def _install(args: argparse.Namespace) -> int:
         sys.stderr.write("memriver install: the memory store could not be read; "
                          "run memriver doctor\n")
         return 1
-    if warning is not None:
-        sys.stderr.write(f"memriver install: {warning}\n")
     return run_install(harnesses, yes=args.yes, dry_run=args.dry_run,
                        home=Path.home(), cwd=Path.cwd(), env=os.environ,
                        input_fn=input, stdout=sys.stdout, stderr=sys.stderr,

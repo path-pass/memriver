@@ -6,7 +6,7 @@ Every diagnostic rule lives in memriver_core, reached through
 the text) doctor lists, as it lists the changes a hard delete left incomplete
 (not undoable; not a finding). This module owns exit codes, fixed state messages, and
 JSON/human rendering; it never opens the store itself, and [DEFERRED-4] performs
-no harness-configuration audit (see spec S10). It also states the optional content
+no harness-configuration audit (see spec S10). It also states the content
 classifier in one line (never calling a model).
 """
 
@@ -156,7 +156,7 @@ def run_doctor(*, root: Path | None, json_output: bool, stale_days: int,
     from memriver_core.bootstrap import build_services
     from memriver_core.settings import SettingsError, load_settings
 
-    from .classifier_loader import classifier_state
+    from .classifier_plugin import classifier_state
 
     def _unsupported(err: StoreNeedsUpgrade) -> int:
         # spec §9: a store below the schema this memriver needs is refused
