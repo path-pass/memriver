@@ -268,8 +268,10 @@ def _session_key(harness: str, ctx: Context, session_service: Any) -> SessionKey
 
 
 _SESSION_SEARCH_DESCRIPTION = (
-    "Find this project's recorded sessions (newest activity first) by a word in their "
-    "prompts, summary, branch or entry directory; an empty query lists them. Each carries a "
+    "Find this project's recorded sessions by what their prompts, summary, branch or entry "
+    "directory hold. query: space-separated keywords; an entry matching any keyword is "
+    "returned, entries matching more keywords first, newest activity first among equals; "
+    "an empty query (\"\") lists them all, newest activity first. Each carries a "
     "resume_command to show the user; whether to run it is the user's decision. Prompt "
     "and summary texts are quoted from the sessions. " + UNTRUSTED_DATA_NOTICE)
 
@@ -357,8 +359,10 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
 
     @mcp.tool
     def memory_search(query: str, ctx: Context, limit: int | None = None) -> list[dict]:
-        """Search the current project's memories, then global's. `limit` caps the
-        whole answer: project hits first, global fills what is left."""
+        """Search the current project's memories, then global's. query:
+        space-separated keywords; an entry matching any keyword is returned, entries
+        matching more keywords first. `limit` caps the whole answer: project hits
+        first, global fills what is left."""
         try:
             context = context_of(ctx)
             global_project_id = context.read_write_set.global_project_id
