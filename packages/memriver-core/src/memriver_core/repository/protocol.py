@@ -144,8 +144,10 @@ class ProjectStore(Protocol):
       read/write set is given) or one that does not exist answers `[]`; a
       `None` read/write set is the management view. Deleted rows never match;
       a single invalid memory row is skipped. `query=None` lists everything,
-      `query=""` matches nothing, any other query is a case-insensitive
-      substring of description or body. Newest `updated` first, then id.
+      newest `updated` first, then id. Any other query is split into keywords
+      (`models.search.search_terms`; a query with none matches nothing) and
+      answers the memories any keyword matches in description or body, in
+      `models.search.rank_memories` order.
     - `resolve(start, ignoring=None, logical=None)`: which project `start`
       belongs to; `ignoring=(project_id, root)` previews the answer without
       that binding; `logical` walks that path's ancestors instead of
@@ -213,9 +215,13 @@ class SessionStore(Protocol):
       overwritten. `origin`, `entry_cwd` and `branch` stay. None for an
       unknown key.
     - `search`: `project_id=None` is every row (the human CLI); otherwise
-      that project's registered rows. A case-insensitive substring of a
-      prompt text, the published summary, `entry_cwd` or `branch`; newest
-      `last_active_at` first.
+      that project's registered rows. The query's keywords
+      (`models.search.search_terms`) are matched against the prompt texts,
+      the published summary, `entry_cwd` and `branch`: the rows any keyword
+      matches, by `models.search.rank_key` (larger first), newest
+      `last_active_at` first within a rank. The empty query `""` lists every
+      row, newest `last_active_at` first; any other query with no keyword
+      matches nothing.
     - `record_call`: maps a harness's tool-call id to `key`'s session
       (replacing an earlier mapping of the same id), then drops every
       mapping recorded more than `retention_s` seconds before `at`, in the

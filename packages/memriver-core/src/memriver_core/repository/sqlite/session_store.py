@@ -21,6 +21,7 @@ from memriver_core.models import (
     is_timestamp,
 )
 from memriver_core.models.errors import ProjectUnavailable, SessionMoved, StorageFailure
+from memriver_core.models.search import Rank, rank_key, search_terms
 
 from .database import Database
 
@@ -170,11 +171,11 @@ def _require_timestamp(at: object) -> None:
         raise ValueError("at is not a timestamp")
 
 
-def _matches(session: Session, needle: str) -> bool:
+def _texts(session: Session) -> list[str]:
+    """What a session search reads: saved prompt texts, entry cwd, branch, summary."""
     prompts = (session.first_prompt, *session.recent_prompts)
     texts = [entry.text for entry in prompts if entry is not None and entry.text is not None]
-    texts += [session.entry_cwd, session.branch or "", session.summary or ""]
-    return any(needle in text.lower() for text in texts)
+    return texts + [session.entry_cwd, session.branch or "", session.summary or ""]
 
 
 class SqliteSessionStore:
@@ -329,22 +330,27 @@ class SqliteSessionStore:
         sql, params = _SELECT, ()
         if project_id is not None:
             sql, params = sql + " WHERE project_id = ? AND status = 'registered'", (project_id,)
-        needle = query.lower()
-        found: list[Session] = []
+        terms = search_terms(query)
+        if query and not terms:
+            return []                       # a query with no keyword matches nothing
+        found: list[tuple[Rank, Session]] = []
         with self._database.read() as conn:
             if conn is None:
                 return []
             for row in conn.execute(sql + " ORDER BY last_active_at DESC, harness, session_id",
                                     params):
-                if len(found) >= limit:
-                    break
+                if not terms and len(found) >= limit:
+                    break                   # "" lists every session: nothing to rank
                 try:
                     session = session_from_row(row)
                 except ValueError:
                     continue                # a bad row is skipped here, a doctor finding
-                if _matches(session, needle):
-                    found.append(session)
-        return found
+                rank = rank_key(terms, _texts(session))
+                if rank.terms or not terms:
+                    found.append((rank, session))
+        # stable, reverse included: equal ranks keep the newest-first order above
+        found.sort(key=lambda pair: pair[0], reverse=True)
+        return [session for _, session in found[:limit]]
 
     def bound(self) -> list[Session]:
         found: list[Session] = []

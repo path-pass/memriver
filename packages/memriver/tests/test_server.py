@@ -1102,8 +1102,10 @@ async def test_session_search_is_limited_to_the_callers_project(world):
     mine = next(s for s in found if s["harness"] == "codex")
     assert mine["resume_command"] == f"codex resume {CODEX_ID}"
 
+    # the phrase first; the sibling holds two of its three keywords
     assert [s["session_id"] for s in await _call(server, "session_search", meta=meta,
-                                                 query="fix the login")] == [CODEX_ID]
+                                                 query="fix the login")] == \
+        [CODEX_ID, "it's-$HOME"]
     assert len(await _call(server, "session_search", meta=meta, limit=1)) == 1
 
 

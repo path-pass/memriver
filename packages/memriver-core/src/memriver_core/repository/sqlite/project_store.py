@@ -24,6 +24,7 @@ from memriver_core.models.errors import (
     ProjectNotFound,
     StorageFailure,
 )
+from memriver_core.models.search import rank_memories, search_terms
 
 from .. import directories
 from .database import (
@@ -156,10 +157,10 @@ class SqliteProjectStore:
             return []
         if not isinstance(project_id, str) or not ID_RE.fullmatch(project_id):
             return []
-        needle = None
+        terms = None
         if query is not None:
-            needle = query.replace("\x00", "").lower()
-            if not needle:
+            terms = search_terms(query)
+            if not terms:
                 return []
         with self._database.read() as conn:
             if conn is None:
@@ -175,16 +176,15 @@ class SqliteProjectStore:
         matches: list[Memory] = []
         for memory_row in rows:
             try:
-                memory = memory_from_row(memory_row)
+                matches.append(memory_from_row(memory_row))
             except ValueError:
                 continue                            # one bad row is skipped; doctor reports it
-            # ponytail: the substring match runs in Python over one project's
-            # rows (str.lower folds beyond ASCII, SQLite's LIKE does not); add
-            # FTS when a project outgrows it
-            if needle is None or needle in memory.description.lower() \
-                    or needle in memory.body.lower():
-                matches.append(memory)
         matches.sort(key=lambda m: (m.updated, m.id), reverse=True)
+        if terms is not None:
+            # ponytail: the keyword match runs in Python over one project's rows
+            # (NFKC and casefold, which SQLite's LIKE cannot do); FTS5 with CJK
+            # bigrams when a project outgrows it
+            matches = rank_memories(terms, matches)
         return matches if limit is None else matches[:limit]
 
     # --- directories ---
