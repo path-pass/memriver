@@ -699,8 +699,8 @@ def test_a_multi_keyword_query_finds_entries_holding_any_term(world):
 def test_keyword_hits_follow_the_four_order_rules(world):
     whole_old = _record(world, body="use uv pip for installs")
     one_term = _record(world, body="uv only")
-    two_in_body = _record(world, body="pip, then uv")
     two_one_in_cue = _record(world, body="then pip", description="uv")
+    two_in_body = _record(world, body="pip, then uv")
     whole_new = _record(world, body="uv pip again")
     assert _hits(world, "uv pip") == [whole_new.id, whole_old.id,       # 1, then 4
                                       two_one_in_cue.id, two_in_body.id,  # 2, then 3

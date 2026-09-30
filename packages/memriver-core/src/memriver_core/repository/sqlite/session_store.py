@@ -333,7 +333,7 @@ class SqliteSessionStore:
         terms = search_terms(query)
         if query and not terms:
             return []                       # a query with no keyword matches nothing
-        found: list[tuple[Rank, Session]] = []
+        found: list[tuple[Rank | None, Session]] = []
         with self._database.read() as conn:
             if conn is None:
                 return []
@@ -345,11 +345,12 @@ class SqliteSessionStore:
                     session = session_from_row(row)
                 except ValueError:
                     continue                # a bad row is skipped here, a doctor finding
-                rank = rank_key(terms, _texts(session))
-                if rank.terms or not terms:
+                rank = rank_key(terms, _texts(session)) if terms else None
+                if rank is None or rank.terms:
                     found.append((rank, session))
-        # stable, reverse included: equal ranks keep the newest-first order above
-        found.sort(key=lambda pair: pair[0], reverse=True)
+        if terms:
+            # stable, reverse included: equal ranks keep the newest-first order above
+            found.sort(key=lambda pair: pair[0], reverse=True)
         return [session for _, session in found[:limit]]
 
     def bound(self) -> list[Session]:

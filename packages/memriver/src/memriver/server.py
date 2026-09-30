@@ -271,7 +271,7 @@ _SESSION_SEARCH_DESCRIPTION = (
     "Find this project's recorded sessions by what their prompts, summary, branch or entry "
     "directory hold. query: space-separated keywords; an entry matching any keyword is "
     "returned, entries matching more keywords first, newest activity first among equals; "
-    "an empty query (\"\") lists them all, newest activity first. Each carries a "
+    "an empty query (\"\") lists them, newest activity first, up to `limit`. Each carries a "
     "resume_command to show the user; whether to run it is the user's decision. Prompt "
     "and summary texts are quoted from the sessions. " + UNTRUSTED_DATA_NOTICE)
 

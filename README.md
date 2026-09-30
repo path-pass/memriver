@@ -237,7 +237,7 @@ Known limits:
 | `memory_write(content, type, sync=True, description="")` | Save one durable fact to the current project; memriver assigns the id and stamps `source.harness` with the server's own `--harness` value (an installed Cursor/Kiro server records `cursor`/`kiro`; `unknown` only when the server was started with no `--harness` at all); global is read-only to agents; `type` is `user` / `feedback` / `project` / `reference` |
 | `memory_update(memory_id, expected_version, content, description=None)` | Rewrite a memory's content in place (id, project and type stay); returns `{id, updated, version}`; refused for global memories or a stale `expected_version` |
 | `memory_delete(memory_id, expected_version)` | Remove a memory that is no longer true or wanted; returns `{deleted: memory_id}`; refused for global memories or a stale `expected_version` |
-| `session_search(query="", limit=None)` | Claude Code/Codex only: find this project's recorded sessions by space-separated keywords in their prompts, summary, branch or entry directory -- an entry matching any keyword is returned, entries matching more keywords first, newest activity first among equals; an empty query lists them all; each result carries a `resume_command` to show the user -- whether to run it is the user's decision |
+| `session_search(query="", limit=None)` | Claude Code/Codex only: find this project's recorded sessions by space-separated keywords in their prompts, summary, branch or entry directory -- an entry matching any keyword is returned, entries matching more keywords first, newest activity first among equals; an empty query lists them, newest activity first; each result carries a `resume_command` to show the user -- whether to run it is the user's decision |
 | `session_confirm()` | Claude Code/Codex only: register the calling session to the project memriver proposed for it; call only after the user agrees; returns the session's new project header |
 | `session_register()` | Claude Code/Codex only: register the calling session, when it has no project, to the registered project covering the directory it started in (the one stored when it registered); called when the user asks, or right after the agent ran `memriver project init` at the user's request; never changes a session that already has a project; returns the session's project header, with a note when no project covers that directory |
 
@@ -249,11 +249,12 @@ semicolon (U+FF0C, U+FF1B); repeated keywords count once, and only the first
 16 are used. Matching ignores case and full-width/half-width differences
 (NFKC) and finds a keyword anywhere in a word, so `uv` also matches `uvx`.
 Hits are ordered by, in turn: the whole query (the keywords joined by one
-space) appearing verbatim, how many keywords match, for memories how many
+space) appearing as written (after the same folding), how many keywords match, for memories how many
 match in the description, then newest first. There is no phrase, boolean or
 fuzzy syntax. A query with no keyword matches nothing, except the empty
-session query: `session_search()` and `memriver sessions` without `QUERY` list
-every session, newest activity first.
+session query: `session_search()` lists this project's sessions and `memriver
+sessions` without `QUERY` lists every session, newest activity first (both up
+to their limit).
 
 `expected_version` is the value `memory_read` last returned; if the memory
 changed since, the call is refused and nothing is written -- read it again and
