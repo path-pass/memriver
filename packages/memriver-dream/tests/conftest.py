@@ -73,7 +73,7 @@ def world(tmp_path, executor, transcripts):
     services = build_services(Settings(root=root), root=root, home=home)
     global_id = services.project.ensure_global()
     project = services.project.init_project("demo", services.project.plan_root(str(work)))
-    dream = DreamSettings(executor="claude", executor_path="/usr/bin/true")
+    dream = DreamSettings()
     reports = root / "dream" / "reports"
 
     def create(project_id: str, body: str, *, description: str = "cue",

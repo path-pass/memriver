@@ -715,39 +715,12 @@ def test_install_with_an_unreadable_store_stops_before_touching_any_harness(
                              "run memriver doctor\n")
 
 
-def test_install_warns_when_the_package_is_missing_and_a_classifier_table_is_set(
-        monkeypatch, tmp_path):
-    import memriver.install as install_module
-
-    monkeypatch.setitem(sys.modules, "memriver_classifier", None)
-    store = tmp_path / "store"
-    store.mkdir()
-    (store / "settings.toml").write_text('[classifier]\nbackend = "jev"\n', encoding="utf-8")
-    monkeypatch.setenv("MEMRIVER_ROOT", str(store))
-    monkeypatch.setattr(install_module, "run_install", lambda *a, **kw: 0)
-    result = invoke_main(["install", "--yes"], stdin="")
-    assert result.exit_code == 0
-    assert result.stderr == f"memriver install: {cli.CLASSIFIER_NOT_INSTALLED_WARNING}\n"
-
-
-def test_install_prints_no_classifier_warning_without_a_table(monkeypatch, tmp_path):
-    import memriver.install as install_module
-
-    monkeypatch.setitem(sys.modules, "memriver_classifier", None)
-    monkeypatch.setenv("MEMRIVER_ROOT", str(tmp_path / "store"))
-    monkeypatch.setattr(install_module, "run_install", lambda *a, **kw: 0)
-    result = invoke_main(["install", "--yes"], stdin="")
-    assert result.exit_code == 0
-    assert result.stderr == ""
-
-
-def test_install_prints_no_classifier_warning_when_the_package_is_installed(
-        monkeypatch, tmp_path):
+def test_install_says_nothing_about_a_classifier_table(monkeypatch, tmp_path):
     import memriver.install as install_module
 
     store = tmp_path / "store"
     store.mkdir()
-    (store / "settings.toml").write_text('[classifier]\nbackend = "jev"\n', encoding="utf-8")
+    (store / "settings.toml").write_text('[classifier]\nexecutor = "jev"\n', encoding="utf-8")
     monkeypatch.setenv("MEMRIVER_ROOT", str(store))
     monkeypatch.setattr(install_module, "run_install", lambda *a, **kw: 0)
     result = invoke_main(["install", "--yes"], stdin="")
@@ -806,7 +779,7 @@ def _capture_serve(monkeypatch):
 def test_serve_builds_the_configured_classifier(tmp_path, monkeypatch):
     built = _capture_serve(monkeypatch)
     (tmp_path / "settings.toml").write_text(
-        '[classifier]\nbackend = "jev"\napi_key_env = "MEMRIVER_TEST_UNSET_KEY"\n',
+        '[classifier]\nexecutor = "jev"\napi_key_env = "MEMRIVER_TEST_UNSET_KEY"\n',
         encoding="utf-8")
     assert cli.main(["serve", "--root", str(tmp_path)]) == 0
     assert built[0]["classifier"].classify("x", changed_by="mcp").category == "unavailable"
@@ -818,23 +791,18 @@ def test_serve_without_a_table_builds_no_classifier(tmp_path, monkeypatch):
     assert built[0]["classifier"] is None
 
 
-def test_serve_without_the_package_serves_unchecked_and_warns_once(tmp_path, monkeypatch,
-                                                                   capsys):
-    from memriver.classifier_loader import TABLE_WITHOUT_PACKAGE
-
-    monkeypatch.setitem(sys.modules, "memriver_classifier", None)
+def test_serve_with_a_disabled_classifier_table_builds_no_classifier(tmp_path, monkeypatch):
     built = _capture_serve(monkeypatch)
-    (tmp_path / "settings.toml").write_text('[classifier]\nbackend = "jev"\n', encoding="utf-8")
-    with isolated_memriver_loggers():       # main() binds its handler to capsys's stderr
-        assert cli.main(["serve", "--root", str(tmp_path)]) == 0
+    (tmp_path / "settings.toml").write_text('[classifier]\nexecutor = "jev"\nenabled = false\n',
+                                            encoding="utf-8")
+    assert cli.main(["serve", "--root", str(tmp_path)]) == 0
     assert built[0]["classifier"] is None
-    assert capsys.readouterr().err == f"memriver: {TABLE_WITHOUT_PACKAGE}\n"
 
 
 def test_serve_stops_on_an_invalid_classifier_table(tmp_path, monkeypatch, capsys):
     built = _capture_serve(monkeypatch)
-    (tmp_path / "settings.toml").write_text('[classifier]\nbackend = "gpt"\n', encoding="utf-8")
+    (tmp_path / "settings.toml").write_text('[classifier]\nexecutor = "gpt"\n', encoding="utf-8")
     assert cli.main(["serve", "--root", str(tmp_path)]) == 1
     assert built == []
     assert capsys.readouterr().err == ("memriver: settings.toml is invalid: field "
-                                       "classifier.backend\n")
+                                       "classifier.executor\n")

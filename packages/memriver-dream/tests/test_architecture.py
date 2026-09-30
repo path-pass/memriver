@@ -2,8 +2,8 @@
 (bootstrap, models, settings and the error classes of `memriver_core.__all__`), no
 harness anywhere -- no harness name, no subprocess, no harness file format -- and the
 agreed module layout, every module name without an underscore.
-The one exception is the settings module: it parses the user's [dream] table,
-whose keys and values (executor = "codex", codex_overrides) name the executor.
+The settings module too: dream's keys of the [dream] table name no executor; the
+caller defines those and validates the table with its own model.
 
 The same import normalization as the core and umbrella architecture tests:
 every import spelling (plain, from, relative, aliased) is treated alike.
@@ -26,12 +26,12 @@ FORBIDDEN_STDLIB = {"subprocess", "pty", "multiprocessing"}
 # os itself is used for ordinary things (os.path, ...); only these calls shell out or
 # spawn another process
 _FORBIDDEN_OS_CALLS = ("system", "popen", "fork", "forkpty")
-HARNESS_WORDS = ("claude", "codex", "jsonl", "anthropic", "openai")
+HARNESS_WORDS = ("claude", "codex", "jsonl", "anthropic", "openai", "jev")
 STDLIB = set(sys.stdlib_module_names)
 # the settings baseline core already depends on, declared again in dream's own
 # pyproject because the settings module imports it directly
 THIRD_PARTY = {"pydantic", "pydantic_settings"}
-# parses the user's [dream] table, whose file format names the executor
+# the one module that reads the [dream] table with the settings libraries
 SETTINGS_MODULE = "memriver_dream.settings"
 # the agreed layout (spec §2): nothing outside it, no module name with an underscore
 MODULES = {ROOT_PKG, *(f"{ROOT_PKG}.{name}" for name in (
@@ -165,8 +165,6 @@ def test_a_second_import_os_as_alias_is_still_caught():
 @pytest.mark.parametrize("word", HARNESS_WORDS)
 def test_dream_sources_name_no_harness(word):
     for module, path in SOURCES.items():
-        if module == SETTINGS_MODULE:
-            continue
         assert word not in path.read_text(encoding="utf-8").lower(), f"{module} names {word}"
 
 

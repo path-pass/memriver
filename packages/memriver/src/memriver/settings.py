@@ -1,10 +1,12 @@
-"""memriver-classifier's settings: the [classifier] table of <root>/settings.toml, and
-every default and fixed constant of this package.
+"""memriver's settings: every default and fixed value of the memriver package, the
+executor keys the [dream] and [classifier] tables share -- the Codex provider-override
+whitelist among them -- and the [classifier] table.
 
-The table is read on its own, straight from the file, with no environment layer, the
-way memriver dream reads [dream]. A bad value is core's SettingsError naming the field,
-never the value; nothing falls back to a default. The Codex provider-override
-whitelist lives here, where the table is validated.
+A table is read on its own, straight from settings.toml, with no environment layer; a
+bad value is core's SettingsError naming the field, never the value. The keys of
+[dream] that memriver-dream owns are memriver_dream's: memriver adds its own to them
+where it reads [dream] (memriver.dream_plugin.commands). This module imports no
+memriver_dream.
 """
 
 from __future__ import annotations
@@ -34,38 +36,49 @@ from pydantic import (
 )
 
 __all__ = [
+    "CLASSIFIER_SCRATCH_PREFIX",
     "CLASSIFIER_TABLE",
     "DEFAULT_API_KEY_ENV",
     "DEFAULT_BLOCK_THRESHOLD",
+    "DEFAULT_DREAM_SCHEDULE_AT",
     "DEFAULT_HEADLESS_TIMEOUT_S",
     "DEFAULT_JEV_MODEL",
     "DEFAULT_JEV_TIMEOUT_S",
-    "JEV_URL",
+    "DREAM_LAUNCH_AGENT_LABEL",
+    "DREAM_SCRATCH_PREFIX",
+    "JEV_BASE_URL",
     "KILL_GRACE_S",
+    "SCHEDULE_AT_RE",
     "ClassifierSettings",
+    "ExecutorSettings",
     "check_classifier_table",
     "check_codex_overrides",
     "load_classifier_settings",
 ]
 
-CLASSIFIER_TABLE = "classifier"
+# the executors (memriver.executor)
+KILL_GRACE_S = 2                        # draining a timed-out run's pipes after the kill
+DREAM_SCRATCH_PREFIX = "memriver-dream-"            # a dream run's temporary directories
+CLASSIFIER_SCRATCH_PREFIX = "memriver-classifier-"  # a classification's
+JEV_BASE_URL = "https://api.typesafe.ai"            # fixed: never read from the environment
+DEFAULT_JEV_MODEL = "jev-latest"
+DEFAULT_API_KEY_ENV = "TYPESAFE_API_KEY"            # jev: the variable the key is read from
 
-# the [classifier] table's defaults; backend (and executor_path for claude/codex) has none
+# [dream]: the keys memriver adds to memriver-dream's own
+DEFAULT_DREAM_SCHEDULE_AT = "04:00"
+DREAM_LAUNCH_AGENT_LABEL = "io.github.path-pass.memriver.dream"
+SCHEDULE_AT_RE = re.compile(r"([01][0-9]|2[0-3]):[0-5][0-9]")
+
+# [classifier]; executor (and executor_path for claude/codex) has no default
+CLASSIFIER_TABLE = "classifier"
 DEFAULT_HEADLESS_TIMEOUT_S = 60         # one claude/codex classification
 DEFAULT_JEV_TIMEOUT_S = 10              # one jev request
-DEFAULT_JEV_MODEL = "jev-latest"
-DEFAULT_API_KEY_ENV = "TYPESAFE_API_KEY"
 DEFAULT_BLOCK_THRESHOLD = 0.7           # jev: block when P(plants instructions) >= this
 
-# fixed values
-JEV_URL = "https://api.typesafe.ai/v1/systemone"
-KILL_GRACE_S = 2                        # draining a timed-out run's pipes after the kill
-
 _ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
-
-# [classifier.codex_overrides]: a copy of memriver_dream.settings.check_codex_overrides
-# and its patterns (this package may not import memriver dream); a fix to one is checked
-# against the other
+# [dream.codex_overrides], [classifier.codex_overrides]: the Codex provider keys a user
+# may set, each matched by its whole path; everything else -- tools, hooks, MCP
+# servers, whole tables, credential fields -- is refused
 _CODEX_TOP_KEYS = frozenset({"model_provider", "model"})
 _CODEX_PROVIDER_KEY_RE = re.compile(
     r"model_providers\.([A-Za-z0-9_-]{1,64})\."
@@ -89,7 +102,8 @@ def check_codex_overrides(value: object) -> dict[str, str | bool]:
     """The whitelisted Codex provider overrides, or ValueError naming the key and a
     fixed reason -- never the value, which could be a pasted secret."""
     if not isinstance(value, dict):
-        # pydantic only catches ValueError/AssertionError from a validator
+        # a TypeError here would escape a pydantic field_validator uncaught: pydantic
+        # only catches ValueError/AssertionError from a validator, never TypeError
         raise ValueError("codex_overrides must be a table")  # noqa: TRY004
     provider_ids: set[str] = set()
     for key, item in value.items():
@@ -119,42 +133,34 @@ def check_codex_overrides(value: object) -> dict[str, str | bool]:
     return value
 
 
-class ClassifierSettings(BaseModel):
-    """The [classifier] table. A plain model, like DreamSettings: one source (the file),
-    no environment layer. extra="ignore": a key it does not know is skipped."""
+class ExecutorSettings(BaseModel):
+    """The keys that pick and configure an executor, one set for [dream] and
+    [classifier]: each table's model adds its own keys to these, so one validation names
+    every bad key of the table, the Codex whitelist included. A plain model: one source
+    (the file), no environment layer; extra="ignore": a key it does not know is skipped.
+    Field order is the order an error line names the fields in.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
-    # strict: pydantic's lax bool reads 1/"no" as booleans, and tightening this
-    # later would break a released user's settings.toml
-    enabled: StrictBool = True          # false: off, the table kept
-    agent_writes: StrictBool = True     # check changed_by "mcp"
-    dream_writes: StrictBool = True     # check changed_by "dream"
-    backend: Literal["claude", "codex", "jev"]
-    # declared after backend: its validator reads the backend already validated
+    executor: Literal["claude", "codex", "jev"]
+    # declared after executor: its validator reads the executor already validated
     executor_path: str | None = Field(None, validate_default=True)
-    model: str | None = None            # claude/codex
+    # claude --model, codex -c model=, the jev model (jev-latest when unset)
+    model: str | None = None
     # passed to claude as --settings, reloaded whole into the call (hooks and
     # environment included): authentication only, never a hook
     claude_settings: str | None = None
-    timeout_s: int | None = Field(None, gt=0)
+    # provider settings the Codex executor passes as -c overrides: it skips
+    # config.toml, so a provider defined only there is given here
     codex_overrides: dict[str, str | bool] = Field(default_factory=dict)
-    jev_model: str = DEFAULT_JEV_MODEL
-    api_key_env: str = DEFAULT_API_KEY_ENV
-    block_threshold: float = Field(DEFAULT_BLOCK_THRESHOLD, gt=0, le=1)
-
-    @property
-    def timeout(self) -> int:
-        """timeout_s, else the backend's default."""
-        if self.timeout_s is not None:
-            return self.timeout_s
-        return DEFAULT_JEV_TIMEOUT_S if self.backend == "jev" else DEFAULT_HEADLESS_TIMEOUT_S
+    api_key_env: str = DEFAULT_API_KEY_ENV      # jev: the variable's name, never the key
 
     @field_validator("executor_path")
     @classmethod
     def _executor_path(cls, value: str | None, info: ValidationInfo) -> str | None:
         if value is None:
-            if info.data.get("backend") in ("claude", "codex"):
+            if info.data.get("executor") in ("claude", "codex"):
                 raise ValueError("executor_path is required for claude and codex")
             return None
         if not os.path.isabs(value):
@@ -168,7 +174,7 @@ class ClassifierSettings(BaseModel):
             raise ValueError("claude_settings must be absolute")
         return value
 
-    @field_validator("model", "jev_model")
+    @field_validator("model")
     @classmethod
     def _one_line(cls, value: str | None) -> str | None:
         if value is not None and not (value.strip() and value.isprintable()):
@@ -182,15 +188,34 @@ class ClassifierSettings(BaseModel):
             raise ValueError("api_key_env must name an environment variable")
         return value
 
-    @field_validator("timeout_s", "block_threshold", mode="before")
-    @classmethod
-    def _no_booleans(cls, value: object) -> object:
-        return reject_boolean(value)
-
     @field_validator("codex_overrides", mode="before")
     @classmethod
     def _codex_whitelist(cls, value: object) -> object:
         return check_codex_overrides(value)
+
+
+class ClassifierSettings(ExecutorSettings):
+    """The [classifier] table: the executor keys, then the classifier's own."""
+
+    # strict: pydantic's lax bool reads 1/"no" as booleans, and tightening this
+    # later would break a released user's settings.toml
+    enabled: StrictBool = True          # false: off, the table kept
+    agent_writes: StrictBool = True     # check changed_by "mcp"
+    dream_writes: StrictBool = True     # check changed_by "dream"
+    timeout_s: int | None = Field(None, gt=0)
+    block_threshold: float = Field(DEFAULT_BLOCK_THRESHOLD, gt=0, le=1)
+
+    @property
+    def timeout(self) -> int:
+        """timeout_s, else the executor's default."""
+        if self.timeout_s is not None:
+            return self.timeout_s
+        return DEFAULT_JEV_TIMEOUT_S if self.executor == "jev" else DEFAULT_HEADLESS_TIMEOUT_S
+
+    @field_validator("timeout_s", "block_threshold", mode="before")
+    @classmethod
+    def _no_booleans(cls, value: object) -> object:
+        return reject_boolean(value)
 
 
 def check_classifier_table(table: Mapping[str, object]) -> ClassifierSettings:

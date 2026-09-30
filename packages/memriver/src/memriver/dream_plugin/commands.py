@@ -18,7 +18,7 @@ import sys
 import tomllib
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import IO
+from typing import IO, Literal
 
 import tomlkit
 from memriver_core import StorageFailure, StoreNeedsUpgrade
@@ -33,29 +33,38 @@ from memriver_core.settings import (
 )
 from memriver_dream import (
     DEFAULT_DREAM_REPORT_RETENTION_DAYS,
-    DEFAULT_DREAM_SCHEDULE_AT,
     DEFAULT_DREAM_TTL_DAYS,
     DREAM_DIRECTORY,
-    DREAM_LAUNCH_AGENT_LABEL,
     DREAM_LOG_FILENAME,
     DREAM_REPORTS_DIRECTORY,
     DREAM_TOOL_OUTPUT_CHARS,
+    DreamSettings,
     check_dream_table,
     find_run,
     load_dream_settings,
     recent_runs,
     run_dream,
 )
-from pydantic import ValidationError
+from pydantic import ValidationError, field_validator
 
-from . import launch_agent
-from .classifier_loader import load_classifier
-from .executors import make_executor, missing_env
-from .install import replace_atomically
-from .project_commands import _confirm
-from .project_context import visible
+from ..classifier_plugin import build_classifier
+from ..executor import make_executor
+from ..executor.harness import missing_env
+from ..install import replace_atomically
+from ..project_commands import _confirm
+from ..project_context import visible
+from ..settings import (
+    DEFAULT_DREAM_SCHEDULE_AT,
+    DREAM_LAUNCH_AGENT_LABEL,
+    DREAM_SCRATCH_PREFIX,
+    SCHEDULE_AT_RE,
+    ExecutorSettings,
+    load_classifier_settings,
+)
+from ..views import unsupported_store
+from . import schedule as launch_agent
+from .adapter import FAILURE_HINTS, DreamExecutor
 from .transcripts import HarnessTranscripts
-from .views import unsupported_store
 
 STORE_FAILURE = "memriver dream: the memory store could not be read or written\n"
 # dream's own files: dream.db, the run lock, the report directory and files
@@ -66,6 +75,26 @@ INTERRUPTED = ("(interrupted: this run stopped before it finished; later section
 UV_CACHE_REFUSAL = ("refused: the memriver running this command lives in uv's cache (uvx), "
                     "which uv may delete at any time; install it persistently "
                     "(uv tool install memriver) and run memriver dream init from there\n")
+
+
+class DreamTable(DreamSettings, ExecutorSettings):
+    """[dream] as the memriver dream commands read it: memriver_dream's policy keys,
+    the executor keys memriver shares with [classifier] (the Codex provider whitelist
+    included) and the schedule. Every [dream] load here passes it as `model=`, so one
+    validation names every bad key of the table, never a value."""
+
+    executor: Literal["claude", "codex"]        # dream needs generated text: never jev
+    # required, as before the composition: a missing path is named even beside a bad
+    # executor
+    executor_path: str
+    schedule_at: str = DEFAULT_DREAM_SCHEDULE_AT
+
+    @field_validator("schedule_at")
+    @classmethod
+    def _hh_mm(cls, value: str) -> str:
+        if not SCHEDULE_AT_RE.fullmatch(value):
+            raise ValueError("schedule_at must be HH:MM")
+        return value
 
 
 def _store_ready(settings: Settings) -> bool:
@@ -133,7 +162,7 @@ def _salvaged(raw: Mapping, key: str) -> object | None:
         if isinstance(name, str) and name.lower() == key:
             try:
                 return getattr(check_dream_table(
-                    {"executor": "claude", "executor_path": "/x", key: value}), key)
+                    {"executor": "claude", "executor_path": "/x", key: value}, model=DreamTable), key)
             except ValidationError:
                 return None
     return None
@@ -207,7 +236,7 @@ def run_init(*, executor: str | None, ttl_days: int | None, at: str | None, yes:
     except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
         raise SettingsError(unreadable=True) from None
     try:
-        current = load_dream_settings(store)
+        current = load_dream_settings(store, model=DreamTable)
     except SettingsError:
         # init rewrites the keys it owns: the table as it will stand is checked below.
         # A key it owns may still be individually valid even though a sibling key sank
@@ -237,7 +266,7 @@ def run_init(*, executor: str | None, ttl_days: int | None, at: str | None, yes:
     try:
         # the whole table as it will stand, read the way the run reads it: a bad key
         # init does not own is never kept
-        table = check_dream_table(_with(raw_table, values))
+        table = check_dream_table(_with(raw_table, values), model=DreamTable)
     except ValidationError as err:
         fields = validation_fields(err)
         given = [name for name in fields if name in values]
@@ -343,9 +372,12 @@ def run_run(*, phase: str | None, trigger: str, root: Path | None, stdout: IO[st
     # an unusable settings.toml, [dream] table or MEMRIVER_* value raises
     # SettingsError: cli.main prints its one line
     settings = load_settings(root_override=root)
-    dream = load_dream_settings(settings.root)
-    # dream's changes carry model-written text: checked when the classifier is configured
-    classifier = load_classifier(settings.root, env=os.environ)
+    dream = load_dream_settings(settings.root, model=DreamTable)
+    # dream's changes are checked only when [classifier] checks dream writes; otherwise no
+    # executor is built for dream at all (spec §8)
+    table = load_classifier_settings(settings.root)
+    classifier = (build_classifier(table, os.environ)
+                  if table is not None and table.dream_writes else None)
     if phase is not None and dream is None:
         stderr.write("memriver dream: --phase needs an executor; run memriver dream init\n")
         return 1
@@ -365,11 +397,12 @@ def run_run(*, phase: str | None, trigger: str, root: Path | None, stdout: IO[st
             return 1
         executor = sources = None
         if dream is not None:
-            executor = (executor_factory or (lambda table: make_executor(
-                table, env=os.environ)))(dream)
+            executor = (executor_factory or (lambda table: DreamExecutor(make_executor(
+                table, env=os.environ, scratch_prefix=DREAM_SCRATCH_PREFIX))))(dream)
             sources = transcripts or HarnessTranscripts(tool_output_chars=DREAM_TOOL_OUTPUT_CHARS)
         run = run_dream(services, executor, sources, dream, root=Path(settings.root),
-                        now=_now(), trigger=trigger, phases={phase} if phase else None)
+                        now=_now(), trigger=trigger, phases={phase} if phase else None,
+                        failure_hints=FAILURE_HINTS)
     except StoreNeedsUpgrade as err:
         stderr.write(f"memriver dream: {unsupported_store(err)}\n")
         return 1
@@ -401,7 +434,7 @@ def run_run(*, phase: str | None, trigger: str, root: Path | None, stdout: IO[st
 def run_report(run_id: str | None, *, list_count: int | None, root: Path | None,
                stdout: IO[str]) -> int:
     settings = load_settings(root_override=root)
-    dream = load_dream_settings(settings.root)       # its report_retention_days
+    dream = load_dream_settings(settings.root, model=DreamTable)  # its report_retention_days
     store_root = Path(settings.root)
     try:
         # the same check run and init make, through the same core entry point: a

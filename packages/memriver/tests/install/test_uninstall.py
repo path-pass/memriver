@@ -39,7 +39,7 @@ from pathlib import Path
 
 import pytest
 import tomlkit
-from memriver import launch_agent
+from memriver.dream_plugin import schedule as launch_agent
 from memriver.install import (
     HARNESS_SETTING_TAKEOVER_NOTICE,
     PlanningError,

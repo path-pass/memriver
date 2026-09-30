@@ -21,6 +21,9 @@ dependencies = [
     "memriver-dream==0.1.0",
     "fastmcp>=3.4.7,<4",
     "pydantic>=2",
+    # jev (and later model APIs) through Pydantic AI; the extra brings typesafe-sdk
+    # and httpx2, which memriver.executor.api uses directly
+    "pydantic-ai-slim[typesafe]>=2.51.0,<3",
     "tomlkit",
 ]
 
@@ -29,7 +32,6 @@ memriver = "memriver.cli:main"
 
 [project.optional-dependencies]
 # planned: vector = ["memriver-vector"], sync = ["memriver-sync"]
-classifier = ["memriver-classifier==0.1.0"]
 
 [project.urls]
 Homepage = "https://github.com/path-pass/memriver"
@@ -39,7 +41,6 @@ Issues = "https://github.com/path-pass/memriver/issues"
 [tool.uv.sources]
 memriver-core = { workspace = true }
 memriver-dream = { workspace = true }
-memriver-classifier = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

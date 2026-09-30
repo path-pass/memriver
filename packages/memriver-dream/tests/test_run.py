@@ -532,9 +532,10 @@ def test_the_default_budget_leaves_180k_tokens_of_input_room(world):
     assert world.context().budget_tokens == 200_000 - 20_000
 
 
-LOGIN = ("executor fake: login failure — check the executor's login; for API-key, Bedrock "
-         "or Vertex auth see [dream] claude_settings / codex_overrides")
-QUOTA = "executor fake: quota failure — the executor's usage limit was hit"
+# the caller's hint for each kind (memriver gives its own)
+HINTS = {"login": "check the login", "quota": "the limit was hit"}
+LOGIN = "executor fake: login failure — check the login"
+QUOTA = "executor fake: quota failure — the limit was hit"
 
 
 def _second_project(world) -> str:
@@ -553,7 +554,7 @@ def test_the_first_login_failure_of_a_run_is_one_needs_you_line(world):
     world.create(world.project.id, "a demo fact")
     world.create(_second_project(world), "a second fact")
     world.executor.default = ExecutorResult(error="login")
-    row = world.run()
+    row = world.run(failure_hints=HINTS)
     assert len(world.executor.calls) >= 3                   # two scopes and the extraction
     assert _needs(world, row).count(LOGIN) == 1
     assert row.status == "completed"
@@ -564,7 +565,17 @@ def test_login_and_quota_each_get_their_own_line_and_other_kinds_none(world):
     world.create(_second_project(world), "a second fact")
     world.executor.replies = [ExecutorResult(error="quota"), ExecutorResult(error="timeout"),
                               ExecutorResult(error="login"), ExecutorResult(error="quota")]
-    row = world.run()
+    row = world.run(failure_hints=HINTS)
     needs = _needs(world, row)
     assert (needs.count(LOGIN), needs.count(QUOTA)) == (1, 1)
     assert not [line for line in needs if "timeout" in line]
+
+
+def test_without_hints_the_first_login_and_quota_failure_are_still_one_line_each(world):
+    world.create(world.project.id, "a demo fact")
+    world.create(_second_project(world), "a second fact")
+    world.executor.replies = [ExecutorResult(error="login"), ExecutorResult(error="quota"),
+                              ExecutorResult(error="login")]
+    needs = _needs(world, world.run())
+    assert (needs.count("executor fake: login failure"),
+            needs.count("executor fake: quota failure")) == (1, 1)

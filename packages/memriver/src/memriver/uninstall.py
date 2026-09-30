@@ -109,10 +109,11 @@ def _remove_dream_schedule(*, yes: bool, dry_run: bool, home: Path, stdout: Text
     if platform != "darwin":
         return 0
     # imported here, not at module scope, for the same reason memriver_core is:
-    # dream_commands pulls in memriver_dream and pydantic, which a plain
+    # dream_plugin.commands pulls in memriver_dream and pydantic, which a plain
     # uninstall on a platform without a schedule (or one that fails before
     # this point) never needs to pay for
-    from . import dream_commands, launch_agent
+    from .dream_plugin import commands as dream_commands
+    from .dream_plugin import schedule as launch_agent
 
     label = dream_commands.DREAM_LAUNCH_AGENT_LABEL
     plist = launch_agent.plist_path(home, label)

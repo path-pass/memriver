@@ -29,13 +29,6 @@ from memriver_core.settings import Settings
 P = "aaaaaaaaaa"
 
 
-@pytest.fixture(autouse=True)
-def _no_classifier_package(monkeypatch):
-    """memriver-classifier is a workspace member; every test below sees it absent unless
-    it says otherwise, so doctor's classifier line is the fixed "not installed"."""
-    monkeypatch.setitem(sys.modules, "memriver_classifier", None)
-
-
 @dataclass(frozen=True)
 class DoctorRun:
     stdout: str
@@ -160,7 +153,7 @@ def test_huge_stale_days_against_a_missing_store_stays_uninitialized(tmp_path):
 
     assert result.exit_code == 0
     assert result.stderr == ""
-    assert result.stdout == "store not initialized yet; run memriver install\nclassifier: not installed\n"
+    assert result.stdout == "store not initialized yet; run memriver install\nclassifier: not configured\n"
 
 
 def test_an_invalid_env_setting_is_a_named_exit_two(monkeypatch, tmp_path):
@@ -240,7 +233,7 @@ _EXPECTED_JSON = {
     "policy_hits": [],
     "incomplete_changes": [],
     "projects": [],
-    "classifier": "not installed",
+    "classifier": "not configured",
 }
 
 
@@ -257,7 +250,7 @@ def test_json_output_keeps_arrays_when_empty(monkeypatch, tmp_path):
 
     assert json.loads(result.stdout) == {
         "state": "healthy", "initialized": True, "findings": [], "policy_hits": [],
-        "incomplete_changes": [], "projects": [], "classifier": "not installed",
+        "incomplete_changes": [], "projects": [], "classifier": "not configured",
     }
 
 
@@ -355,13 +348,13 @@ def test_healthy_human_output_has_no_findings_section(monkeypatch, tmp_path):
     install_fake_diagnostics_service(monkeypatch, "healthy", 0)
     result = invoke_doctor(root=tmp_path)
 
-    assert result.stdout == "store is healthy\nclassifier: not installed\n"
+    assert result.stdout == "store is healthy\nclassifier: not configured\n"
 
 
 def test_an_uninitialized_store_names_the_command_to_run(tmp_path):
     result = invoke_doctor(root=tmp_path / "never-created")
     assert (result.exit_code, result.stdout) == \
-        (0, "store not initialized yet; run memriver install\nclassifier: not installed\n")
+        (0, "store not initialized yet; run memriver install\nclassifier: not configured\n")
 
 
 def test_an_initialized_empty_store_is_empty(tmp_path):
@@ -553,7 +546,7 @@ def test_policy_hits_are_listed_by_version_and_rule_and_make_exit_one(monkeypatc
     assert result.exit_code == 1
     assert result.stdout == (
         "store is healthy\n"
-        "classifier: not installed\n"
+        "classifier: not configured\n"
         "\ncontent policy hits:\n"
         "  - mmmmmmmmmm v2 (current): github-pat\n"
         "  - mmmmmmmmmm v1 (history): memriver-instruction\n"
@@ -572,14 +565,14 @@ def test_policy_hits_in_json(monkeypatch, tmp_path):
 def test_no_policy_hits_leave_the_output_and_exit_code_alone(monkeypatch, tmp_path):
     install_policy_hits(monkeypatch, [])
     result = invoke_doctor(root=tmp_path)
-    assert (result.exit_code, result.stdout) == (0, "store is healthy\nclassifier: not installed\n")
+    assert (result.exit_code, result.stdout) == (0, "store is healthy\nclassifier: not configured\n")
 
 
 def test_a_store_that_is_not_initialized_is_never_scanned(monkeypatch, tmp_path):
     install_policy_hits(monkeypatch, None, state="uninitialized", initialized=False)
     result = invoke_doctor(root=tmp_path)
     assert (result.exit_code, result.stdout) == (
-        0, "store not initialized yet; run memriver install\nclassifier: not installed\n")
+        0, "store not initialized yet; run memriver install\nclassifier: not configured\n")
 
 
 # spec §9: every command exits 1 with the one hint on a store below the schema this
@@ -773,9 +766,8 @@ def test_doctor_human_output_has_no_raw_control_characters_from_a_policy_hit_id(
 
 def test_doctor_prints_the_classifier_state_after_the_store_state(monkeypatch, tmp_path):
     install_fake_diagnostics_service(monkeypatch, "healthy", 0)
-    monkeypatch.delitem(sys.modules, "memriver_classifier")        # installed again
     (tmp_path / "settings.toml").write_text(
-        '[classifier]\nbackend = "claude"\nexecutor_path = "/opt/bin/claude"\n',
+        '[classifier]\nexecutor = "claude"\nexecutor_path = "/opt/bin/claude"\n',
         encoding="utf-8")
     result = invoke_doctor(root=tmp_path)
     assert result.stdout == "store is healthy\nclassifier: claude (/opt/bin/claude)\n"
@@ -785,8 +777,7 @@ def test_doctor_prints_the_classifier_state_after_the_store_state(monkeypatch, t
 
 def test_an_invalid_classifier_table_is_a_named_exit_two(monkeypatch, tmp_path):
     install_fake_diagnostics_service(monkeypatch, "healthy", 0)
-    monkeypatch.delitem(sys.modules, "memriver_classifier")
-    (tmp_path / "settings.toml").write_text('[classifier]\nbackend = "gpt"\n', encoding="utf-8")
+    (tmp_path / "settings.toml").write_text('[classifier]\nexecutor = "gpt"\n', encoding="utf-8")
     result = invoke_doctor(root=tmp_path)
     assert (result.exit_code, result.stdout) == (2, "")
-    assert result.stderr == "memriver: settings.toml is invalid: field classifier.backend\n"
+    assert result.stderr == "memriver: settings.toml is invalid: field classifier.executor\n"
