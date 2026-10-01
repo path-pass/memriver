@@ -247,9 +247,10 @@ practice:
   exists but cannot be read (a value memriver could not have written) is
   reported as unreadable.
 - `memory_search` exists as a tool contract, but the local engine is a plain
-  case-insensitive substring scan over the project's rows, computed in Python
-  rather than in SQL. At local scale (hundreds of entries) an LLM scanning the
-  index outperforms any keyword engine, so the local layer ships no search
+  keyword scan over the project's rows (any keyword matches, entries matching
+  more keywords first; NFKC and case-folded), computed in Python rather than
+  in SQL. At local scale (hundreds of entries) an LLM scanning the index
+  outperforms any keyword engine, so the local layer ships no search
   infrastructure. When hybrid mode adds semantic retrieval, the engine
   upgrades behind the same contract — agents never notice.
 
@@ -402,7 +403,7 @@ provisioning for the later modes.
 ## Non-goals
 
 - A new memory taxonomy, storage format, or recall strategy.
-- Local search infrastructure beyond a plain substring scan (full-text
+- Local search infrastructure beyond a plain keyword scan (full-text
   search, tokenizers, embeddings).
 - History visible to agents, or supersede protocols agents must follow.
 - Restoring a soft-deleted memory through MCP (a person can, with `memriver

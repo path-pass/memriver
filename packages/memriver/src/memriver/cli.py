@@ -194,7 +194,9 @@ def _add_view_commands(commands) -> None:
     show.set_defaults(handler=_view_show)
 
     search = add("search", "search memories across projects")
-    search.add_argument("query")
+    search.add_argument("query", help="space-separated keywords; an entry matching any "
+                                      "keyword is returned, entries matching more keywords "
+                                      "first")
     search.add_argument("--project", default=None, help="only this project id")
     search.add_argument("--limit", type=_positive_int, default=None)
     search.set_defaults(handler=_view_search)
@@ -205,8 +207,10 @@ def _add_view_commands(commands) -> None:
 
     sessions = add("sessions", "list every recorded session, or one project's")
     sessions.add_argument("query", nargs="?", default="",
-                          help="only sessions matching this word in a prompt, "
-                               "branch or entry directory")
+                          help="space-separated keywords matched against a prompt, "
+                               "summary, branch or entry directory; an entry matching any "
+                               "keyword is returned, entries matching more keywords first "
+                               "(none: every session)")
     sessions.add_argument("--project", default=None, help="only this project id")
     sessions.add_argument("--limit", type=_positive_int, default=None)
     sessions.add_argument("--json", action="store_true",

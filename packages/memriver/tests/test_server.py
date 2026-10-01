@@ -255,6 +255,32 @@ async def test_search_default_limit_is_one_total_budget(world):
     assert len(await _call(srv, "memory_search", query="word")) == 5     # the default, not 10
 
 
+async def test_memory_search_takes_keywords_project_then_global_in_one_budget(world):
+    _global_memory(world, body="the classifier moved into memriver")
+    srv = build_server(root=world["store"], project_dir=world["dir"])
+    executor = await _call(srv, "memory_write", type="project",
+                           content="one executor layer runs every harness")
+    classifier = await _call(srv, "memory_write", type="project",
+                             content="classifier folded into memriver")
+    await _call(srv, "memory_write", content="zebra", type="project")
+    query = "executor \u5c42 classifier \u5e76\u56de memriver"
+    hits = await _call(srv, "memory_search", query=query)
+    assert [h["collection"] for h in hits] == ["project", "project", "global"]
+    assert [h["id"] for h in hits[:2]] == [classifier["id"], executor["id"]]
+    two = await _call(srv, "memory_search", query=query, limit=2)
+    assert [h["id"] for h in two] == [classifier["id"], executor["id"]]
+
+
+async def test_the_search_tools_say_they_take_keywords(world):
+    server = build_server(root=world["store"], project_dir=world["dir"], harness="codex")
+    async with Client(server) as c:
+        described = {t.name: " ".join(t.description.split()) for t in await c.list_tools()}
+    for name in ("memory_search", "session_search"):
+        assert (
+            "space-separated keywords; an entry matching any keyword is returned, "
+            "entries matching more keywords first") in described[name], name
+
+
 async def test_no_tool_offers_a_scope_or_name_argument(server):
     async with Client(server) as c:
         for tool in await c.list_tools():
@@ -1102,8 +1128,10 @@ async def test_session_search_is_limited_to_the_callers_project(world):
     mine = next(s for s in found if s["harness"] == "codex")
     assert mine["resume_command"] == f"codex resume {CODEX_ID}"
 
+    # the phrase first; the sibling holds two of its three keywords
     assert [s["session_id"] for s in await _call(server, "session_search", meta=meta,
-                                                 query="fix the login")] == [CODEX_ID]
+                                                 query="fix the login")] == \
+        [CODEX_ID, "it's-$HOME"]
     assert len(await _call(server, "session_search", meta=meta, limit=1)) == 1
 
 

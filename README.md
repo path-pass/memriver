@@ -233,13 +233,28 @@ Known limits:
 |---|---|
 | `memory_index()` | The session's project on the first line, then a compact index: the project's memories, then global's (tagged `global`) |
 | `memory_read(memory_id)` | One memory in full, by id: eleven fields, including the `version` that `memory_update`/`memory_delete` must be given back. An entry that exists but cannot be read is reported as such, not as missing |
-| `memory_search(query, limit=None)` | Memories relevant to a task: the project's hits first, then global's; `limit` caps the whole answer, so a query with many project hits can leave no room for global ones |
+| `memory_search(query, limit=None)` | Memories relevant to a task, by space-separated keywords: an entry matching any keyword is returned, entries matching more keywords first (see below); the project's hits first, then global's; `limit` caps the whole answer, so a query with many project hits can leave no room for global ones |
 | `memory_write(content, type, sync=True, description="")` | Save one durable fact to the current project; memriver assigns the id and stamps `source.harness` with the server's own `--harness` value (an installed Cursor/Kiro server records `cursor`/`kiro`; `unknown` only when the server was started with no `--harness` at all); global is read-only to agents; `type` is `user` / `feedback` / `project` / `reference` |
 | `memory_update(memory_id, expected_version, content, description=None)` | Rewrite a memory's content in place (id, project and type stay); returns `{id, updated, version}`; refused for global memories or a stale `expected_version` |
 | `memory_delete(memory_id, expected_version)` | Remove a memory that is no longer true or wanted; returns `{deleted: memory_id}`; refused for global memories or a stale `expected_version` |
-| `session_search(query="", limit=None)` | Claude Code/Codex only: find this project's recorded sessions (newest activity first) by a word in their prompts, summary, branch or entry directory; each result carries a `resume_command` to show the user -- whether to run it is the user's decision |
+| `session_search(query="", limit=None)` | Claude Code/Codex only: find this project's recorded sessions by space-separated keywords in their prompts, summary, branch or entry directory -- an entry matching any keyword is returned, entries matching more keywords first, newest activity first among equals; an empty query lists them, newest activity first; each result carries a `resume_command` to show the user -- whether to run it is the user's decision |
 | `session_confirm()` | Claude Code/Codex only: register the calling session to the project memriver proposed for it; call only after the user agrees; returns the session's new project header |
 | `session_register()` | Claude Code/Codex only: register the calling session, when it has no project, to the registered project covering the directory it started in (the one stored when it registered); called when the user asks, or right after the agent ran `memriver project init` at the user's request; never changes a session that already has a project; returns the session's project header, with a note when no project covers that directory |
+
+`memory_search`, `session_search`, `memriver search` and `memriver sessions`
+take space-separated keywords: an entry matching any keyword is returned,
+entries matching more keywords first. The query is split on whitespace and on
+`,`, `;`, the ideographic comma (U+3001) and the full-width comma and
+semicolon (U+FF0C, U+FF1B); repeated keywords count once, and only the first
+16 are used. Matching ignores case and full-width/half-width differences
+(NFKC) and finds a keyword anywhere in a word, so `uv` also matches `uvx`.
+Hits are ordered by, in turn: the whole query (the keywords joined by one
+space) appearing as written (after the same folding), how many keywords match, for memories how many
+match in the description, then newest first. There is no phrase, boolean or
+fuzzy syntax. A query with no keyword matches nothing, except the empty
+session query: `session_search()` lists this project's sessions and `memriver
+sessions` without `QUERY` lists every session, newest activity first (both up
+to their limit).
 
 `expected_version` is the value `memory_read` last returned; if the memory
 changed since, the call is refused and nothing is written -- read it again and
@@ -370,7 +385,8 @@ uvx memriver delete ID --hard [--dry-run | --confirm CODE]   # delete a memory w
 ```
 
 These are commands for a person, not the MCP surface agents use; MCP has no
-path to history, restore, undo or a hard delete. `list`/`search`/`export` see
+path to history, restore, undo or a hard delete. `search` ranks its hits as one
+list across the projects it reads (see *Tools*). `list`/`search`/`export` see
 every project, including global, but never a soft-deleted memory; `show
 --deleted` is the one view that can, and it prints the memory's `deleted_at`.
 `show` and `export` also expose `last_read_at`, set by a successful
@@ -456,12 +472,13 @@ Lists every recorded Claude Code/Codex session (or one project's), newest
 activity first: harness, project, branch, when it was first recorded and last
 active, its last `SessionEnd`, its first and latest prompt, a resume command
 (`claude --resume <id>` / `codex resume <id>`), and the session's summary once
-`memriver dream` has written one. `QUERY` matches a word in a session's saved
-prompt text (the same first-plus-five, 512-characters-each scope
-`session_search` has -- see its Known limits above), its summary, branch or
-entry directory, the same way `session_search` does for the calling session's
-own project; unlike `session_search`, this sees every project. `--json` emits
-the same item shape `session_search` returns.
+`memriver dream` has written one. `QUERY` is space-separated keywords (see
+*Tools*), matched against a session's saved prompt text (the same
+first-plus-five, 512-characters-each scope `session_search` has -- see its
+Known limits above), its summary, branch or entry directory, and ranked the
+same way `session_search` ranks the calling session's own project; unlike
+`session_search`, this sees every project. `--json` emits the same item shape
+`session_search` returns.
 
 ## Dream: offline maintenance
 

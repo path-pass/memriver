@@ -41,6 +41,14 @@ def test_top_level_help_lists_the_serve_hook_and_install_commands():
     assert "install" in out.stdout and "doctor" in out.stdout
 
 
+@pytest.mark.parametrize("command", ["search", "sessions"])
+def test_search_help_says_the_query_is_keywords(command):
+    out = _run_cli(command, "--help")
+    assert out.returncode == 0
+    assert ("space-separated keywords" in " ".join(out.stdout.split())
+            and "entries matching more keywords first" in " ".join(out.stdout.split()))
+
+
 def test_doctor_rejects_a_non_positive_stale_days_without_a_traceback(tmp_path):
     out = _run_cli("doctor", "--root", str(tmp_path), "--stale-days", "0")
     assert out.returncode == 2

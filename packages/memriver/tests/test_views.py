@@ -82,6 +82,23 @@ def test_show_neutralises_terminal_escapes_in_the_body_but_keeps_newlines(world)
     assert "\x1b" not in out and "a [2Jb\nc" in out
 
 
+def test_search_takes_keywords_and_ranks_across_projects(world, tmp_path):
+    services = world["services"]
+    other_work = tmp_path / "other"
+    other_work.mkdir()
+    services.project.init_project("other", services.project.plan_root(str(other_work)))
+    newer = services.memory.record(content="two only", type="project", sync=True,
+                                   harness="t", description="",
+                                   context=services.project.open_project_context(str(other_work)))
+    code, out = _out(run_search, "one two", root=world["store"], project_id=None, limit=None,
+                     home=world["home"])
+    assert code == 0
+    assert [line.split()[0] for line in out.splitlines()] == [world["memory"].id, newer.id]
+    _, out = _out(run_search, "zebra yak", root=world["store"], project_id=None, limit=None,
+                  home=world["home"])
+    assert out == "(no matches)\n"
+
+
 def test_show_of_a_soft_deleted_memory_needs_the_flag(world):
     world["services"].memory.delete(world["memory"].id, world["project_context"],
                             expected_version=1)
@@ -360,6 +377,18 @@ def test_sessions_lists_harness_project_branch_and_prompts(world):
     assert world["project"].name in out and world["project"].id in out
     assert "first task" in out and "second task" in out
     assert "codex resume sess-1" in out
+
+
+def test_sessions_take_keywords_and_rank_by_how_many_match(world):
+    older, newer = SessionKey("codex", "older"), SessionKey("codex", "newer")
+    _start(world, older, world["work"])
+    _observe(world, older, world["work"], "fix the login form")
+    _start(world, newer, world["work"])
+    _observe(world, newer, world["work"], "login page")
+    code, out = _sessions("login form", root=world["store"], home=world["home"],
+                          json_output=True)
+    assert code == 0
+    assert [item["session_id"] for item in json.loads(out)] == ["older", "newer"]
 
 
 def test_sessions_shows_the_relative_age_from_the_injected_now(world):

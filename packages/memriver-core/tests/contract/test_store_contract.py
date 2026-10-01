@@ -682,6 +682,53 @@ def test_search_does_not_match_on_the_id(world):
                                          limit=None) == []
 
 
+def _hits(world, query, limit=None) -> list[str]:
+    return [m.id for m in world["project_store"].search(world["mine"], world["read_write_set"],
+                                                        query=query, limit=limit)]
+
+
+def test_a_multi_keyword_query_finds_entries_holding_any_term(world):
+    classifier = _record(world, body="the classifier now lives in memriver")
+    executor = _record(world, body="one runner", description="Executor layer")
+    _record(world, body="unrelated")
+    assert set(_hits(world, "executor \u5c42 classifier \u5e76\u56de memriver")) == {
+        classifier.id, executor.id}
+    assert _hits(world, "zebra yak") == []
+
+
+def test_keyword_hits_follow_the_four_order_rules(world):
+    whole_old = _record(world, body="use uv pip for installs")
+    one_term = _record(world, body="uv only")
+    two_one_in_cue = _record(world, body="then pip", description="uv")
+    two_in_body = _record(world, body="pip, then uv")
+    whole_new = _record(world, body="uv pip again")
+    assert _hits(world, "uv pip") == [whole_new.id, whole_old.id,       # 1, then 4
+                                      two_one_in_cue.id, two_in_body.id,  # 2, then 3
+                                      one_term.id]
+    assert _hits(world, "uv pip", limit=3) == [whole_new.id, whole_old.id, two_one_in_cue.id]
+
+
+def test_whole_query_hits_rank_before_partial_matches(world):
+    """Entries holding the whole (folded) query rank ahead of entries matching
+    only some of its terms; within each group the newer comes first."""
+    phrase_old = _record(world, body="run the flaky login test twice")
+    login_only = _record(world, body="login works")
+    flaky_only = _record(world, body="flaky network")
+    phrase_new = _record(world, body="THE FLAKY LOGIN again")
+    assert _hits(world, "LOGIN") == [phrase_new.id, login_only.id, phrase_old.id]
+    assert _hits(world, "flaky login") == [phrase_new.id, phrase_old.id,   # the phrase hits
+                                           flaky_only.id, login_only.id]
+
+
+def test_a_comma_in_the_query_is_a_separator_not_part_of_the_phrase(world):
+    """The boundary of that promise: the whole query is the terms joined by one
+    space, so for `uv, pip` an entry holding `uv pip` is the whole-query hit and
+    the literal `uv, pip` (newer) only matches both terms."""
+    spaced = _record(world, body="run uv pip")
+    literal = _record(world, body="run uv, pip")
+    assert _hits(world, "uv, pip") == [spaced.id, literal.id]
+
+
 def test_every_write_method_reads_back_what_it_wrote(stores, tmp_path):
     memory_store, project_store = stores
     directory = tmp_path / "proj"

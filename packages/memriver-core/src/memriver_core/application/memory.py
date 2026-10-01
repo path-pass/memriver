@@ -32,6 +32,7 @@ from memriver_core.models.errors import (
     ProjectUnavailable,
     StorageFailure,
 )
+from memriver_core.models.search import rank_memories, search_terms
 
 if TYPE_CHECKING:
     from memriver_core.content_policy.protocol import ContentClassifier, ContentPolicy
@@ -361,7 +362,8 @@ class MemoryService:
 
     def search_all(self, query: str, project_id: str | None = None,
                    limit: int | None = None) -> list[Memory]:
-        """Matches across every project (or one), newest first.
+        """Matches across every project (or one), ranked as one list (newest
+        first within a rank).
 
         Each project is read in its own transaction, so a multi-project search
         is not a single cross-project snapshot.
@@ -371,4 +373,5 @@ class MemoryService:
         hits = [m for project in projects
                 for m in self._project_store.search(project.id, None, query=query, limit=None)]
         hits.sort(key=lambda m: (m.updated, m.id), reverse=True)
+        hits = rank_memories(search_terms(query), hits)
         return hits if limit is None else hits[:limit]

@@ -438,6 +438,40 @@ def test_search_honours_the_limit_and_the_query(session_store):
     assert session_store.search(None, "no such thing", 10) == []
 
 
+def test_a_multi_keyword_search_finds_sessions_holding_any_term(session_store):
+    _search_world(session_store)
+    session_store.register(_session(SessionKey("codex", "summary"), last_active_at=_at(5),
+                                    summary="Rotated the staging certificates.",
+                                    summary_at=_at(5)))
+    assert _ids(session_store.search(None, "form, CERTIFICATES", 10)) == ["prompted", "summary"]
+    assert _ids(session_store.search(None, "zebra yak", 10)) == []
+
+
+def test_keyword_hits_rank_by_phrase_then_terms_then_recency(session_store):
+    session_store.register(_session(SessionKey("codex", "phrase-old"), last_active_at=_at(1),
+                                    summary="Fix LOGIN FORM", summary_at=_at(1)))
+    session_store.register(_session(SessionKey("codex", "one-term"), last_active_at=_at(9),
+                                    branch="login"))
+    session_store.register(_session(SessionKey("codex", "two-terms"), last_active_at=_at(5),
+                                    branch="form", summary="login", summary_at=_at(5)))
+    session_store.register(_session(SessionKey("codex", "phrase-new"), last_active_at=_at(7),
+                                    summary="the login form", summary_at=_at(7)))
+    session_store.register(_session(SessionKey("codex", "none"), last_active_at=_at(8)))
+    assert _ids(session_store.search(PROJECT, "login form", 10)) == [
+        "phrase-new", "phrase-old", "two-terms", "one-term"]
+    assert _ids(session_store.search(PROJECT, "login form", 2)) == ["phrase-new", "phrase-old"]
+
+
+def test_the_empty_query_lists_every_session_and_a_keywordless_one_matches_nothing(
+        session_store):
+    _search_world(session_store)
+    everything = ["pending", "new", "prompted", "elsewhere", "old"]
+    assert _ids(session_store.search(None, "", 10)) == everything
+    assert _ids(session_store.search(None, "", 2)) == everything[:2]
+    for query in (" ,; ", "\x00", " \u3000\u3001 "):
+        assert session_store.search(None, query, 10) == [], repr(query)
+
+
 def test_search_on_an_absent_store_is_empty_and_creates_nothing(root):
     assert _store(root).search(None, "x", 10) == []
     assert not root.exists()
