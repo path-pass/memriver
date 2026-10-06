@@ -34,7 +34,7 @@ from .phases import (
     summarize,
 )
 from .protocols import ExecutorResult
-from .report import Report, mark_interrupted
+from .report import NOT_RECORDED, NOT_UPDATED, Report, mark_interrupted
 from .settings import (
     DEFAULT_DREAM_CONTEXT_BUDGET_TOKENS,
     DEFAULT_DREAM_REPORT_RETENTION_DAYS,
@@ -93,6 +93,7 @@ class Context:
     excluded: set[str]                    # current-version policy hits (§6.2)
     history_hits: dict[str, set[int]]     # memory id -> hit versions (history only)
     groups_used: int = 0                  # changes applied this run (max_groups_per_run)
+    classifier_unavailable_noted: bool = False    # its one Needs-you line is written
     # one call's input room: the context budget less the answer's reserve and the margin
     # (run_dream sets it from [dream] context_budget_tokens; this default serves tests)
     budget_tokens: int = (DEFAULT_DREAM_CONTEXT_BUDGET_TOKENS - DREAM_OUTPUT_RESERVE_TOKENS
@@ -172,13 +173,21 @@ def run_dream(services: Services, executor: Executor | None,
             # the row is marked failed only once some footer explains why -- a run
             # that cannot record its own outcome at all is left `running`, for the
             # next run's mark_interrupted to close it and finish its dangling line
+            completed_footer = footer_written     # only finish_run(completed) failed
             if not footer_written:
                 with contextlib.suppress(Exception):
                     report.footer(status="failed", finished_at=failed_at)
                     footer_written = True
             if footer_written:
+                recorded = False
                 with contextlib.suppress(Exception):
                     store.finish_run(run_id, status="failed", finished_at=failed_at)
+                    recorded = True
+                if completed_footer:
+                    # the report says completed: one more line says what the row holds,
+                    # only as far as it is known
+                    with contextlib.suppress(Exception):
+                        report.line(NOT_RECORDED if recorded else NOT_UPDATED)
             raise
         return replace(run, status="completed", finished_at=finished)
 

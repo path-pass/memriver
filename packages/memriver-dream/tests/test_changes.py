@@ -114,12 +114,14 @@ def _needs(ctx, world) -> list[str]:
     return text.split("== Needs you ==\n", 1)[1].split("\n\nstatus:")[0].splitlines()
 
 
-class Blocking:
-    def __init__(self, verdict) -> None:
-        self.verdict = verdict
+class Scripted:
+    """A content classifier answering `verdicts` in turn, the last one from then on."""
+
+    def __init__(self, *verdicts) -> None:
+        self.verdicts = list(verdicts)
 
     def classify(self, text, *, changed_by):
-        return self.verdict
+        return self.verdicts.pop(0) if len(self.verdicts) > 1 else self.verdicts[0]
 
 
 def test_a_change_that_touches_global_is_listed_with_its_undo(world):
@@ -151,23 +153,75 @@ def test_a_project_change_is_not_listed(world):
     assert _needs(ctx, world) == []
 
 
-@pytest.mark.parametrize(("verdict", "category"), [
-    (Verdict("instruction"), "instruction"),
-    (Verdict("unavailable", detail="timeout"), "unavailable")])
-def test_a_classifier_block_is_listed_and_the_group_is_not_applied(world, verdict, category):
-    memory_id = world.create(world.project.id, "old body")
+def _classified(world, *verdicts):
     services = build_services(Settings(root=world.root), root=world.root, home=world.home,
-                              classifier=Blocking(verdict))
-    ctx = world.context(services=services)
-    assert apply_group(ctx, "rewrite", [memory_id],
-                       [Update(memory_id=memory_id, expected_version=1, body="new body")]) \
-        is None
+                              classifier=Scripted(*verdicts))
+    return world.context(services=services)
+
+
+def _rewrite(ctx, memory_id: str):
+    return apply_group(ctx, "rewrite", [memory_id],
+                       [Update(memory_id=memory_id, expected_version=1, body="new body")])
+
+
+@pytest.mark.parametrize("category", ["instruction", "injection", "exfiltration", "unsafe"])
+def test_a_classifier_block_is_listed_and_the_group_is_not_applied(world, category):
+    memory_id = world.create(world.project.id, "old body")
+    ctx = _classified(world, Verdict(category))
+    assert _rewrite(ctx, memory_id) is None
     assert ctx.groups_used == 0
     assert (f"applying rewrite {memory_id} -> not applied: policy classifier-{category}"
             in ctx.report.path.read_text())
     assert _needs(ctx, world) == [
         f"blocked by the content classifier ({category}): rewrite {memory_id}"]
     assert [v.version for v in world.services.memory.versions(memory_id)] == [1]
+
+
+def test_every_real_block_gets_its_own_line(world):
+    first = world.create(world.project.id, "first body")
+    second = world.create(world.project.id, "second body")
+    ctx = _classified(world, Verdict("instruction"))
+    assert _rewrite(ctx, first) is None and _rewrite(ctx, second) is None
+    assert _needs(ctx, world) == [
+        f"blocked by the content classifier (instruction): rewrite {first}",
+        f"blocked by the content classifier (instruction): rewrite {second}"]
+
+
+UNAVAILABLE = ("the content classifier could not check dream's changes ({}); those "
+               "changes were not applied and are tried again next run")
+
+
+def test_a_classifier_that_cannot_check_is_listed_once_per_run_with_its_reason(world):
+    ids = [world.create(world.project.id, f"body {n}") for n in range(3)]
+    ctx = _classified(world, Verdict("unavailable", detail="login"),
+                      Verdict("unavailable", detail="timeout"))
+    assert [_rewrite(ctx, memory_id) for memory_id in ids] == [None, None, None]
+    assert ctx.groups_used == 0
+    text = ctx.report.path.read_text()
+    for memory_id in ids:
+        assert (f"applying rewrite {memory_id} -> not applied: policy "
+                f"classifier-unavailable\n") in text
+    # the first refusal's reason; a later one with another reason adds no line
+    assert _needs(ctx, world) == [UNAVAILABLE.format("login")]
+
+
+def test_unavailable_once_and_real_blocks_each_in_one_run(world):
+    ids = [world.create(world.project.id, f"body {n}") for n in range(4)]
+    ctx = _classified(world, Verdict("unavailable", detail="timeout"), Verdict("unsafe"),
+                      Verdict("unavailable", detail="timeout"), Verdict("unsafe"))
+    assert [_rewrite(ctx, memory_id) for memory_id in ids] == [None] * 4
+    assert _needs(ctx, world) == [
+        UNAVAILABLE.format("timeout"),
+        f"blocked by the content classifier (unsafe): rewrite {ids[1]}",
+        f"blocked by the content classifier (unsafe): rewrite {ids[3]}"]
+
+
+@pytest.mark.parametrize("detail", ["", "Not A Label", "x" * 33])
+def test_a_reason_core_does_not_accept_is_named_unknown(world, detail):
+    memory_id = world.create(world.project.id, "old body")
+    ctx = _classified(world, Verdict("unavailable", detail=detail))
+    assert _rewrite(ctx, memory_id) is None
+    assert _needs(ctx, world) == [UNAVAILABLE.format("unknown")]
 
 
 def test_a_content_policy_refusal_is_not_a_classifier_block(world):
