@@ -108,6 +108,7 @@ def test_a_block_refuses_the_write_with_the_category_and_writes_nothing(classifi
     with pytest.raises(ContentRejected) as caught:
         _record(services, context)
     assert (str(caught.value), caught.value.rule_id) == (BLOCKED, "classifier-instruction")
+    assert caught.value.detail == ""
     assert _count(world) == before
 
 
@@ -118,6 +119,7 @@ def test_an_undecided_classifier_refuses_with_its_reason_and_points_at_doctor(cl
     with pytest.raises(ContentRejected) as caught:
         services.memory.update(memory_id, "new fact", context, expected_version=1)
     assert (str(caught.value), caught.value.rule_id) == (UNAVAILABLE, "classifier-unavailable")
+    assert caught.value.detail == "timeout"
     assert [v.version for v in services.memory.versions(memory_id)] == [1]
 
 
@@ -169,6 +171,7 @@ def test_a_malformed_category_from_the_classifier_reads_as_invalid(classified):
     assert (str(caught.value), caught.value.rule_id) == (
         "content rejected by the content classifier (invalid); no change was made",
         "classifier-invalid")
+    assert caught.value.detail == ""
 
 
 def test_an_empty_detail_from_the_classifier_reads_as_unknown(classified):
@@ -179,6 +182,21 @@ def test_an_empty_detail_from_the_classifier_reads_as_unknown(classified):
         ("the content classifier could not check this text (unknown); no change was "
          "made; see memriver doctor"),
         "classifier-unavailable")
+    assert caught.value.detail == "unknown"
+
+
+def test_a_malformed_detail_from_the_classifier_reads_as_unknown(classified):
+    services, context, _ = classified(lambda text: Verdict("unavailable", detail="Not A Label"))
+    with pytest.raises(ContentRejected) as caught:
+        _record(services, context)
+    assert caught.value.detail == "unknown"
+
+
+def test_a_policy_refusal_carries_no_detail(classified):
+    services, context, _ = classified()
+    with pytest.raises(ContentRejected) as caught:
+        _record(services, context, content=SECRET)
+    assert caught.value.detail == ""
 
 
 def test_an_exception_from_the_classifier_is_a_bug_and_propagates(classified):

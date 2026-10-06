@@ -213,7 +213,7 @@ class MemoryService:
             detail = verdict.detail if _VERDICT_LABEL_RE.fullmatch(verdict.detail) \
                 else "unknown"
             raise ContentRejected(_CLASSIFIER_UNAVAILABLE.format(detail=detail),
-                                  rule_id="classifier-unavailable")
+                                  rule_id="classifier-unavailable", detail=detail)
         raise ContentRejected(_CLASSIFIER_BLOCKED.format(category=category),
                               rule_id=f"classifier-{category}")
 

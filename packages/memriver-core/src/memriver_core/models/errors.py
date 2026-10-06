@@ -75,13 +75,17 @@ class ContentRejected(MemoryError):
     `memory_id` names the memory whose resulting state was refused (None for
     a memory being created, or a text checked outside any memory). Raised
     without a message, the message is composed from the rule id alone.
+    `detail` is a short machine label refining `rule_id` where one applies (the
+    content classifier's reason for `classifier-unavailable`), never content;
+    empty otherwise.
     """
 
     def __init__(self, message: str = "", *, rule_id: str = "",
-                 memory_id: str | None = None) -> None:
+                 memory_id: str | None = None, detail: str = "") -> None:
         super().__init__(message or f"content rejected ({rule_id}); no change was made")
         self.rule_id = rule_id
         self.memory_id = memory_id
+        self.detail = detail
 
 
 class ProjectUnavailable(MemoryError):

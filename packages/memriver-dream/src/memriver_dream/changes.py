@@ -11,7 +11,6 @@ there once per run, with its reason, however many groups it could not check.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
@@ -21,9 +20,8 @@ from memriver_core.models.errors import BatchConflict, ContentRejected
 if TYPE_CHECKING:
     from .run import Context
 
-# core's classifier-unavailable refusal names its reason in parentheses, a label core
-# has already reduced to [a-z0-9-] ("unknown" when the classifier gave none it accepts)
-_REASON_RE = re.compile(r"\(([a-z0-9-]{1,32})\)")
+# core passes the classifier's reason as ContentRejected.detail, already reduced to
+# [a-z0-9-] ("unknown" when the classifier gave none it accepts); empty reads "unknown"
 _CLASSIFIER_UNAVAILABLE = ("the content classifier could not check dream's changes ({reason}); "
                            "those changes were not applied and are tried again next run")
 
@@ -57,9 +55,8 @@ def apply_group(ctx: Context, kind: str, items: Sequence[str], ops: Sequence[Op]
             # check at all: one line for the run, the rest stay section lines
             if not ctx.classifier_unavailable_noted:
                 ctx.classifier_unavailable_noted = True
-                found = _REASON_RE.search(str(err))
                 report.needs_you(_CLASSIFIER_UNAVAILABLE.format(
-                    reason=found.group(1) if found else "unknown"))
+                    reason=err.detail or "unknown"))
         elif err.rule_id.startswith("classifier-"):
             report.needs_you(f"blocked by the content classifier "
                              f"({err.rule_id.removeprefix('classifier-')}): "

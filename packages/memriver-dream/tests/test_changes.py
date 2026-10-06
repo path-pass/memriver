@@ -9,6 +9,7 @@ import pytest
 from memriver_core import Verdict
 from memriver_core.bootstrap import build_services
 from memriver_core.models.changes import Create, SoftDelete, SourceRef, Update
+from memriver_core.models.errors import ContentRejected
 from memriver_core.settings import Settings
 from memriver_dream.changes import apply_group
 
@@ -220,6 +221,19 @@ def test_unavailable_once_and_real_blocks_each_in_one_run(world):
 def test_a_reason_core_does_not_accept_is_named_unknown(world, detail):
     memory_id = world.create(world.project.id, "old body")
     ctx = _classified(world, Verdict("unavailable", detail=detail))
+    assert _rewrite(ctx, memory_id) is None
+    assert _needs(ctx, world) == [UNAVAILABLE.format("unknown")]
+
+
+def test_the_reason_is_read_from_the_field_not_parsed_from_the_message(world, monkeypatch):
+    memory_id = world.create(world.project.id, "old body")
+    ctx = world.context()
+
+    def refuse(ops, **kwargs):
+        raise ContentRejected("classifier trouble (timeout)", rule_id="classifier-unavailable",
+                              detail="")
+
+    monkeypatch.setattr(ctx.services.memory, "apply", refuse)
     assert _rewrite(ctx, memory_id) is None
     assert _needs(ctx, world) == [UNAVAILABLE.format("unknown")]
 
