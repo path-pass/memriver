@@ -239,6 +239,46 @@ def test_a_tag_that_merely_shares_the_hook_prompt_prefix_is_kept(tmp_path, near_
         _session("codex", codex)).records] == [near_miss]
 
 
+@pytest.mark.parametrize("wrapper", [
+    "<command-name>/clear</command-name>",
+    "<command-name>/exit</command-name>\n<command-message>exit</command-message>",
+    "<command-name>/model</command-name>",
+    "<local-command-stdout>Set model to gpt-5</local-command-stdout>",
+    "<local-command-stderr>Error: unknown command</local-command-stderr>",
+    "<task-notification>\n<task-id>t1</task-id>\n</task-notification>",
+    "<send_user_message_question_4f2a>which branch?</send_user_message_question_4f2a>",
+    "<send_user_message_question_",
+])
+def test_a_command_or_notification_wrapper_is_dropped(tmp_path, wrapper):
+    codex = tmp_path / "x.jsonl"
+    xml = "<task>Fix PR #1234 in auth.py</task>"
+    _write(codex, [{"timestamp": AT, "type": "response_item", "ordinal": 1, "payload": {
+        "type": "message", "role": "user", "content": [
+            {"type": "input_text", "text": wrapper},
+            {"type": "input_text", "text": xml}]}}])
+    assert [r.text for r in CodexTranscripts(tool_output_chars=100).read(
+        _session("codex", codex)).records] == [xml]
+
+
+@pytest.mark.parametrize("lookalike", [
+    "<command-names>a real prompt with a longer tag name</command-names>",
+    "<command-name-list>/clear /exit</command-name-list>",
+    '<command-name kind="slash">/clear</command-name>',
+    "<local-command-stdout-format>json</local-command-stdout-format>",
+    "<task-notifications>turn them off</task-notifications>",
+    "<task-notification-settings>quiet</task-notification-settings>",
+    "<send_user_message_questions>a list of questions</send_user_message_questions>",
+    "<send_user_message_question>no suffix</send_user_message_question>",
+])
+def test_a_prompt_that_only_looks_like_a_wrapper_is_kept(tmp_path, lookalike):
+    codex = tmp_path / "x.jsonl"
+    _write(codex, [{"timestamp": AT, "type": "response_item", "ordinal": 1, "payload": {
+        "type": "message", "role": "user",
+        "content": [{"type": "input_text", "text": lookalike}]}}])
+    assert [r.text for r in CodexTranscripts(tool_output_chars=100).read(
+        _session("codex", codex)).records] == [lookalike]
+
+
 def test_a_real_prompt_mentioning_agents_md_mid_text_is_kept(tmp_path):
     codex = tmp_path / "x.jsonl"
     text = "can you update the AGENTS.md instructions for the team while you're at it"

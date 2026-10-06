@@ -196,10 +196,33 @@ def _write_dream_table(path: Path, values: dict) -> None:
                        os.replace)
 
 
-def _agent_env(home: Path, memriver: str, executor_path: str, root: Path) -> dict[str, str]:
+# a `#!` line is read this far at most; the macOS kernel reads no more of one
+_SHEBANG_BYTES = 512
+
+
+def _node_script(path: str) -> bool:
+    """Whether `path` is a script whose `#!` line names node (`#!/usr/bin/env node`,
+    `#!/opt/node/bin/node`), as npm installs a CLI: launchd's PATH must then hold node.
+    Anything that is not a readable regular file is taken as native."""
+    if not os.path.isfile(path):
+        return False
+    try:
+        with open(path, "rb") as file:
+            first = file.readline(_SHEBANG_BYTES)
+    except OSError:
+        return False
+    return first.startswith(b"#!") and any(os.path.basename(word) == b"node"
+                                           for word in first[2:].split())
+
+
+def _agent_env(home: Path, memriver: str, executor_path: str, root: Path,
+               node: str | None = None) -> dict[str, str]:
+    """The LaunchAgent's environment; `node`, when given, is the node a node-script
+    executor needs, its directory placed right after the executor's."""
     path: list[str] = []
-    for directory in (os.path.dirname(memriver), os.path.dirname(executor_path), "/usr/bin",
-                      "/bin"):
+    for directory in (os.path.dirname(memriver), os.path.dirname(executor_path),
+                      *([os.path.dirname(os.path.abspath(node))] if node else []),
+                      "/usr/bin", "/bin"):
         if directory not in path:
             path.append(directory)
     # always the absolute root init chose: launchd's working directory is not the user's
@@ -288,6 +311,9 @@ def run_init(*, executor: str | None, ttl_days: int | None, at: str | None, yes:
     log_path = store / DREAM_DIRECTORY / DREAM_LOG_FILENAME
     command = [memriver, "dream", "run", "--trigger", "schedule"]
     where = "LaunchAgent" if platform == "darwin" else "you add it to your scheduler"
+    # the LaunchAgent's PATH is fixed at init: node is looked up on init's own PATH
+    node_script = platform == "darwin" and _node_script(values["executor_path"])
+    node = which("node") if node_script else None
     plan = (f"memriver dream init\n"
             f"  settings: {visible(str(settings_file))} [dream]\n"
             f"  executor: {name} ({visible(values['executor_path'])})\n"
@@ -298,6 +324,9 @@ def run_init(*, executor: str | None, ttl_days: int | None, at: str | None, yes:
             + (f"  provider variables: {', '.join(variables)} -- not written to the "
                "schedule; make them visible to it, or the scheduled run refuses\n"
                if variables else "")
+            + (f"  warning: {name} is a node script and node is not on PATH; the scheduled "
+               "run cannot start it -- put node on PATH and run memriver dream init again\n"
+               if node_script and node is None else "")
             + "  stop it with: memriver dream uninstall\n")
     code = _confirm(plan, yes=yes, stdin_is_tty=stdin_is_tty, input_fn=input_fn, stdout=stdout)
     if code is not None:
@@ -321,7 +350,8 @@ def run_init(*, executor: str | None, ttl_days: int | None, at: str | None, yes:
                      f"{values['schedule_at']}:\n{visible(line)}\n")
         return 0
     plist = launch_agent.render(program=command, schedule_at=values["schedule_at"],
-                                env=_agent_env(home, memriver, values["executor_path"], store),
+                                env=_agent_env(home, memriver, values["executor_path"], store,
+                                               node),
                                 log_path=log_path, label=label)
     try:
         launch_agent.install(home=home, plist=plist, uid=os.getuid() if uid is None else uid,

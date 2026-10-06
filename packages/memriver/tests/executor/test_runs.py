@@ -55,10 +55,10 @@ class Runner:
         return self.on_call(argv) if self.on_call is not None else self.completed
 
 
-def _claude(completed, **options):
+def _claude(completed, *, env=BASE_ENV, **options):
     runner = Runner(completed)
     answer = run_claude("/opt/bin/claude", system_prompt="SYS", prompt="PROMPT", schema=SCHEMA,
-                        timeout_s=60, env=BASE_ENV, scratch_prefix=PREFIX, runner=runner,
+                        timeout_s=60, env=env, scratch_prefix=PREFIX, runner=runner,
                         **options)
     return answer, runner
 
@@ -258,6 +258,41 @@ def test_the_environment_and_override_helpers():
     assert missing_env(PROVIDER, {"FOUNDRY_API_KEY": "set"}) == []
     assert missing_env({"model_providers.a.env_key": "B",
                         "model_providers.b.env_key": "A"}, {}) == ["A", "B"]
+
+
+# what a run started inside a Claude Code or Codex session inherits from it
+SESSION_MARKERS = {"CLAUDECODE": "1", "CLAUDE_CODE_ENTRYPOINT": "cli",
+                   "CLAUDE_CODE_SSE_PORT": "53111", "CODEX_SANDBOX": "seatbelt",
+                   "CODEX_SANDBOX_NETWORK_DISABLED": "1"}
+# authentication and provider settings: never markers
+KEPT = {"ANTHROPIC_API_KEY": "synthetic", "CLAUDE_CODE_USE_BEDROCK": "1",
+        "AWS_REGION": "us-east-1", "AWS_PROFILE": "work", "CODEX_HOME": "/home/u/.codex",
+        "FOUNDRY_API_KEY": "set", "CLAUDE_CONFIG_DIR": "/home/u/.claude-alt"}
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex"])
+def test_a_run_drops_the_calling_harness_session_markers_and_keeps_the_rest(harness):
+    env = {**BASE_ENV, **SESSION_MARKERS, **KEPT}
+    if harness == "claude":
+        _, runner = _claude(_ok({"summary": "s"}), env=env)
+        _, plain = _claude(_ok({"summary": "s"}))
+        assert runner.seen["argv"] == plain.seen["argv"]          # argv unchanged
+    else:
+        _, runner = _codex(_answering({"summary": "s"}), env=env, overrides=PROVIDER)
+    child = runner.seen["env"]
+    # every marker gone, everything else as given (MEMRIVER_ROOT replaced, as before)
+    assert child == {**BASE_ENV, **KEPT, "MEMRIVER_ROOT": child["MEMRIVER_ROOT"]}
+    assert child["MEMRIVER_ROOT"] != BASE_ENV["MEMRIVER_ROOT"]
+    assert env == {**BASE_ENV, **SESSION_MARKERS, **KEPT}          # the caller's, untouched
+
+
+def test_only_the_listed_names_and_the_codex_sandbox_prefix_are_markers():
+    # exact, case-sensitive names; CODEX_SANDBOX as a prefix only
+    env = isolated_env({"CLAUDECODE_X": "1", "XCLAUDECODE": "1", "claudecode": "1",
+                        "CODEX_SANDBOXED_TOOL": "1", "MY_CODEX_SANDBOX": "1",
+                        "CLAUDE_CODE_ENTRYPOINT_V2": "1"}, Path("/scratch/work"))
+    assert set(env) == {"CLAUDECODE_X", "XCLAUDECODE", "claudecode", "MY_CODEX_SANDBOX",
+                        "CLAUDE_CODE_ENTRYPOINT_V2", "MEMRIVER_ROOT"}
 
 
 def _stand_in(tmp_path: Path, body: str) -> Path:

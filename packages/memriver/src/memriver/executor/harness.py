@@ -3,9 +3,11 @@
 
 Each run gets the prompt on stdin (an argument could not hold it: the OS caps argument
 lists well below a model's context), an empty temporary working directory named with
-the caller's prefix, the caller's environment with MEMRIVER_ROOT pointed at a path that
-does not exist (memriver's own hooks inside the run find no store and do nothing), and
-a process group of its own, killed whole on timeout. Only the kind of a failure comes
+the caller's prefix, the caller's environment less the session markers of a harness
+it may run inside (a run started from a Claude Code or Codex session is no nested
+session of it) and with MEMRIVER_ROOT pointed at a path that does not exist
+(memriver's own hooks inside the run find no store and do nothing), and a process
+group of its own, killed whole on timeout. Only the kind of a failure comes
 back, never the output: it may repeat the text that was sent.
 
 The claude run loads no user, project or local settings -- except, when the caller
@@ -109,8 +111,16 @@ def missing_env(overrides: Mapping[str, str | bool], env: Mapping[str, str]) -> 
                    and not env.get(value)})
 
 
+# the calling harness's session markers, by exact name, plus every CODEX_SANDBOX*
+# variable; authentication and provider settings (ANTHROPIC_*, CLAUDE_CODE_USE_*, AWS_*,
+# CODEX_HOME, the codex_overrides env_key variables) stay
+_SESSION_MARKERS = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT")
+_SESSION_MARKER_PREFIX = "CODEX_SANDBOX"
+
+
 def isolated_env(base: Mapping[str, str], workdir: Path) -> dict[str, str]:
-    env = dict(base)
+    env = {key: value for key, value in base.items()
+           if key not in _SESSION_MARKERS and not key.startswith(_SESSION_MARKER_PREFIX)}
     env["MEMRIVER_ROOT"] = str(workdir / "no-memriver-store")      # never created
     return env
 

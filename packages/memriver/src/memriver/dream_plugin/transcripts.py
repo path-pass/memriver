@@ -28,14 +28,19 @@ CUT_MARK = " [cut]"
 # drifted across codex-cli versions -- 0.157.1 writes "...instructions for <path>",
 # 0.156.1 "...instructions" alone before a blank line -- so both header shapes are
 # listed; either still requires the line to *start* with the header, so a real
-# prompt that merely mentions AGENTS.md mid-text is never caught by it. Both tags
+# prompt that merely mentions AGENTS.md mid-text is never caught by it. The tags
 # here are matched whole (through their closing `>`), so they need no separate
-# boundary check the way the tag-name prefixes below do. "<no retained transcript
-# delta" is not a tag either -- there is no closing `>` to require -- so any
-# character (or none) may follow it.
+# boundary check the way the tag-name prefixes below do: <command-name> (a slash
+# command such as /clear or /model), <local-command-stdout>, <local-command-stderr>
+# and <task-notification> among them. "<no retained transcript delta" and
+# "<send_user_message_question_" are prefixes, not tags -- the first has no closing
+# `>` to require, the second a suffix that varies -- so any character (or none) may
+# follow them.
 _CODEX_INJECTED = ("<environment_context>", "<user_instructions>",
                    "# AGENTS.md instructions for ", "# AGENTS.md instructions\n",
-                   "<no retained transcript delta")
+                   "<no retained transcript delta", "<command-name>",
+                   "<local-command-stdout>", "<local-command-stderr>", "<task-notification>",
+                   "<send_user_message_question_")
 # matched by tag name alone, since some carry attributes (<hook_prompt session-start>):
 # the character right after the name must close the tag or start an attribute, or a
 # real prompt starting with a longer tag name (<hook_prompt_examples>, <hook_prompter>,

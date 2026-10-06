@@ -331,8 +331,9 @@ Fail closed: when the classifier cannot decide, the write is refused, with the r
 and nothing is written: `timeout`, `login` (a harness that is not logged in, or no
 key, or a key jev refuses), `quota`, `too-large` (input too large for the model),
 `start` (the harness could not be started), `unparsable` (an answer that does not fit)
-or `exit` (any other failure, an HTTP error among them). Dream lists its blocked
-changes under *Needs you* and tries again next run. `enabled = false` turns the
+or `exit` (any other failure, an HTTP error among them). Dream lists each change the
+classifier blocks under *Needs you* -- a classifier that cannot check at all once per
+run, with its reason -- and tries again next run. `enabled = false` turns the
 classifier off and keeps the table; `agent_writes = false` or `dream_writes = false`
 stops checking one source. `memriver doctor` states whether the classifier is
 configured, off, or which executor it uses (it never calls a model).
@@ -557,7 +558,8 @@ change to global -- a global consolidation, an extraction, a re-check, a global
 memory's retirement -- is also listed under *Needs you* with its undo command,
 so a change every project reads is never missed. A change the content
 classifier blocks (*Content classifier*) is not made; it is listed under
-*Needs you* and the step runs again next run.
+*Needs you* (a classifier that cannot check at all is listed once per run, with
+its reason) and the step runs again next run.
 
 **Reports.** `memriver dream report` prints the latest run's report (or
 `RUN_ID`'s) as it was written: the run, its trigger and executor; each change,
@@ -565,7 +567,8 @@ by project; the TTL decisions; skips and failures with their reasons; *Needs
 you* -- content-policy hits with their `memriver delete ID --hard` command,
 contradictions, instruction-like entries, overturned global entries and
 refused extractions, every change to global with its undo command, and
-changes the content classifier blocked, inputs too large for
+changes the content classifier blocked (a classifier that could not check at
+all: one line per run, with its reason), inputs too large for
 `context_budget_tokens` (each by
 scope or id, with its estimate and the room -- raise the setting when our own
 estimate rejected the input before any call, lower it when the executor
@@ -628,9 +631,11 @@ What an executor run can and cannot do:
 **Schedule.** On macOS, `init` installs a per-user LaunchAgent,
 `~/Library/LaunchAgents/io.github.path-pass.memriver.dream.plist`, that runs
 `memriver dream run` daily at `--at` (default 04:00) with `HOME`, a `PATH`
-holding the memriver and executor directories, and `MEMRIVER_ROOT` set to the
-store's absolute path; its output goes to `<root>/dream/dream.log`, one line
-per run naming the run and its status (read the report with `memriver dream
+holding the memriver and executor directories (and node's, found on `init`'s
+own `PATH`, when the executor is a node script as npm installs it; `init` warns
+when it finds no node), and `MEMRIVER_ROOT` set to the store's absolute path;
+its output goes to `<root>/dream/dream.log`, one line per run naming the run
+and its status (read the report with `memriver dream
 report`), so the log never keeps report text past the retention. It runs
 only while you are logged in, and needs no sudo. The same bare environment
 reaches the content classifier's own executor when one is configured
