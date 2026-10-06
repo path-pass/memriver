@@ -5,7 +5,8 @@ MemoryService.apply as "dream" with the executor's harness, then the change id, 
 undo command and one line per step. A conflict or a policy refusal is reported and
 returns None: the phase counts it as a failure and its pass does not finish (§6.9).
 A change that touches global, and a group the content classifier blocks, is also
-listed under Needs you.
+listed under Needs you; a classifier that could not check a group at all is listed
+there once per run, with its reason, however many groups it could not check.
 """
 
 from __future__ import annotations
@@ -18,6 +19,11 @@ from memriver_core.models.errors import BatchConflict, ContentRejected
 
 if TYPE_CHECKING:
     from .run import Context
+
+# core passes the classifier's reason as ContentRejected.detail, already reduced to
+# [a-z0-9-] ("unknown" when the classifier gave none it accepts); empty reads "unknown"
+_CLASSIFIER_UNAVAILABLE = ("the content classifier could not check dream's changes ({reason}); "
+                           "those changes were not applied and are tried again next run")
 
 
 def apply_group(ctx: Context, kind: str, items: Sequence[str], ops: Sequence[Op], *,
@@ -44,7 +50,14 @@ def apply_group(ctx: Context, kind: str, items: Sequence[str], ops: Sequence[Op]
         return None
     except ContentRejected as err:
         report.not_applied(f"policy {err.rule_id}")
-        if err.rule_id.startswith("classifier-"):
+        if err.rule_id == "classifier-unavailable":
+            # every group of the run is refused the same way when the classifier cannot
+            # check at all: one line for the run, the rest stay section lines
+            if not ctx.classifier_unavailable_noted:
+                ctx.classifier_unavailable_noted = True
+                report.needs_you(_CLASSIFIER_UNAVAILABLE.format(
+                    reason=err.detail or "unknown"))
+        elif err.rule_id.startswith("classifier-"):
             report.needs_you(f"blocked by the content classifier "
                              f"({err.rule_id.removeprefix('classifier-')}): "
                              f"{' '.join([kind, *items])}")

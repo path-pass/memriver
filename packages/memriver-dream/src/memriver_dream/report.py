@@ -21,6 +21,11 @@ from memriver_core.models import ID_RE, single_line
 
 WITHHELD = "(withheld)"
 INTERRUPTED = "run interrupted; later sections unknown"
+# after a completed footer whose run row could not be marked completed (run_dream): the
+# row was then marked failed, or that write failed too
+NOT_RECORDED = "the run could not be recorded as completed; its record says failed"
+NOT_UPDATED = ("the run could not be recorded as completed, and its record could not be "
+               "updated either (it may still read running)")
 _APPLYING = "applying "
 # a created memory's id is only known once apply returns, so the line says one is coming
 _CREATES = " (creates a memory)"

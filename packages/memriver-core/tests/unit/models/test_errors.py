@@ -142,3 +142,8 @@ def test_session_moved_takes_no_arguments_and_is_public():
     assert str(SessionMoved()) == "session moved"
     assert memriver_core.SessionMoved is SessionMoved is models.SessionMoved
     assert "SessionMoved" in memriver_core.__all__ and "SessionMoved" in models.__all__
+
+
+def test_content_rejected_detail_defaults_to_empty():
+    assert ContentRejected(rule_id="x").detail == ""
+    assert ContentRejected(rule_id="x", detail="y").detail == "y"

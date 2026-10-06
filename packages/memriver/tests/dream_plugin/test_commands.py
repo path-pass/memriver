@@ -158,6 +158,84 @@ def test_init_is_idempotent_and_replaces_the_schedule(world):
     assert code == 0 and _settings(world)["dream"]["ttl_days"] == 30
 
 
+def _node_executor(world, node: Path | None):
+    """The claude on PATH made an npm-installed script; `node` is init's node, or None."""
+    (world["bin"] / "claude").write_text("#!/usr/bin/env node\nrequire('./cli.js')\n")
+    found = {"claude": str(world["bin"] / "claude"),
+             "node": None if node is None else str(node)}
+    return lambda name: found.get(name)
+
+
+def _agent_path(world) -> str:
+    return plistlib.loads(plist_path(world["home"]).read_bytes())[
+        "EnvironmentVariables"]["PATH"]
+
+
+def test_a_node_script_executor_gets_nodes_directory_after_its_own(world):
+    node_dir = world["tmp"] / "node" / "bin"
+    node_dir.mkdir(parents=True)
+    code, out = _init(world, which=_node_executor(world, node_dir / "node"))
+    assert code == 0
+    assert _agent_path(world) == f"{world['bin']}:{node_dir}:/usr/bin:/bin"
+    assert "warning" not in out
+
+
+def test_a_node_script_executor_without_node_still_installs_and_warns_once(world):
+    code, out = _init(world, which=_node_executor(world, None))
+    assert code == 0 and plist_path(world["home"]).exists()
+    assert _agent_path(world) == f"{world['bin']}:/usr/bin:/bin"
+    assert [line for line in out.splitlines() if "warning" in line] == [(
+        "  warning: claude is a node script and node is not on PATH; the scheduled run "
+        "cannot start it -- put node on PATH and run memriver dream init again")]
+
+
+def test_node_is_never_looked_up_for_a_native_executor(world):
+    asked = []
+
+    def which(name):
+        asked.append(name)
+        return world["which"](name)
+
+    assert _init(world, which=which)[0] == 0
+    assert "node" not in asked
+    assert _agent_path(world) == f"{world['bin']}:/usr/bin:/bin"
+
+
+@pytest.mark.parametrize(("content", "expected"), [
+    (b"#!/usr/bin/env node\n", True),
+    (b"#!/usr/bin/env -S node --no-warnings\n", True),
+    (b"#! /opt/node/bin/node\n", True),
+    (b"#!/usr/bin/env node", True),                      # no newline at all
+    (b"#!/bin/sh\nexec node cli.js\n", False),           # node on a later line only
+    (b"#!/usr/bin/env nodejs\n", False),
+    (b"#!/usr/bin/env bun\n", False),
+    (b"\xcf\xfa\xed\xfe" + b"\x00node" * 8, False),     # a native binary
+    (b"", False),
+    (b"#!/usr/bin/env " + b"x" * 600 + b" node\n", False),  # past the 512-byte read
+], ids=["env", "env-S", "absolute", "no-newline", "later-line", "nodejs", "bun", "binary",
+        "empty", "past-512"])
+def test_a_node_script_is_one_whose_first_line_names_node(tmp_path, content, expected):
+    path = tmp_path / "executor"
+    path.write_bytes(content)
+    assert dream_commands._node_script(str(path)) is expected
+
+
+def test_a_missing_unreadable_or_odd_executor_counts_as_native(tmp_path):
+    unreadable = tmp_path / "unreadable"
+    unreadable.write_bytes(b"#!/usr/bin/env node\n")
+    unreadable.chmod(0)
+    fifo = tmp_path / "fifo"
+    os.mkfifo(fifo)
+    try:
+        for path in (tmp_path / "missing", tmp_path, fifo):
+            assert dream_commands._node_script(str(path)) is False
+        if os.access(unreadable, os.R_OK):               # running as root reads it anyway
+            return
+        assert dream_commands._node_script(str(unreadable)) is False
+    finally:
+        unreadable.chmod(0o600)
+
+
 def test_a_relative_root_is_stored_absolute_and_a_run_from_elsewhere_uses_that_store(
         world, monkeypatch):
     monkeypatch.chdir(world["tmp"])

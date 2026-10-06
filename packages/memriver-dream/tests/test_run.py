@@ -26,7 +26,13 @@ from memriver_dream.phases import (
     summarize,
 )
 from memriver_dream.protocols import ExecutorResult
-from memriver_dream.report import INTERRUPTED, WITHHELD, Report
+from memriver_dream.report import (
+    INTERRUPTED,
+    NOT_RECORDED,
+    NOT_UPDATED,
+    WITHHELD,
+    Report,
+)
 from memriver_dream.run import prune_reports
 from memriver_dream.store import DreamStore, ReviewRow, RunRow, SummaryRow, shift_days
 
@@ -451,6 +457,56 @@ def test_a_dream_store_or_report_error_after_the_row_exists_fails_the_run(
     assert row.status == "failed" and row.finished_at is not None
     with run_lock(world.root) as held:
         assert held
+
+
+def test_a_completed_footer_whose_row_cannot_be_written_is_followed_by_the_record(
+        world, calls, monkeypatch):
+    # the footer first, then the row: when the row cannot be marked completed it is
+    # marked failed, and one more line says so, so the report and the row agree
+    _fail_completed_finish(monkeypatch)
+    with pytest.raises(sqlite3.OperationalError, match="^injected$"):
+        world.run()
+    (row,) = _store(world).runs(10)
+    assert row.status == "failed"
+    lines = world.report_text(row).splitlines()
+    assert lines[-3] == "status: completed" and lines[-2].startswith("finished: ")
+    assert lines[-1] == NOT_RECORDED == (
+        "the run could not be recorded as completed; its record says failed")
+    assert "status: failed" not in lines
+
+
+def test_a_record_that_cannot_be_updated_at_all_is_not_claimed_failed(
+        world, calls, monkeypatch):
+    # both finish_run calls fail: the row stays running and the report claims no record
+    # state it could not write; the first error is the one re-raised
+    errors = []
+
+    def finish_run(self, run_id, *, status, finished_at):
+        errors.append(status)
+        raise sqlite3.OperationalError(f"injected {status}")
+
+    monkeypatch.setattr(DreamStore, "finish_run", finish_run)
+    with pytest.raises(sqlite3.OperationalError, match="^injected completed$"):
+        world.run()
+    assert errors == ["completed", "failed"]
+    (row,) = _store(world).runs(10)
+    assert row.status == "running"
+    lines = world.report_text(row).splitlines()
+    assert lines[-3] == "status: completed" and lines[-2].startswith("finished: ")
+    assert lines[-1] == NOT_UPDATED == (
+        "the run could not be recorded as completed, and its record could not be "
+        "updated either (it may still read running)")
+    assert NOT_RECORDED not in lines
+
+
+def test_a_run_that_fails_before_its_footer_gets_no_record_line(world, calls, monkeypatch):
+    _fail_scope_pass(monkeypatch)
+    with pytest.raises(sqlite3.OperationalError, match="^injected$"):
+        world.run()
+    (row,) = _store(world).runs(10)
+    lines = world.report_text(row).splitlines()
+    assert lines[-2] == "status: failed"
+    assert NOT_RECORDED not in lines and NOT_UPDATED not in lines
 
 
 def test_an_error_before_the_row_exists_is_raised_with_no_run_recorded(world, calls):
