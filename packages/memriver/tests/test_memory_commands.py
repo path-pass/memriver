@@ -194,7 +194,7 @@ def test_history_of_a_version_with_an_undecodable_source_id_is_store_unreadable(
         [Update(world.memory.id, 1, sources=(SourceRef(source.id, 1),))], changed_by="human")
     with closing(sqlite3.connect(world.store / "memriver.db")) as conn, conn:
         conn.execute("UPDATE memory_sources SET source_id = "
-                     "CAST(X'80808080808080808080' AS TEXT) WHERE memory_id = ?",
+                     "CAST(X'80616161616161616161' AS TEXT) WHERE memory_id = ?",
                      (world.memory.id,))
     assert _history(world, world.memory.id) == (2, memory_commands.STORE_UNREADABLE + "\n")
 
@@ -536,10 +536,10 @@ def test_hard_dry_run_refuses_cleanly_when_a_referrer_id_is_not_addressable(worl
     _global_memory(world, (target, 1))                   # a second, addressable referrer
     citer = _global_memory(world, (target, 1))
     with closing(sqlite3.connect(world.store / "memriver.db")) as conn, conn:
-        conn.execute("UPDATE memories SET id = CAST(X'80808080808080808080' AS TEXT) "
+        conn.execute("UPDATE memories SET id = CAST(X'80616161616161616161' AS TEXT) "
                      "WHERE id = ?", (citer,))
         conn.execute("UPDATE memory_sources SET memory_id = "
-                     "CAST(X'80808080808080808080' AS TEXT) WHERE memory_id = ?", (citer,))
+                     "CAST(X'80616161616161616161' AS TEXT) WHERE memory_id = ?", (citer,))
 
     code, out = _delete(world, target, hard=True, dry_run=True, input_fn=_never_called)
 
