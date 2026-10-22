@@ -630,7 +630,7 @@ def test_a_change_with_an_undecodable_id_is_an_invalid_row_not_a_crash(tmp_path)
     services.memory.apply([Create(project.id, "project", "cue", "body")], changed_by="human")
     with closing(sqlite3.connect(store / "memriver.db")) as conn, conn:
         conn.execute("INSERT INTO changes (change_id, at, changed_by, step_count) "
-                     "VALUES (CAST(X'80808080808080808080' AS TEXT), "
+                     "VALUES (CAST(X'80616161616161616161' AS TEXT), "
                      "'2026-09-27T00:00:00.000000Z', 'human', 2)")
 
     text = invoke_doctor(root=store)

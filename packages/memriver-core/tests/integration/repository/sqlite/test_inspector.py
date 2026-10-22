@@ -545,7 +545,7 @@ def test_a_change_with_an_undecodable_id_is_invalid_row_not_incomplete(world):
     a caller (doctor's `visible`, its `--json` rendering) treats every entry there as an
     addressable id, never as bytes."""
     _sql(world["store"], "INSERT INTO changes (change_id, at, changed_by, step_count) "
-         "VALUES (CAST(X'80808080808080808080' AS TEXT), "
+         "VALUES (CAST(X'80616161616161616161' AS TEXT), "
          "'2026-09-27T00:00:00.000000Z', 'human', 2)")
     report = _inspect(world)
     assert report.incomplete_changes == ()
