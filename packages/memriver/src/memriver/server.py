@@ -8,6 +8,7 @@ from typing import Any, Literal, NoReturn
 
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
+from mcp.shared.session import RequestResponder
 from memriver_core import (
     ContentClassifier,
     ContentRejected,
@@ -152,8 +153,10 @@ def _map_error(operation: Operation, err: Exception, *, memory_id: str | None = 
         return f"no such entry{suffix}"
     if isinstance(err, VersionConflict) and operation in ("update", "delete"):
         subject = f"entry {memory_id}" if valid else "entry"
-        return (f"{subject} changed since you read it; no change was made. "
-                "Call memory_read again and retry with its version.")
+        return (f"{subject} changed since you read it, possibly by your own earlier call "
+                "that was interrupted; no change was made. Call memory_read again: if it "
+                "already shows your edit, nothing is left to do; otherwise retry with its "
+                "version.")
     if operation == "read":
         return f"could not read entry{suffix}"
     if operation == "update":
@@ -276,6 +279,37 @@ _SESSION_SEARCH_DESCRIPTION = (
     "and summary texts are quoted from the sessions. " + UNTRUSTED_DATA_NOTICE)
 
 
+def _never_answer_a_cancelled_request(mcp: FastMCP) -> None:
+    """The MCP spec: a receiver of notifications/cancelled SHOULD NOT answer the
+    cancelled request. The SDK answers it with a "Request cancelled" error, which
+    Claude Code (having dropped the id) met by closing the connection; and once the
+    tool's worker thread finished, the SDK's own late respond() asserted and ended
+    the server. So each request's responder is given a cancel that cancels and
+    completes without sending, and a respond that sends nothing once cancelled.
+    Installed before the SDK enters the responder, which its own cancel requires.
+    Pinned by test_a_cancelled_call_gets_no_response_and_the_connection_stays_usable."""
+    low_level = mcp._mcp_server
+    handle_message = low_level._handle_message
+
+    async def handle(message: Any, *args: Any, **kwargs: Any) -> None:
+        if isinstance(message, RequestResponder):
+            responder, respond = message, message.respond
+
+            async def cancel() -> None:
+                responder._cancel_scope.cancel()
+                responder._completed = True     # leaves the in-flight table on exit
+
+            async def respond_unless_cancelled(response: Any) -> None:
+                if not responder.cancelled:
+                    await respond(response)
+
+            responder.cancel = cancel
+            responder.respond = respond_unless_cancelled
+        await handle_message(message, *args, **kwargs)
+
+    low_level._handle_message = handle
+
+
 def build_server(root: Path, project_dir: Path, settings: Settings | None = None, *,
                  harness: str | None = None,
                  classifier: ContentClassifier | None = None) -> FastMCP:
@@ -328,6 +362,7 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
             return directory_context
 
     mcp = FastMCP("memriver", instructions=instructions)
+    _never_answer_a_cancelled_request(mcp)
 
     # Tools are plain `def`: FastMCP runs each in a worker thread, so a slow
     # SQLite wait for another process's write lock cannot stall the event
@@ -380,7 +415,9 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
         type: user = who the user is; feedback = how they want you to work;
         project = ongoing work/constraints; reference = external resources.
         description: one-line summary shown in the index; when should a future
-        session recall this?"""
+        session recall this?
+        A memory_write that was interrupted may still have been saved; check
+        memory_search before writing it again."""
         context = None
         try:
             context = context_of(ctx)

@@ -471,6 +471,13 @@ async def test_the_index_tool_describes_its_first_line_in_the_agents_terms(serve
         "followed by global's.")
 
 
+async def test_memory_write_says_an_interrupted_write_may_have_been_saved(server):
+    async with Client(server) as c:
+        tool = next(t for t in await c.list_tools() if t.name == "memory_write")
+    assert ("A memory_write that was interrupted may still have been saved; check "
+            "memory_search before writing it again.") in " ".join(tool.description.split())
+
+
 async def test_search_limit_stays_a_plain_integer_in_the_tool_schema(server):
     async with Client(server) as c:
         tool = next(t for t in await c.list_tools() if t.name == "memory_search")
@@ -509,8 +516,10 @@ async def test_update_and_delete_need_the_version_memory_read_returned(server):
     assert updated["version"] == 2
     stale = await _error(server, "memory_update", memory_id=written["id"],
                          expected_version=1, content="lost")
-    assert stale == (f"entry {written['id']} changed since you read it; no change "
-                     "was made. Call memory_read again and retry with its version.")
+    assert stale == (f"entry {written['id']} changed since you read it, possibly by "
+                     "your own earlier call that was interrupted; no change was made. "
+                     "Call memory_read again: if it already shows your edit, nothing is "
+                     "left to do; otherwise retry with its version.")
     assert (await _call(server, "memory_read", memory_id=written["id"]))["body"] == "v2"
 
 

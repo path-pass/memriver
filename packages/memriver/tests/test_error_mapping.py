@@ -113,8 +113,9 @@ def test_every_mutation_of_a_global_entry_reports_the_same_refusal(operation):
 @pytest.mark.parametrize("operation", ["update", "delete"])
 def test_a_version_conflict_names_the_entry_and_the_recovery(operation):
     assert _map_error(operation, VersionConflict(M), memory_id=M) == (
-        f"entry {M} changed since you read it; no change was made. "
-        "Call memory_read again and retry with its version.")
+        f"entry {M} changed since you read it, possibly by your own earlier call that "
+        "was interrupted; no change was made. Call memory_read again: if it already "
+        "shows your edit, nothing is left to do; otherwise retry with its version.")
     assert _map_error(operation, VersionConflict("x\ny"), memory_id="x\ny") \
         .startswith("entry changed since you read it")
 

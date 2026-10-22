@@ -350,6 +350,90 @@ def test_project_scope_defaults_to_working_directory(tmp_path):
     assert _active_memories(root, project_id) == 1
 
 
+def _messages_until(proc, message_id: int, timeout: float = 10.0) -> list[dict]:
+    """Every JSON-RPC frame the server sends, up to and including the response to
+    `message_id`."""
+    deadline = time.monotonic() + timeout
+    seen: list[dict] = []
+    while not seen or seen[-1].get("id") != message_id:
+        seen.append(_next_message(proc, deadline))
+    return seen
+
+
+def _next_message(proc, deadline: float) -> dict:
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AssertionError("timed out waiting for the server")
+        if not select.select([proc.stdout], [], [], remaining)[0]:
+            continue
+        line = proc.stdout.readline()
+        if not line:
+            raise AssertionError("server closed stdout")
+        with contextlib.suppress(json.JSONDecodeError):
+            return json.loads(line)
+
+
+def test_a_cancelled_call_gets_no_response_and_the_connection_stays_usable(tmp_path):
+    """MCP: a receiver of notifications/cancelled SHOULD NOT answer the cancelled
+    request. Claude Code drops a cancelled id, and an answer to it made it close the
+    connection; and once the write ran on to the end (it lands anyway), the SDK's late
+    respond() ended the server."""
+    root, home = tmp_path / "mem", tmp_path / "home"
+    home.mkdir()
+    git_repo = _git_repo(tmp_path, "repo")
+    project_id = _register(root, git_repo)
+    started, finished = tmp_path / "started", tmp_path / "finished"
+    script = tmp_path / "claude"                # a classifier that takes 2 s to allow
+    script.write_text(
+        f"#!{sys.executable}\n"
+        "import json, pathlib, sys, time\n"
+        "sys.stdin.read()\n"
+        f"pathlib.Path({str(started)!r}).touch()\n"
+        "time.sleep(2)\n"
+        "print(json.dumps({'is_error': False, 'structured_output': "
+        "{'verdict': 'allow', 'category': 'none'}}))\n"
+        f"pathlib.Path({str(finished)!r}).touch()\n", encoding="utf-8")
+    script.chmod(0o755)
+    (root / "settings.toml").write_text(
+        f'[classifier]\nexecutor = "claude"\nexecutor_path = "{script}"\n', encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("MEMRIVER_")}
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "memriver.cli", "serve", "--root", str(root)],
+        cwd=str(git_repo), env={**env, "HOME": str(home)}, stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
+    try:
+        _send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                     "params": {"protocolVersion": PROTOCOL_VERSION, "capabilities": {},
+                                "clientInfo": {"name": "test", "version": "0"}}})
+        _messages_until(proc, 1)
+        _send(proc, {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+        _send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                     "params": {"name": "memory_write",
+                                "arguments": {"content": "a slow fact", "type": "project"}}})
+        deadline = time.monotonic() + 10
+        while not started.exists():             # the write is in flight
+            assert time.monotonic() < deadline, "the classifier never started"
+            time.sleep(0.05)
+        _send(proc, {"jsonrpc": "2.0", "method": "notifications/cancelled",
+                     "params": {"requestId": 2, "reason": "user pressed Esc"}})
+        _send(proc, {"jsonrpc": "2.0", "id": 3, "method": "ping"})
+        seen = _messages_until(proc, 3)
+        while not finished.exists():            # the write runs on and lands anyway
+            assert time.monotonic() < deadline, "the classifier never finished"
+            time.sleep(0.05)
+        time.sleep(0.5)
+        _send(proc, {"jsonrpc": "2.0", "id": 4, "method": "tools/list"})
+        seen += _messages_until(proc, 4)
+    finally:
+        proc.stdin.close()
+        proc.terminate()
+        proc.wait(timeout=10)
+    assert [m for m in seen if m.get("id") == 2] == []
+    assert seen[-1]["result"]["tools"]
+    assert _active_memories(root, project_id) == 1
+
+
 def test_settings_file_in_root_is_honoured_end_to_end(tmp_path):
     """<root>/settings.toml tunes the running server, not just load_settings()."""
     root = tmp_path / "mem"
