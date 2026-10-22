@@ -2,10 +2,12 @@ import contextlib
 import io
 import json
 import os
+import queue
 import select
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from contextlib import closing
 from dataclasses import dataclass
@@ -350,40 +352,56 @@ def test_project_scope_defaults_to_working_directory(tmp_path):
     assert _active_memories(root, project_id) == 1
 
 
-def _messages_until(proc, message_id: int, timeout: float = 10.0) -> list[dict]:
+def _pump(stream, lines: queue.Queue) -> None:
+    """Hand every line the server writes to `lines`, then None at end of stream."""
+    for line in stream:
+        lines.put(line)
+    lines.put(None)
+
+
+def _messages_until(lines: queue.Queue, message_id: int, deadline: float) -> list[dict]:
     """Every JSON-RPC frame the server sends, up to and including the response to
     `message_id`."""
-    deadline = time.monotonic() + timeout
     seen: list[dict] = []
     while not seen or seen[-1].get("id") != message_id:
-        seen.append(_next_message(proc, deadline))
+        try:
+            line = lines.get(timeout=max(0.0, deadline - time.monotonic()))
+        except queue.Empty:
+            raise AssertionError(f"timed out waiting for id {message_id}") from None
+        if line is None:
+            raise AssertionError(f"server closed stdout before answering id {message_id}")
+        with contextlib.suppress(json.JSONDecodeError):
+            seen.append(json.loads(line))
     return seen
 
 
-def _next_message(proc, deadline: float) -> dict:
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise AssertionError("timed out waiting for the server")
-        if not select.select([proc.stdout], [], [], remaining)[0]:
-            continue
-        line = proc.stdout.readline()
-        if not line:
-            raise AssertionError("server closed stdout")
+def _remaining_messages(lines: queue.Queue) -> list[dict]:
+    """The frames left once the server has exited and its stdout has ended."""
+    seen: list[dict] = []
+    while (line := lines.get(timeout=5)) is not None:
         with contextlib.suppress(json.JSONDecodeError):
-            return json.loads(line)
+            seen.append(json.loads(line))
+    return seen
+
+
+def _until(condition, deadline: float, what: str) -> None:
+    while not condition():
+        assert time.monotonic() < deadline, f"timed out waiting until {what}"
+        time.sleep(0.05)
 
 
 def test_a_cancelled_call_gets_no_response_and_the_connection_stays_usable(tmp_path):
     """MCP: a receiver of notifications/cancelled SHOULD NOT answer the cancelled
     request. Claude Code drops a cancelled id, and an answer to it made it close the
     connection; and once the write ran on to the end (it lands anyway), the SDK's late
-    respond() ended the server."""
+    respond() ended the server. The server only exits after every handler has
+    finished, so a clean exit at end of input proves the late result was dropped."""
+    deadline = time.monotonic() + 25            # the whole test
     root, home = tmp_path / "mem", tmp_path / "home"
     home.mkdir()
     git_repo = _git_repo(tmp_path, "repo")
     project_id = _register(root, git_repo)
-    started, finished = tmp_path / "started", tmp_path / "finished"
+    started = tmp_path / "started"
     script = tmp_path / "claude"                # a classifier that takes 2 s to allow
     script.write_text(
         f"#!{sys.executable}\n"
@@ -392,46 +410,52 @@ def test_a_cancelled_call_gets_no_response_and_the_connection_stays_usable(tmp_p
         f"pathlib.Path({str(started)!r}).touch()\n"
         "time.sleep(2)\n"
         "print(json.dumps({'is_error': False, 'structured_output': "
-        "{'verdict': 'allow', 'category': 'none'}}))\n"
-        f"pathlib.Path({str(finished)!r}).touch()\n", encoding="utf-8")
+        "{'verdict': 'allow', 'category': 'none'}}))\n", encoding="utf-8")
     script.chmod(0o755)
     (root / "settings.toml").write_text(
         f'[classifier]\nexecutor = "claude"\nexecutor_path = "{script}"\n', encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if not k.startswith("MEMRIVER_")}
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "memriver.cli", "serve", "--root", str(root)],
-        cwd=str(git_repo), env={**env, "HOME": str(home)}, stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
+    stderr = tmp_path / "stderr"
+    with stderr.open("w") as err:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "memriver.cli", "serve", "--root", str(root)],
+            cwd=str(git_repo), env={**env, "HOME": str(home)}, stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=err, text=True, bufsize=1)
+    lines: queue.Queue = queue.Queue()
+    threading.Thread(target=_pump, args=(proc.stdout, lines), daemon=True).start()
     try:
         _send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
                      "params": {"protocolVersion": PROTOCOL_VERSION, "capabilities": {},
                                 "clientInfo": {"name": "test", "version": "0"}}})
-        _messages_until(proc, 1)
+        _messages_until(lines, 1, deadline)
         _send(proc, {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
         _send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
                      "params": {"name": "memory_write",
                                 "arguments": {"content": "a slow fact", "type": "project"}}})
-        deadline = time.monotonic() + 10
-        while not started.exists():             # the write is in flight
-            assert time.monotonic() < deadline, "the classifier never started"
-            time.sleep(0.05)
+        _until(started.exists, deadline, "the write is in flight")
         _send(proc, {"jsonrpc": "2.0", "method": "notifications/cancelled",
                      "params": {"requestId": 2, "reason": "user pressed Esc"}})
         _send(proc, {"jsonrpc": "2.0", "id": 3, "method": "ping"})
-        seen = _messages_until(proc, 3)
-        while not finished.exists():            # the write runs on and lands anyway
-            assert time.monotonic() < deadline, "the classifier never finished"
-            time.sleep(0.05)
-        time.sleep(0.5)
+        seen = _messages_until(lines, 3, deadline)
+        _until(lambda: _active_memories(root, project_id) == 1, deadline,
+               "the cancelled write lands anyway")
         _send(proc, {"jsonrpc": "2.0", "id": 4, "method": "tools/list"})
-        seen += _messages_until(proc, 4)
+        seen += _messages_until(lines, 4, deadline)
+        assert seen[-1]["result"]["tools"]
+        proc.stdin.close()                      # end of input: exits once all handlers end
+        returncode = proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+        seen += _remaining_messages(lines)
     finally:
-        proc.stdin.close()
-        proc.terminate()
-        proc.wait(timeout=10)
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
     assert [m for m in seen if m.get("id") == 2] == []
-    assert seen[-1]["result"]["tools"]
-    assert _active_memories(root, project_id) == 1
+    log = stderr.read_text(encoding="utf-8", errors="replace")
+    assert (returncode, "Traceback" in log) == (0, False), log[-2000:]
 
 
 def test_settings_file_in_root_is_honoured_end_to_end(tmp_path):

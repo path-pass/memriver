@@ -153,10 +153,13 @@ def _map_error(operation: Operation, err: Exception, *, memory_id: str | None = 
         return f"no such entry{suffix}"
     if isinstance(err, VersionConflict) and operation in ("update", "delete"):
         subject = f"entry {memory_id}" if valid else "entry"
+        # an entry that still reads back is not deleted, whatever edit it shows
+        recovery = ("Call memory_read again: if it already shows your edit, nothing is "
+                    "left to do; otherwise retry with its version." if operation == "update"
+                    else "Call memory_read again and delete with its version if it should "
+                    "still go.")
         return (f"{subject} changed since you read it, possibly by your own earlier call "
-                "that was interrupted; no change was made. Call memory_read again: if it "
-                "already shows your edit, nothing is left to do; otherwise retry with its "
-                "version.")
+                f"that was interrupted; no change was made. {recovery}")
     if operation == "read":
         return f"could not read entry{suffix}"
     if operation == "update":
@@ -287,6 +290,9 @@ def _never_answer_a_cancelled_request(mcp: FastMCP) -> None:
     the server. So each request's responder is given a cancel that cancels and
     completes without sending, and a respond that sends nothing once cancelled.
     Installed before the SDK enters the responder, which its own cancel requires.
+    Not covered (SDK limitation): a cancellation that arrives before the request's
+    handler has started still reaches the SDK's own cancel, which refuses it, so that
+    request may still run and be answered.
     Pinned by test_a_cancelled_call_gets_no_response_and_the_connection_stays_usable."""
     low_level = mcp._mcp_server
     handle_message = low_level._handle_message
