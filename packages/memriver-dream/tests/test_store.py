@@ -83,6 +83,9 @@ def test_a_streak_is_replaced_and_ended_and_evidence_is_only_ever_added(tmp_path
     seen = EvidenceRow("gggggggggg", 3, "run0000001", "restatement", None, None, None,
                        "aaaaaaaaaa", 2, T0)
     store.add_evidence([quote, seen])
+    assert store.evidence("gggggggggg") == [] and store.pending_evidence() == [quote, seen]
+    store.settle_evidence([("gggggggggg", 3, "run0000001")], "cccccccccc")
+    quote, seen = (replace(row, change_id="cccccccccc") for row in (quote, seen))
     store.delete_curation("gggggggggg")
     assert store.curation("gggggggggg") is None
     assert store.evidence("gggggggggg") == [quote, seen]

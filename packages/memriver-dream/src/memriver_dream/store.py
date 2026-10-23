@@ -1,6 +1,7 @@
 """dream.db, memriver-dream's own records (spec §5): runs, TTL reviews, scope passes,
 source re-checks, session summary state, the re-statements of global entries, and
-their curation: demotion streaks and the evidence of every promotion.
+their curation: demotion streaks and the evidence of every promotion (pending until
+the change that applied it is known).
 
 It never holds a memory body, a full prompt or secret text; the only model text in it
 is the policy-checked partial summaries of an unfinished long session
@@ -90,7 +91,8 @@ _SCHEMA = (
     )""",
     # what one promotion to level 1 rested on, kept for good: a quote by its place in
     # the version judged (field and character offsets, never the text), or a recorded
-    # re-statement by its project memory and version
+    # re-statement by its project memory and version. change_id NULL: written before
+    # the core change, pending; a value: the core change that applied the promotion
     """CREATE TABLE IF NOT EXISTS evidence (
       memory_id      TEXT NOT NULL,
       memory_version INTEGER NOT NULL,
@@ -101,7 +103,8 @@ _SCHEMA = (
       stop           INTEGER,
       source_id      TEXT,
       source_version INTEGER,
-      decided_at     TEXT NOT NULL
+      decided_at     TEXT NOT NULL,
+      change_id      TEXT
     )""",
 )
 _RUN_COLUMNS = "run_id, started_at, finished_at, trigger, status, report_file"
@@ -163,6 +166,7 @@ class EvidenceRow:
     source_id: str | None       # restatement: the project memory and its version
     source_version: int | None
     decided_at: str
+    change_id: str | None = None   # None: pending, not yet known to have been applied
 
     def reference(self) -> str:
         """How the report names it: traceable, never the quoted text."""
@@ -361,18 +365,39 @@ class DreamStore:
         self._execute("DELETE FROM curation WHERE memory_id = ?", memory_id)
 
     def add_evidence(self, rows: Iterable[EvidenceRow]) -> None:
+        """Write rows in one transaction; a row without change_id is pending."""
         with self._write() as conn:
             conn.executemany("INSERT INTO evidence (memory_id, memory_version, run_id, kind, "
-                             "field, start, stop, source_id, source_version, decided_at) "
-                             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                             "field, start, stop, source_id, source_version, decided_at, "
+                             "change_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                              [astuple(row) for row in rows])
+
+    def settle_evidence(self, keys: Iterable[tuple[str, int, str]],
+                        change_id: str | None) -> None:
+        """Pending rows by (memory_id, memory_version, run_id): marked with the change
+        that applied them, or deleted when `change_id` is None."""
+        with self._write() as conn:
+            for key in keys:
+                where = ("WHERE memory_id = ? AND memory_version = ? AND run_id = ? "
+                         "AND change_id IS NULL")
+                if change_id is None:
+                    conn.execute(f"DELETE FROM evidence {where}", key)
+                else:
+                    conn.execute(f"UPDATE evidence SET change_id = ? {where}",
+                                 (change_id, *key))
+
+    def pending_evidence(self) -> list[EvidenceRow]:
+        return self._evidence("WHERE change_id IS NULL")
 
     def evidence(self, memory_id: str) -> list[EvidenceRow]:
         """Every recorded piece of evidence of `memory_id`'s promotions, oldest first."""
+        return self._evidence("WHERE change_id IS NOT NULL AND memory_id = ?", memory_id)
+
+    def _evidence(self, clause: str, *params: object) -> list[EvidenceRow]:
         return [EvidenceRow(*row) for row in self._rows(
             "SELECT memory_id, memory_version, run_id, kind, field, start, stop, source_id, "
-            "source_version, decided_at FROM evidence WHERE memory_id = ? "
-            "ORDER BY rowid", memory_id)]
+            f"source_version, decided_at, change_id FROM evidence {clause} ORDER BY rowid",
+            *params)]
 
     def summary(self, harness: str, session_id: str) -> SummaryRow | None:
         rows = self._rows(f"SELECT {_SUMMARY_COLUMNS} FROM session_summaries "

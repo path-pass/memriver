@@ -17,7 +17,9 @@ candidates with the strongest evidence (re-statements, then recency), and the re
 stay 2, under Needs you. A new tag name without a description is not applied, nor
 are more tag names than tags_max. Every change is one apply_group, then the tag
 descriptions. Curation never merges, splits or deletes. dream.db keeps each rule's
-demotion streak and, apart from it and for good, the evidence of every promotion.
+demotion streak and, apart from it and for good, the evidence of every promotion:
+written pending before the change, marked with its change id right after it, and
+reconciled from the store's history at the next curate pass if the run died between.
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ from typing import TYPE_CHECKING
 
 from memriver_core.models import TAG_NAME_MAX_CHARS, TAG_NAME_RE
 from memriver_core.models.changes import Update
-from memriver_core.models.errors import ContentRejected
+from memriver_core.models.errors import ContentRejected, MemoryNotFound
 
 from ..calls import storable
 from ..changes import apply_group, classifier_refusal
@@ -230,8 +232,33 @@ def _streaks(ctx: Context, current: list[Memory], plans: dict[str, _Plan]) -> No
         plan = plans.get(memory.id)
         if plan is not None and plan.level == 1 and plan.judged_two:
             ctx.store.put_curation(CurationRow(memory.id, plan.judged_two, ctx.now))
-        elif memory.level == 1 or plan is not None:
+        else:
             ctx.store.delete_curation(memory.id)
+
+
+def _reconcile(ctx: Context) -> None:
+    """Pending evidence left by an earlier run, settled from the store's history: the
+    promotion was applied if the next version of the entry is a level-1 version made by
+    dream, whose change then marks the rows; otherwise (or if the entry is gone) the
+    rows are dropped."""
+    applied: dict[str, list[tuple[str, int, str]]] = {}
+    dropped: list[tuple[str, int, str]] = []
+    for row in ctx.store.pending_evidence():
+        key = (row.memory_id, row.memory_version, row.run_id)
+        try:
+            versions = ctx.services.memory.versions(row.memory_id)
+        except MemoryNotFound:
+            versions = []
+        after = next((v for v in versions if v.version == row.memory_version + 1), None)
+        if after is not None and after.level == 1 and after.change is not None \
+                and after.change.changed_by == "dream":
+            applied.setdefault(after.change.change_id, []).append(key)
+        else:
+            dropped.append(key)
+    for change_id, keys in applied.items():
+        ctx.store.settle_evidence(keys, change_id)
+    if dropped:
+        ctx.store.settle_evidence(dropped, None)
 
 
 def run(ctx: Context) -> PassResult:
@@ -240,6 +267,7 @@ def run(ctx: Context) -> PassResult:
     if global_id is None:
         report.line("no global project")
         return PassResult(finished=True)
+    _reconcile(ctx)
     memories = usable(ctx, global_id)
     if not memories:
         report.line("no global memories")
@@ -326,16 +354,25 @@ def run(ctx: Context) -> PassResult:
            if (plan.level, plan.tags, plan.body) != (plan.memory.level, plan.memory.tags, None)]
     before = _standing(current, {m.id: m.level for m in current},
                        {m.id: m.body for m in current})
-    if ops and apply_group(ctx, "curate", [op.memory_id for op in ops], ops,
-                           touches_global=True) is None:
+    # the evidence is written pending before the change and marked with its id right
+    # after it, ahead of any other dream.db write: a failure in between leaves a pending
+    # row the next pass reconciles from the store's history
+    pending = [row for plan in plans.values() for row in plan.evidence] if ops else []
+    keys = sorted({(row.memory_id, row.memory_version, row.run_id) for row in pending})
+    if pending:
+        ctx.store.add_evidence(pending)
+    change_id = apply_group(ctx, "curate", [op.memory_id for op in ops], ops,
+                            touches_global=True) if ops else None
+    if ops and change_id is None:
+        ctx.store.settle_evidence(keys, None)
         _streaks(ctx, current, {})                 # nothing this run judged took effect
         return PassResult(finished=False)
+    if pending:
+        ctx.store.settle_evidence(keys, change_id)
     _streaks(ctx, current, plans)
     for plan in plans.values():
         if plan.note:
             report.line(plan.note)
-        if plan.evidence:
-            ctx.store.add_evidence(plan.evidence)
     after = _standing(current, {m.id: plans[m.id].level if m.id in plans else m.level
                                 for m in current},
                       {m.id: (plans[m.id].body if m.id in plans and plans[m.id].body

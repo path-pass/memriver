@@ -548,8 +548,10 @@ still going is recorded as skipped. Each run, in order:
    text, not that the user said it: which words are the user's is the model's
    call, and a re-statement is the evidence that can be traced. Each promotion's
    evidence is kept in `dream.db` for good -- a quote by the version, field and
-   character range it stands at, a re-statement by its memory and version -- and
-   the report names it the same way. Leaving level 1 takes the entry being judged
+   character range it stands at, a re-statement by its memory and version --
+   recorded as pending before the change and marked with the change's id after
+   it (a pending record left by a run that died is settled from the memory's
+   history at the next curate run), and the report names it the same way. Leaving level 1 takes the entry being judged
    level 2 in `standing_demote_runs` curate runs in a row; a curate run that does
    not judge it level 2 (it was left out, the answer about it was invalid, the
    call failed, or the change was not applied) starts the count over, and nobody

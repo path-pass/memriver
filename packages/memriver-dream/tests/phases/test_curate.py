@@ -5,10 +5,13 @@ tags and their descriptions, one change per run, the report and dream.db's recor
 from __future__ import annotations
 
 import json
+import sqlite3
+from dataclasses import replace
 
 import pytest
 from memriver_core import Verdict
 from memriver_core.bootstrap import build_services
+from memriver_core.models.changes import Update
 from memriver_core.settings import Settings
 from memriver_dream.phases import PassResult, curate
 from memriver_dream.protocols import ExecutorResult
@@ -54,6 +57,13 @@ def _pass(world, *replies, **overrides) -> tuple[PassResult, str]:
 def _state(world, memory_id: str) -> tuple:
     memory = world.services.memory.show(memory_id)
     return memory.version, memory.level, memory.tags
+
+
+def _recorded(world, memory_id: str) -> list[EvidenceRow]:
+    """The recorded evidence, each row with the change that applied it (set to None here)."""
+    rows = _store(world).evidence(memory_id)
+    assert all(row.change_id for row in rows)
+    return [replace(row, change_id=None) for row in rows]
 
 
 def _limited(world, **caps):
@@ -120,7 +130,7 @@ def test_level_1_needs_evidence_the_code_can_find(world, quotes, restated, promo
                     run_id="r2")
     assert _state(world, rule)[1] == (1 if promoted else 2)
     assert (f"refused level 1 {rule}: evidence\n" in text) is not promoted
-    rows = _store(world).evidence(rule)
+    rows = _recorded(world, rule)
     if not promoted:
         assert rows == []
     elif quotes:
@@ -142,7 +152,7 @@ def test_quote_evidence_stays_traceable_after_a_rewrite_and_a_demotion(world):
     assert world.services.memory.show(rule).body == short
     _pass(world, _answer(_entry(rule, 2)), settings=settings, run_id="r2")
     assert _state(world, rule)[1] == 2
-    (row,) = _store(world).evidence(rule)
+    (row,) = _recorded(world, rule)
     assert row == _quote_row(rule, 1, "r1", world.now)
     judged = next(v for v in world.services.memory.versions(rule)
                   if v.version == row.memory_version)
@@ -401,5 +411,61 @@ def test_run_dream_curates_after_extraction_under_its_section(world):
     text = world.report_text(row)
     assert text.index("== Global layer: extraction ==") < text.index("== Global curation ==")
     assert f"promoted {rule} (v1 body[{AT}:{AT + len(QUOTE)}]): judged on its text\n" in text
-    assert _store(world).evidence(rule) == [_quote_row(rule, 1, row.run_id, world.now)]
+    assert _recorded(world, rule) == [_quote_row(rule, 1, row.run_id, world.now)]
     assert _store(world).curation(rule) is None
+
+
+def test_a_promotion_applied_before_dream_db_failed_keeps_its_evidence(world, monkeypatch):
+    long_rule = f'{RULE} {"Explain why in the pull request. " * 6}'.strip()
+    rule = _global(world, long_rule)
+    short = "Open a pull request; avoid direct pushes."
+    world.executor.replies = [_answer(_entry(rule, 1, quotes=(QUOTE,), body=short))]
+
+    def fail(self, *args):
+        raise sqlite3.OperationalError("database is locked")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(DreamStore, "settle_evidence", fail)
+        with pytest.raises(sqlite3.OperationalError):
+            curate.run(world.context(run_id="r1"))
+    assert _state(world, rule)[1] == 1 and _store(world).evidence(rule) == []
+    assert len(_store(world).pending_evidence()) == 1
+    _pass(world, _answer(_entry(rule, 1)), run_id="r2")
+    version_2 = next(v for v in world.services.memory.versions(rule) if v.version == 2)
+    (row,) = _store(world).evidence(rule)
+    assert (row.memory_version, row.field, row.change_id) == (1, "body", version_2.change.change_id)
+    assert long_rule[row.start:row.stop] == QUOTE
+
+
+def test_a_refused_change_leaves_no_evidence_pending_or_recorded(world):
+    rule = _global(world)
+    settings = world.dream.model_copy(update={"max_groups_per_run": 1})
+    world.executor.replies = [_answer(_entry(rule, 1, quotes=(QUOTE,)))]
+    assert not curate.run(world.context(settings=settings, groups_used=1)).finished
+    assert _store(world).pending_evidence() == [] and _store(world).evidence(rule) == []
+
+
+def test_pending_evidence_of_a_promotion_never_applied_is_dropped_by_the_next_pass(world):
+    rule = _global(world)
+    _store(world).add_evidence([_quote_row(rule, 1, "r0", world.now)])
+    assert len(_store(world).pending_evidence()) == 1
+    _pass(world, _answer(_entry(rule, 2)))
+    assert _store(world).pending_evidence() == [] and _store(world).evidence(rule) == []
+
+
+def test_a_gap_breaks_the_streak_of_an_entry_that_was_not_level_1_meanwhile(world):
+    a, b = _global(world), _global(world, "uv manages python", type="user")
+    settings = world.dream.model_copy(update={"standing_demote_runs": 2})
+    memory = world.services.memory
+
+    def person(level):
+        memory.apply([Update(a, memory.show(a).version, level=level)], changed_by="test")
+
+    _pass(world, _answer(_entry(a, 1, quotes=(QUOTE,)), _entry(b)), settings=settings)
+    _pass(world, _answer(_entry(a, 2), _entry(b)), settings=settings)
+    assert _store(world).curation(a).judged_two == 1
+    person(2)
+    _pass(world, _answer(_entry(b)), settings=settings)            # A sent, not judged
+    person(1)
+    _pass(world, _answer(_entry(a, 2), _entry(b)), settings=settings)
+    assert _state(world, a)[1] == 1 and _store(world).curation(a).judged_two == 1
