@@ -496,3 +496,22 @@ def test_only_a_retired_global_memory_is_listed_in_needs_you(world, in_global):
     listed = re.search(rf"^global changed: retire {memory_id} — undo: memriver undo \S+$",
                        text, re.MULTILINE)
     assert bool(listed) is in_global
+
+
+def test_a_standing_rule_is_not_a_ttl_candidate_but_a_level_2_entry_is(world):
+    # level-1 bodies are injected into every session, so a rule is never read:
+    # its use is its injection, and curate (not the TTL) demotes it
+    rule_text = 'The user said "never push to main"; open a pull request instead.'
+    rule = world.create(world.global_id, rule_text, type="feedback")
+    plain = world.create(world.global_id, "uv manages python", type="user")
+    memory = world.services.memory
+    memory.apply([Update(rule, memory.show(rule).version, level=1),
+                  Update(plain, memory.show(plain).version, level=2)], changed_by="test")
+    _age(world, rule, 400)
+    _age(world, plain, 400)
+    assert _candidates(world) == [plain]
+    world.executor.replies = [_decision("uncertain"), _decision("uncertain")]
+    for _ in range(2):
+        _pass(world)
+    assert not _deleted(world, rule)
+    assert _review(world, rule) is None

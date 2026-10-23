@@ -83,7 +83,8 @@ def candidates(ctx: Context) -> tuple[str, list[Memory]]:
     created must be a valid timestamp to prove an age at all (old or hand-edited data
     can hold anything): a memory with a malformed one has no provable age and is
     skipped, never retired on an unknown age. A malformed or absent last_read_at
-    simply does not count towards the age.
+    simply does not count towards the age. A level-1 entry is never a candidate (see
+    the loop).
     """
     listed_at = clock()
     settings = ctx.settings
@@ -91,6 +92,8 @@ def candidates(ctx: Context) -> tuple[str, list[Memory]]:
     usage = ctx.services.memory.usage([memory.id for memory in memories])
     due = []
     for memory in memories:
+        if memory.level == 1:
+            continue                    # injected in full, never read: curate demotes it
         if not is_timestamp(memory.created):
             ctx.report.line(f"skipped {memory.id}: unknown time")
             continue

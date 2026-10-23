@@ -225,7 +225,7 @@ def _describe(ctx: Context, global_id: str, name: str, description: str) -> bool
 
 
 def _streaks(ctx: Context, current: list[Memory], plans: dict[str, _Plan]) -> None:
-    """Each level-1 entry's demotion streak after this curate run: kept for a rule the
+    """Every current entry's demotion streak after this curate run: kept for a rule the
     run judged 2 and kept at 1; ended for every other entry -- judged 1, demoted, or not
     judged at all, which breaks "in a row"."""
     for memory in current:

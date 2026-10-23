@@ -94,7 +94,9 @@ reports go to stderr.
   whole lines with an omission notice rather than cutting mid-entry. Global
   comes first -- its standing rules in full, one line per tag with how many
   entries carry it, then the global entries `memriver dream` has not judged
-  yet -- and the project's entries last, so a cut drops project lines first.
+  yet, the level-2 ones with no tag, and rules past `standing_max_count`
+  that carry no tag -- and the project's entries last, so a cut drops project
+  lines first.
   An agent opens a tag with `memory_index(tag=...)`.
 - **A session's project is fixed at its start.** A Claude Code or Codex
   session gets its project once -- from its first `SessionStart` -- and keeps
@@ -217,14 +219,21 @@ Known limits:
   `serve --harness` argument, so without it prompts are not counted, `Stop`
   never nudges, and the MCP server stays in directory mode. Then restart
   every harness session and MCP server that shares the store; a running
-  server keeps its old rules. This release's store is schema version 4: a
-  store written by an earlier release is refused -- hooks do nothing, MCP
-  tools answer that the store's schema version is not supported and change
-  nothing, and every other command, `doctor`, `memriver dream run` and
-  `dream report` included, exits 1 with one line naming the store's schema
-  version; an earlier memriver refuses a v4 store. A session that already
-  has a row keeps being routed by it regardless of a software update (see
-  *What your agent sees*).
+  server keeps its old rules. This release's store is schema version 5: a
+  version-4 store is upgraded in place on its first read, write or `doctor`
+  run (two columns and a table, no version rows; one write lock, once). A store
+  below version 4 is refused as before -- hooks do nothing, MCP tools answer
+  that the store's schema version is not supported and change nothing, and
+  every other command, `doctor`, `memriver dream run` and `dream report`
+  included, exits 1 with one line naming the store's schema version. An earlier
+  memriver meets a version-5 store as an unknown schema: its hooks inject no
+  memories (`SessionStart` shows the store as unavailable), its MCP tools
+  fail with a generic could-not-read (or could-not-write) message, and its
+  `doctor` reports `unknown-schema`. So after upgrading, update every harness
+  that shares the store (e.g. `uvx --refresh memriver ...` or reinstalling
+  the tool) and restart its sessions. A session that already has a row keeps
+  being routed by it regardless of a software update (see *What your agent
+  sees*).
 - A store written by the pre-SQLite file layout (`global/`, `store.toml`,
   `projects/`, `memories/`, `registry/`) is not read or migrated; `memriver
   doctor` reports it as `legacy-layout`.
@@ -551,10 +560,11 @@ still going is recorded as skipped. Each run, in order:
    character range it stands at, a re-statement by its memory and version --
    recorded as pending before the change and marked with the change's id after
    it (a pending record left by a run that died is settled from the memory's
-   history at the next curate run), and the report names it the same way. Leaving level 1 takes the entry being judged
-   level 2 in `standing_demote_runs` curate runs in a row; a curate run that does
-   not judge it level 2 (it was left out, the answer about it was invalid, the
-   call failed, or the change was not applied) starts the count over, and nobody
+   history at the next curate run), and the report names it the same way.
+   Leaving level 1 takes the entry being judged level 2 in
+   `standing_demote_runs` curate runs in a row; a curate run that does not
+   judge it level 2 (it was left out, the answer about it was invalid, the call
+   failed, or the change was not applied) starts the count over, and nobody
    re-stating a rule never demotes it. Rules keep their place under
    `standing_max_count`; the room left goes to the new candidates with the most
    re-statements, then the most recent, and the rest stay level 2 and are listed
@@ -572,7 +582,8 @@ still going is recorded as skipped. Each run, in order:
    alone for another `ttl_days`; `delete` soft-deletes it; `uncertain_limit`
    uncertain answers in a row about the same content (type, description and
    body) soft-delete it too. A read that lands while the model decides keeps
-   the memory.
+   the memory. Level-1 entries are not TTL candidates: they are injected, not
+   read, and curate demotes them.
 8. Writes its report, and deletes runs and reports older than
    `report_retention_days`.
 
@@ -769,7 +780,8 @@ uvx memriver doctor --root /path      # check a non-default store
 A store below schema version 4 is refused before any of the checks below run:
 `doctor` prints the one line naming the store's schema version to stderr and
 exits 1, with `--json` still emitting `{"error": ...}` on stdout -- no report
-either way. On a store at schema version 4, `doctor` diagnoses problems in
+either way. On a store at schema version 5 (`doctor` upgrades a version-4
+store first), `doctor` diagnoses problems in
 more detail than a tool call reports: a schema version this build does not
 recognize as current (`unknown-schema`; when the check cannot complete at
 all -- a garbage file, a missing table -- doctor takes the inaccessible
