@@ -19,10 +19,14 @@ from typing import get_args
 
 from memriver_core.models import (
     ID_RE,
+    TAG_NAME_MAX_CHARS,
+    TAG_NAME_RE,
     Memory,
     MemoryType,
     ReadWriteSet,
     Trust,
+    checked_level,
+    checked_tags,
     is_timestamp,
     new_id,
     now,
@@ -35,6 +39,7 @@ from memriver_core.models.changes import (
     HardDeleteItem,
     HardDeletePlan,
     MemoryVersion,
+    MetadataCaps,
     Op,
     OpName,
     PlanCitation,
@@ -48,6 +53,7 @@ from memriver_core.models.changes import (
 )
 from memriver_core.models.errors import (
     BatchConflict,
+    CapExceeded,
     ContentRejected,
     GlobalReadOnly,
     IdCollision,
@@ -59,6 +65,7 @@ from memriver_core.models.errors import (
     UndoRefused,
     VersionConflict,
 )
+from memriver_core.models.memory import tags_from_json, tags_to_json
 
 from .database import MEMORY_COLUMNS, Database, memory_from_row, memory_to_row
 
@@ -149,6 +156,8 @@ class _State:
     body: str
     deleted: bool
     sources: tuple[SourceRef, ...]
+    level: int | None
+    tags: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -164,11 +173,13 @@ class _Batch:
     before: dict[str, tuple[int, bool] | None] = field(default_factory=dict)
     # (index, memory_id, version) of every new version with sources: the cycle check
     cited: list[tuple[int, str, int]] = field(default_factory=list)
+    # memory_id -> (project_id, state before this change or None, state after): the caps
+    written: dict[str, tuple[str, _State | None, _State]] = field(default_factory=dict)
 
 
 def apply_ops(conn: sqlite3.Connection, ops: Sequence[Op], *,
               restriction: ReadWriteSet | None, changed_by: str, changed_via: str | None,
-              check: Check, undoes: str | None = None) -> Change:
+              check: Check, caps: MetadataCaps, undoes: str | None = None) -> Change:
     """Check and write `ops` as one change, inside the caller's write transaction.
 
     Every refusal raises before the caller commits, so a refused change
@@ -199,6 +210,7 @@ def apply_ops(conn: sqlite3.Connection, ops: Sequence[Op], *,
     steps = tuple(_apply_one(batch, index, op, changed_by=changed_by, changed_via=changed_via)
                   for index, op in enumerate(ops))
     _refuse_cycles(batch)
+    _refuse_caps(batch, caps)
     conn.executemany("INSERT INTO change_steps (change_id, step, memory_id, op, before_version, "
                      "after_version) VALUES (?, ?, ?, ?, ?, ?)",
                      [(change_id, s.step, s.memory_id, s.op, s.before_version, s.after_version)
@@ -224,9 +236,11 @@ def _create(batch: _Batch, index: int, op: Create, *, changed_by: str,
     # with sources, trust and sync come from them alone (spec §3.3)
     trust, sync = _derived(batch, index, None, "user", True, sources) if sources \
         else (op.trust, op.sync)
-    memory = Memory.new(body=op.body, type=op.type, project_id=op.project_id,
-                        source={"harness": changed_via or "unknown", "method": changed_by},
-                        trust=trust, sync=sync, description=op.description)
+    memory = replace(
+        Memory.new(body=op.body, type=op.type, project_id=op.project_id,
+                   source={"harness": changed_via or "unknown", "method": changed_by},
+                   trust=trust, sync=sync, description=op.description),
+        level=checked_level(op.level), tags=checked_tags(op.tags))
     row = memory_to_row(memory)
     # a row the read path would reject is never committed
     memory_from_row(row)
@@ -238,9 +252,10 @@ def _create(batch: _Batch, index: int, op: Create, *, changed_by: str,
         raise IdCollision(memory.id)
     batch.conn.execute(f"INSERT INTO memories ({MEMORY_COLUMNS}) VALUES ({_PLACEHOLDERS})", row)
     batch.before[memory.id] = None
-    _insert_version(batch, index, memory.id, 1,
-                    _State(memory.type, memory.trust, memory.sync, memory.description,
-                           memory.body, False, sources))
+    state = _State(memory.type, memory.trust, memory.sync, memory.description, memory.body,
+                   False, sources, memory.level, memory.tags)
+    batch.written[memory.id] = (memory.project_id, None, state)
+    _insert_version(batch, index, memory.id, 1, state)
     return Step(index + 1, memory.id, "create", None, 1)
 
 
@@ -273,7 +288,10 @@ def _update(batch: _Batch, index: int, op: Update) -> Step:
     after = replace(
         before, trust=trust, sync=sync, sources=sources,
         description=before.description if op.description is None else op.description.strip(),
-        body=before.body if op.body is None else op.body.strip())
+        body=before.body if op.body is None else op.body.strip(),
+        # not mentioned: carried forward, like the text
+        level=before.level if op.level is None else checked_level(op.level),
+        tags=before.tags if op.tags is None else checked_tags(op.tags))
     return _write_version(batch, index, "update", current, before, after)
 
 
@@ -294,18 +312,18 @@ def _restore(batch: _Batch, index: int, op: Restore) -> Step:
     """`to_version`'s recorded state -- its own trust and sync included -- as the next version."""
     current = _target(batch, index, op, allow_deleted=True)
     row = batch.conn.execute(
-        "SELECT type, trust, sync, description, body, deleted FROM memory_versions "
+        "SELECT type, trust, sync, description, body, deleted, level, tags FROM memory_versions "
         "WHERE memory_id = ? AND version = ?", (current.id, op.to_version)).fetchone()
     if row is None:
         raise BatchConflict(index, current.id, "missing")
-    type_, trust, sync, description, body, deleted = _decode_history_state(*row)
+    type_, trust, sync, description, body, deleted, level, tags = _decode_history_state(*row)
     sources = _sources_of(batch.conn, current.id, op.to_version)
     # restored references go back as they were; each cited version must still exist
     for ref in sources:
         if batch.conn.execute("SELECT 1 FROM memory_versions WHERE memory_id = ? AND version = ?",
                               (ref.memory_id, ref.version)).fetchone() is None:
             raise BatchConflict(index, current.id, "source")
-    after = _State(type_, trust, sync, description, body, deleted, sources)
+    after = _State(type_, trust, sync, description, body, deleted, sources, level, tags)
     return _write_version(batch, index, "restore", current, _state_of(batch.conn, current),
                           after)
 
@@ -384,9 +402,55 @@ def _refuse_cycles(batch: _Batch) -> None:
             raise BatchConflict(index, memory_id, "cycle")
 
 
+def _standing(state: _State | None) -> bool:
+    return state is not None and not state.deleted and state.level == 1
+
+
+def _refuse_caps(batch: _Batch, caps: MetadataCaps) -> None:
+    """The metadata limits, per project the change wrote, on the states it
+    leaves. A change never breaks a limit, and a breach already there -- the limit was
+    lowered since -- may stay but never grow: a memory it wrote may keep its own breach
+    while the new value is no larger than the old (its tag count, its level-1 body),
+    and a project's count may stay above its limit but never rise."""
+    for memory_id, (_, before, after) in batch.written.items():
+        if after.deleted:
+            continue
+        held = before is not None and not before.deleted
+        if len(after.tags) > caps.tags_per_memory_max and not (
+                held and len(after.tags) <= len(before.tags)):
+            raise CapExceeded("tags_per_memory_max", memory_id)
+        if _standing(after) and len(after.body) > caps.standing_max_chars and not (
+                _standing(before) and len(after.body) <= len(before.body)):
+            raise CapExceeded("standing_max_chars", memory_id)
+    for project_id in sorted({project for project, _, _ in batch.written.values()}):
+        written = {memory_id: states for memory_id, (project, *states) in batch.written.items()
+                   if project == project_id}
+        standing, names = 0, set()
+        # the project's other current memories: the same before and after this change
+        for level, tags in batch.conn.execute(
+                "SELECT level, tags FROM memories WHERE project_id = ? AND deleted_at IS NULL "
+                f"AND id NOT IN ({', '.join('?' for _ in written)})", (project_id, *written)):
+            try:
+                names.update(tags_from_json(tags))
+            except ValueError as err:
+                raise StorageFailure from err
+            standing += level == 1
+        before = [state for state, _ in written.values()]
+        after = [state for _, state in written.values()]
+        counts = [standing + sum(map(_standing, states)) for states in (before, after)]
+        if counts[1] > caps.standing_max_count and counts[1] > counts[0]:
+            raise CapExceeded("standing_max_count")
+        carried = [names.union(*(state.tags for state in states
+                                 if state is not None and not state.deleted))
+                   for states in (before, after)]
+        if len(carried[1]) > caps.tags_max and len(carried[1]) > len(carried[0]):
+            raise CapExceeded("tags_max")
+
+
 def _state_of(conn: sqlite3.Connection, memory: Memory) -> _State:
     return _State(memory.type, memory.trust, memory.sync, memory.description, memory.body,
-                  memory.deleted_at is not None, _sources_of(conn, memory.id, memory.version))
+                  memory.deleted_at is not None, _sources_of(conn, memory.id, memory.version),
+                  memory.level, memory.tags)
 
 
 def _sources_of(conn: sqlite3.Connection, memory_id: str,
@@ -409,7 +473,8 @@ def _sources_of(conn: sqlite3.Connection, memory_id: str,
 
 
 def _decode_history_state(type_: object, trust: object, sync: object, description: object,
-                          body: object, deleted: object) -> tuple[str, str, bool, str, str, bool]:
+                          body: object, deleted: object, level: object, tags: object
+                          ) -> tuple[str, str, bool, str, str, bool, int | None, tuple[str, ...]]:
     """A `memory_versions` row's state, validated like `memory_from_row`.
 
     `memory_versions` has no CHECK on `type`/`trust`, and the connection's lenient
@@ -428,7 +493,11 @@ def _decode_history_state(type_: object, trust: object, sync: object, descriptio
         raise StorageFailure
     if type(deleted) is not int or deleted not in (0, 1):
         raise StorageFailure
-    return type_, trust, bool(sync), description, body, bool(deleted)
+    try:
+        level, tags = checked_level(level), tags_from_json(tags)
+    except ValueError as err:
+        raise StorageFailure from err
+    return type_, trust, bool(sync), description, body, bool(deleted), level, tags
 
 
 def _write_version(batch: _Batch, index: int, op_name: OpName, current: Memory,
@@ -449,15 +518,18 @@ def _write_version(batch: _Batch, index: int, op_name: OpName, current: Memory,
     memory = replace(current, type=after.type, trust=after.trust, sync=after.sync,
                      description=after.description, body=after.body, updated=updated,
                      version=current.version + 1,
-                     deleted_at=updated if after.deleted else None)
+                     deleted_at=updated if after.deleted else None,
+                     level=after.level, tags=after.tags)
     # validate the row as it will stand, before writing it
     memory_from_row(memory_to_row(memory))
     batch.before.setdefault(current.id, (current.version, before.deleted))
+    batch.written[current.id] = (current.project_id, before, after)
     batch.conn.execute(
         "UPDATE memories SET type = ?, trust = ?, sync = ?, description = ?, body = ?, "
-        "updated = ?, version = ?, deleted_at = ? WHERE id = ?",
+        "updated = ?, version = ?, deleted_at = ?, level = ?, tags = ? WHERE id = ?",
         (memory.type, memory.trust, int(memory.sync), memory.description, memory.body,
-         memory.updated, memory.version, memory.deleted_at, memory.id))
+         memory.updated, memory.version, memory.deleted_at, memory.level,
+         tags_to_json(memory.tags), memory.id))
     _insert_version(batch, index, memory.id, memory.version, after)
     return Step(index + 1, memory.id, op_name, current.version, memory.version)
 
@@ -518,9 +590,10 @@ def _insert_version(batch: _Batch, index: int, memory_id: str, version: int,
                     state: _State) -> None:
     batch.conn.execute(
         "INSERT INTO memory_versions (memory_id, version, type, trust, sync, description, "
-        "body, deleted, change_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "body, deleted, change_id, level, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (memory_id, version, state.type, state.trust, int(state.sync), state.description,
-         state.body, int(state.deleted), batch.change_id))
+         state.body, int(state.deleted), batch.change_id, state.level,
+         tags_to_json(state.tags)))
     batch.conn.executemany(
         "INSERT INTO memory_sources (memory_id, version, source_id, source_version) "
         "VALUES (?, ?, ?, ?)",
@@ -535,17 +608,17 @@ class SqliteMemoryStore:
         self._database = Database(self.root, busy_timeout_ms=busy_timeout_ms)
 
     def apply(self, ops: Sequence[Op], *, changed_by: str, changed_via: str | None,
-              check: Check) -> Change:
+              check: Check, caps: MetadataCaps) -> Change:
         with self._database.write(create=False) as conn:
             return apply_ops(conn, ops, restriction=None, changed_by=changed_by,
-                             changed_via=changed_via, check=check)
+                             changed_via=changed_via, check=check, caps=caps)
 
     def change(self, change_id: str) -> Change | None:
         with self._database.read() as conn:
             return None if conn is None else _change(conn, change_id)
 
     def undo(self, change_id: str, *, changed_by: str, changed_via: str | None,
-             check: Check) -> Change:
+             check: Check, caps: MetadataCaps) -> Change:
         """The inverse of a change as one new change (spec §4.1), in one transaction."""
         with self._database.write(create=False) as conn:
             change = _change(conn, change_id)
@@ -566,7 +639,7 @@ class SqliteMemoryStore:
                        else Restore(step.memory_id, step.after_version, step.before_version)
                        for step in change.steps]
             return apply_ops(conn, inverse, restriction=None, changed_by=changed_by,
-                             changed_via=changed_via, check=check, undoes=change_id)
+                             changed_via=changed_via, check=check, caps=caps, undoes=change_id)
 
     def scan(self, check: Callable[[str], str | None]) -> list[PolicyHit]:
         """Every stored version of every memory against `check`: one hit per version, no text."""
@@ -615,7 +688,7 @@ class SqliteMemoryStore:
             return members
 
     def write(self, op: Op, *, restriction: ReadWriteSet, changed_by: str,
-              changed_via: str | None, check: Check) -> Memory:
+              changed_via: str | None, check: Check, caps: MetadataCaps) -> Memory:
         """One agent op; the resulting memory, read inside the write transaction.
 
         An unchanged result writes nothing and returns the memory as checked.
@@ -626,10 +699,11 @@ class SqliteMemoryStore:
         # another project's memories through "source"/"cycle" conflicts
         if isinstance(op, Restore):
             raise ValueError("restore is not an agent operation")  # noqa: TRY004
-        # an agent never sets sources: a Create cites none, an Update keeps them
-        if (isinstance(op, Create) and op.sources != ()) or \
-                (isinstance(op, Update) and op.sources is not None):
-            raise ValueError("citing sources is not an agent operation")
+        # an agent never sets sources, a level or tags: a Create has none, an Update
+        # keeps them
+        if (isinstance(op, Create) and (op.sources, op.level, op.tags) != ((), None, ())) or \
+                (isinstance(op, Update) and (op.sources, op.level, op.tags) != (None,) * 3):
+            raise ValueError("citing sources or setting metadata is not an agent operation")
         # a malformed target id answers exactly like a missing one, never as
         # storage damage: SQLite never sees it
         if not isinstance(op, Create) and not _addressable(op.memory_id):
@@ -646,7 +720,7 @@ class SqliteMemoryStore:
             try:
                 memory_id = apply_ops(conn, [op], restriction=restriction,
                                       changed_by=changed_by, changed_via=changed_via,
-                                      check=check).steps[0].memory_id
+                                      check=check, caps=caps).steps[0].memory_id
             except BatchConflict as err:
                 # on this path only an unchanged result, after every other check passed
                 if err.reason != "same-state":
@@ -763,20 +837,49 @@ class SqliteMemoryStore:
                 raise MemoryNotFound(memory_id)
             rows = conn.execute(
                 "SELECT v.version, v.type, v.trust, v.sync, v.description, v.body, v.deleted, "
+                "v.level, v.tags, "
                 "c.change_id, c.at, c.changed_by, c.changed_via, c.step_count, c.undoes "
                 "FROM memory_versions v LEFT JOIN changes c ON c.change_id = v.change_id "
                 "WHERE v.memory_id = ? ORDER BY v.version", (memory_id,)).fetchall()
             found = []
-            for (version, type_, trust, sync, description, body, deleted, change_id,
-                 at, changed_by, changed_via, step_count, undoes) in rows:
-                type_, trust, sync, description, body, deleted = _decode_history_state(
-                    type_, trust, sync, description, body, deleted)
+            for (version, type_, trust, sync, description, body, deleted, level, tags,
+                 change_id, at, changed_by, changed_via, step_count, undoes) in rows:
+                type_, trust, sync, description, body, deleted, level, tags = \
+                    _decode_history_state(type_, trust, sync, description, body, deleted,
+                                          level, tags)
                 change = None if change_id is None else Change(
                     change_id, at, changed_by, changed_via, step_count, undoes, ())
                 found.append(MemoryVersion(memory_id, version, type_, trust, sync, description,
                                            body, deleted, _sources_of(conn, memory_id, version),
-                                           change))
+                                           change, level, tags))
             return found
+
+    def describe_tag(self, project_id: str, name: str, description: str) -> None:
+        """Set the description of `name` in `project_id`, replacing any; ProjectNotFound
+        for an unknown project. Not a memory change: no version, no step, no undo."""
+        if not (isinstance(name, str) and len(name) <= TAG_NAME_MAX_CHARS
+                and TAG_NAME_RE.fullmatch(name)):
+            raise ValueError("not a tag name")
+        if not _addressable(project_id) or not self._database.exists():
+            raise ProjectNotFound(project_id)
+        with self._database.write(create=False) as conn:
+            if conn.execute("SELECT 1 FROM projects WHERE id = ?",
+                            (project_id,)).fetchone() is None:
+                raise ProjectNotFound(project_id)
+            conn.execute("INSERT OR REPLACE INTO tags (project_id, name, description, updated) "
+                         "VALUES (?, ?, ?, ?)", (project_id, name, description, now()))
+
+    def tag_descriptions(self, project_id: str) -> dict[str, str]:
+        """Every described tag name of `project_id` with its description; a row
+        memriver could not have written is skipped."""
+        with self._database.read() as conn:
+            if conn is None:
+                return {}
+            rows = conn.execute("SELECT name, description FROM tags WHERE project_id = ?",
+                                (project_id,)).fetchall()
+        return {name: description for name, description in rows
+                if isinstance(name, str) and TAG_NAME_RE.fullmatch(name)
+                and isinstance(description, str)}
 
     def citing(self, memory_id: str) -> list[Citation]:
         with self._database.read() as conn:

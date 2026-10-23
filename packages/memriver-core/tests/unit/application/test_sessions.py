@@ -24,6 +24,7 @@ from memriver_core.application.projects import ProjectService
 from memriver_core.application.sessions import SessionService
 from memriver_core.content_policy.secret_scanner import SecretScanner
 from memriver_core.models import (
+    MetadataCaps,
     ProjectContext,
     PromptEntry,
     ReadWriteSet,
@@ -122,7 +123,8 @@ class World:
             self.memory_store, project_store, lambda: self.policy,
             refuse_pending=session.refuse_pending, mark_saved=session.mark_saved,
             max_body_chars=8000, metadata_max_chars=8000, search_limit_default=5,
-            search_limit_max=50, index_budget_lines=100, index_cue_chars=60)
+            search_limit_max=50, index_budget_lines=100, index_cue_chars=60,
+            metadata_caps=MetadataCaps(10, 200, 12, 3))
         project = ProjectService(project_store, header_field_chars=120,
                                  project_name_max_chars=120)
         # no maintenance service: these tests never diagnose

@@ -21,7 +21,14 @@ from memriver_core.models import (
     ReadWriteSet,
     new_id,
 )
-from memriver_core.models.changes import Create, Restore, SoftDelete, SourceRef, Update
+from memriver_core.models.changes import (
+    Create,
+    MetadataCaps,
+    Restore,
+    SoftDelete,
+    SourceRef,
+    Update,
+)
 from memriver_core.models.errors import (
     GlobalReadOnly,
     IdCollision,
@@ -35,6 +42,8 @@ from memriver_core.repository.protocol import MemoryStore, ProjectStore
 from memriver_core.repository.sqlite import SqliteMemoryStore, SqliteProjectStore
 
 SOURCE = {"harness": "test", "method": "agent"}
+CAPS = MetadataCaps(standing_max_count=10, standing_max_chars=200, tags_max=12,
+                    tags_per_memory_max=3)
 MEMORY_COLUMNS = ("id, project_id, type, source_harness, source_method, trust, sync, "
                   "description, body, created, updated, version, deleted_at, last_read_at")
 
@@ -137,7 +146,8 @@ def _accept(description: str, body: str) -> str | None:
 def _write(world, op, read_write_set=None) -> Memory:
     """One agent op; the memory as the store wrote it."""
     return world["memory_store"].write(op, restriction=read_write_set or world["read_write_set"],
-                                       changed_by="mcp", changed_via="test", check=_accept)
+                                       changed_by="mcp", changed_via="test", check=_accept,
+                                       caps=CAPS)
 
 
 def _create_op(project_id: str, body: str = "内容", description: str = "") -> Create:
@@ -424,7 +434,7 @@ def test_two_writers_with_the_same_version_exactly_one_wins(backend, root, home,
             results.append(memory_store.write(Update(memory.id, 1, body=body),
                                               restriction=world["read_write_set"],
                                               changed_by="mcp", changed_via="test",
-                                              check=_accept))
+                                              check=_accept, caps=CAPS))
         except VersionConflict as err:
             results.append(err)
 
@@ -597,7 +607,7 @@ def test_an_undecodable_row_in_the_same_project_is_skipped_by_search_and_index_n
         world["memory_store"], world["project_store"], content_policy_factory=lambda: None,
         refuse_pending=lambda context: None, mark_saved=lambda context: None,
         max_body_chars=10_000, metadata_max_chars=1_000, search_limit_default=20,
-        search_limit_max=100, index_budget_lines=50, index_cue_chars=80)
+        search_limit_max=100, index_budget_lines=50, index_cue_chars=80, metadata_caps=CAPS)
     assert good.id in memory_service.index(ProjectContext("registered", "", world["read_write_set"]))
     assert world["memory_store"].read(good.id, world["read_write_set"]) == good
     with pytest.raises(StorageFailure):
@@ -766,7 +776,7 @@ def test_concurrent_records_from_two_instances_all_land(backend, root, home, wor
     def write(i: int) -> None:
         memory_stores[i % 2].write(_create_op(world["mine"], f"fact {i}"),
                                    restriction=world["read_write_set"], changed_by="mcp",
-                                   changed_via="test", check=_accept)
+                                   changed_via="test", check=_accept, caps=CAPS)
 
     threads = [threading.Thread(target=write, args=(i,)) for i in range(20)]
     for thread in threads:
@@ -786,6 +796,6 @@ def test_a_missing_store_answers_absence_and_is_never_created_by_reads_or_update
     for op in (Update(new_id(), 1, body="x"), SoftDelete(new_id(), 1)):
         with pytest.raises(MemoryNotFound):
             memory_store.write(op, restriction=read_write_set, changed_by="mcp",
-                               changed_via=None, check=_accept)
+                               changed_via=None, check=_accept, caps=CAPS)
     assert project_store.search(new_id(), None, query=None, limit=None) == []
     assert not (tmp_path / "none").exists()

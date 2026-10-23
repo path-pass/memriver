@@ -14,12 +14,21 @@ import re
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
-from memriver_core.models import Memory, Project, ProjectContext, now, single_line
+from memriver_core.models import (
+    TAG_NAME_MAX_CHARS,
+    TAG_NAME_RE,
+    Memory,
+    Project,
+    ProjectContext,
+    now,
+    single_line,
+)
 from memriver_core.models.changes import (
     Change,
     Citation,
     Create,
     MemoryVersion,
+    MetadataCaps,
     Op,
     Restore,
     SoftDelete,
@@ -69,6 +78,7 @@ class MemoryService:
                  mark_saved: Callable[[ProjectContext], None], max_body_chars: int,
                  metadata_max_chars: int, search_limit_default: int, search_limit_max: int,
                  index_budget_lines: int, index_cue_chars: int,
+                 metadata_caps: MetadataCaps,
                  memory_reads_retention_days: int | None = None,
                  classifier: ContentClassifier | None = None) -> None:
         self._memory_store = memory_store
@@ -89,6 +99,9 @@ class MemoryService:
         self._search_limit_max = search_limit_max
         self._index_budget_lines = index_budget_lines
         self._index_cue_chars = index_cue_chars
+        # read once, when the services are composed: a changed setting applies to the
+        # next process (server start, command, run), never to one already running
+        self._caps = metadata_caps
         # unset keeps every read fact
         self._memory_reads_retention_days = memory_reads_retention_days
         # None: no classifier (the optional package absent, a read-only caller, a
@@ -169,7 +182,8 @@ class MemoryService:
         first-occurrence id collision is StorageFailure, same as every other write."""
         try:
             return self._memory_store.write(op, restriction=restriction, changed_by=changed_by,
-                                            changed_via=changed_via, check=self._check_state)
+                                            changed_via=changed_via, check=self._check_state,
+                                            caps=self._caps)
         except IdCollision as err:
             raise StorageFailure from err
 
@@ -195,14 +209,14 @@ class MemoryService:
             raise ContentRejected(rule_id=err.rule_id, memory_id=memory_id) from err
 
     def _classify(self, description: str | None, body: str | None, *,
-                  changed_by: str) -> None:
+                  changed_by: str, tags: Sequence[str] = ()) -> None:
         """The content classifier on a write's new text, outside any transaction: a call
         can take seconds, and the store's write lock must never wait on it. Only the
-        candidate text is sent -- its non-blank description and body joined by a blank
-        line -- never another memory, a project or an id."""
+        candidate text is sent -- its non-blank description, body and tag names (one
+        line) joined by a blank line -- never another memory, a project or an id."""
         if self._classifier is None:
             return
-        text = "\n\n".join(part for part in (description, body)
+        text = "\n\n".join(part for part in (description, body, " ".join(tags))
                            if part is not None and part.strip())
         verdict = self._classifier.classify(text, changed_by=changed_by)
         if verdict is None:
@@ -234,16 +248,18 @@ class MemoryService:
         model's output.
         """
         if self._classifier is not None:
-            # every op that carries new text, in op order, before the transaction; the
-            # policy first, so a secret is refused here and never reaches the classifier
+            # every op that carries new text or tag names, in op order, before the
+            # transaction; the policy first, so a secret is refused here and never
+            # reaches the classifier
             for op in ops:
-                if isinstance(op, Create | Update) \
-                        and (op.description is not None or op.body is not None):
+                if isinstance(op, Create | Update) and (
+                        op.description is not None or op.body is not None or op.tags):
                     self._precheck_text(op)
-                    self._classify(op.description, op.body, changed_by=changed_by)
+                    self._classify(op.description, op.body, changed_by=changed_by,
+                                   tags=op.tags or ())
         try:
             return self._memory_store.apply(ops, changed_by=changed_by, changed_via=changed_via,
-                                            check=self._check_state)
+                                            check=self._check_state, caps=self._caps)
         except IdCollision as err:
             raise StorageFailure from err
 
@@ -264,9 +280,23 @@ class MemoryService:
         """
         try:
             return self._memory_store.undo(change_id, changed_by=changed_by,
-                                           changed_via=changed_via, check=self._check_state)
+                                           changed_via=changed_via, check=self._check_state,
+                                           caps=self._caps)
         except IdCollision as err:
             raise StorageFailure from err
+
+    def describe_tag(self, project_id: str, name: str, description: str, *,
+                     changed_by: str) -> None:
+        """Set a tag name's description in a project, on one line: the content
+        policy, then the classifier, as for any text the index injects. The management
+        path only; not a memory change, so it has no version and no undo."""
+        if not (isinstance(name, str) and len(name) <= TAG_NAME_MAX_CHARS
+                and TAG_NAME_RE.fullmatch(name)):
+            raise ValueError("not a tag name")
+        description = single_line(description)
+        self._policy().check(description, self._metadata_max_chars)
+        self._classify(name, description, changed_by=changed_by)
+        self._memory_store.describe_tag(project_id, name, description)
 
     # --- collections ---
 

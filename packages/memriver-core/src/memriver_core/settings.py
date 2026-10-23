@@ -28,6 +28,10 @@ __all__ = [
     "DEFAULT_MAX_BODY_CHARS",
     "DEFAULT_SEARCH_LIMIT",
     "DEFAULT_SEARCH_LIMIT_MAX",
+    "DEFAULT_STANDING_MAX_CHARS",
+    "DEFAULT_STANDING_MAX_COUNT",
+    "DEFAULT_TAGS_MAX",
+    "DEFAULT_TAGS_PER_MEMORY_MAX",
     "GIT_QUERY_TIMEOUT_S",
     "HEADER_FIELD_CHARS",
     "INDEX_CUE_CHARS",
@@ -62,6 +66,11 @@ DEFAULT_MAX_BODY_CHARS = 8000
 DEFAULT_SEARCH_LIMIT_MAX = 50
 DEFAULT_SEARCH_LIMIT = 5
 DEFAULT_BUDGET_LINES = 100
+# the metadata limits every write keeps (memriver-core's MetadataCaps)
+DEFAULT_STANDING_MAX_COUNT = 10     # level-1 entries of one project
+DEFAULT_STANDING_MAX_CHARS = 200    # the body of one level-1 entry
+DEFAULT_TAGS_MAX = 12               # distinct tag names of one project
+DEFAULT_TAGS_PER_MEMORY_MAX = 3     # tag names of one memory
 
 # Fixed values that are not user-configurable but still live here, with every
 # other core default (the rule: each package keeps its defaults in its one
@@ -231,6 +240,10 @@ class Settings(BaseSettings):
     # unset keeps every memory_reads row; a number of days lets prune_reads drop
     # older rows
     memory_reads_retention_days: int | None = Field(None, gt=0)
+    standing_max_count: int = Field(DEFAULT_STANDING_MAX_COUNT, gt=0)
+    standing_max_chars: int = Field(DEFAULT_STANDING_MAX_CHARS, gt=0)
+    tags_max: int = Field(DEFAULT_TAGS_MAX, gt=0)
+    tags_per_memory_max: int = Field(DEFAULT_TAGS_PER_MEMORY_MAX, gt=0)
 
     @classmethod
     def settings_customise_sources(
@@ -250,7 +263,8 @@ class Settings(BaseSettings):
         return (*sources, _StrictTomlSource(settings_cls, toml_file=path))
 
     @field_validator("max_body_chars", "search_limit_default", "search_limit_max",
-                     "index_budget_lines", "memory_reads_retention_days", mode="before")
+                     "index_budget_lines", "memory_reads_retention_days", "standing_max_count",
+                     "standing_max_chars", "tags_max", "tags_per_memory_max", mode="before")
     @classmethod
     def _no_booleans(cls, value: object) -> object:
         return reject_boolean(value)

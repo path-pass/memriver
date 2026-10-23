@@ -24,6 +24,7 @@ from memriver.server import build_server
 from memriver_core import Verdict
 from memriver_core.bootstrap import build_services
 from memriver_core.models import Memory, SessionKey, new_id
+from memriver_core.models.changes import Create
 from memriver_core.settings import Settings
 
 SOURCE = {"harness": "test", "method": "agent"}
@@ -208,6 +209,21 @@ async def test_write_then_read_returns_the_eleven_agent_fields(server, world):
     assert read["source"] == {"harness": "unknown", "method": "mcp"}
 
 
+async def test_level_and_tags_never_reach_an_agent_and_survive_its_update(server, world):
+    services = _services(world["store"])
+    memory_id = services.memory.apply(
+        [Create(world["project"], "project", "cue", "fact", level=1, tags=("tools",))],
+        changed_by="human").steps[0].memory_id
+    read = await _call(server, "memory_read", memory_id=memory_id)
+    assert set(read) == {"id", "project_id", "type", "source", "trust", "sync", "created",
+                         "updated", "description", "body", "version"}
+    await _call(server, "memory_update", memory_id=memory_id, expected_version=1,
+                content="fact, reworded")
+    kept = services.memory.show(memory_id)
+    assert (kept.version, kept.body, kept.level, kept.tags) == (2, "fact, reworded", 1,
+                                                                ("tools",))
+
+
 async def test_index_shows_the_header_then_project_then_global_entries(server, world):
     shared = _global_memory(world, description="global cue")
     mine = await _call(server, "memory_write", content="mine", type="project",
@@ -293,7 +309,8 @@ async def test_no_tool_offers_a_scope_or_name_argument(server):
 # spec §2 / acceptance item 3: management stays off MCP, and nothing a model sends
 # chooses a project, sources, a role or who made the change
 MANAGEMENT_PARAMETERS = {"project", "project_id", "sources", "role", "trust", "changed_by",
-                         "changed_via", "to_version", "change_id", "hard", "ops"}
+                         "changed_via", "to_version", "change_id", "hard", "ops", "level",
+                         "tags"}
 
 
 async def test_no_tool_offers_a_management_operation_or_parameter(server):

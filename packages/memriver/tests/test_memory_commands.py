@@ -382,6 +382,23 @@ def test_an_undo_refused_by_the_content_policy_prints_the_rule(world, monkeypatc
                         "rule github-pat; nothing was changed\n")
 
 
+def test_an_undo_or_restore_past_a_metadata_limit_prints_the_setting(world):
+    refusal = ("refused (standing_max_count): the result would exceed the standing_max_count "
+               "setting; nothing was changed\n")
+    first = world.services.memory.apply(
+        [Create(world.global_id, "feedback", "rule one", "one", level=1)],
+        changed_by="dream").steps[0].memory_id
+    demote = world.services.memory.apply([Update(first, 1, level=2)], changed_by="dream")
+    world.services.memory.apply([Create(world.global_id, "feedback", "rule two", "two",
+                                        level=1)], changed_by="dream")
+    (world.store / "settings.toml").write_text("standing_max_count = 1\n")
+    code, out = _undo(world, demote.change_id)
+    assert code == 2 and out.endswith(refusal)
+    code, out = _restore(world, first, 1)
+    assert code == 2 and "  changes: level and tags\n" in out and out.endswith(refusal)
+    assert world.services.memory.show(first).version == 2
+
+
 def test_undo_declined_changes_nothing(world):
     created = _versions(world, world.memory.id)[0].change.change_id
     code, out = _undo(world, created, input_fn=lambda _: "n")

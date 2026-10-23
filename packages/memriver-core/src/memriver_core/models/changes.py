@@ -31,17 +31,21 @@ class Create:
     # ignored when there are sources: the store derives both from them (spec §3.3)
     trust: str = "agent"
     sync: bool = True
+    level: int | None = None              # None: not judged
+    tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class Update:
-    """None keeps a value; `sources` replaces the whole set."""
+    """None keeps a value; `sources` and `tags` replace the whole set."""
 
     memory_id: str
     expected_version: int
     description: str | None = None
     body: str | None = None
     sources: tuple[SourceRef, ...] | None = None
+    level: int | None = None
+    tags: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -97,6 +101,19 @@ class MemoryVersion:
     deleted: bool
     sources: tuple[SourceRef, ...]
     change: Change | None            # None = an imported version (steps omitted: ())
+    level: int | None = None
+    tags: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class MetadataCaps:
+    """The limits every write keeps for each project's level-1 entries and tags: a
+    write never breaks one it kept, nor grows a breach a lowered limit left."""
+
+    standing_max_count: int           # current level-1 entries of one project
+    standing_max_chars: int           # the body of one level-1 entry
+    tags_max: int                     # distinct names the current entries of one project carry
+    tags_per_memory_max: int          # names one entry carries
 
 
 @dataclass(frozen=True)

@@ -904,7 +904,7 @@ its cached one. `install` prints a note when `uvx` itself is not on `PATH`.
 ## Settings
 
 Settings are read from `--root` / `MEMRIVER_*` environment variables and an
-optional `<root>/settings.toml`, in that order of precedence. All four file
+optional `<root>/settings.toml`, in that order of precedence. All eight file
 settings are positive integers. A key or table memriver does not use is ignored.
 An unreadable file, bad TOML or an invalid value (in the file or in a
 `MEMRIVER_*` variable) stops every entry point that reads settings with one
@@ -930,7 +930,17 @@ max_body_chars = 8000       # largest body memory_write accepts
 search_limit_default = 5    # memory_search limit when the caller omits it
 search_limit_max = 50       # ceiling applied to any caller-supplied limit
 index_budget_lines = 100    # entries memory_index lists before truncating
+standing_max_count = 10     # standing rules (level 1) one project may hold
+standing_max_chars = 200    # characters of one standing rule's body
+tags_max = 12               # distinct tag names one project's entries may carry
+tags_per_memory_max = 3     # tag names one entry may carry
 ```
+
+The last four are limits every write keeps -- `memriver dream` sets levels and
+tags on global entries (*Dream*), and a restore or undo that would break one is
+refused naming the setting. Lowering one keeps what is already there: a write
+may leave an existing excess as it is but never grow it. A changed value
+applies from the next server start, command or dream run.
 
 One more top-level key, unset by default: `memory_reads_retention_days = N`
 keeps read records for N days (unset keeps every one; a dropped read no longer

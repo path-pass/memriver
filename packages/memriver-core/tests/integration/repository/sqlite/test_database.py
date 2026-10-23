@@ -35,8 +35,8 @@ def test_a_read_of_a_missing_store_creates_nothing(tmp_path):
     assert not root.exists()
 
 
-V4_TABLES = {"projects", "memories", "memory_versions", "memory_sources", "changes",
-             "change_steps", "memory_reads", "sessions", "tool_calls"}
+V5_TABLES = {"projects", "memories", "memory_versions", "memory_sources", "changes",
+             "change_steps", "memory_reads", "sessions", "tool_calls", "tags"}
 
 
 def test_the_first_write_creates_a_private_directory_file_and_schema(tmp_path):
@@ -47,17 +47,17 @@ def test_the_first_write_creates_a_private_directory_file_and_schema(tmp_path):
     assert stat.S_IMODE(os.stat(root).st_mode) == 0o700
     assert stat.S_IMODE(os.stat(root / "memriver.db").st_mode) == 0o600
     with closing(sqlite3.connect(root / "memriver.db")) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 4
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 5
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert tables == V4_TABLES
+    assert tables == V5_TABLES
 
 
-def test_create_schema_is_the_whole_v4_definition_and_leaves_the_version_alone():
+def test_create_schema_is_the_whole_v5_definition_and_leaves_the_version_alone():
     with closing(sqlite3.connect(":memory:")) as fresh:
         create_schema(fresh)
         assert fresh.execute("PRAGMA user_version").fetchone()[0] == 0
         assert {r[0] for r in fresh.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'")} == V4_TABLES
+            "SELECT name FROM sqlite_master WHERE type='table'")} == V5_TABLES
         indexes = {r[0] for r in fresh.execute(
             "SELECT name FROM sqlite_master WHERE type='index' AND sql IS NOT NULL")}
     assert indexes == {"projects_one_global", "memories_active_by_project",
@@ -273,13 +273,16 @@ _FULLWIDTH_TIMESTAMP = "2026-09-24T00:00:01.000000Z".translate(_FULLWIDTH_DIGITS
     {"last_read_at": "9999-99-99T99:99:99.999999Z"},          # right shape, no such calendar date
     {"last_read_at": "2026-02-30T00:00:00.000000Z"},          # right shape, February has no 30th
     {"last_read_at": _FULLWIDTH_TIMESTAMP},                    # right shape, not ASCII digits
+    {"level": 0}, {"level": True}, {"level": "1"}, {"tags": None}, {"tags": "x"},
+    {"tags": '{"a": 1}'}, {"tags": '["Bad"]'}, {"tags": '["a", "a"]'},
+    {"tags": '["' + "a" * 33 + '"]'},
 ])
 def test_a_memory_row_memriver_could_not_have_written_is_invalid(change):
     memory = Memory.new(body="b", type="project", project_id=new_id(),
                         source={"harness": "h", "method": "agent"})
     columns = ["id", "project_id", "type", "source_harness", "source_method", "trust", "sync",
                "description", "body", "created", "updated", "version", "deleted_at",
-               "last_read_at"]
+               "last_read_at", "level", "tags"]
     row = dict(zip(columns, memory_to_row(memory), strict=True))
     row.update(change)
     with pytest.raises(ValueError):
@@ -300,3 +303,112 @@ def test_a_valid_project_row_reads_back():
     pid = new_id()
     project, is_global = project_from_row((pid, "demo", "/w", 0))
     assert (project.id, project.name, project.root, is_global) == (pid, "demo", "/w", False)
+
+
+# --- schema v4 -> v5, in place --------------------------------------------------
+
+# the two tables v5 changes, as schema v4 defined them
+_V4_TABLES = (
+    """CREATE TABLE memories (
+      id             TEXT PRIMARY KEY NOT NULL CHECK (length(id) = 10),
+      project_id     TEXT NOT NULL REFERENCES projects(id),
+      source_harness TEXT NOT NULL,
+      source_method  TEXT NOT NULL,
+      created        TEXT NOT NULL,
+      version        INTEGER NOT NULL CHECK (version >= 1),
+      type           TEXT NOT NULL CHECK (type IN ('user','feedback','project','reference')),
+      trust          TEXT NOT NULL CHECK (trust IN ('user','agent','untrusted-derived')),
+      sync           INTEGER NOT NULL CHECK (sync IN (0, 1)),
+      description    TEXT NOT NULL,
+      body           TEXT NOT NULL,
+      updated        TEXT NOT NULL,
+      deleted_at     TEXT,
+      last_read_at   TEXT
+    ) STRICT""",
+    ("CREATE INDEX memories_active_by_project "
+     "ON memories(project_id, updated DESC) WHERE deleted_at IS NULL"),
+    """CREATE TABLE memory_versions (
+      memory_id    TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+      version      INTEGER NOT NULL CHECK (version >= 1),
+      type         TEXT NOT NULL,
+      trust        TEXT NOT NULL,
+      sync         INTEGER NOT NULL CHECK (sync IN (0, 1)),
+      description  TEXT NOT NULL,
+      body         TEXT NOT NULL,
+      deleted      INTEGER NOT NULL CHECK (deleted IN (0, 1)),
+      change_id    TEXT REFERENCES changes(change_id),
+      PRIMARY KEY (memory_id, version)
+    ) STRICT""",
+)
+
+
+def _v4_store(root) -> tuple[str, str]:
+    """A store as schema v4 left it, holding global and one memory at two versions;
+    (global id, memory id)."""
+    with _db(root).write():
+        pass
+    global_id, memory_id = new_id(), new_id()
+    stamp = "2026-10-01T00:00:00.000000Z"
+    with closing(sqlite3.connect(root / "memriver.db", isolation_level=None)) as conn:
+        for table in ("tags", "memory_versions", "memories"):
+            conn.execute(f"DROP TABLE {table}")
+        for statement in _V4_TABLES:
+            conn.execute(statement)
+        conn.execute("INSERT INTO projects (id, name, root, is_global) VALUES (?, 'global', "
+                     "NULL, 1)", (global_id,))
+        conn.execute("INSERT INTO memories (id, project_id, source_harness, source_method, "
+                     "created, version, type, trust, sync, description, body, updated) "
+                     "VALUES (?, ?, 'h', 'human', ?, 2, 'feedback', 'user', 1, 'cue', "
+                     "'second', ?)", (memory_id, global_id, stamp, stamp))
+        conn.executemany("INSERT INTO memory_versions (memory_id, version, type, trust, sync, "
+                         "description, body, deleted) VALUES (?, ?, 'feedback', 'user', 1, "
+                         "'cue', ?, 0)", [(memory_id, 1, "first"), (memory_id, 2, "second")])
+        conn.execute("PRAGMA user_version = 4")
+    return global_id, memory_id
+
+
+def _columns(root, table: str) -> list[str]:
+    with closing(sqlite3.connect(root / "memriver.db")) as conn:
+        return [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
+
+
+@pytest.mark.parametrize("opener", ["read", "write"])
+def test_a_v4_store_is_upgraded_in_place_by_the_first_read_or_write(tmp_path, opener):
+    root = tmp_path / "store"
+    _, memory_id = _v4_store(root)
+    with getattr(_db(root), opener)() as conn:
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        rows = conn.execute("SELECT version, level, tags FROM memory_versions "
+                            "ORDER BY version").fetchall()
+        memory = memory_from_row(conn.execute(
+            "SELECT id, project_id, type, source_harness, source_method, trust, sync, "
+            "description, body, created, updated, version, deleted_at, last_read_at, level, "
+            "tags FROM memories").fetchone())
+    assert version == SCHEMA_VERSION == 5
+    assert rows == [(1, None, "[]"), (2, None, "[]")]          # no version row written
+    assert (memory.id, memory.version, memory.level, memory.tags) == (memory_id, 2, None, ())
+    assert _columns(root, "memories")[-2:] == _columns(root, "memory_versions")[-2:] == \
+        ["level", "tags"]
+    with closing(sqlite3.connect(root / "memriver.db")) as conn:
+        assert conn.execute("SELECT count(*) FROM tags").fetchone()[0] == 0
+
+
+def test_an_upgrade_that_fails_part_way_leaves_v4_intact(tmp_path, monkeypatch):
+    from memriver_core.repository.sqlite import database
+    root = tmp_path / "store"
+    _v4_store(root)
+    before = (root / "memriver.db").read_bytes()
+    monkeypatch.setattr(database, "_UPGRADE", (*database._UPGRADE[:3], "CREATE TABLE ("))
+    with pytest.raises(StorageFailure), _db(root).read():
+        pass
+    assert (root / "memriver.db").read_bytes() == before
+    assert "level" not in _columns(root, "memories")
+
+
+def test_an_upgraded_store_has_the_schema_a_fresh_one_has(tmp_path):
+    _v4_store(tmp_path / "old")
+    _db(tmp_path / "old").upgrade()
+    with _db(tmp_path / "new").write():
+        pass
+    for table in ("memories", "memory_versions", "tags"):
+        assert _columns(tmp_path / "old", table) == _columns(tmp_path / "new", table)

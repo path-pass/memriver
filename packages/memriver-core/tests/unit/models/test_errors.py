@@ -106,7 +106,18 @@ def test_a_below_version_store_error_carries_its_version():
     assert StoreNeedsUpgrade(2).version == 2
 
 
-@pytest.mark.parametrize("name", ["BatchConflict", "StoreNeedsUpgrade"])
+def test_cap_exceeded_names_a_known_cap_and_maybe_the_memory():
+    from memriver_core.models.errors import CAPS, CapExceeded
+    assert CAPS == {"standing_max_count", "standing_max_chars", "tags_max",
+                    "tags_per_memory_max"}
+    err = CapExceeded("tags_max")
+    assert (err.cap, err.memory_id, str(err)) == ("tags_max", None, "cap exceeded: tags_max")
+    assert CapExceeded("standing_max_chars", "mmmmmmmmmm").memory_id == "mmmmmmmmmm"
+    with pytest.raises(ValueError):
+        CapExceeded("max_body_chars")
+
+
+@pytest.mark.parametrize("name", ["BatchConflict", "CapExceeded", "StoreNeedsUpgrade"])
 def test_the_new_errors_are_public(name):
     from memriver_core import models
     assert getattr(memriver_core, name) is getattr(errors, name) is getattr(models, name)

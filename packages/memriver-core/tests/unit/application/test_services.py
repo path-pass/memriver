@@ -9,6 +9,7 @@ from memriver_core.bootstrap import Services
 from memriver_core.models import (
     ID_RE,
     Memory,
+    MetadataCaps,
     Project,
     ProjectContext,
     ReadWriteSet,
@@ -37,6 +38,8 @@ NO_PROJECT_CONTEXT = ProjectContext("none", "", NO_PROJECT)
 # pending, and there is no session to mark saved
 SESSION_CALLBACKS = {"refuse_pending": lambda context: None,
                      "mark_saved": lambda context: None}
+CAPS = MetadataCaps(standing_max_count=10, standing_max_chars=200, tags_max=12,
+                    tags_per_memory_max=3)
 
 
 class FakeContentPolicy:
@@ -132,7 +135,7 @@ class FakeMemoryStore:
         self.attempts = 0
         self.stored: dict[str, Memory] = {}
 
-    def write(self, op, *, restriction, changed_by, changed_via, check):
+    def write(self, op, *, restriction, changed_by, changed_via, check, caps):
         self.attempts += 1
         if self.failures:
             raise self.failures.pop(0)
@@ -169,7 +172,7 @@ def _services(project_store=None, *, budget=100, limit_default=5, limit_max=50):
     memory = MemoryService(memory_store, project_store, lambda: policy, **SESSION_CALLBACKS,
                            max_body_chars=100, metadata_max_chars=200,
                            search_limit_default=limit_default, search_limit_max=limit_max,
-                           index_budget_lines=budget, index_cue_chars=60)
+                           index_budget_lines=budget, index_cue_chars=60, metadata_caps=CAPS)
     project = ProjectService(project_store, header_field_chars=120, project_name_max_chars=120)
     # no session or maintenance service: these directory-mode tests reach neither
     services = Services(memory=memory, project=project, session=None, maintenance=None)
@@ -307,7 +310,7 @@ def test_the_content_policy_is_built_only_when_a_write_needs_it():
         FakeMemoryStore(project_store), project_store,
         lambda: built.append(1) or FakeContentPolicy(), **SESSION_CALLBACKS,
         max_body_chars=100, metadata_max_chars=200, search_limit_default=5,
-        search_limit_max=50, index_budget_lines=100, index_cue_chars=60)
+        search_limit_max=50, index_budget_lines=100, index_cue_chars=60, metadata_caps=CAPS)
     memory_service.index(CONTEXT)
     assert built == []
     memory_service.record(content="c", type="user", sync=True, harness="h", description="",

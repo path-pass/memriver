@@ -2,8 +2,9 @@
 
 The serving read paths skip what they cannot trust, which is right for an
 agent and wrong for a doctor. This inspector walks the same tables and keeps
-what reads drop, each finding with a fixed reason. It never creates or
-changes the database.
+what reads drop, each finding with a fixed reason. It never creates the
+database, and changes it only to bring a store one schema behind forward, as
+every read does.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ from .database import (
     MEMORY_COLUMNS,
     PROJECT_COLUMNS,
     SCHEMA_VERSION,
+    Database,
     _lenient_text,
     memory_from_row,
     project_from_row,
@@ -139,6 +141,8 @@ class SqliteStoreInspector:
             findings.append(_finding("unsafe-database", DATABASE_FILENAME))
             return StoreReport(initialized=True, entries=(), projects=(),
                                findings=_sorted_findings(findings))
+        # a store one schema behind is brought forward first, as every read does it
+        Database(self.root, busy_timeout_ms=self._busy_timeout_ms).upgrade()
         try:
             # the same per-connection settings as Database's reads (mode=rw so a
             # hot journal left by a crashed writer can be rolled back; query_only
@@ -264,7 +268,7 @@ class SqliteStoreInspector:
         project_of = dict(conn.execute("SELECT id, project_id FROM memories"))
         versions: dict[str, list[tuple]] = {}
         for row in conn.execute("SELECT memory_id, version, type, trust, sync, description, "
-                                "body, deleted, change_id FROM memory_versions "
+                                "body, deleted, change_id, level, tags FROM memory_versions "
                                 "ORDER BY memory_id, version"):
             versions.setdefault(row[0], []).append(row[1:])
         change_ids = {row[0] for row in conn.execute("SELECT change_id FROM changes")}
@@ -288,14 +292,16 @@ class SqliteStoreInspector:
             try:
                 # every stored version -- not only the latest -- must still
                 # decode like a version `versions()`/`Restore` would accept
-                decoded = [_decode_history_state(row[1], row[2], row[3], row[4], row[5], row[6])
+                decoded = [_decode_history_state(row[1], row[2], row[3], row[4], row[5], row[6],
+                                                 row[8], row[9])
                           for row in rows]
             except StorageFailure:
                 findings.append(_finding("invalid-row", where, project_id=memory.project_id,
                                          memory_id=memory.id))
                 continue
             if decoded[-1] != (memory.type, memory.trust, memory.sync, memory.description,
-                               memory.body, memory.deleted_at is not None):
+                               memory.body, memory.deleted_at is not None, memory.level,
+                               memory.tags):
                 findings.append(_finding("version-mismatch", where,
                                          project_id=memory.project_id, memory_id=memory.id))
             # a non-migrated version (change_id set) needs both its change row

@@ -29,14 +29,18 @@ from memriver_core.models import (
     MemoryType,
     Project,
     Trust,
+    checked_level,
     is_timestamp,
     single_line,
 )
 from memriver_core.models.errors import StorageFailure, StoreNeedsUpgrade
+from memriver_core.models.memory import tags_from_json, tags_to_json
 
 from ..directories import DATABASE_FILENAME
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
+# the one older schema brought forward in place; anything older is refused
+UPGRADABLE_VERSION = 4
 
 # spec §3.5: the session rows of v2, plus the published summary
 _SESSIONS_TABLE = """CREATE TABLE sessions (
@@ -77,7 +81,19 @@ _TOOL_CALLS_TABLE = """CREATE TABLE tool_calls (
 ) STRICT"""
 _TOOL_CALLS_INDEX = "CREATE INDEX tool_calls_by_recorded_at ON tool_calls(recorded_at)"
 
-# schema v4, copied from spec §3: the one definition a fresh store runs
+# a tag name's description, per project: the name is what memories carry;
+# not versioned, so an undo needs no step here
+_TAGS_TABLE = """CREATE TABLE tags (
+  project_id  TEXT NOT NULL REFERENCES projects(id),
+  name        TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 32),
+  description TEXT NOT NULL,          -- one line, with the keywords an agent would look for
+  updated     TEXT NOT NULL,
+  PRIMARY KEY (project_id, name)
+) STRICT"""
+_LEVEL_COLUMN = "level INTEGER CHECK (level IS NULL OR level >= 1)"
+_TAGS_COLUMN = "tags TEXT NOT NULL DEFAULT '[]'"
+
+# schema v5, copied from the specs: the one definition a fresh store runs
 # (create_schema)
 _SCHEMA = (
     """CREATE TABLE projects (
@@ -102,7 +118,9 @@ _SCHEMA = (
       body           TEXT NOT NULL,
       updated        TEXT NOT NULL,          -- time of the last content or state change
       deleted_at     TEXT,                   -- set while the current state is deleted
-      last_read_at   TEXT
+      last_read_at   TEXT,
+      level          INTEGER CHECK (level IS NULL OR level >= 1),  -- 1 standing, NULL not judged
+      tags           TEXT NOT NULL DEFAULT '[]'                    -- JSON array of tag names
     ) STRICT""",
     ("CREATE INDEX memories_active_by_project "
      "ON memories(project_id, updated DESC) WHERE deleted_at IS NULL"),
@@ -124,6 +142,8 @@ _SCHEMA = (
       body         TEXT NOT NULL,
       deleted      INTEGER NOT NULL CHECK (deleted IN (0, 1)),
       change_id    TEXT REFERENCES changes(change_id),   -- NULL for an imported version
+      level        INTEGER CHECK (level IS NULL OR level >= 1),
+      tags         TEXT NOT NULL DEFAULT '[]',
       PRIMARY KEY (memory_id, version)
     ) STRICT""",
     # the deferred key has no delete action: a cited version goes only together
@@ -163,10 +183,22 @@ _SCHEMA = (
     _SESSIONS_INDEX,
     _TOOL_CALLS_TABLE,
     _TOOL_CALLS_INDEX,
+    _TAGS_TABLE,
+)
+
+# v4 -> v5: the columns land last, as in _SCHEMA, with NULL and '[]' in
+# every existing row; no version row is written
+_UPGRADE = (
+    f"ALTER TABLE memories ADD COLUMN {_LEVEL_COLUMN}",
+    f"ALTER TABLE memories ADD COLUMN {_TAGS_COLUMN}",
+    f"ALTER TABLE memory_versions ADD COLUMN {_LEVEL_COLUMN}",
+    f"ALTER TABLE memory_versions ADD COLUMN {_TAGS_COLUMN}",
+    _TAGS_TABLE,
 )
 
 MEMORY_COLUMNS = ("id, project_id, type, source_harness, source_method, trust, sync, "
-                  "description, body, created, updated, version, deleted_at, last_read_at")
+                  "description, body, created, updated, version, deleted_at, last_read_at, "
+                  "level, tags")
 PROJECT_COLUMNS = "id, name, root, is_global"
 
 # anything a driver or the OS can raise while we talk to the file; a lone
@@ -197,7 +229,7 @@ def memory_to_row(memory: Memory) -> tuple:
     return (memory.id, memory.project_id, memory.type, memory.source["harness"],
             memory.source["method"], memory.trust, int(memory.sync), memory.description,
             memory.body, memory.created, memory.updated, memory.version, memory.deleted_at,
-            memory.last_read_at)
+            memory.last_read_at, memory.level, tags_to_json(memory.tags))
 
 
 def memory_from_row(row: Sequence[object]) -> Memory:
@@ -207,7 +239,7 @@ def memory_from_row(row: Sequence[object]) -> Memory:
     '../../evil', and a writer with foreign keys off is not stopped at all.
     """
     (memory_id, project_id, type_, harness, method, trust, sync, description, body,
-     created, updated, version, deleted_at, last_read_at) = row
+     created, updated, version, deleted_at, last_read_at, level, tags) = row
     texts = (memory_id, project_id, type_, harness, method, trust, description, body,
              created, updated)
     if not all(isinstance(value, str) for value in texts):
@@ -228,7 +260,8 @@ def memory_from_row(row: Sequence[object]) -> Memory:
                   source={"harness": harness, "method": method}, trust=trust,
                   sync=bool(sync), created=created, updated=updated,
                   description=description, body=body, version=version,
-                  deleted_at=deleted_at, last_read_at=last_read_at)
+                  deleted_at=deleted_at, last_read_at=last_read_at,
+                  level=checked_level(level), tags=tags_from_json(tags))
 
 
 def project_from_row(row: Sequence[object]) -> tuple[Project, bool]:
@@ -251,13 +284,17 @@ def project_from_row(row: Sequence[object]) -> tuple[Project, bool]:
 
 
 def create_schema(conn: sqlite3.Connection) -> None:
-    """Every v4 table and index, on `conn`: no transaction control, no user_version.
+    """Every v5 table and index, on `conn`: no transaction control, no user_version.
 
     The caller owns the transaction and the version stamp -- `Database.write`
     for a fresh store.
     """
     for statement in _SCHEMA:
         conn.execute(statement)
+
+
+class _Upgradable(Exception):
+    """A read met UPGRADABLE_VERSION: the read connection cannot upgrade, a write can."""
 
 
 class Database:
@@ -287,11 +324,44 @@ class Database:
         The connection is mode=rw with query_only on (see the module
         docstring): write access only so a hot journal can be rolled back.
         The schema check and the body share one snapshot, so a peer's first
-        write cannot land between them.
+        write cannot land between them. A store at UPGRADABLE_VERSION is
+        upgraded first by one write transaction, then read.
         """
         if not self.exists():
             yield None
             return
+        try:
+            with self._snapshot() as conn:
+                yield conn
+            return
+        except _Upgradable:
+            pass
+        self.upgrade()
+        with self._snapshot() as conn:
+            yield conn
+
+    def upgrade(self) -> None:
+        """Bring a store at UPGRADABLE_VERSION to SCHEMA_VERSION in one write transaction;
+        a missing store, or one at any other version, is left as it is. A peer that
+        upgraded first is seen under the write lock, and nothing runs twice."""
+        if not self.exists():
+            return
+        try:
+            conn = self._connect(read_only=True)
+        except _BACKEND_ERRORS as err:
+            raise StorageFailure from err
+        try:
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+        except _BACKEND_ERRORS as err:
+            raise StorageFailure from err
+        finally:
+            conn.close()
+        if version == UPGRADABLE_VERSION:
+            with self.write(create=False):
+                pass
+
+    @contextmanager
+    def _snapshot(self) -> Iterator[sqlite3.Connection | None]:
         try:
             conn = self._connect(read_only=True)
         except _BACKEND_ERRORS as err:
@@ -302,6 +372,8 @@ class Database:
                 state = self._schema_state(conn)
                 if state == "unknown":
                     raise StorageFailure
+                if state == "upgradable":
+                    raise _Upgradable
                 yield conn if state == "current" else None
             finally:
                 if conn.in_transaction:
@@ -342,6 +414,11 @@ class Database:
                     raise StorageFailure
                 if state == "fresh":
                     create_schema(conn)
+                    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                elif state == "upgradable":
+                    # SQLite's DDL is transactional: a failure rolls back to v4 intact
+                    for statement in _UPGRADE:
+                        conn.execute(statement)
                     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                 yield conn
                 conn.execute("COMMIT")
@@ -392,6 +469,8 @@ class Database:
             return "current"
         if version == 0 and conn.execute("SELECT count(*) FROM sqlite_master").fetchone()[0] == 0:
             return "fresh"
+        if version == UPGRADABLE_VERSION:
+            return "upgradable"
         if 1 <= version < SCHEMA_VERSION:
             # an older store is refused, never read or written in place
             raise StoreNeedsUpgrade(version)
