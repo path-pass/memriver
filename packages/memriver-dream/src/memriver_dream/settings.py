@@ -28,6 +28,7 @@ __all__ = [
     "DEFAULT_DREAM_MAX_GROUPS_PER_RUN",
     "DEFAULT_DREAM_MAX_SESSIONS_PER_RUN",
     "DEFAULT_DREAM_REPORT_RETENTION_DAYS",
+    "DEFAULT_DREAM_STANDING_DEMOTE_RUNS",
     "DEFAULT_DREAM_TTL_DAYS",
     "DEFAULT_DREAM_TTL_READ_MULTIPLIER_MAX",
     "DEFAULT_DREAM_UNCERTAIN_LIMIT",
@@ -61,6 +62,7 @@ DEFAULT_DREAM_MAX_SESSIONS_PER_RUN = 20
 DEFAULT_DREAM_MAX_GROUPS_PER_RUN = 20
 DEFAULT_DREAM_MAX_CANDIDATES_PER_RUN = 30
 DEFAULT_DREAM_CONTEXT_BUDGET_TOKENS = 200_000   # one executor call, input and output
+DEFAULT_DREAM_STANDING_DEMOTE_RUNS = 3     # runs in a row judged 2 before a rule leaves level 1
 
 # fixed values (spec §10): initial values, revisited after a real-transcript run
 DREAM_OUTPUT_RESERVE_TOKENS = 4_000     # kept free for the answer
@@ -101,6 +103,7 @@ class DreamSettings(BaseModel):
     max_sessions_per_run: int = Field(DEFAULT_DREAM_MAX_SESSIONS_PER_RUN, gt=0)
     max_groups_per_run: int = Field(DEFAULT_DREAM_MAX_GROUPS_PER_RUN, gt=0)
     max_candidates_per_run: int = Field(DEFAULT_DREAM_MAX_CANDIDATES_PER_RUN, gt=0)
+    standing_demote_runs: int = Field(DEFAULT_DREAM_STANDING_DEMOTE_RUNS, gt=0)
     # one executor call's tokens, input and output; must leave room after the answer's
     # reserve and the estimate's margin
     context_budget_tokens: int = Field(
@@ -109,7 +112,8 @@ class DreamSettings(BaseModel):
 
     @field_validator("ttl_days", "ttl_read_multiplier_max", "uncertain_limit",
                      "report_retention_days", "max_sessions_per_run", "max_groups_per_run",
-                     "max_candidates_per_run", "context_budget_tokens", mode="before")
+                     "max_candidates_per_run", "context_budget_tokens",
+                     "standing_demote_runs", mode="before")
     @classmethod
     def _no_booleans(cls, value: object) -> object:
         return reject_boolean(value)

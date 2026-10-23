@@ -331,7 +331,9 @@ superseded ones within one project (or within global); it extracts
 principles backed by memories of at least two projects into global, citing
 them, and re-checks a global entry when a source it cites has changed; and it
 soft-deletes memories unused past a TTL that every recorded read lengthens,
-after asking a model. It never hard-deletes: content-policy hits in any
+after asking a model. It also curates global: a level for each entry (1, a
+standing rule the index shows in full; 2, the rest, found through tags) and one
+to `tags_per_memory_max` tags, held to the four limits of `settings.toml`. It never hard-deletes: content-policy hits in any
 stored version, contradictions and instruction-like entries are listed for a
 person to act on. Each of its changes can be undone with `memriver undo`
 while the memories it touched are unchanged. Maintenance never counts as

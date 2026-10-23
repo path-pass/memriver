@@ -20,6 +20,7 @@ from memriver_dream.lock import run_lock
 from memriver_dream.phases import (
     PassResult,
     consolidate,
+    curate,
     extract,
     recheck,
     retire,
@@ -47,7 +48,7 @@ def calls(world, monkeypatch) -> list[tuple]:
             return PassResult(finished=True)
         return phase
 
-    for module in (summarize, consolidate, extract, recheck, retire):
+    for module in (summarize, consolidate, extract, recheck, curate, retire):
         monkeypatch.setattr(module, "run", recorder(module.__name__.rpartition(".")[2]))
     monkeypatch.setattr(world.services.memory, "prune_reads",
                         lambda: seen.append(("prune_reads",)) or 0)
@@ -71,14 +72,15 @@ def test_the_phases_run_in_spec_order_projects_before_global(world, calls):
                      ("consolidate", demo, f"project:{demo}"),
                      ("consolidate", second.id, f"project:{second.id}"),
                      ("consolidate", glob, "global"),
-                     ("extract",), ("recheck",),
+                     ("extract",), ("recheck",), ("curate",),
                      ("retire",), ("prune_reads",)]
     text = world.report_text(row)
     assert [line for line in text.splitlines() if line.startswith("== ")] == [
         "== Policy scan ==", "== Session summaries ==",
         f"== Project layer: demo ({demo}) ==", f"== Project layer: second ({second.id}) ==",
         "== Project layer: global ==", "== Global layer: extraction ==",
-        "== Global layer: source re-check ==", "== TTL ==", "== Maintenance =="]
+        "== Global layer: source re-check ==", "== Global curation ==", "== TTL ==",
+        "== Maintenance =="]
     assert text.startswith(f"memriver dream run {row.run_id}\nstarted: {world.now}\n"
                            "trigger: manual\nexecutor: fake\n")
     assert text.splitlines()[-2:] == ["status: completed", f"finished: {row.finished_at}"]
@@ -123,6 +125,7 @@ def test_an_unknown_trigger_never_closes_a_stale_running_row(world, calls):
     (set(), []),
     ({"summarize"}, ["summarize"]),
     ({"extract"}, ["extract", "recheck"]),
+    ({"curate"}, ["curate"]),
     ({"retire"}, ["retire"]),
     ({"consolidate"}, ["consolidate", "consolidate"]),
 ])

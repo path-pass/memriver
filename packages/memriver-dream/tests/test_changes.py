@@ -52,6 +52,19 @@ def test_a_group_is_applied_by_dream_and_reported_with_its_undo(world):
         f"  update {memory_id} v1→v2"]
 
 
+def test_a_change_past_a_metadata_limit_is_reported_and_not_applied(world):
+    memory_id = world.create(world.global_id, "x" * 300, type="feedback")
+    world.services.memory.apply([Update(memory_id=memory_id, expected_version=1, level=1,
+                                        body="short rule")], changed_by="test")
+    ctx = world.context()
+    assert apply_group(ctx, "rewrite", [memory_id],
+                       [Update(memory_id=memory_id, expected_version=2, body="y" * 201)],
+                       touches_global=True) is None
+    assert ctx.groups_used == 0
+    assert ctx.report.path.read_text() == (f"applying rewrite {memory_id} -> not applied: "
+                                           f"limit standing_max_chars {memory_id}\n")
+
+
 def test_a_group_that_creates_says_so_and_lists_the_created_memory_after(world):
     first = world.create(world.project.id, "alpha")
     second = world.create(world.project.id, "beta")

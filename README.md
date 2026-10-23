@@ -490,7 +490,7 @@ same way `session_search` ranks the calling session's own project; unlike
 ```bash
 uv tool install memriver   # the schedule needs a persistent memriver, not uvx's cache
 memriver dream init [--executor claude|codex] [--ttl-days N] [--at HH:MM] [--yes]
-memriver dream run [--phase summarize|consolidate|extract|retire]
+memriver dream run [--phase summarize|consolidate|extract|curate|retire]
 memriver dream report [RUN_ID] [--list [N]]
 memriver dream uninstall
 ```
@@ -536,7 +536,32 @@ still going is recorded as skipped. Each run, in order:
    *Needs you* as overturned. A project memory the model names as more evidence
    for an existing global entry is recorded in `dream.db` as a re-statement of
    it, even when the extraction itself is refused.
-6. **Retires memories unused past their TTL**, after asking the model whether
+6. **Curates global**: the model gives every global entry a level and one to
+   `tags_per_memory_max` tags (three by default). Level 1, a standing rule, is
+   for an entry the user would mind seeing broken; `memory_index` shows these in
+   full at every session start. Everything else is level 2 and found through its
+   tags, whose lines (with a one-line description each) are always in the index.
+   A promotion to level 1 needs cited evidence -- words quoted verbatim from the
+   entry, or a re-statement recorded by step 5 -- and a body within
+   `standing_max_chars` (the model rewrites a longer one, as a content change);
+   it applies the same run. The code checks that a quote stands in the entry's
+   text, not that the user said it: which words are the user's is the model's
+   call, and a re-statement is the evidence that can be traced. Each promotion's
+   evidence is kept in `dream.db` for good -- a quote by the version, field and
+   character range it stands at, a re-statement by its memory and version -- and
+   the report names it the same way. Leaving level 1 takes the entry being judged
+   level 2 in `standing_demote_runs` curate runs in a row; a curate run that does
+   not judge it level 2 (it was left out, the answer about it was invalid, the
+   call failed, or the change was not applied) starts the count over, and nobody
+   re-stating a rule never demotes it. Rules keep their place under
+   `standing_max_count`; the room left goes to the new candidates with the most
+   re-statements, then the most recent, and the rest stay level 2 and are listed
+   under *Needs you*. A new tag name without a description is not applied, more
+   tag names than `tags_max` change no tags and are listed there too, as is a
+   global entry of type `project` the first time it is judged (it probably
+   belongs to a project). The whole curation is one change; curation never
+   merges or deletes.
+7. **Retires memories unused past their TTL**, after asking the model whether
    there is reason enough to retire each one: a memory's last use is the
    later of its creation and its last `memory_read` -- a new version does not
    count, since an agent reads a memory before it edits it and dream's own
@@ -546,13 +571,14 @@ still going is recorded as skipped. Each run, in order:
    uncertain answers in a row about the same content (type, description and
    body) soft-delete it too. A read that lands while the model decides keeps
    the memory.
-7. Writes its report, and deletes runs and reports older than
+8. Writes its report, and deletes runs and reports older than
    `report_retention_days`.
 
 `--phase` runs one step after the policy scan: `summarize` (2), `consolidate`
-(3 and 4), `extract` (5) or `retire` (6). A consolidation or extraction pass
-is skipped while the memories it would read are unchanged since its last
-finished pass.
+(3 and 4), `extract` (5), `curate` (6) or `retire` (7). A consolidation or
+extraction pass is skipped while the memories it would read are unchanged
+since its last finished pass; curation runs every time, so a demotion's runs
+in a row are counted.
 
 **Changes and undo.** Every change dream makes goes through the same change
 log as any other write, recorded as `dream` with its executor's harness, and
@@ -562,8 +588,9 @@ one-sentence reason, followed by the command that reverses it, `memriver undo
 <change_id>` -- refused once any memory the change touched has changed since,
 where `memriver restore` takes over (*Browsing and managing memories
 directly*). A session summary is not a memory change and has no undo. Every
-change to global -- a global consolidation, an extraction, a re-check, a global
-memory's retirement -- is also listed under *Needs you* with its undo command,
+change to global -- a global consolidation, an extraction, a re-check, a
+curation, a global memory's retirement -- is also listed under *Needs you*
+with its undo command,
 so a change every project reads is never missed. A change the content
 classifier blocks (*Content classifier*) is not made; it is listed under
 *Needs you* (a classifier that cannot check at all is listed once per run, with
@@ -571,7 +598,11 @@ its reason) and the step runs again next run.
 
 **Reports.** `memriver dream report` prints the latest run's report (or
 `RUN_ID`'s) as it was written: the run, its trigger and executor; each change,
-by project; the TTL decisions; skips and failures with their reasons; *Needs
+by project; the global curation (level-1 entries and their characters before
+and after this curation, each promotion with where its evidence stands and each
+demotion, tag names added and
+dropped, descriptions set, re-statements seen); the TTL decisions; skips and
+failures with their reasons; *Needs
 you* -- content-policy hits with their `memriver delete ID --hard` command,
 contradictions, instruction-like entries, overturned global entries and
 refused extractions, every change to global with its undo command, and
@@ -678,6 +709,7 @@ schedule_at = "04:00"
 max_sessions_per_run = 20             # sessions one run summarizes
 max_groups_per_run = 20               # changes one run may make
 max_candidates_per_run = 30           # TTL reviews one run may ask for
+standing_demote_runs = 3              # curate runs in a row judged level 2 before a rule leaves level 1
 context_budget_tokens = 200000        # tokens one executor call may use, input and output
 # claude_settings = "/absolute/path/to/auth-settings.json"   # passed to claude as --settings
 # model = "your-model"                # passed to claude as --model, to codex as -c model=
@@ -864,7 +896,7 @@ memriver's own checkout).
   memriver.db-journal    # transient, SQLite's own; also left by a crashed writer until the next connection rolls it back
   settings.toml          # optional, see Settings
   dream/                 # 0700; memriver dream's own (see Dream)
-    dream.db             # runs, TTL reviews, finished passes, source re-checks, summary progress, re-statements
+    dream.db             # runs, TTL reviews, finished passes, source re-checks, summary progress, re-statements, demotion streaks, promotion evidence
     reports/             # one report file per run, kept report_retention_days
     .lock                # one run at a time
     dream.log            # one line per scheduled run: its id and status

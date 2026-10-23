@@ -288,6 +288,15 @@ class MemoryService:
         except IdCollision as err:
             raise StorageFailure from err
 
+    @property
+    def metadata_caps(self) -> MetadataCaps:
+        """The limits this service's writes keep (settings.toml, read at composition)."""
+        return self._caps
+
+    def tag_descriptions(self, project_id: str) -> dict[str, str]:
+        """Every described tag name of a project with its description."""
+        return self._memory_store.tag_descriptions(project_id)
+
     def describe_tag(self, project_id: str, name: str, description: str, *,
                      changed_by: str) -> None:
         """Set a tag name's description in a project, on one line: the content

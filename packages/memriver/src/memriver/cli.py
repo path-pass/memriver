@@ -295,7 +295,8 @@ def _add_dream_commands(commands) -> None:
     init.set_defaults(handler=_dream_init)
 
     run = add("run", "run dream once now (what the schedule runs)")
-    run.add_argument("--phase", choices=["summarize", "consolidate", "extract", "retire"],
+    run.add_argument("--phase", choices=["summarize", "consolidate", "extract", "curate",
+                                         "retire"],
                      default=None, help="run only this step after the policy scan")
     run.add_argument("--trigger", choices=["manual", "schedule"], default="manual",
                      help=argparse.SUPPRESS)

@@ -2,8 +2,8 @@
 
 The run lock; runs a crash left `running` marked failed and their reports closed;
 the policy scan; with an executor, the session summaries, the project layer per
-ordinary project, the project layer for global, the global layer (extraction, then
-the source re-check) and TTL; then prune_reads, report retention and the finish.
+ordinary project, the project layer for global, the global layer (extraction, the
+source re-check, then curation) and TTL; then prune_reads, report retention and the finish.
 Global consolidate runs before extraction and the source re-check so an entry it
 flags instruction_like this run is already excluded from both, not just from TTL.
 Per-item failures stay inside their phase; whatever a phase raises is a store
@@ -27,6 +27,7 @@ from .phases import (
     GLOBAL_SCOPE,
     PassResult,
     consolidate,
+    curate,
     extract,
     recheck,
     retire,
@@ -53,7 +54,7 @@ if TYPE_CHECKING:
     from .protocols import Executor, TranscriptSource
 
 # the phases `memriver dream run --phase` can name; the policy scan always runs
-PHASES = frozenset({"summarize", "consolidate", "extract", "retire"})
+PHASES = frozenset({"summarize", "consolidate", "extract", "curate", "retire"})
 
 
 class WatchedExecutor:
@@ -310,6 +311,9 @@ def _phases(ctx: Context, wanted: frozenset[str] | set[str]) -> None:
         _passed(ctx, EXTRACTION_SCOPE, extract.run(ctx))
         report.section("Global layer: source re-check")
         recheck.run(ctx)
+    if "curate" in wanted:
+        report.section("Global curation")
+        curate.run(ctx)
     if "retire" in wanted:
         report.section("TTL")
         retire.run(ctx)
