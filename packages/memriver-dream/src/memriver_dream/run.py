@@ -98,6 +98,7 @@ class Context:
     # (run_dream sets it from [dream] context_budget_tokens; this default serves tests)
     budget_tokens: int = (DEFAULT_DREAM_CONTEXT_BUDGET_TOKENS - DREAM_OUTPUT_RESERVE_TOKENS
                           - DREAM_INPUT_MARGIN_TOKENS)
+    run_id: str = ""                      # what dream.db records name this run by
 
 
 def run_dream(services: Services, executor: Executor | None,
@@ -150,7 +151,8 @@ def run_dream(services: Services, executor: Executor | None,
                           settings=settings, now=now, store=store, report=report,
                           excluded=set(), history_hits={},
                           budget_tokens=(budget - DREAM_OUTPUT_RESERVE_TOKENS
-                                         - DREAM_INPUT_MARGIN_TOKENS))
+                                         - DREAM_INPUT_MARGIN_TOKENS),
+                          run_id=run_id)
             _phases(ctx, PHASES if phases is None else phases)
             report.section("Maintenance")
             report.line(f"reads pruned: {services.memory.prune_reads()}")

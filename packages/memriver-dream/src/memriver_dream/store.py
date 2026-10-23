@@ -1,5 +1,5 @@
 """dream.db, memriver-dream's own records (spec §5): runs, TTL reviews, scope passes,
-source re-checks and session summary state.
+source re-checks, session summary state and the re-statements of global entries.
 
 It never holds a memory body, a full prompt or secret text; the only model text in it
 is the policy-checked partial summaries of an unfinished long session
@@ -70,6 +70,16 @@ _SCHEMA = (
       progress           TEXT,
       PRIMARY KEY (harness, session_id)
     )""",
+    # a project memory extraction named as more evidence of a global entry: evidence
+    # for curation, kept whatever became of the judgment (ids and versions only)
+    """CREATE TABLE IF NOT EXISTS restatements (
+      global_id      TEXT NOT NULL,
+      memory_id      TEXT NOT NULL,
+      memory_version INTEGER NOT NULL,
+      run_id         TEXT NOT NULL,
+      seen_at        TEXT NOT NULL,
+      PRIMARY KEY (global_id, memory_id, memory_version)
+    )""",
 )
 _RUN_COLUMNS = "run_id, started_at, finished_at, trigger, status, report_file"
 _REVIEW_COLUMNS = ("memory_id, memory_version, decision, uncertain_streak, decided_at, "
@@ -100,6 +110,15 @@ class ReviewRow:
     decided_at: str
     next_review_at: str
     reason: str
+
+
+@dataclass(frozen=True)
+class RestatementRow:
+    global_id: str
+    memory_id: str              # the project memory that says it again
+    memory_version: int
+    run_id: str                 # the run that first saw it
+    seen_at: str
 
 
 @dataclass(frozen=True)
@@ -256,6 +275,24 @@ class DreamStore:
     def put_source_check(self, memory_id: str, digest: str, at: str) -> None:
         self._execute("INSERT OR REPLACE INTO source_checks (memory_id, input_digest, "
                       "checked_at) VALUES (?, ?, ?)", memory_id, digest, at)
+
+    def put_restatements(self, global_id: str, pairs: Iterable[tuple[str, int]], *,
+                         run_id: str, at: str) -> None:
+        """Record each (project memory id, version) as restating `global_id`; one seen
+        before keeps its first run."""
+        with self._write() as conn:
+            conn.executemany(
+                "INSERT OR IGNORE INTO restatements (global_id, memory_id, memory_version, "
+                "run_id, seen_at) VALUES (?, ?, ?, ?, ?)",
+                [(global_id, memory_id, version, run_id, at) for memory_id, version in pairs])
+
+    def restatements(self) -> dict[str, list[RestatementRow]]:
+        """Every recorded re-statement by global id, oldest first."""
+        found: dict[str, list[RestatementRow]] = {}
+        for row in self._rows("SELECT global_id, memory_id, memory_version, run_id, seen_at "
+                              "FROM restatements ORDER BY seen_at, memory_id"):
+            found.setdefault(row[0], []).append(RestatementRow(*row))
+        return found
 
     def summary(self, harness: str, session_id: str) -> SummaryRow | None:
         rows = self._rows(f"SELECT {_SUMMARY_COLUMNS} FROM session_summaries "

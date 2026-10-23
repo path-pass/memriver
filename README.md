@@ -533,15 +533,19 @@ still going is recorded as skipped. Each run, in order:
    commands: "Python projects prefer pytest for tests", never "pytest -q". A
    global entry whose cited sources changed since is re-checked against their
    new versions: kept, pointed at the new versions, revised, or listed under
-   *Needs you* as overturned.
+   *Needs you* as overturned. A project memory the model names as more evidence
+   for an existing global entry is recorded in `dream.db` as a re-statement of
+   it, even when the extraction itself is refused.
 6. **Retires memories unused past their TTL**, after asking the model whether
    there is reason enough to retire each one: a memory's last use is the
-   latest of its creation, its last update and its last `memory_read`, and its
-   TTL is `ttl_days` times one plus its recorded reads, capped at
-   `ttl_read_multiplier_max` times. `keep` leaves it alone for another
-   `ttl_days`; `delete` soft-deletes it; `uncertain_limit` uncertain answers in
-   a row about the same version soft-delete it too. A read that lands while
-   the model decides keeps the memory.
+   later of its creation and its last `memory_read` -- a new version does not
+   count, since an agent reads a memory before it edits it and dream's own
+   changes are no use of it -- and its TTL is `ttl_days` times one plus its
+   recorded reads, capped at `ttl_read_multiplier_max` times. `keep` leaves it
+   alone for another `ttl_days`; `delete` soft-deletes it; `uncertain_limit`
+   uncertain answers in a row about the same content (type, description and
+   body) soft-delete it too. A read that lands while the model decides keeps
+   the memory.
 7. Writes its report, and deletes runs and reports older than
    `report_retention_days`.
 
@@ -860,7 +864,7 @@ memriver's own checkout).
   memriver.db-journal    # transient, SQLite's own; also left by a crashed writer until the next connection rolls it back
   settings.toml          # optional, see Settings
   dream/                 # 0700; memriver dream's own (see Dream)
-    dream.db             # runs, TTL reviews, finished passes, source re-checks, summary progress
+    dream.db             # runs, TTL reviews, finished passes, source re-checks, summary progress, re-statements
     reports/             # one report file per run, kept report_retention_days
     .lock                # one run at a time
     dream.log            # one line per scheduled run: its id and status

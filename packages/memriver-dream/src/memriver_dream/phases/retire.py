@@ -1,14 +1,16 @@
 """TTL (spec §6.7): memories unused past their TTL, reviewed by the model, one judgment
 each per run.
 
-The TTL only nominates: a current memory is a candidate once max(created, updated,
-last read) is ttl_days x min(1 + reads, ttl_read_multiplier_max) days old, unless a
-review of its current version is not due yet. The model is asked whether there is
-reason enough to retire it -- not whether it was used. keep and uncertain are
-recorded in dream.db, an uncertain streak counting judgments of the same version
-only; delete, or a streak reaching uncertain_limit, soft-deletes it through apply
-with unread_since = the listing time, so a read after the listing makes the delete
-a conflict, which records nothing.
+The TTL only nominates: a current memory is a candidate once max(created, last read)
+is ttl_days x min(1 + reads, ttl_read_multiplier_max) days old, unless a review of
+its current content is not due yet. A new version does not make a memory younger:
+an agent reads before it edits, and dream's own changes (a level, tags) are not use.
+The model is asked whether there is reason enough to retire it -- not whether it was
+used. keep and uncertain are recorded in dream.db, an uncertain streak counting
+judgments of the same content only (type, description, body: a version that changed
+only metadata keeps both); delete, or a streak reaching uncertain_limit,
+soft-deletes it through apply with unread_since = the listing time, so a read after
+the listing makes the delete a conflict, which records nothing.
 """
 
 from __future__ import annotations
@@ -60,14 +62,28 @@ SCHEMA = {"type": "object", "additionalProperties": False,
                          "evidence": {"type": "array", "items": {"type": "string"}}}}
 
 
+def same_content(ctx: Context, memory: Memory, version: int) -> bool:
+    """Whether `memory` still holds the content -- type, description, body -- it had
+    at `version`; False when that version is gone (a hard delete)."""
+    if version == memory.version:
+        return True
+    try:
+        recorded = {v.version: v for v in ctx.services.memory.versions(memory.id)}
+    except MemoryNotFound:
+        return False
+    old = recorded.get(version)
+    return old is not None and (old.type, old.description, old.body) == \
+        (memory.type, memory.description, memory.body)
+
+
 def candidates(ctx: Context) -> tuple[str, list[Memory]]:
     """The listing time (the soft delete's unread_since) and the candidates, oldest
     first, at most max_candidates_per_run.
 
-    created and updated must be valid timestamps to prove an age at all (old or
-    hand-edited data can hold anything): a memory with either one malformed has no
-    provable age and is skipped, never retired on an unknown age. A malformed or
-    absent last_read_at simply does not count towards the age.
+    created must be a valid timestamp to prove an age at all (old or hand-edited data
+    can hold anything): a memory with a malformed one has no provable age and is
+    skipped, never retired on an unknown age. A malformed or absent last_read_at
+    simply does not count towards the age.
     """
     listed_at = clock()
     settings = ctx.settings
@@ -75,21 +91,21 @@ def candidates(ctx: Context) -> tuple[str, list[Memory]]:
     usage = ctx.services.memory.usage([memory.id for memory in memories])
     due = []
     for memory in memories:
-        if not (is_timestamp(memory.created) and is_timestamp(memory.updated)):
+        if not is_timestamp(memory.created):
             ctx.report.line(f"skipped {memory.id}: unknown time")
             continue
         use = usage.get(memory.id)
         reads = 0 if use is None else use.reads
         last_read = use.last_read_at if use is not None and is_timestamp(use.last_read_at) \
             else None
-        last = max(memory.created, memory.updated, last_read or "")
+        last = max(memory.created, last_read or "")
         days = settings.ttl_days * min(1 + reads, settings.ttl_read_multiplier_max)
         if last > shift_days(ctx.now, -days):
             continue
         review = ctx.store.review(memory.id)
-        if review is not None and review.memory_version == memory.version \
-                and review.next_review_at > ctx.now:
-            continue                    # judged at this version, not due again yet
+        if review is not None and review.next_review_at > ctx.now \
+                and same_content(ctx, memory, review.memory_version):
+            continue                    # judged with this content, not due again yet
         due.append((last, memory.id, memory))
     due.sort(key=lambda item: item[:2])
     return listed_at, [memory for _, _, memory in due[:settings.max_candidates_per_run]]
@@ -163,10 +179,11 @@ def review(ctx: Context, memory: Memory, listed_at: str, live: set[str],
         return False
     reason, decision, streak, by_streak = shown(result["reason"]), result["decision"], 0, False
     if decision == "uncertain":
-        # "in a row" means judgments of the same content (D24): any new version starts over
+        # "in a row" means judgments of the same content (D24): new content starts over,
+        # a version that changed only metadata does not
         previous = ctx.store.review(memory.id)
         same = previous is not None and previous.decision == "uncertain" \
-            and previous.memory_version == memory.version
+            and same_content(ctx, memory, previous.memory_version)
         streak = 1 + (previous.uncertain_streak if same else 0)
         if streak >= settings.uncertain_limit:
             decision, by_streak = "delete", True

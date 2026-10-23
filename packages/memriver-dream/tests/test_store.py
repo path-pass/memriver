@@ -14,6 +14,7 @@ import pytest
 from memriver_dream.store import (
     _SCHEMA,
     DreamStore,
+    RestatementRow,
     ReviewRow,
     RunRow,
     SummaryRow,
@@ -33,7 +34,7 @@ def _run(run_id: str, started_at: str, status: str = "completed") -> RunRow:
     return RunRow(run_id, started_at, finished, "schedule", status, f"{run_id}.txt")
 
 
-def test_the_file_is_private_and_holds_the_five_tables(tmp_path):
+def test_the_file_is_private_and_holds_its_tables(tmp_path):
     store = _store(tmp_path)
     assert stat.S_IMODE(os.stat(store.path).st_mode) == 0o600
     assert stat.S_IMODE(os.stat(store.path.parent).st_mode) == 0o700
@@ -41,9 +42,32 @@ def test_the_file_is_private_and_holds_the_five_tables(tmp_path):
         names = {row[0] for row in conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert names == {"runs", "ttl_reviews", "scope_passes", "source_checks",
-                     "session_summaries"}
+                     "session_summaries", "restatements"}
     store.put_scope_pass("global", "d1", T0)
     assert DreamStore(store.path).scope_digest("global") == "d1"     # reopening keeps rows
+
+
+def test_a_restatement_keeps_the_run_that_first_saw_it(tmp_path):
+    store = _store(tmp_path)
+    store.put_restatements("gggggggggg", [("aaaaaaaaaa", 1), ("bbbbbbbbbb", 2)],
+                           run_id="run0000001", at=T0)
+    later = shift_days(T0, 1)
+    store.put_restatements("gggggggggg", [("aaaaaaaaaa", 1), ("aaaaaaaaaa", 2)],
+                           run_id="run0000002", at=later)
+    assert store.restatements() == {"gggggggggg": [
+        RestatementRow("gggggggggg", "aaaaaaaaaa", 1, "run0000001", T0),
+        RestatementRow("gggggggggg", "bbbbbbbbbb", 2, "run0000001", T0),
+        RestatementRow("gggggggggg", "aaaaaaaaaa", 2, "run0000002", later)]}
+
+
+def test_an_existing_dream_db_gains_the_restatements_table_on_open(tmp_path):
+    path = tmp_path / "dream" / "dream.db"
+    path.parent.mkdir(mode=0o700, parents=True)
+    with closing(sqlite3.connect(path)) as conn, conn:
+        for statement in _SCHEMA[:-1]:
+            conn.execute(statement)
+        conn.execute("PRAGMA user_version = 1")
+    assert DreamStore(path).restatements() == {}
 
 
 def test_a_fresh_store_is_stamped_with_the_current_schema_version(tmp_path):
