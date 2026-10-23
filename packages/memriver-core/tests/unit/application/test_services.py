@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from memriver_core.application.memory import EMPTY_INDEX, MemoryService
+from memriver_core.application.memory import EMPTY_INDEX, NO_SUCH_TAG, MemoryService
 from memriver_core.application.projects import ProjectService
 from memriver_core.bootstrap import Services
 from memriver_core.models import (
@@ -134,6 +134,11 @@ class FakeMemoryStore:
         self.failures: list[Exception] = []     # raised, in order, by write
         self.attempts = 0
         self.stored: dict[str, Memory] = {}
+        self.descriptions: dict[str, str] = {}
+
+    def tag_descriptions(self, project_id):
+        self.calls.append(("tag_descriptions", project_id))
+        return self.descriptions
 
     def write(self, op, *, restriction, changed_by, changed_via, check, caps):
         self.attempts += 1
@@ -165,24 +170,24 @@ class FakeMemoryStore:
         raise MemoryNotFound(memory_id)
 
 
-def _services(project_store=None, *, budget=100, limit_default=5, limit_max=50):
+def _services(project_store=None, *, budget=100, limit_default=5, limit_max=50, caps=CAPS):
     project_store = project_store or FakeProjectStore([Project(id=P, name="demo")])
     memory_store = FakeMemoryStore(project_store)
     policy = FakeContentPolicy()
     memory = MemoryService(memory_store, project_store, lambda: policy, **SESSION_CALLBACKS,
                            max_body_chars=100, metadata_max_chars=200,
                            search_limit_default=limit_default, search_limit_max=limit_max,
-                           index_budget_lines=budget, index_cue_chars=60, metadata_caps=CAPS)
+                           index_budget_lines=budget, index_cue_chars=60, metadata_caps=caps)
     project = ProjectService(project_store, header_field_chars=120, project_name_max_chars=120)
     # no session or maintenance service: these directory-mode tests reach neither
     services = Services(memory=memory, project=project, session=None, maintenance=None)
     return services, memory_store, project_store, policy
 
 
-def _memory(project_id, body, updated, description=""):
+def _memory(project_id, body, updated, description="", *, level=None, tags=()):
     m = Memory.new(body=body, type="user", project_id=project_id, source={},
                    description=description)
-    m.updated = updated
+    m.updated, m.level, m.tags = updated, level, tags
     return m
 
 
@@ -454,15 +459,16 @@ def test_empty_index_is_the_sentinel():
     assert services.memory.index(ProjectContext("unavailable", "", ReadWriteSet(project_id=None, global_project_id=None))) == EMPTY_INDEX
 
 
-def test_index_lists_the_project_then_global_with_a_global_tag():
-    services, _, project_store, _ = _services()
+def test_index_lists_unjudged_global_then_the_project_with_a_global_tag():
+    services, memory_store, project_store, _ = _services()
     mine = _memory(P, "mine body", "2026-09-01T00:00:00.000000Z", description="my cue")
     shared = _memory(G, "global body\nsecond line", "2026-09-05T00:00:00.000000Z")
     project_store.memories += [mine, shared]
     assert services.memory.index(CONTEXT).splitlines() == [
-        f"- [user] {mine.id}: my cue (2026-09-01)",
         f"- [user, global] {shared.id}: global body (2026-09-05)",
+        f"- [user] {mine.id}: my cue (2026-09-01)",
     ]
+    assert memory_store.calls == []           # no tag carried: no description read
 
 
 def test_index_uses_two_single_project_searches():
@@ -478,15 +484,81 @@ def test_index_without_a_project_lists_global_only():
     assert project_store.search_calls == [(G, None, None)]
 
 
-def test_index_fills_one_budget_project_first_and_counts_what_it_dropped():
+def test_index_fills_one_budget_global_first_and_counts_what_it_dropped():
     services, _, project_store, _ = _services(budget=3)
     project_store.memories += [_memory(P, f"p{i}", f"2026-09-0{i}T00:00:00.000000Z")
                                for i in range(1, 5)]
     project_store.memories += [_memory(G, "g", "2026-09-09T00:00:00.000000Z")]
     lines = services.memory.index(CONTEXT).splitlines()
     assert [line.split(": ", 1)[1] for line in lines[:3]] == \
-        ["p4 (2026-09-04)", "p3 (2026-09-03)", "p2 (2026-09-02)"]
-    assert lines[3] == "… (2 more entries omitted; use memory_search)"
+        ["g (2026-09-09)", "p4 (2026-09-04)", "p3 (2026-09-03)"]
+    assert lines[3] == "\u2026 (2 more entries omitted; use memory_search)"
+
+
+def _judged(project_store):
+    """Global: two rules, two level-2 entries tagged, one level-2 untagged, one unjudged."""
+    day = "2026-09-0{}T00:00:00.000000Z".format
+    entries = {
+        "rule": _memory(G, "never push\nto main", day(9), "push cue", level=1, tags=("git",)),
+        "old_rule": _memory(G, "answer in Chinese", day(8), level=1),
+        "git": _memory(G, "rebase first", day(7), "rebase cue", level=2, tags=("git",)),
+        "both": _memory(G, "uv for python", day(6), "uv cue", level=2,
+                        tags=("git", "python")),
+        "untagged": _memory(G, "loose", day(5), "loose cue", level=2),
+        "unjudged": _memory(G, "new one", day(4), "new cue"),
+        "mine": _memory(P, "project fact", day(3), "mine cue"),
+    }
+    project_store.memories += entries.values()
+    return entries
+
+
+def test_index_composes_rules_tags_unjudged_global_then_the_project():
+    services, memory_store, project_store, _ = _services()
+    memory_store.descriptions = {"git": "branches, rebase\nand pushes"}
+    e = _judged(project_store)
+    assert services.memory.index(CONTEXT).splitlines() == [
+        f"- [rule, global] {e['rule'].id}: never push to main",
+        f"- [rule, global] {e['old_rule'].id}: answer in Chinese",
+        "- [tag, global] git: branches, rebase and pushes (3 entries; memory_index tag=git)",
+        "- [tag, global] python (1 entries; memory_index tag=python)",
+        f"- [user, global] {e['untagged'].id}: loose cue (2026-09-05)",
+        f"- [user, global] {e['unjudged'].id}: new cue (2026-09-04)",
+        f"- [user] {e['mine'].id}: mine cue (2026-09-03)",
+    ]
+    assert memory_store.calls == [("tag_descriptions", G)]
+
+
+def test_the_index_re_checks_the_rule_limits_when_it_renders():
+    caps = MetadataCaps(standing_max_count=1, standing_max_chars=5, tags_max=12,
+                        tags_per_memory_max=3)
+    services, _, project_store, _ = _services(caps=caps)
+    e = _judged(project_store)
+    lines = services.memory.index(CONTEXT).splitlines()
+    # the newest rule, cut with an ellipsis; the other one is shown as a level-2 entry is
+    assert lines[0] == f"- [rule, global] {e['rule'].id}: never\u2026"
+    assert f"- [user, global] {e['old_rule'].id}: answer in Chinese (2026-09-08)" in lines
+    assert lines[1].startswith("- [tag, global] git (3 entries;")
+
+
+def test_a_tag_expands_to_its_entries_with_rules_marked():
+    services, _, project_store, _ = _services()
+    e = _judged(project_store)
+    assert services.memory.index(CONTEXT, tag="git").splitlines() == [
+        f"- [user, global, rule] {e['rule'].id}: push cue (2026-09-09)",
+        f"- [user, global] {e['git'].id}: rebase cue (2026-09-07)",
+        f"- [user, global] {e['both'].id}: uv cue (2026-09-06)",
+    ]
+    assert services.memory.index(CONTEXT, tag="nope") == NO_SUCH_TAG
+    assert services.memory.index(CONTEXT, tag="Git\nignore") == NO_SUCH_TAG
+
+
+def test_a_tag_expansion_keeps_the_line_budget():
+    services, _, project_store, _ = _services(budget=2)
+    e = _judged(project_store)
+    lines = services.memory.index(CONTEXT, tag="git").splitlines()
+    assert lines[:2] == [f"- [user, global, rule] {e['rule'].id}: push cue (2026-09-09)",
+                         f"- [user, global] {e['git'].id}: rebase cue (2026-09-07)"]
+    assert lines[2] == "\u2026 (1 more entries omitted; use memory_search)"
 
 
 def test_index_lines_are_single_line_and_capped():

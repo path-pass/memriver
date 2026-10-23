@@ -248,9 +248,12 @@ practice:
 - `memory_index` renders one line per live entry (id + description,
   falling back to the body's first line for entries without one) under a
   line budget, with an explicit truncation notice. The harness injects it at
-  session start; the LLM does the semantic matching. The index lists the
-  current project's entries first, then global's (tagged `global`), in one
-  line budget; `memory_search` runs one search per project with one total
+  session start; the LLM does the semantic matching. The index lists global
+  first -- its standing rules (level 1) in full, one line per tag with how
+  many entries carry it, then its entries not yet judged or tagged -- and the
+  current project's entries last, in one line budget, so a harness that cuts
+  the injection cuts project lines first; `memory_index(tag=...)` lists a
+  tag's entries. `memory_search` runs one search per project with one total
   `limit`, project hits first.
 - `memory_read` fetches one entry by id; an id that is absent, outside the
   session's readable projects (the current project and global), or soft-deleted

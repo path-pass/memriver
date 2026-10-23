@@ -11,6 +11,7 @@ is injected.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
@@ -62,6 +63,8 @@ _VERDICT_LABEL_RE = re.compile(r"[a-z0-9-]{1,32}")
 # What MemoryService.index returns when nothing is visible -- the single
 # source transports compare against.
 EMPTY_INDEX = "(no memories yet)"
+# memory_index(tag=...) for a name no current global memory carries: a line, not an error
+NO_SUCH_TAG = "(no such tag)"
 
 # the classifier's two refusals: the category and the detail come from the
 # implementation, which keeps them to short fixed labels
@@ -333,26 +336,65 @@ class MemoryService:
         return (f"- [{memory.type}{tag}] {single_line(memory.id)}: {cue} "
                 f"({single_line(memory.updated[:10])})")
 
-    def index(self, context: ProjectContext) -> str:
-        """The current project's entries, then global's, in one line budget."""
-        read_write_set = context.read_write_set
-        sections = [(project_id, tag) for project_id, tag in
-                    ((read_write_set.project_id, ""),
-                     (read_write_set.global_project_id, ", global"))
-                    if project_id is not None]
-        listed = [(tag, self._project_store.search(project_id, read_write_set,
-                                                   query=None, limit=None))
-                  for project_id, tag in sections]
-        total = sum(len(memories) for _, memories in listed)
-        if total == 0:
+    def _rule_line(self, memory: Memory) -> str:
+        """A standing rule in full, on one line; a body past standing_max_chars (stored
+        before the limit was lowered) is cut there with an ellipsis, never dropped."""
+        body = single_line(memory.body)
+        if len(body) > self._caps.standing_max_chars:
+            body = body[:self._caps.standing_max_chars] + "\u2026"
+        return f"- [rule, global] {single_line(memory.id)}: {body}"
+
+    def _tag_line(self, name: str, count: int, description: str | None) -> str:
+        about = "" if description is None else \
+            ": " + single_line(description)[:self._index_cue_chars]
+        return (f"- [tag, global] {name}{about} ({count} entries; "
+                f"memory_index tag={name})")
+
+    def _budgeted(self, lines: list[str]) -> str:
+        """`lines` within the line budget, with the one notice of how many were left out."""
+        if not lines:
             return EMPTY_INDEX
-        lines: list[str] = []
-        for tag, memories in listed:
-            room = self._index_budget_lines - len(lines)
-            lines += [self._index_line(m, tag) for m in memories[:max(room, 0)]]
-        if total > len(lines):
-            lines.append(f"… ({total - len(lines)} more entries omitted; use memory_search)")
-        return "\n".join(lines)
+        kept = lines[:self._index_budget_lines]
+        if len(lines) > len(kept):
+            kept.append(f"\u2026 ({len(lines) - len(kept)} more entries omitted; "
+                        "use memory_search)")
+        return "\n".join(kept)
+
+    def index(self, context: ProjectContext, tag: str | None = None) -> str:
+        """Global's standing rules in full, a line per global tag, global's unjudged
+        entries, then the current project's entries, in one line budget:
+        a harness that cuts the end cuts project lines first. A level-2 global entry
+        appears only through its tags, or as a plain line when it carries none.
+
+        With `tag`, the current global entries carrying that name instead, as index
+        lines (a standing one marked `rule`), or NO_SUCH_TAG."""
+        read_write_set = context.read_write_set
+        listed = {project_id: self._project_store.search(project_id, read_write_set,
+                                                         query=None, limit=None)
+                  for project_id in (read_write_set.project_id,
+                                     read_write_set.global_project_id)
+                  if project_id is not None}
+        shared = listed.get(read_write_set.global_project_id, [])
+        if tag is not None:
+            carriers = [m for m in shared if tag in m.tags]
+            if not carriers:
+                return NO_SUCH_TAG
+            return self._budgeted([self._index_line(m, ", global, rule" if m.level == 1
+                                                    else ", global") for m in carriers])
+        # newest first; past the count limit (lowered since) a rule shows as level 2 does
+        rules = [m for m in shared if m.level == 1][:self._caps.standing_max_count]
+        ruled = {m.id for m in rules}
+        counts = Counter(name for m in shared for name in m.tags)
+        described = self._memory_store.tag_descriptions(read_write_set.global_project_id) \
+            if counts else {}
+        plain = [m for m in shared if m.id not in ruled and (m.level is None or not m.tags)]
+        mine = listed.get(read_write_set.project_id, []) \
+            if read_write_set.project_id != read_write_set.global_project_id else []
+        return self._budgeted(
+            [self._rule_line(m) for m in rules]
+            + [self._tag_line(name, counts[name], described.get(name)) for name in sorted(counts)]
+            + [self._index_line(m, ", global") for m in plain]
+            + [self._index_line(m, "") for m in mine])
 
     # --- management reads (the human CLI; never reachable from MCP) ---
 

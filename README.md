@@ -91,7 +91,11 @@ reports go to stderr.
   explicit delimiters, preceded by a notice that the entries are data, not
   instructions. The injection is sized in the harness's own metric (Claude
   Code: 10,000 UTF-16 code units; Codex: about 2,500 tokens) and truncates
-  whole lines with an omission notice rather than cutting mid-entry.
+  whole lines with an omission notice rather than cutting mid-entry. Global
+  comes first -- its standing rules in full, one line per tag with how many
+  entries carry it, then the global entries `memriver dream` has not judged
+  yet -- and the project's entries last, so a cut drops project lines first.
+  An agent opens a tag with `memory_index(tag=...)`.
 - **A session's project is fixed at its start.** A Claude Code or Codex
   session gets its project once -- from its first `SessionStart` -- and keeps
   it for the session's whole life: opening a sub-directory of a monorepo
@@ -231,7 +235,7 @@ Known limits:
 
 | Tool | Purpose |
 |---|---|
-| `memory_index()` | The session's project on the first line, then a compact index: the project's memories, then global's (tagged `global`) |
+| `memory_index(tag=None)` | The session's project on the first line, then a compact index: global's standing rules in full, one line per global tag, global's entries not yet tagged, then the project's memories; with `tag`, the global entries carrying that tag (a standing one marked `rule`) |
 | `memory_read(memory_id)` | One memory in full, by id: eleven fields, including the `version` that `memory_update`/`memory_delete` must be given back. An entry that exists but cannot be read is reported as such, not as missing |
 | `memory_search(query, limit=None)` | Memories relevant to a task, by space-separated keywords: an entry matching any keyword is returned, entries matching more keywords first (see below); the project's hits first, then global's; `limit` caps the whole answer, so a query with many project hits can leave no room for global ones |
 | `memory_write(content, type, sync=True, description="")` | Save one durable fact to the current project; memriver assigns the id and stamps `source.harness` with the server's own `--harness` value (an installed Cursor/Kiro server records `cursor`/`kiro`; `unknown` only when the server was started with no `--harness` at all); global is read-only to agents; `type` is `user` / `feedback` / `project` / `reference` |
@@ -939,8 +943,10 @@ tags_per_memory_max = 3     # tag names one entry may carry
 The last four are limits every write keeps -- `memriver dream` sets levels and
 tags on global entries (*Dream*), and a restore or undo that would break one is
 refused naming the setting. Lowering one keeps what is already there: a write
-may leave an existing excess as it is but never grow it. A changed value
-applies from the next server start, command or dream run.
+may leave an existing excess as it is but never grow it, and `memory_index`
+shows at most `standing_max_count` standing rules, each cut at
+`standing_max_chars` with `…`. A changed value applies from the next server
+start, command or dream run.
 
 One more top-level key, unset by default: `memory_reads_retention_days = N`
 keeps read records for N days (unset keeps every one; a dropped read no longer
