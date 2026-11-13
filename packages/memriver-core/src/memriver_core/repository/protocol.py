@@ -19,6 +19,7 @@ from memriver_core.models.changes import (
     Citation,
     HardDeletePlan,
     MemoryVersion,
+    MetadataCaps,
     Op,
     PolicyHit,
     Usage,
@@ -39,9 +40,19 @@ class MemoryStore(Protocol):
       create). A created memory's `source_harness` is `changed_via` or
       "unknown", its `source_method` is `changed_by`. Every new version moves
       `updated`; a soft delete sets `deleted_at = updated`. A new version
-      carries the current source set unless the op replaces it. The same
-      memory twice is a `ValueError`; a taken id is `IdCollision`. Nothing
-      here creates a store.
+      carries the current source set, level and tags unless the op replaces
+      them; a new level or tag set alone is a new version like any other.
+      `caps` holds every write to the metadata limits, per project, on the
+      states the change leaves: more current level-1 entries
+      than `standing_max_count`, a written level-1 body longer than
+      `standing_max_chars`, more distinct names carried than `tags_max`, or a
+      written memory carrying more than `tags_per_memory_max` is
+      `CapExceeded(cap, memory_id)` -- unless that breach was already there
+      (a lowered limit) and the change does not grow it. A tag name is 1 to 32
+      of a-z, 0-9 and single inner hyphens, stored sorted; a bad or repeated
+      one, or a level that is not None or an integer >= 1, is a `ValueError`.
+      The same memory twice is a `ValueError`; a taken id is `IdCollision`.
+      Nothing here creates a store.
       - `apply` is the management path (spec §4.1):
         `BatchConflict(index, memory_id, reason)` for a missing target
         ("missing"), another version ("version"), an update or soft delete of
@@ -49,8 +60,9 @@ class MemoryStore(Protocol):
         ("same-state"), a read at or after `unread_since` ("read-since"); a
         create in an unknown project is `ProjectNotFound`; global is an
         ordinary target.
-      - `write` is the agent path: one op under a `ReadWriteSet`, decided on
-        the stored rows inside the transaction: a create outside `writable()`
+      - `write` is the agent path: one op under a `ReadWriteSet` that sets no
+        sources, level or tags (`ValueError`), decided on the stored rows
+        inside the transaction: a create outside `writable()`
         or into a missing project → `ProjectUnavailable`, into global →
         `GlobalReadOnly`; an absent, deleted, orphaned, unreadable or not
         writable target → `MemoryNotFound`, a global one → `GlobalReadOnly`,
@@ -94,6 +106,11 @@ class MemoryStore(Protocol):
       version of this one. `usage`: reads count and `last_read_at` per known
       id. `prune_reads(retention_days)`: drops older read facts, returns the
       count; never creates a store.
+    - `describe_tag(project_id, name, description)`: sets the one description
+      of a tag name in a project, replacing any (no version, no step, no
+      undo); `ProjectNotFound` for an unknown project, `ValueError` for a bad
+      name. `tag_descriptions(project_id)`: every described name with its
+      description, `{}` for none.
     - `scan(check)`: `check(text)` on the description and body of every stored
       version of every memory (deleted ones and all history included); one
       `PolicyHit` per hit version, never the text; no side effect.
@@ -108,12 +125,13 @@ class MemoryStore(Protocol):
     """
 
     def apply(self, ops: Sequence[Op], *, changed_by: str, changed_via: str | None,
-              check: Callable[[str, str], str | None]) -> Change: ...
+              check: Callable[[str, str], str | None], caps: MetadataCaps) -> Change: ...
     def change(self, change_id: str) -> Change | None: ...
     def undo(self, change_id: str, *, changed_by: str, changed_via: str | None,
-             check: Callable[[str, str], str | None]) -> Change: ...
+             check: Callable[[str, str], str | None], caps: MetadataCaps) -> Change: ...
     def write(self, op: Op, *, restriction: ReadWriteSet, changed_by: str,
-              changed_via: str | None, check: Callable[[str, str], str | None]) -> Memory: ...
+              changed_via: str | None, check: Callable[[str, str], str | None],
+              caps: MetadataCaps) -> Memory: ...
     def read(self, memory_id: str, read_write_set: ReadWriteSet) -> Memory: ...
     def read_any(self, memory_id: str, *, include_deleted: bool) -> Memory: ...
     def touch_read(self, memory_id: str, at: str, *, memory_version: int, harness: str,
@@ -124,6 +142,8 @@ class MemoryStore(Protocol):
                  include_deleted: bool = False) -> list[Memory]: ...
     def versions(self, memory_id: str) -> list[MemoryVersion]: ...
     def citing(self, memory_id: str) -> list[Citation]: ...
+    def describe_tag(self, project_id: str, name: str, description: str) -> None: ...
+    def tag_descriptions(self, project_id: str) -> dict[str, str]: ...
     def scan(self, check: Callable[[str], str | None]) -> list[PolicyHit]: ...
     def plan_hard_delete(self, memory_id: str) -> HardDeletePlan: ...
     def hard_delete(self, memory_id: str, *, expected: frozenset[tuple[str, int]] | None,

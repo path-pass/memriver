@@ -7,7 +7,8 @@ admits a new or grown global entry only when its sources trace to at least two
 distinct ordinary projects (C4): a project memory counts its own project; a global
 memory counts, through its cited versions and recursively, the projects they trace
 to, and never a project of its own. Fewer than two is refused and goes to
-"Needs you".
+"Needs you". A project memory named as more evidence of a global entry restates it:
+the pair is recorded in dream.db for curation, whatever becomes of the judgment.
 """
 
 from __future__ import annotations
@@ -190,6 +191,20 @@ def _refuse(ctx: Context, raw: dict, why: str, reason: str) -> bool:
     return True
 
 
+def _restatements(ctx: Context, raw: dict, global_id: str, sent: dict[str, Memory]) -> None:
+    """The project memories a supplement or add_sources names for a global entry restate
+    it: recorded for curation, applied or refused. Only ids that were sent
+    count; another global entry is no re-statement."""
+    target = sent.get(raw["id"])
+    if raw["kind"] not in ("supplement", "add_sources") or target is None \
+            or target.project_id != global_id:
+        return
+    pairs = [(sent[memory_id].id, sent[memory_id].version) for memory_id in raw["source_ids"]
+             if memory_id in sent and sent[memory_id].project_id != global_id]
+    if pairs:
+        ctx.store.put_restatements(target.id, pairs, run_id=ctx.run_id, at=ctx.now)
+
+
 def _judge(ctx: Context, raw: dict, global_id: str, sent: dict[str, Memory],
            sources: dict[str, tuple[SourceRef, ...]], owner: dict[str, str]) -> bool:
     """One judgment validated and carried out; False when it keeps the pass from
@@ -200,6 +215,7 @@ def _judge(ctx: Context, raw: dict, global_id: str, sent: dict[str, Memory],
     if problem is not None:
         report.line(f"{problem} {kind}: reason")
         return False
+    _restatements(ctx, raw, global_id, sent)
     reason = shown(raw["reason"])
     plan = _plan(raw, global_id, sent, sources)
     if isinstance(plan, Problem):

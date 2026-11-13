@@ -37,7 +37,7 @@ SETTINGS_MODULE = "memriver_dream.settings"
 MODULES = {ROOT_PKG, *(f"{ROOT_PKG}.{name}" for name in (
     "protocols", "settings", "lock", "run", "store", "report", "calls", "changes",
     "phases", "phases.scan", "phases.summarize", "phases.consolidate", "phases.extract",
-    "phases.recheck", "phases.retire"))}
+    "phases.recheck", "phases.curate", "phases.retire"))}
 
 
 def _module_name(path: Path) -> str:

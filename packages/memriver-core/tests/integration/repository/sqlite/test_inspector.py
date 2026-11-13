@@ -480,6 +480,37 @@ def test_a_row_that_differs_from_its_latest_version_is_a_finding(world):
     assert _kinds(_inspect(world)) == [("version-mismatch", memory.id)]
 
 
+@pytest.mark.parametrize("edit", ["level = 1", "tags = '[\"git\"]'"])
+def test_a_row_whose_level_or_tags_differ_from_its_latest_version_is_a_finding(world, edit):
+    memory = _plant(world["store"], _memory(world["project"]))
+    _sql(world["store"], f"UPDATE memories SET {edit} WHERE id = ?", memory.id)
+    assert _kinds(_inspect(world)) == [("version-mismatch", memory.id)]
+
+
+def test_a_version_with_tags_memriver_could_not_have_written_is_a_finding(world):
+    memory = _plant(world["store"], _memory(world["project"]))
+    _sql(world["store"], "UPDATE memory_versions SET tags = '[\"Bad\"]' WHERE memory_id = ?",
+         memory.id)
+    assert _kinds(_inspect(world)) == [("invalid-row", memory.id)]
+
+
+def test_a_v4_store_is_upgraded_before_it_is_inspected(world):
+    _sql(world["store"], "PRAGMA user_version = 4")
+    for table in ("memories", "memory_versions"):
+        _sql(world["store"], f"ALTER TABLE {table} RENAME TO old_{table}")
+    _sql(world["store"], "DROP TABLE tags")
+    # the v4 shape: the same tables less the two metadata columns
+    for table in ("memories", "memory_versions"):
+        columns = [row[1] for row in _sql(world["store"], f"PRAGMA table_info(old_{table})")
+                   if row[1] not in ("level", "tags")]
+        _sql(world["store"], f"CREATE TABLE {table} AS SELECT {', '.join(columns)} "
+             f"FROM old_{table} WHERE 0")
+        _sql(world["store"], f"DROP TABLE old_{table}")
+    report = _inspect(world)
+    assert not any(f.kind == "unknown-schema" for f in report.findings)
+    assert _sql(world["store"], "PRAGMA user_version") == [(5,)]
+
+
 def test_a_version_naming_a_change_without_its_step_is_a_finding(world):
     memory = _plant(world["store"], _memory(world["project"]))
     _sql(world["store"], "INSERT INTO changes (change_id, at, changed_by, step_count) "

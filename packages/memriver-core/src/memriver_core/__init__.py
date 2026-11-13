@@ -9,6 +9,7 @@ from .content_policy.protocol import ContentClassifier, Verdict
 from .models.errors import (
     BatchConflict,
     BindingRefused,
+    CapExceeded,
     ContentRejected,
     GlobalReadOnly,
     MemoryError,
@@ -28,6 +29,7 @@ __version__ = "0.1.0"
 __all__ = [
     "BatchConflict",
     "BindingRefused",
+    "CapExceeded",
     "ContentClassifier",
     "ContentRejected",
     "GlobalReadOnly",

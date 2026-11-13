@@ -44,7 +44,7 @@ from memriver.protocol_text import (
 )
 from memriver_core import bootstrap
 from memriver_core.bootstrap import build_services
-from memriver_core.models import Memory, ReadWriteSet, SessionKey
+from memriver_core.models import Create, Memory, ReadWriteSet, SessionKey
 from memriver_core.settings import Settings
 
 INDEX_LINE = "- [user] likes-tea: drinks oolong (2026-01-01)"
@@ -440,7 +440,39 @@ def test_a_full_index_fits_the_metric_the_harness_itself_counts(harness, source,
     kept = len(body) - 1
     assert 0 < kept < 100
     assert body[:-1] == index.split("\n")[:kept]
-    assert body[-1] == f"… ({100 - kept} more entries omitted; use memory_search)"
+    assert body[-1] == f"\u2026 ({100 - kept} more entries omitted; use memory_search)"
+
+
+@pytest.mark.parametrize("harness", ["claude-code", "codex"])
+def test_a_harness_cut_reaches_project_lines_never_global_ones(harness, tmp_path,
+                                                               registered):
+    """Global's standing rules, tag lines and unjudged entries come first, so the
+    harness's own cap drops project lines: with 89 project entries of 60 CJK
+    characters, Codex used to see none of global."""
+    root = tmp_path / "mem"
+    services = _real_services(root)
+    global_id = services.project.ensure_global()
+    project_id = services.project.open_project_context(str(registered)).read_write_set.project_id
+    services.memory.apply(
+        [Create(global_id, "feedback", f"rule {n}", "\u8336" * 150, level=1, tags=("tea",))
+         for n in range(6)]
+        + [Create(global_id, "user", f"fact {n}", "x", level=2, tags=(f"t{n % 5}",))
+           for n in range(6)]
+        + [Create(global_id, "reference", "unjudged", "y")], changed_by="dream")
+    services.memory.apply([Create(project_id, "project", "\u8336" * 60, f"p{n}")
+                           for n in range(89)], changed_by="human")
+
+    text = additional_context(session_start(harness, {"cwd": str(registered)}, root=root))
+
+    measure, cap = CONSUMER_CAPS[harness]
+    assert measure(text) <= cap
+    body = text.split(INDEX_BEGIN_DELIMITER + "\n", 1)[1].split(
+        "\n" + INDEX_END_DELIMITER, 1)[0].split("\n")[1:]
+    assert [line.split("]")[0] for line in body[:13]] == \
+        ["- [rule, global"] * 6 + ["- [tag, global"] * 6 + ["- [reference, global"]
+    project = [line for line in body if line.startswith("- [project] ")]
+    assert 0 < len(project) < 89 and len(body) == 13 + len(project) + 1
+    assert body[-1] == f"\u2026 ({89 - len(project)} more entries omitted; use memory_search)"
 
 
 def test_an_index_of_thousands_of_lines_is_still_fitted(tmp_path, fake_service):

@@ -96,6 +96,8 @@ def test_the_dream_table_has_no_environment_layer(tmp_path, monkeypatch):
     ("dream = 5\n", "dream"),
     (DREAM_TABLE + "context_budget_tokens = 20000\n", "dream.context_budget_tokens"),
     (DREAM_TABLE + "context_budget_tokens = true\n", "dream.context_budget_tokens"),
+    (DREAM_TABLE + "standing_demote_runs = 0\n", "dream.standing_demote_runs"),
+    (DREAM_TABLE + "standing_demote_runs = true\n", "dream.standing_demote_runs"),
 ])
 def test_an_invalid_dream_table_raises_naming_only_the_file_and_the_field(tmp_path, table,
                                                                           field):
@@ -225,6 +227,13 @@ def test_the_dream_defaults_back_the_table_fields():
     assert defaults == (fields["ttl_days"].default, fields["ttl_read_multiplier_max"].default,
                         fields["report_retention_days"].default)
     assert defaults == (30, 3, 30)
+
+
+def test_a_rule_leaves_level_1_after_3_runs_judged_2_unless_set(tmp_path):
+    assert DreamSettings().standing_demote_runs == \
+        dream_settings.DEFAULT_DREAM_STANDING_DEMOTE_RUNS == 3
+    table = load_dream_settings(_root(tmp_path, DREAM_TABLE + "standing_demote_runs = 5\n"))
+    assert table.standing_demote_runs == 5
 
 
 def test_the_context_budget_defaults_to_200k_and_must_exceed_the_reserve(tmp_path):

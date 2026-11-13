@@ -58,8 +58,10 @@ def test_settings_are_constructible_directly():
 
 
 @pytest.mark.parametrize("field", ["max_body_chars", "search_limit_default",
-                                   "search_limit_max", "index_budget_lines"])
-@pytest.mark.parametrize("value", [0, -1])
+                                   "search_limit_max", "index_budget_lines",
+                                   "standing_max_count", "standing_max_chars", "tags_max",
+                                   "tags_per_memory_max"])
+@pytest.mark.parametrize("value", [0, -1, True])
 def test_non_positive_values_are_rejected(field, value):
     with pytest.raises(ValidationError):
         Settings(**{field: value})

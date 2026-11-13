@@ -2,8 +2,8 @@
 
 The run lock; runs a crash left `running` marked failed and their reports closed;
 the policy scan; with an executor, the session summaries, the project layer per
-ordinary project, the project layer for global, the global layer (extraction, then
-the source re-check) and TTL; then prune_reads, report retention and the finish.
+ordinary project, the project layer for global, the global layer (extraction, the
+source re-check, then curation) and TTL; then prune_reads, report retention and the finish.
 Global consolidate runs before extraction and the source re-check so an entry it
 flags instruction_like this run is already excluded from both, not just from TTL.
 Per-item failures stay inside their phase; whatever a phase raises is a store
@@ -27,6 +27,7 @@ from .phases import (
     GLOBAL_SCOPE,
     PassResult,
     consolidate,
+    curate,
     extract,
     recheck,
     retire,
@@ -53,7 +54,7 @@ if TYPE_CHECKING:
     from .protocols import Executor, TranscriptSource
 
 # the phases `memriver dream run --phase` can name; the policy scan always runs
-PHASES = frozenset({"summarize", "consolidate", "extract", "retire"})
+PHASES = frozenset({"summarize", "consolidate", "extract", "curate", "retire"})
 
 
 class WatchedExecutor:
@@ -98,6 +99,7 @@ class Context:
     # (run_dream sets it from [dream] context_budget_tokens; this default serves tests)
     budget_tokens: int = (DEFAULT_DREAM_CONTEXT_BUDGET_TOKENS - DREAM_OUTPUT_RESERVE_TOKENS
                           - DREAM_INPUT_MARGIN_TOKENS)
+    run_id: str = ""                      # what dream.db records name this run by
 
 
 def run_dream(services: Services, executor: Executor | None,
@@ -150,7 +152,8 @@ def run_dream(services: Services, executor: Executor | None,
                           settings=settings, now=now, store=store, report=report,
                           excluded=set(), history_hits={},
                           budget_tokens=(budget - DREAM_OUTPUT_RESERVE_TOKENS
-                                         - DREAM_INPUT_MARGIN_TOKENS))
+                                         - DREAM_INPUT_MARGIN_TOKENS),
+                          run_id=run_id)
             _phases(ctx, PHASES if phases is None else phases)
             report.section("Maintenance")
             report.line(f"reads pruned: {services.memory.prune_reads()}")
@@ -308,6 +311,9 @@ def _phases(ctx: Context, wanted: frozenset[str] | set[str]) -> None:
         _passed(ctx, EXTRACTION_SCOPE, extract.run(ctx))
         report.section("Global layer: source re-check")
         recheck.run(ctx)
+    if "curate" in wanted:
+        report.section("Global curation")
+        curate.run(ctx)
     if "retire" in wanted:
         report.section("TTL")
         retire.run(ctx)

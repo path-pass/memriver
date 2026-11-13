@@ -24,6 +24,7 @@ from memriver.server import build_server
 from memriver_core import Verdict
 from memriver_core.bootstrap import build_services
 from memriver_core.models import Memory, SessionKey, new_id
+from memriver_core.models.changes import Create
 from memriver_core.settings import Settings
 
 SOURCE = {"harness": "test", "method": "agent"}
@@ -208,14 +209,54 @@ async def test_write_then_read_returns_the_eleven_agent_fields(server, world):
     assert read["source"] == {"harness": "unknown", "method": "mcp"}
 
 
-async def test_index_shows_the_header_then_project_then_global_entries(server, world):
+async def test_level_and_tags_never_reach_an_agent_and_survive_its_update(server, world):
+    services = _services(world["store"])
+    memory_id = services.memory.apply(
+        [Create(world["project"], "project", "cue", "fact", level=1, tags=("tools",))],
+        changed_by="human").steps[0].memory_id
+    read = await _call(server, "memory_read", memory_id=memory_id)
+    assert set(read) == {"id", "project_id", "type", "source", "trust", "sync", "created",
+                         "updated", "description", "body", "version"}
+    await _call(server, "memory_update", memory_id=memory_id, expected_version=1,
+                content="fact, reworded")
+    kept = services.memory.show(memory_id)
+    assert (kept.version, kept.body, kept.level, kept.tags) == (2, "fact, reworded", 1,
+                                                                ("tools",))
+
+
+async def test_index_shows_the_header_then_unjudged_global_then_project_entries(server,
+                                                                               world):
     shared = _global_memory(world, description="global cue")
     mine = await _call(server, "memory_write", content="mine", type="project",
                        description="project cue")
     lines = (await _call(server, "memory_index")).splitlines()
     assert lines[0].startswith(f"project: demo [{world['project']}] (root ")
-    assert lines[1].startswith(f"- [project] {mine['id']}: project cue (")
-    assert lines[2].startswith(f"- [user, global] {shared.id}: global cue (")
+    assert lines[1].startswith(f"- [user, global] {shared.id}: global cue (")
+    assert lines[2].startswith(f"- [project] {mine['id']}: project cue (")
+
+
+async def test_index_lists_rules_and_tags_and_a_tag_expands(server, world):
+    services = _services(world["store"])
+    rule, tagged = (services.memory.apply(
+        [Create(world["global"], "feedback", cue, body, level=level, tags=("git",))],
+        changed_by="dream").steps[0].memory_id
+        for cue, body, level in (("push cue", "never force-push", 1),
+                                 ("rebase cue", "rebase before merge", 2)))
+    services.memory.describe_tag(world["global"], "git", "branches and history",
+                                 changed_by="dream")
+    mine = await _call(server, "memory_write", content="mine", type="project",
+                       description="project cue")
+    lines = (await _call(server, "memory_index")).splitlines()
+    assert lines[1:3] == [
+        f"- [rule, global] {rule}: never force-push",
+        "- [tag, global] git: branches and history (2 entries; memory_index tag=git)"]
+    assert lines[3].startswith(f"- [project] {mine['id']}: ") and len(lines) == 4
+    expanded = (await _call(server, "memory_index", tag="git")).splitlines()
+    assert expanded[0] == lines[0]
+    assert [line.split(": ")[0] for line in expanded[1:]] == [
+        f"- [feedback, global] {tagged}", f"- [feedback, global, rule] {rule}"]
+    assert (await _call(server, "memory_index", tag="nope")).splitlines()[1:] == \
+        ["(no such tag)"]
 
 
 async def test_an_empty_index_still_has_its_header(server, world):
@@ -293,7 +334,8 @@ async def test_no_tool_offers_a_scope_or_name_argument(server):
 # spec §2 / acceptance item 3: management stays off MCP, and nothing a model sends
 # chooses a project, sources, a role or who made the change
 MANAGEMENT_PARAMETERS = {"project", "project_id", "sources", "role", "trust", "changed_by",
-                         "changed_via", "to_version", "change_id", "hard", "ops"}
+                         "changed_via", "to_version", "change_id", "hard", "ops", "level",
+                         "tags"}
 
 
 async def test_no_tool_offers_a_management_operation_or_parameter(server):
@@ -467,8 +509,12 @@ async def test_the_index_tool_describes_its_first_line_in_the_agents_terms(serve
     async with Client(server) as c:
         tool = next(t for t in await c.list_tools() if t.name == "memory_index")
     assert " ".join(tool.description.split()) == (
-        "The current project on the first line, then a compact index of its memories "
-        "followed by global's.")
+        "The current project on the first line, then a compact index: global's standing "
+        "rules in full, one line per global tag, then entries -- global's not yet tagged, "
+        "then the project's. tag: a name from a tag line; lists the entries carrying it "
+        "instead.")
+    assert set(tool.inputSchema.get("properties", {})) == {"tag"}
+    assert tool.inputSchema.get("required", []) == []
 
 
 async def test_memory_write_says_an_interrupted_write_may_have_been_saved(server):

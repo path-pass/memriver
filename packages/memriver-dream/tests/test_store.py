@@ -13,7 +13,10 @@ import memriver_dream.store as store_module
 import pytest
 from memriver_dream.store import (
     _SCHEMA,
+    CurationRow,
     DreamStore,
+    EvidenceRow,
+    RestatementRow,
     ReviewRow,
     RunRow,
     SummaryRow,
@@ -33,7 +36,7 @@ def _run(run_id: str, started_at: str, status: str = "completed") -> RunRow:
     return RunRow(run_id, started_at, finished, "schedule", status, f"{run_id}.txt")
 
 
-def test_the_file_is_private_and_holds_the_five_tables(tmp_path):
+def test_the_file_is_private_and_holds_its_tables(tmp_path):
     store = _store(tmp_path)
     assert stat.S_IMODE(os.stat(store.path).st_mode) == 0o600
     assert stat.S_IMODE(os.stat(store.path.parent).st_mode) == 0o700
@@ -41,9 +44,55 @@ def test_the_file_is_private_and_holds_the_five_tables(tmp_path):
         names = {row[0] for row in conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert names == {"runs", "ttl_reviews", "scope_passes", "source_checks",
-                     "session_summaries"}
+                     "session_summaries", "restatements", "curation", "evidence"}
     store.put_scope_pass("global", "d1", T0)
     assert DreamStore(store.path).scope_digest("global") == "d1"     # reopening keeps rows
+
+
+def test_a_restatement_keeps_the_run_that_first_saw_it(tmp_path):
+    store = _store(tmp_path)
+    store.put_restatements("gggggggggg", [("aaaaaaaaaa", 1), ("bbbbbbbbbb", 2)],
+                           run_id="run0000001", at=T0)
+    later = shift_days(T0, 1)
+    store.put_restatements("gggggggggg", [("aaaaaaaaaa", 1), ("aaaaaaaaaa", 2)],
+                           run_id="run0000002", at=later)
+    assert store.restatements() == {"gggggggggg": [
+        RestatementRow("gggggggggg", "aaaaaaaaaa", 1, "run0000001", T0),
+        RestatementRow("gggggggggg", "bbbbbbbbbb", 2, "run0000001", T0),
+        RestatementRow("gggggggggg", "aaaaaaaaaa", 2, "run0000002", later)]}
+
+
+def test_an_existing_dream_db_gains_the_new_tables_on_open(tmp_path):
+    path = tmp_path / "dream" / "dream.db"
+    path.parent.mkdir(mode=0o700, parents=True)
+    with closing(sqlite3.connect(path)) as conn, conn:
+        for statement in _SCHEMA[:-3]:
+            conn.execute(statement)
+        conn.execute("PRAGMA user_version = 1")
+    store = DreamStore(path)
+    assert store.restatements() == {} and store.curation("gggggggggg") is None
+    assert store.evidence("gggggggggg") == []
+
+
+def test_a_streak_is_replaced_and_ended_and_evidence_is_only_ever_added(tmp_path):
+    store = _store(tmp_path)
+    store.put_curation(CurationRow("gggggggggg", 1, T0))
+    store.put_curation(CurationRow("gggggggggg", 2, T0))
+    assert store.curation("gggggggggg") == CurationRow("gggggggggg", 2, T0)
+    quote = EvidenceRow("gggggggggg", 3, "run0000001", "quote", "body", 15, 33, None, None, T0)
+    seen = EvidenceRow("gggggggggg", 3, "run0000001", "restatement", None, None, None,
+                       "aaaaaaaaaa", 2, T0)
+    store.add_evidence([quote, seen])
+    assert store.evidence("gggggggggg") == [] and store.pending_evidence() == [quote, seen]
+    store.settle_evidence([("gggggggggg", 3, "run0000001")], "cccccccccc")
+    quote, seen = (replace(row, change_id="cccccccccc") for row in (quote, seen))
+    store.delete_curation("gggggggggg")
+    assert store.curation("gggggggggg") is None
+    assert store.evidence("gggggggggg") == [quote, seen]
+    assert (quote.reference(), seen.reference()) == ("v3 body[15:33]",
+                                                     "restated by aaaaaaaaaa v2")
+    with closing(sqlite3.connect(store.path)) as conn, conn, pytest.raises(sqlite3.IntegrityError):
+        conn.execute("INSERT INTO curation VALUES ('hhhhhhhhhh', 0, ?)", (T0,))
 
 
 def test_a_fresh_store_is_stamped_with_the_current_schema_version(tmp_path):

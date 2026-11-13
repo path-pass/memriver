@@ -298,22 +298,37 @@ def test_a_malformed_created_is_never_a_candidate(world):
     assert not _deleted(world, memory_id) and _review(world, memory_id) is None
 
 
-def test_a_malformed_updated_is_never_a_candidate(world):
+def test_a_malformed_updated_does_not_matter_to_the_age(world):
     memory_id = _aged(world, 200)
     world.sql("UPDATE memories SET updated = 'zzzz' WHERE id = ?", memory_id)
-    assert _candidates(world) == []
-    result, text = _pass(world)
-    assert result.finished
-    assert f"skipped {memory_id}: unknown time" in text
-    assert world.executor.calls == []
-    assert not _deleted(world, memory_id) and _review(world, memory_id) is None
+    assert _candidates(world) == [memory_id]
 
 
-def test_a_recent_update_keeps_an_old_created_memory_off_the_list(world):
+def test_a_recent_update_no_longer_keeps_an_old_memory_off_the_list(world):
+    # the age runs from created and the last read only: a new version is not a use
     memory_id = world.create(world.project.id, "the staging host is stage-3")
     world.sql("UPDATE memories SET created = ?, updated = ?, last_read_at = NULL WHERE id = ?",
               shift_days(world.now, -200), shift_days(world.now, -1), memory_id)
-    assert _candidates(world) == []
+    assert _candidates(world) == [memory_id]
+
+
+def test_dreams_metadata_versions_do_not_keep_a_memory_young(world):
+    memory_id = _aged(world, 200, project_id=world.global_id)
+    world.services.memory.apply([Update(memory_id, 1, level=2, tags=("hosts",))],
+                                changed_by="dream")
+    assert _candidates(world) == [memory_id]
+
+
+def test_a_metadata_only_version_neither_reopens_a_review_nor_resets_a_streak(world):
+    memory_id = _aged(world, 200, project_id=world.global_id)
+    world.executor.replies = [_decision("uncertain"), _decision("uncertain")]
+    _pass(world)
+    world.services.memory.apply([Update(memory_id, 1, level=2, tags=("hosts",))],
+                                changed_by="dream")
+    assert _candidates(world) == []                    # judged with this content: not due
+    result, text = _pass(world, now=_later(world, 31))
+    assert result.finished and _deleted(world, memory_id)
+    assert '  reason: 2 uncertain reviews in a row\n' in text
 
 
 def test_a_recent_created_keeps_an_old_updated_memory_off_the_list(world):
@@ -481,3 +496,22 @@ def test_only_a_retired_global_memory_is_listed_in_needs_you(world, in_global):
     listed = re.search(rf"^global changed: retire {memory_id} — undo: memriver undo \S+$",
                        text, re.MULTILINE)
     assert bool(listed) is in_global
+
+
+def test_a_standing_rule_is_not_a_ttl_candidate_but_a_level_2_entry_is(world):
+    # level-1 bodies are injected into every session, so a rule is never read:
+    # its use is its injection, and curate (not the TTL) demotes it
+    rule_text = 'The user said "never push to main"; open a pull request instead.'
+    rule = world.create(world.global_id, rule_text, type="feedback")
+    plain = world.create(world.global_id, "uv manages python", type="user")
+    memory = world.services.memory
+    memory.apply([Update(rule, memory.show(rule).version, level=1),
+                  Update(plain, memory.show(plain).version, level=2)], changed_by="test")
+    _age(world, rule, 400)
+    _age(world, plain, 400)
+    assert _candidates(world) == [plain]
+    world.executor.replies = [_decision("uncertain"), _decision("uncertain")]
+    for _ in range(2):
+        _pass(world)
+    assert not _deleted(world, rule)
+    assert _review(world, rule) is None

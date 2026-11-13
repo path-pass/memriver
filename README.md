@@ -91,7 +91,13 @@ reports go to stderr.
   explicit delimiters, preceded by a notice that the entries are data, not
   instructions. The injection is sized in the harness's own metric (Claude
   Code: 10,000 UTF-16 code units; Codex: about 2,500 tokens) and truncates
-  whole lines with an omission notice rather than cutting mid-entry.
+  whole lines with an omission notice rather than cutting mid-entry. Global
+  comes first -- its standing rules in full, one line per tag with how many
+  entries carry it, then the global entries `memriver dream` has not judged
+  yet, the level-2 ones with no tag, and rules past `standing_max_count`
+  that carry no tag -- and the project's entries last, so a cut drops project
+  lines first.
+  An agent opens a tag with `memory_index(tag=...)`.
 - **A session's project is fixed at its start.** A Claude Code or Codex
   session gets its project once -- from its first `SessionStart` -- and keeps
   it for the session's whole life: opening a sub-directory of a monorepo
@@ -213,14 +219,21 @@ Known limits:
   `serve --harness` argument, so without it prompts are not counted, `Stop`
   never nudges, and the MCP server stays in directory mode. Then restart
   every harness session and MCP server that shares the store; a running
-  server keeps its old rules. This release's store is schema version 4: a
-  store written by an earlier release is refused -- hooks do nothing, MCP
-  tools answer that the store's schema version is not supported and change
-  nothing, and every other command, `doctor`, `memriver dream run` and
-  `dream report` included, exits 1 with one line naming the store's schema
-  version; an earlier memriver refuses a v4 store. A session that already
-  has a row keeps being routed by it regardless of a software update (see
-  *What your agent sees*).
+  server keeps its old rules. This release's store is schema version 5: a
+  version-4 store is upgraded in place on its first read, write or `doctor`
+  run (two columns and a table, no version rows; one write lock, once). A store
+  below version 4 is refused as before -- hooks do nothing, MCP tools answer
+  that the store's schema version is not supported and change nothing, and
+  every other command, `doctor`, `memriver dream run` and `dream report`
+  included, exits 1 with one line naming the store's schema version. An earlier
+  memriver meets a version-5 store as an unknown schema: its hooks inject no
+  memories (`SessionStart` shows the store as unavailable), its MCP tools
+  fail with a generic could-not-read (or could-not-write) message, and its
+  `doctor` reports `unknown-schema`. So after upgrading, update every harness
+  that shares the store (e.g. `uvx --refresh memriver ...` or reinstalling
+  the tool) and restart its sessions. A session that already has a row keeps
+  being routed by it regardless of a software update (see *What your agent
+  sees*).
 - A store written by the pre-SQLite file layout (`global/`, `store.toml`,
   `projects/`, `memories/`, `registry/`) is not read or migrated; `memriver
   doctor` reports it as `legacy-layout`.
@@ -231,7 +244,7 @@ Known limits:
 
 | Tool | Purpose |
 |---|---|
-| `memory_index()` | The session's project on the first line, then a compact index: the project's memories, then global's (tagged `global`) |
+| `memory_index(tag=None)` | The session's project on the first line, then a compact index: global's standing rules in full, one line per global tag, global's entries not yet tagged, then the project's memories; with `tag`, the global entries carrying that tag (a standing one marked `rule`) |
 | `memory_read(memory_id)` | One memory in full, by id: eleven fields, including the `version` that `memory_update`/`memory_delete` must be given back. An entry that exists but cannot be read is reported as such, not as missing |
 | `memory_search(query, limit=None)` | Memories relevant to a task, by space-separated keywords: an entry matching any keyword is returned, entries matching more keywords first (see below); the project's hits first, then global's; `limit` caps the whole answer, so a query with many project hits can leave no room for global ones |
 | `memory_write(content, type, sync=True, description="")` | Save one durable fact to the current project; memriver assigns the id and stamps `source.harness` with the server's own `--harness` value (an installed Cursor/Kiro server records `cursor`/`kiro`; `unknown` only when the server was started with no `--harness` at all); global is read-only to agents; `type` is `user` / `feedback` / `project` / `reference` |
@@ -486,7 +499,7 @@ same way `session_search` ranks the calling session's own project; unlike
 ```bash
 uv tool install memriver   # the schedule needs a persistent memriver, not uvx's cache
 memriver dream init [--executor claude|codex] [--ttl-days N] [--at HH:MM] [--yes]
-memriver dream run [--phase summarize|consolidate|extract|retire]
+memriver dream run [--phase summarize|consolidate|extract|curate|retire]
 memriver dream report [RUN_ID] [--list [N]]
 memriver dream uninstall
 ```
@@ -529,22 +542,56 @@ still going is recorded as skipped. Each run, in order:
    commands: "Python projects prefer pytest for tests", never "pytest -q". A
    global entry whose cited sources changed since is re-checked against their
    new versions: kept, pointed at the new versions, revised, or listed under
-   *Needs you* as overturned.
-6. **Retires memories unused past their TTL**, after asking the model whether
+   *Needs you* as overturned. A project memory the model names as more evidence
+   for an existing global entry is recorded in `dream.db` as a re-statement of
+   it, even when the extraction itself is refused.
+6. **Curates global**: the model gives every global entry a level and one to
+   `tags_per_memory_max` tags (three by default). Level 1, a standing rule, is
+   for an entry the user would mind seeing broken; `memory_index` shows these in
+   full at every session start. Everything else is level 2 and found through its
+   tags, whose lines (with a one-line description each) are always in the index.
+   A promotion to level 1 needs cited evidence -- words quoted verbatim from the
+   entry, or a re-statement recorded by step 5 -- and a body within
+   `standing_max_chars` (the model rewrites a longer one, as a content change);
+   it applies the same run. The code checks that a quote stands in the entry's
+   text, not that the user said it: which words are the user's is the model's
+   call, and a re-statement is the evidence that can be traced. Each promotion's
+   evidence is kept in `dream.db` for good -- a quote by the version, field and
+   character range it stands at, a re-statement by its memory and version --
+   recorded as pending before the change and marked with the change's id after
+   it (a pending record left by a run that died is settled from the memory's
+   history at the next curate run), and the report names it the same way.
+   Leaving level 1 takes the entry being judged level 2 in
+   `standing_demote_runs` curate runs in a row; a curate run that does not
+   judge it level 2 (it was left out, the answer about it was invalid, the call
+   failed, or the change was not applied) starts the count over, and nobody
+   re-stating a rule never demotes it. Rules keep their place under
+   `standing_max_count`; the room left goes to the new candidates with the most
+   re-statements, then the most recent, and the rest stay level 2 and are listed
+   under *Needs you*. A new tag name without a description is not applied, more
+   tag names than `tags_max` change no tags and are listed there too, as is a
+   global entry of type `project` the first time it is judged (it probably
+   belongs to a project). The whole curation is one change; curation never
+   merges or deletes.
+7. **Retires memories unused past their TTL**, after asking the model whether
    there is reason enough to retire each one: a memory's last use is the
-   latest of its creation, its last update and its last `memory_read`, and its
-   TTL is `ttl_days` times one plus its recorded reads, capped at
-   `ttl_read_multiplier_max` times. `keep` leaves it alone for another
-   `ttl_days`; `delete` soft-deletes it; `uncertain_limit` uncertain answers in
-   a row about the same version soft-delete it too. A read that lands while
-   the model decides keeps the memory.
-7. Writes its report, and deletes runs and reports older than
+   later of its creation and its last `memory_read` -- a new version does not
+   count, since an agent reads a memory before it edits it and dream's own
+   changes are no use of it -- and its TTL is `ttl_days` times one plus its
+   recorded reads, capped at `ttl_read_multiplier_max` times. `keep` leaves it
+   alone for another `ttl_days`; `delete` soft-deletes it; `uncertain_limit`
+   uncertain answers in a row about the same content (type, description and
+   body) soft-delete it too. A read that lands while the model decides keeps
+   the memory. Level-1 entries are not TTL candidates: they are injected, not
+   read, and curate demotes them.
+8. Writes its report, and deletes runs and reports older than
    `report_retention_days`.
 
 `--phase` runs one step after the policy scan: `summarize` (2), `consolidate`
-(3 and 4), `extract` (5) or `retire` (6). A consolidation or extraction pass
-is skipped while the memories it would read are unchanged since its last
-finished pass.
+(3 and 4), `extract` (5), `curate` (6) or `retire` (7). A consolidation or
+extraction pass is skipped while the memories it would read are unchanged
+since its last finished pass; curation runs every time, so a demotion's runs
+in a row are counted.
 
 **Changes and undo.** Every change dream makes goes through the same change
 log as any other write, recorded as `dream` with its executor's harness, and
@@ -554,8 +601,9 @@ one-sentence reason, followed by the command that reverses it, `memriver undo
 <change_id>` -- refused once any memory the change touched has changed since,
 where `memriver restore` takes over (*Browsing and managing memories
 directly*). A session summary is not a memory change and has no undo. Every
-change to global -- a global consolidation, an extraction, a re-check, a global
-memory's retirement -- is also listed under *Needs you* with its undo command,
+change to global -- a global consolidation, an extraction, a re-check, a
+curation, a global memory's retirement -- is also listed under *Needs you*
+with its undo command,
 so a change every project reads is never missed. A change the content
 classifier blocks (*Content classifier*) is not made; it is listed under
 *Needs you* (a classifier that cannot check at all is listed once per run, with
@@ -563,7 +611,11 @@ its reason) and the step runs again next run.
 
 **Reports.** `memriver dream report` prints the latest run's report (or
 `RUN_ID`'s) as it was written: the run, its trigger and executor; each change,
-by project; the TTL decisions; skips and failures with their reasons; *Needs
+by project; the global curation (level-1 entries and their characters before
+and after this curation, each promotion with where its evidence stands and each
+demotion, tag names added and
+dropped, descriptions set, re-statements seen); the TTL decisions; skips and
+failures with their reasons; *Needs
 you* -- content-policy hits with their `memriver delete ID --hard` command,
 contradictions, instruction-like entries, overturned global entries and
 refused extractions, every change to global with its undo command, and
@@ -670,6 +722,7 @@ schedule_at = "04:00"
 max_sessions_per_run = 20             # sessions one run summarizes
 max_groups_per_run = 20               # changes one run may make
 max_candidates_per_run = 30           # TTL reviews one run may ask for
+standing_demote_runs = 3              # curate runs in a row judged level 2 before a rule leaves level 1
 context_budget_tokens = 200000        # tokens one executor call may use, input and output
 # claude_settings = "/absolute/path/to/auth-settings.json"   # passed to claude as --settings
 # model = "your-model"                # passed to claude as --model, to codex as -c model=
@@ -727,7 +780,8 @@ uvx memriver doctor --root /path      # check a non-default store
 A store below schema version 4 is refused before any of the checks below run:
 `doctor` prints the one line naming the store's schema version to stderr and
 exits 1, with `--json` still emitting `{"error": ...}` on stdout -- no report
-either way. On a store at schema version 4, `doctor` diagnoses problems in
+either way. On a store at schema version 5 (`doctor` upgrades a version-4
+store first), `doctor` diagnoses problems in
 more detail than a tool call reports: a schema version this build does not
 recognize as current (`unknown-schema`; when the check cannot complete at
 all -- a garbage file, a missing table -- doctor takes the inaccessible
@@ -856,7 +910,7 @@ memriver's own checkout).
   memriver.db-journal    # transient, SQLite's own; also left by a crashed writer until the next connection rolls it back
   settings.toml          # optional, see Settings
   dream/                 # 0700; memriver dream's own (see Dream)
-    dream.db             # runs, TTL reviews, finished passes, source re-checks, summary progress
+    dream.db             # runs, TTL reviews, finished passes, source re-checks, summary progress, re-statements, demotion streaks, promotion evidence
     reports/             # one report file per run, kept report_retention_days
     .lock                # one run at a time
     dream.log            # one line per scheduled run: its id and status
@@ -904,7 +958,7 @@ its cached one. `install` prints a note when `uvx` itself is not on `PATH`.
 ## Settings
 
 Settings are read from `--root` / `MEMRIVER_*` environment variables and an
-optional `<root>/settings.toml`, in that order of precedence. All four file
+optional `<root>/settings.toml`, in that order of precedence. All eight file
 settings are positive integers. A key or table memriver does not use is ignored.
 An unreadable file, bad TOML or an invalid value (in the file or in a
 `MEMRIVER_*` variable) stops every entry point that reads settings with one
@@ -930,7 +984,19 @@ max_body_chars = 8000       # largest body memory_write accepts
 search_limit_default = 5    # memory_search limit when the caller omits it
 search_limit_max = 50       # ceiling applied to any caller-supplied limit
 index_budget_lines = 100    # entries memory_index lists before truncating
+standing_max_count = 10     # standing rules (level 1) one project may hold
+standing_max_chars = 200    # characters of one standing rule's body
+tags_max = 12               # distinct tag names one project's entries may carry
+tags_per_memory_max = 3     # tag names one entry may carry
 ```
+
+The last four are limits every write keeps -- `memriver dream` sets levels and
+tags on global entries (*Dream*), and a restore or undo that would break one is
+refused naming the setting. Lowering one keeps what is already there: a write
+may leave an existing excess as it is but never grow it, and `memory_index`
+shows at most `standing_max_count` standing rules, each cut at
+`standing_max_chars` with `…`. A changed value applies from the next server
+start, command or dream run.
 
 One more top-level key, unset by default: `memory_reads_retention_days = N`
 keeps read records for N days (unset keeps every one; a dropped read no longer

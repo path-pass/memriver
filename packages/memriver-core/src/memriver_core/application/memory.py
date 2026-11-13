@@ -11,15 +11,25 @@ is injected.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
-from memriver_core.models import Memory, Project, ProjectContext, now, single_line
+from memriver_core.models import (
+    TAG_NAME_MAX_CHARS,
+    TAG_NAME_RE,
+    Memory,
+    Project,
+    ProjectContext,
+    now,
+    single_line,
+)
 from memriver_core.models.changes import (
     Change,
     Citation,
     Create,
     MemoryVersion,
+    MetadataCaps,
     Op,
     Restore,
     SoftDelete,
@@ -53,6 +63,8 @@ _VERDICT_LABEL_RE = re.compile(r"[a-z0-9-]{1,32}")
 # What MemoryService.index returns when nothing is visible -- the single
 # source transports compare against.
 EMPTY_INDEX = "(no memories yet)"
+# memory_index(tag=...) for a name no current global memory carries: a line, not an error
+NO_SUCH_TAG = "(no such tag)"
 
 # the classifier's two refusals: the category and the detail come from the
 # implementation, which keeps them to short fixed labels
@@ -69,6 +81,7 @@ class MemoryService:
                  mark_saved: Callable[[ProjectContext], None], max_body_chars: int,
                  metadata_max_chars: int, search_limit_default: int, search_limit_max: int,
                  index_budget_lines: int, index_cue_chars: int,
+                 metadata_caps: MetadataCaps,
                  memory_reads_retention_days: int | None = None,
                  classifier: ContentClassifier | None = None) -> None:
         self._memory_store = memory_store
@@ -89,6 +102,9 @@ class MemoryService:
         self._search_limit_max = search_limit_max
         self._index_budget_lines = index_budget_lines
         self._index_cue_chars = index_cue_chars
+        # read once, when the services are composed: a changed setting applies to the
+        # next process (server start, command, run), never to one already running
+        self._caps = metadata_caps
         # unset keeps every read fact
         self._memory_reads_retention_days = memory_reads_retention_days
         # None: no classifier (the optional package absent, a read-only caller, a
@@ -169,7 +185,8 @@ class MemoryService:
         first-occurrence id collision is StorageFailure, same as every other write."""
         try:
             return self._memory_store.write(op, restriction=restriction, changed_by=changed_by,
-                                            changed_via=changed_via, check=self._check_state)
+                                            changed_via=changed_via, check=self._check_state,
+                                            caps=self._caps)
         except IdCollision as err:
             raise StorageFailure from err
 
@@ -195,14 +212,14 @@ class MemoryService:
             raise ContentRejected(rule_id=err.rule_id, memory_id=memory_id) from err
 
     def _classify(self, description: str | None, body: str | None, *,
-                  changed_by: str) -> None:
+                  changed_by: str, tags: Sequence[str] = ()) -> None:
         """The content classifier on a write's new text, outside any transaction: a call
         can take seconds, and the store's write lock must never wait on it. Only the
-        candidate text is sent -- its non-blank description and body joined by a blank
-        line -- never another memory, a project or an id."""
+        candidate text is sent -- its non-blank description, body and tag names (one
+        line) joined by a blank line -- never another memory, a project or an id."""
         if self._classifier is None:
             return
-        text = "\n\n".join(part for part in (description, body)
+        text = "\n\n".join(part for part in (description, body, " ".join(tags))
                            if part is not None and part.strip())
         verdict = self._classifier.classify(text, changed_by=changed_by)
         if verdict is None:
@@ -234,16 +251,18 @@ class MemoryService:
         model's output.
         """
         if self._classifier is not None:
-            # every op that carries new text, in op order, before the transaction; the
-            # policy first, so a secret is refused here and never reaches the classifier
+            # every op that carries new text or tag names, in op order, before the
+            # transaction; the policy first, so a secret is refused here and never
+            # reaches the classifier
             for op in ops:
-                if isinstance(op, Create | Update) \
-                        and (op.description is not None or op.body is not None):
+                if isinstance(op, Create | Update) and (
+                        op.description is not None or op.body is not None or op.tags):
                     self._precheck_text(op)
-                    self._classify(op.description, op.body, changed_by=changed_by)
+                    self._classify(op.description, op.body, changed_by=changed_by,
+                                   tags=op.tags or ())
         try:
             return self._memory_store.apply(ops, changed_by=changed_by, changed_via=changed_via,
-                                            check=self._check_state)
+                                            check=self._check_state, caps=self._caps)
         except IdCollision as err:
             raise StorageFailure from err
 
@@ -264,9 +283,32 @@ class MemoryService:
         """
         try:
             return self._memory_store.undo(change_id, changed_by=changed_by,
-                                           changed_via=changed_via, check=self._check_state)
+                                           changed_via=changed_via, check=self._check_state,
+                                           caps=self._caps)
         except IdCollision as err:
             raise StorageFailure from err
+
+    @property
+    def metadata_caps(self) -> MetadataCaps:
+        """The limits this service's writes keep (settings.toml, read at composition)."""
+        return self._caps
+
+    def tag_descriptions(self, project_id: str) -> dict[str, str]:
+        """Every described tag name of a project with its description."""
+        return self._memory_store.tag_descriptions(project_id)
+
+    def describe_tag(self, project_id: str, name: str, description: str, *,
+                     changed_by: str) -> None:
+        """Set a tag name's description in a project, on one line: the content
+        policy, then the classifier, as for any text the index injects. The management
+        path only; not a memory change, so it has no version and no undo."""
+        if not (isinstance(name, str) and len(name) <= TAG_NAME_MAX_CHARS
+                and TAG_NAME_RE.fullmatch(name)):
+            raise ValueError("not a tag name")
+        description = single_line(description)
+        self._policy().check(description, self._metadata_max_chars)
+        self._classify(name, description, changed_by=changed_by)
+        self._memory_store.describe_tag(project_id, name, description)
 
     # --- collections ---
 
@@ -303,26 +345,65 @@ class MemoryService:
         return (f"- [{memory.type}{tag}] {single_line(memory.id)}: {cue} "
                 f"({single_line(memory.updated[:10])})")
 
-    def index(self, context: ProjectContext) -> str:
-        """The current project's entries, then global's, in one line budget."""
-        read_write_set = context.read_write_set
-        sections = [(project_id, tag) for project_id, tag in
-                    ((read_write_set.project_id, ""),
-                     (read_write_set.global_project_id, ", global"))
-                    if project_id is not None]
-        listed = [(tag, self._project_store.search(project_id, read_write_set,
-                                                   query=None, limit=None))
-                  for project_id, tag in sections]
-        total = sum(len(memories) for _, memories in listed)
-        if total == 0:
+    def _rule_line(self, memory: Memory) -> str:
+        """A standing rule in full, on one line; a body past standing_max_chars (stored
+        before the limit was lowered) is cut there with an ellipsis, never dropped."""
+        body = single_line(memory.body)
+        if len(body) > self._caps.standing_max_chars:
+            body = body[:self._caps.standing_max_chars] + "\u2026"
+        return f"- [rule, global] {single_line(memory.id)}: {body}"
+
+    def _tag_line(self, name: str, count: int, description: str | None) -> str:
+        about = "" if description is None else \
+            ": " + single_line(description)[:self._index_cue_chars]
+        return (f"- [tag, global] {name}{about} ({count} entries; "
+                f"memory_index tag={name})")
+
+    def _budgeted(self, lines: list[str]) -> str:
+        """`lines` within the line budget, with the one notice of how many were left out."""
+        if not lines:
             return EMPTY_INDEX
-        lines: list[str] = []
-        for tag, memories in listed:
-            room = self._index_budget_lines - len(lines)
-            lines += [self._index_line(m, tag) for m in memories[:max(room, 0)]]
-        if total > len(lines):
-            lines.append(f"… ({total - len(lines)} more entries omitted; use memory_search)")
-        return "\n".join(lines)
+        kept = lines[:self._index_budget_lines]
+        if len(lines) > len(kept):
+            kept.append(f"\u2026 ({len(lines) - len(kept)} more entries omitted; "
+                        "use memory_search)")
+        return "\n".join(kept)
+
+    def index(self, context: ProjectContext, tag: str | None = None) -> str:
+        """Global's standing rules in full, a line per global tag, global's unjudged
+        entries, then the current project's entries, in one line budget:
+        a harness that cuts the end cuts project lines first. A level-2 global entry
+        appears only through its tags, or as a plain line when it carries none.
+
+        With `tag`, the current global entries carrying that name instead, as index
+        lines (a standing one marked `rule`), or NO_SUCH_TAG."""
+        read_write_set = context.read_write_set
+        listed = {project_id: self._project_store.search(project_id, read_write_set,
+                                                         query=None, limit=None)
+                  for project_id in (read_write_set.project_id,
+                                     read_write_set.global_project_id)
+                  if project_id is not None}
+        shared = listed.get(read_write_set.global_project_id, [])
+        if tag is not None:
+            carriers = [m for m in shared if tag in m.tags]
+            if not carriers:
+                return NO_SUCH_TAG
+            return self._budgeted([self._index_line(m, ", global, rule" if m.level == 1
+                                                    else ", global") for m in carriers])
+        # newest first; past the count limit (lowered since) a rule shows as level 2 does
+        rules = [m for m in shared if m.level == 1][:self._caps.standing_max_count]
+        ruled = {m.id for m in rules}
+        counts = Counter(name for m in shared for name in m.tags)
+        described = self._memory_store.tag_descriptions(read_write_set.global_project_id) \
+            if counts else {}
+        plain = [m for m in shared if m.id not in ruled and (m.level is None or not m.tags)]
+        mine = listed.get(read_write_set.project_id, []) \
+            if read_write_set.project_id != read_write_set.global_project_id else []
+        return self._budgeted(
+            [self._rule_line(m) for m in rules]
+            + [self._tag_line(name, counts[name], described.get(name)) for name in sorted(counts)]
+            + [self._index_line(m, ", global") for m in plain]
+            + [self._index_line(m, "") for m in mine])
 
     # --- management reads (the human CLI; never reachable from MCP) ---
 

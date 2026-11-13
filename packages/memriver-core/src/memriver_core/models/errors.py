@@ -4,8 +4,8 @@ Two kinds of error live here, and they differ in who owns the words:
 
 - **Storage-boundary errors** -- `MemoryNotFound`, `ProjectNotFound`,
   `IdCollision`, `StorageFailure`, `VersionConflict`, `BindingRefused`,
-  `ProjectUnavailable`, `BatchConflict`, `StoreNeedsUpgrade`, `UndoRefused`,
-  `PlanChanged`, `SessionMoved` -- carry structured *fields*
+  `ProjectUnavailable`, `BatchConflict`, `CapExceeded`, `StoreNeedsUpgrade`,
+  `UndoRefused`, `PlanChanged`, `SessionMoved` -- carry structured *fields*
   only. Their `str()` is a developer-facing line for logs and must never
   reach a client: a transport composes client copy from the operation plus
   these fields, so a second backend cannot change a byte of what a client
@@ -173,6 +173,26 @@ class BatchConflict(MemoryError):
         self.index = index
         self.memory_id = memory_id
         self.reason = reason
+
+
+CAPS = frozenset({"standing_max_count", "standing_max_chars", "tags_max",
+                  "tags_per_memory_max"})
+
+
+class CapExceeded(MemoryError):
+    """A change would break one of the metadata limits; nothing was written.
+
+    Fields only: `cap` is the setting's name, one of CAPS; `memory_id` the memory
+    whose own state breaks it (None for the count of a project's level-1 entries or
+    of its tag names).
+    """
+
+    def __init__(self, cap: str, memory_id: str | None = None) -> None:
+        if cap not in CAPS:
+            raise ValueError(f"unknown cap: {cap!r}")
+        super().__init__(f"cap exceeded: {cap}")
+        self.cap = cap
+        self.memory_id = memory_id
 
 
 class StoreNeedsUpgrade(MemoryError):

@@ -14,6 +14,7 @@ from .application.memory import EMPTY_INDEX, MemoryService
 from .application.projects import ProjectService
 from .application.sessions import SessionService
 from .content_policy.protocol import ContentClassifier
+from .models.changes import MetadataCaps
 
 # The store purge is the one data operation outside the four services (the user's
 # choice): it destroys the whole storage directory rather than records.
@@ -124,6 +125,10 @@ def build_services(settings: Settings, *, root: Path | None = None,
         index_budget_lines=settings.index_budget_lines,
         index_cue_chars=INDEX_CUE_CHARS,
         memory_reads_retention_days=settings.memory_reads_retention_days,
+        metadata_caps=MetadataCaps(standing_max_count=settings.standing_max_count,
+                                   standing_max_chars=settings.standing_max_chars,
+                                   tags_max=settings.tags_max,
+                                   tags_per_memory_max=settings.tags_per_memory_max),
         classifier=classifier,
     )
     return Services(

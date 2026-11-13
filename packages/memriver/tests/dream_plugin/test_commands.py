@@ -627,12 +627,12 @@ def test_run_hands_the_settings_the_phase_and_the_trigger_to_run_dream(world, mo
         return _skipped("r", now, trigger)
 
     monkeypatch.setattr(dream_commands, "run_dream", fake_run_dream)
-    for phase in ("summarize", "consolidate", "extract", "retire"):
+    for phase in ("summarize", "consolidate", "extract", "curate", "retire"):
         assert _run(world, phase=phase, trigger="schedule")[0] == 0
     assert _run(world)[0] == 0
     assert [call["phases"] for call in seen] == [{"summarize"}, {"consolidate"}, {"extract"},
-                                                 {"retire"}, None]
-    assert [call["trigger"] for call in seen] == ["schedule"] * 4 + ["manual"]
+                                                 {"curate"}, {"retire"}, None]
+    assert [call["trigger"] for call in seen] == ["schedule"] * 5 + ["manual"]
     first = seen[0]
     assert isinstance(first["executor"], Executor)
     assert isinstance(first["transcripts"], HarnessTranscripts)
@@ -912,7 +912,8 @@ def test_dream_help_lists_the_commands_and_hides_the_internal_options(capsys):
         assert command in out
     assert "undo" not in out
     run_help = help_of("dream", "run")
-    assert "--trigger" not in run_help and "{summarize,consolidate,extract,retire}" in run_help
+    assert "--trigger" not in run_help \
+        and "{summarize,consolidate,extract,curate,retire}" in run_help
     assert "--agent-label" not in help_of("dream", "init")
 
 def test_a_fifo_planted_at_a_temporary_name_never_blocks_init(world):

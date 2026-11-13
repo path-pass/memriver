@@ -203,6 +203,49 @@ def test_add_sources_cites_the_new_memories_and_keeps_the_text(world):   # §10 
     assert '  description: "principle"\n' in text
 
 
+def test_a_project_memory_restating_a_global_entry_is_recorded_even_when_refused(world):
+    # a hand-made global rule cites nothing: a project memory saying it again traces to one
+    # project, so add_sources is refused -- and the pair is still evidence for curation
+    rule = _global(world, "Answer in the user's language.")
+    a = world.create(world.project.id, "the user wants answers in Chinese")
+    world.executor.replies = [_answer(_judgment("add_sources", id=rule, source_ids=(a,)))]
+    result, text = _pass(world, run_id="run0000001")
+    assert result.finished and "extraction refused: add_sources" in text
+    rows = DreamStore(world.root / "dream" / "dream.db").restatements()
+    assert [(r.global_id, r.memory_id, r.memory_version, r.run_id, r.seen_at)
+            for r in rows[rule]] == [(rule, a, 1, "run0000001", world.now)]
+
+
+def test_only_sent_project_memories_named_for_a_global_entry_are_restatements(world):
+    second = _second(world)
+    a = world.create(world.project.id, "pytest in demo")
+    b = world.create(second, "pytest in second")
+    other = _global(world, "another global entry")
+    target = _global(world, "Python projects prefer pytest.", (a, 1))
+    world.executor.replies = [_answer(
+        _judgment("supplement", id=target, description="python tests",
+                  body="Python projects prefer pytest everywhere.", source_ids=(b, other)),
+        _judgment("add_sources", id=target, source_ids=("zzzzzzzzzz",)),
+        _judgment("add_sources", id=a, source_ids=(b,)),
+        _new(a, b))]
+    _pass(world)
+    rows = DreamStore(world.root / "dream" / "dream.db").restatements()
+    assert list(rows) == [target]
+    assert [(r.memory_id, r.memory_version) for r in rows[target]] == [(b, 1)]
+
+
+def test_a_run_records_restatements_under_its_own_id(world):
+    rule = _global(world, "Answer in the user's language.")
+    a = world.create(world.project.id, "the user wants answers in Chinese")
+    world.executor.default = lambda prompt, schema: (
+        _answer(_judgment("add_sources", id=rule, source_ids=(a,)))
+        if "<memories>" in prompt and "Memories of every project" in prompt
+        else _answer() if "judgments" in schema["properties"] else None)
+    row = world.run(phases={"extract"})
+    (seen,) = DreamStore(world.root / "dream" / "dream.db").restatements()[rule]
+    assert seen.run_id == row.run_id
+
+
 @pytest.mark.parametrize(("kind", "case", "outcome", "field"), [
     ("new", "unknown source", "invalid", "source_ids"),
     ("supplement", "unknown target", "invalid", "id"),

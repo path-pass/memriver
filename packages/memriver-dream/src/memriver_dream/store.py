@@ -1,5 +1,7 @@
 """dream.db, memriver-dream's own records (spec §5): runs, TTL reviews, scope passes,
-source re-checks and session summary state.
+source re-checks, session summary state, the re-statements of global entries, and
+their curation: demotion streaks and the evidence of every promotion (pending until
+the change that applied it is known).
 
 It never holds a memory body, a full prompt or secret text; the only model text in it
 is the policy-checked partial summaries of an unfinished long session
@@ -70,6 +72,40 @@ _SCHEMA = (
       progress           TEXT,
       PRIMARY KEY (harness, session_id)
     )""",
+    # a project memory extraction named as more evidence of a global entry: evidence
+    # for curation, kept whatever became of the judgment (ids and versions only)
+    """CREATE TABLE IF NOT EXISTS restatements (
+      global_id      TEXT NOT NULL,
+      memory_id      TEXT NOT NULL,
+      memory_version INTEGER NOT NULL,
+      run_id         TEXT NOT NULL,
+      seen_at        TEXT NOT NULL,
+      PRIMARY KEY (global_id, memory_id, memory_version)
+    )""",
+    # a level-1 global entry judged 2 in the curate runs just before: its demotion
+    # streak, broken by any curate run that does not judge it 2
+    """CREATE TABLE IF NOT EXISTS curation (
+      memory_id   TEXT PRIMARY KEY,
+      judged_two  INTEGER NOT NULL CHECK (judged_two >= 1),
+      decided_at  TEXT NOT NULL
+    )""",
+    # what one promotion to level 1 rested on, kept for good: a quote by its place in
+    # the version judged (field and character offsets, never the text), or a recorded
+    # re-statement by its project memory and version. change_id NULL: written before
+    # the core change, pending; a value: the core change that applied the promotion
+    """CREATE TABLE IF NOT EXISTS evidence (
+      memory_id      TEXT NOT NULL,
+      memory_version INTEGER NOT NULL,
+      run_id         TEXT NOT NULL,
+      kind           TEXT NOT NULL CHECK (kind IN ('quote', 'restatement')),
+      field          TEXT,
+      start          INTEGER,
+      stop           INTEGER,
+      source_id      TEXT,
+      source_version INTEGER,
+      decided_at     TEXT NOT NULL,
+      change_id      TEXT
+    )""",
 )
 _RUN_COLUMNS = "run_id, started_at, finished_at, trigger, status, report_file"
 _REVIEW_COLUMNS = ("memory_id, memory_version, decision, uncertain_streak, decided_at, "
@@ -100,6 +136,43 @@ class ReviewRow:
     decided_at: str
     next_review_at: str
     reason: str
+
+
+@dataclass(frozen=True)
+class RestatementRow:
+    global_id: str
+    memory_id: str              # the project memory that says it again
+    memory_version: int
+    run_id: str                 # the run that first saw it
+    seen_at: str
+
+
+@dataclass(frozen=True)
+class CurationRow:
+    memory_id: str
+    judged_two: int             # curate runs in a row that judged it 2 while at level 1
+    decided_at: str
+
+
+@dataclass(frozen=True)
+class EvidenceRow:
+    memory_id: str              # the global entry promoted
+    memory_version: int         # the version judged
+    run_id: str
+    kind: str                   # 'quote' | 'restatement'
+    field: str | None           # quote: 'description' | 'body'
+    start: int | None           # quote: [start, stop) in that field of that version
+    stop: int | None
+    source_id: str | None       # restatement: the project memory and its version
+    source_version: int | None
+    decided_at: str
+    change_id: str | None = None   # None: pending, not yet known to have been applied
+
+    def reference(self) -> str:
+        """How the report names it: traceable, never the quoted text."""
+        if self.kind == "quote":
+            return f"v{self.memory_version} {self.field}[{self.start}:{self.stop}]"
+        return f"restated by {self.source_id} v{self.source_version}"
 
 
 @dataclass(frozen=True)
@@ -256,6 +329,75 @@ class DreamStore:
     def put_source_check(self, memory_id: str, digest: str, at: str) -> None:
         self._execute("INSERT OR REPLACE INTO source_checks (memory_id, input_digest, "
                       "checked_at) VALUES (?, ?, ?)", memory_id, digest, at)
+
+    def put_restatements(self, global_id: str, pairs: Iterable[tuple[str, int]], *,
+                         run_id: str, at: str) -> None:
+        """Record each (project memory id, version) as restating `global_id`; one seen
+        before keeps its first run."""
+        with self._write() as conn:
+            conn.executemany(
+                "INSERT OR IGNORE INTO restatements (global_id, memory_id, memory_version, "
+                "run_id, seen_at) VALUES (?, ?, ?, ?, ?)",
+                [(global_id, memory_id, version, run_id, at) for memory_id, version in pairs])
+
+    def restatements(self) -> dict[str, list[RestatementRow]]:
+        """Every recorded re-statement by global id, oldest first."""
+        found: dict[str, list[RestatementRow]] = {}
+        for row in self._rows("SELECT global_id, memory_id, memory_version, run_id, seen_at "
+                              "FROM restatements ORDER BY seen_at, memory_id"):
+            found.setdefault(row[0], []).append(RestatementRow(*row))
+        return found
+
+    def curation(self, memory_id: str) -> CurationRow | None:
+        rows = self._rows("SELECT memory_id, judged_two, decided_at FROM curation "
+                          "WHERE memory_id = ?", memory_id)
+        if not rows:
+            return None
+        row = CurationRow(*rows[0])
+        # hand-edited data reads as no record, as review() does
+        return row if isinstance(row.judged_two, int) and row.judged_two >= 1 else None
+
+    def put_curation(self, row: CurationRow) -> None:
+        self._execute("INSERT OR REPLACE INTO curation (memory_id, judged_two, decided_at) "
+                      "VALUES (?, ?, ?)", *astuple(row))
+
+    def delete_curation(self, memory_id: str) -> None:
+        self._execute("DELETE FROM curation WHERE memory_id = ?", memory_id)
+
+    def add_evidence(self, rows: Iterable[EvidenceRow]) -> None:
+        """Write rows in one transaction; a row without change_id is pending."""
+        with self._write() as conn:
+            conn.executemany("INSERT INTO evidence (memory_id, memory_version, run_id, kind, "
+                             "field, start, stop, source_id, source_version, decided_at, "
+                             "change_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                             [astuple(row) for row in rows])
+
+    def settle_evidence(self, keys: Iterable[tuple[str, int, str]],
+                        change_id: str | None) -> None:
+        """Pending rows by (memory_id, memory_version, run_id): marked with the change
+        that applied them, or deleted when `change_id` is None."""
+        with self._write() as conn:
+            for key in keys:
+                where = ("WHERE memory_id = ? AND memory_version = ? AND run_id = ? "
+                         "AND change_id IS NULL")
+                if change_id is None:
+                    conn.execute(f"DELETE FROM evidence {where}", key)
+                else:
+                    conn.execute(f"UPDATE evidence SET change_id = ? {where}",
+                                 (change_id, *key))
+
+    def pending_evidence(self) -> list[EvidenceRow]:
+        return self._evidence("WHERE change_id IS NULL")
+
+    def evidence(self, memory_id: str) -> list[EvidenceRow]:
+        """Every recorded piece of evidence of `memory_id`'s promotions, oldest first."""
+        return self._evidence("WHERE change_id IS NOT NULL AND memory_id = ?", memory_id)
+
+    def _evidence(self, clause: str, *params: object) -> list[EvidenceRow]:
+        return [EvidenceRow(*row) for row in self._rows(
+            "SELECT memory_id, memory_version, run_id, kind, field, start, stop, source_id, "
+            f"source_version, decided_at, change_id FROM evidence {clause} ORDER BY rowid",
+            *params)]
 
     def summary(self, harness: str, session_id: str) -> SummaryRow | None:
         rows = self._rows(f"SELECT {_SUMMARY_COLUMNS} FROM session_summaries "

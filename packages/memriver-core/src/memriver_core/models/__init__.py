@@ -5,6 +5,7 @@ from .changes import (
     HardDeleteItem,
     HardDeletePlan,
     MemoryVersion,
+    MetadataCaps,
     Op,
     OpName,
     PlanCitation,
@@ -18,6 +19,7 @@ from .changes import (
 )
 from .errors import (
     BatchConflict,
+    CapExceeded,
     PlanChanged,
     SessionMoved,
     StoreNeedsUpgrade,
@@ -33,7 +35,15 @@ from .helpers import (
     now_strictly_after,
     single_line,
 )
-from .memory import Memory, MemoryType, Trust
+from .memory import (
+    TAG_NAME_MAX_CHARS,
+    TAG_NAME_RE,
+    Memory,
+    MemoryType,
+    Trust,
+    checked_level,
+    checked_tags,
+)
 from .project import Project, RootPlan, UnbindPlan, project_name
 from .project_context import ProjectContext, ProjectContextState
 from .read_write_set import ReadWriteSet
@@ -63,7 +73,10 @@ __all__ = [
     "ID_ALPHABET",
     "ID_LENGTH",
     "ID_RE",
+    "TAG_NAME_MAX_CHARS",
+    "TAG_NAME_RE",
     "BatchConflict",
+    "CapExceeded",
     "Change",
     "Citation",
     "Create",
@@ -78,6 +91,7 @@ __all__ = [
     "Memory",
     "MemoryType",
     "MemoryVersion",
+    "MetadataCaps",
     "Op",
     "OpName",
     "PlanChanged",
@@ -110,6 +124,8 @@ __all__ = [
     "UndoRefused",
     "Update",
     "Usage",
+    "checked_level",
+    "checked_tags",
     "is_call_id",
     "is_timestamp",
     "new_id",

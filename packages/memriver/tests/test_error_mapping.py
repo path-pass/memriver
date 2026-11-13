@@ -29,7 +29,7 @@ from memriver_core.application.memory import MemoryService
 from memriver_core.application.projects import ProjectService
 from memriver_core.bootstrap import Services, build_services
 from memriver_core.content_policy.secret_scanner import SecretScanner
-from memriver_core.models import Project, Resolution
+from memriver_core.models import MetadataCaps, Project, Resolution
 from memriver_core.settings import (
     DEFAULT_MAX_BODY_CHARS,
     HEADER_FIELD_CHARS,
@@ -225,7 +225,7 @@ class OtherMemoryStore:
     def __init__(self, backend: OtherBackend) -> None:
         self.backend = backend
 
-    def write(self, op, *, restriction, changed_by, changed_via, check):
+    def write(self, op, *, restriction, changed_by, changed_via, check, caps):
         raise self.backend.error
 
     def read(self, memory_id, read_write_set):
@@ -261,6 +261,7 @@ def other_backend_server(tmp_path, monkeypatch):
                                    search_limit_max=settings.search_limit_max,
                                    index_budget_lines=settings.index_budget_lines,
                                    index_cue_chars=INDEX_CUE_CHARS,
+                                   metadata_caps=MetadataCaps(10, 200, 12, 3),
                                    classifier=classifier)
             project = ProjectService(backend, header_field_chars=HEADER_FIELD_CHARS,
                                      project_name_max_chars=PROJECT_NAME_MAX_CHARS)

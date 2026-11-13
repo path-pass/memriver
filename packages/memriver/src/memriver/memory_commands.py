@@ -17,6 +17,7 @@ from typing import IO
 
 from memriver_core import (
     BatchConflict,
+    CapExceeded,
     ContentRejected,
     GlobalReadOnly,
     MemoryNotFound,
@@ -157,6 +158,7 @@ def _restore_plan(current: MemoryVersion, target: MemoryVersion) -> str:
     changes = [name for name, differs in (
         ("content", (current.description, current.body) != (target.description, target.body)),
         ("sources", set(current.sources) != set(target.sources)),
+        ("level and tags", (current.level, current.tags) != (target.level, target.tags)),
         ("deleted state", current.deleted != target.deleted)) if differs]
     return (f"memriver restore: {current.memory_id} from v{current.version} to the state of "
             f"v{target.version}\n"
@@ -164,6 +166,9 @@ def _restore_plan(current: MemoryVersion, target: MemoryVersion) -> str:
             f"  target (v{target.version}): {_state(target)}\n"
             f"  changes: {', '.join(changes) or 'nothing'}\n")
 
+
+# a restore or an undo whose result would break a metadata limit of settings.toml
+_CAP_REFUSAL = "refused ({cap}): the result would exceed the {cap} setting; nothing was changed"
 
 _RESTORE_CONFLICTS = {
     "version": ("refused (version): {memory_id} changed while waiting; nothing was changed; "
@@ -211,6 +216,9 @@ def run_restore(memory_id: str, *, to_version: int, yes: bool, root: Path | None
         except ContentRejected as err:
             stdout.write(f"refused (content policy): the state of v{to_version} fails rule "
                          f"{err.rule_id}; nothing was changed\n")
+            return 2
+        except CapExceeded as err:
+            stdout.write(_CAP_REFUSAL.format(cap=err.cap) + "\n")
             return 2
         except MemoryNotFound:
             return _no_such_memory(memory_id, stdout)
@@ -295,6 +303,9 @@ def run_undo(change_id: str, *, yes: bool, root: Path | None, stdin_is_tty: bool
     except BatchConflict as err:
         stdout.write(f"refused ({err.reason}): the undo conflicts with the current state; "
                      "nothing was changed\n")
+        return 2
+    except CapExceeded as err:
+        stdout.write(_CAP_REFUSAL.format(cap=err.cap) + "\n")
         return 2
     except StorageFailure:
         stdout.write(STORE_UNWRITABLE + "\n")

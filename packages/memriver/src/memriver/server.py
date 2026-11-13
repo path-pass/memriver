@@ -380,12 +380,14 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
     # assignment never exposes a half-built object, so no lock is needed.
 
     @mcp.tool
-    def memory_index(ctx: Context) -> str:
-        """The current project on the first line, then a compact index of its
-        memories followed by global's."""
+    def memory_index(ctx: Context, tag: str | None = None) -> str:
+        """The current project on the first line, then a compact index: global's
+        standing rules in full, one line per global tag, then entries -- global's
+        not yet tagged, then the project's. tag: a name from a tag line; lists the
+        entries carrying it instead."""
         try:
             context = context_of(ctx)
-            return context.header + "\n" + memory_service.index(context)
+            return context.header + "\n" + memory_service.index(context, tag)
         except Exception as err:  # noqa: BLE001
             _fail("list", err)
 

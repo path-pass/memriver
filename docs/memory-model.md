@@ -98,7 +98,7 @@ Codex) also resolves a directory once, but per session rather than per
 process: at the session's own start, into its persistent row, kept for as
 long as that session lives, even after its working directory changes.
 
-The tables of `memriver.db` (schema version 4). Solid lines are foreign keys;
+The tables of `memriver.db` (schema version 5). Solid lines are foreign keys;
 the dotted line is a reference the schema does not enforce (a tool call's
 session).
 
@@ -115,6 +115,7 @@ erDiagram
     memories ||--o{ change_steps : "memory_id"
     changes |o--o| changes : "undoes"
     memories ||--o{ memory_reads : "memory_id"
+    projects ||--o{ tags : "project_id"
 
     projects {
         text id PK
@@ -137,6 +138,8 @@ erDiagram
         text updated
         text deleted_at "set while deleted"
         text last_read_at
+        int level "1 standing, 2 the rest, NULL not judged"
+        text tags "JSON array of tag names"
     }
     memory_versions {
         text memory_id PK, FK
@@ -148,6 +151,8 @@ erDiagram
         text body
         int deleted
         text change_id FK "NULL for an imported version"
+        int level
+        text tags
     }
     memory_sources {
         text memory_id PK, FK
@@ -195,6 +200,12 @@ erDiagram
         text session_id
         text recorded_at
     }
+    tags {
+        text project_id PK, FK
+        text name PK "what memories carry"
+        text description "one line"
+        text updated
+    }
 ```
 
 `memories` holds each memory's current state, which always equals its
@@ -237,9 +248,12 @@ practice:
 - `memory_index` renders one line per live entry (id + description,
   falling back to the body's first line for entries without one) under a
   line budget, with an explicit truncation notice. The harness injects it at
-  session start; the LLM does the semantic matching. The index lists the
-  current project's entries first, then global's (tagged `global`), in one
-  line budget; `memory_search` runs one search per project with one total
+  session start; the LLM does the semantic matching. The index lists global
+  first -- its standing rules (level 1) in full, one line per tag with how
+  many entries carry it, then its entries not yet judged or tagged -- and the
+  current project's entries last, in one line budget, so a harness that cuts
+  the injection cuts project lines first; `memory_index(tag=...)` lists a
+  tag's entries. `memory_search` runs one search per project with one total
   `limit`, project hits first.
 - `memory_read` fetches one entry by id; an id that is absent, outside the
   session's readable projects (the current project and global), or soft-deleted
@@ -317,7 +331,9 @@ superseded ones within one project (or within global); it extracts
 principles backed by memories of at least two projects into global, citing
 them, and re-checks a global entry when a source it cites has changed; and it
 soft-deletes memories unused past a TTL that every recorded read lengthens,
-after asking a model. It never hard-deletes: content-policy hits in any
+after asking a model. It also curates global: a level for each entry (1, a
+standing rule the index shows in full; 2, the rest, found through tags) and one
+to `tags_per_memory_max` tags, held to the four limits of `settings.toml`. It never hard-deletes: content-policy hits in any
 stored version, contradictions and instruction-like entries are listed for a
 person to act on. Each of its changes can be undone with `memriver undo`
 while the memories it touched are unchanged. Maintenance never counts as
