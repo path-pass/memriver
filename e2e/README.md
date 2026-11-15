@@ -108,7 +108,7 @@ entering from the registered project and one from unregistered `/root`:
   delimiters is `project: e2e-project [<id>] (root /root/e2e-project)`,
   followed by the seeded global memory's `- [project, global] <id>: ...` line.
 - SessionStart from `/root`: the no-project header (`project: none — this
-  session was registered with no project, ...`), and the global memory is still
+  session has no project, ...`), and the global memory is still
   injected.
 - Five prompts through UserPromptSubmit in each session; then Stop in the
   registered session returns `decision: block` with the `[memriver] Before

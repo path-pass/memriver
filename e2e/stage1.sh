@@ -82,7 +82,7 @@ STOP_CMD="$(extract_hook_command Stop)"
 PRE_TOOL_CMD="$(extract_hook_command PreToolUse)"
 SESSION_END_CMD="$(extract_hook_command SessionEnd)"
 PROJECT_HEADER="project: e2e-project [$E2E_PROJECT_ID] (root $E2E_PROJECT_DIR)"
-NONE_HEADER="project: none — this session was registered with no project, so global is read-only; to save, ask the user to run memriver project init where this session started, then call session_register"
+NONE_HEADER="project: none — this session has no project, so global is read-only; to save, ask the user to run memriver project init in the directory this session is working in, then call session_register"
 IN_PROJECT=e2e-session-in-project
 OUTSIDE=e2e-session-outside
 
