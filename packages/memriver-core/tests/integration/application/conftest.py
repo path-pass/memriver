@@ -48,9 +48,9 @@ def world(tmp_path):
 def session(world):
     """A registered session in `mine` with one prompt and no save yet."""
     services, key = world["services"], SessionKey("codex", "session-1")
-    context = services.session.start_session(key, source="startup",
-                                             entry_dir=str(world["work"]),
-                                             transcript_path=None)
+    context, _ = services.session.start_session(key, source="startup",
+                                                entry_dir=str(world["work"]),
+                                                transcript_path=None)
     services.session.observe_prompt(key, prompt="remember this", entry_dir=str(world["work"]),
                                     transcript_path=None)
 

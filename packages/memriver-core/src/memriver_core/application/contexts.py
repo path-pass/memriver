@@ -26,20 +26,20 @@ PENDING_HEADER = ("project: awaiting confirmation — this session is not regist
 # project (session_register can assign one later), so the header offers
 # session_register rather than session_confirm
 PENDING_NO_CANDIDATE_HEADER = (
-    "project: none — this session is not registered, and the directory it was first "
-    "observed in is not in any registered project, so global is read-only; to save, ask "
-    "the user to run memriver project init there, then call session_register")
+    "project: none — this session is not registered, and its recorded directory is not in any "
+    "registered project, so global is read-only; to save, ask the user to run memriver "
+    "project init in the directory this session is working in, then call session_register")
 UNIDENTIFIED_HEADER = ("project: none — this session is not registered with memriver: its "
                        "hooks may not be installed (memriver install) or trusted (Codex asks "
                        "on start), or the harness sent no session id; ask the user to fix "
                        "that, then start a new session")
-# a session row's project never re-resolves on its own: one registered with
-# no project gets one only through session_register, from where it started,
-# and one whose project is gone needs a new session -- never the directory the
-# session happens to be in
-SESSION_NONE_HEADER = ("project: none — this session was registered with no project, so global "
-                       "is read-only; to save, ask the user to run memriver project init where "
-                       "this session started, then call session_register")
+# a session row's project never re-resolves on its own: one with no project
+# gets one only through session_register (its recorded directory, else the
+# directory the call came from) or a Claude Code /cd, and one whose project is
+# gone needs a new session
+SESSION_NONE_HEADER = ("project: none — this session has no project, so global is read-only; "
+                       "to save, ask the user to run memriver project init in the directory "
+                       "this session is working in, then call session_register")
 SESSION_PROJECT_GONE_HEADER = ("project: unavailable — this session's project no longer exists "
                                "or became global, so global is read-only; to save, ask the "
                                "user to start a new session")

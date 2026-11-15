@@ -47,9 +47,9 @@ UNIDENTIFIED_HEADER = ("project: none — this session is not registered with me
                        "hooks may not be installed (memriver install) or trusted (Codex asks "
                        "on start), or the harness sent no session id; ask the user to fix "
                        "that, then start a new session")
-SESSION_NONE_HEADER = ("project: none — this session was registered with no project, so global "
-                       "is read-only; to save, ask the user to run memriver project init where "
-                       "this session started, then call session_register")
+SESSION_NONE_HEADER = ("project: none — this session has no project, so global is read-only; "
+                       "to save, ask the user to run memriver project init in the directory "
+                       "this session is working in, then call session_register")
 SESSION_PROJECT_GONE_HEADER = ("project: unavailable — this session's project no longer exists "
                                "or became global, so global is read-only; to save, ask the "
                                "user to start a new session")
@@ -784,8 +784,8 @@ def _codex_meta(session_id, base="root"):
 def _start(world, key, directory, source="startup"):
     """Start a session the way the SessionStart hook does, through the service."""
     return _services(world["store"]).session.start_session(key, source=source,
-                                                  entry_dir=str(directory),
-                                                  transcript_path=None)
+                                                           entry_dir=str(directory),
+                                                           transcript_path=None)[0]
 
 
 def _registered_header(world, directory) -> str:

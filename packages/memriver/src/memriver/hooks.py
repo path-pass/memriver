@@ -301,7 +301,7 @@ def _user_prompt_submit(harness: Harness, payload_text: str, *, root: Path | Non
             session_service = _open_services(root).session
             if not session_service.store_exists():
                 return HookResult()
-            context, created = session_service.observe_prompt(
+            context, created, _ = session_service.observe_prompt(
                 key, prompt=payload.get("prompt"),
                 entry_dir=str(_resolve_dir(harness, payload, project_dir, cwd)),
                 transcript_path=_transcript_path(payload))
@@ -353,7 +353,7 @@ def _session_start(harness: Harness, payload_text: str, *, root: Path | None,
             # no store, nothing to route: silent, and nothing is created
             if not services.session.store_exists():
                 return HookResult()
-            context = services.session.start_session(
+            context, _ = services.session.start_session(
                 key, source=source if isinstance(source, str) else "",
                 entry_dir=str(_resolve_dir(harness, payload, project_dir, cwd)),
                 transcript_path=_transcript_path(payload))

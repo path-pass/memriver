@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 from memriver_core import bootstrap
+from memriver_core.application import contexts
 from memriver_core.application.contexts import NONE_HEADER
 from memriver_core.application.memory import MemoryService
 from memriver_core.application.projects import ProjectService
@@ -25,6 +26,7 @@ from memriver_core.application.sessions import SessionService
 from memriver_core.content_policy.secret_scanner import SecretScanner
 from memriver_core.models import (
     MetadataCaps,
+    MoveOutcome,
     ProjectContext,
     PromptEntry,
     ReadWriteSet,
@@ -37,7 +39,11 @@ from memriver_core.models.errors import (
     StorageFailure,
     VersionConflict,
 )
-from memriver_core.repository.directories import canonical_directory
+from memriver_core.repository.directories import (
+    canonical_directory,
+    transcript_moved,
+    usable_directory,
+)
 from memriver_core.repository.sqlite import (
     SqliteMemoryStore,
     SqliteProjectStore,
@@ -56,12 +62,12 @@ UNIDENTIFIED_HEADER = ("project: none — this session is not registered with me
                        "on start), or the harness sent no session id; ask the user to fix "
                        "that, then start a new session")
 PENDING_NO_CANDIDATE_HEADER = (
-    "project: none — this session is not registered, and the directory it was first "
-    "observed in is not in any registered project, so global is read-only; to save, ask "
-    "the user to run memriver project init there, then call session_register")
-SESSION_NONE_HEADER = ("project: none — this session was registered with no project, so global "
-                       "is read-only; to save, ask the user to run memriver project init where "
-                       "this session started, then call session_register")
+    "project: none — this session is not registered, and its recorded directory is not in any "
+    "registered project, so global is read-only; to save, ask the user to run memriver "
+    "project init in the directory this session is working in, then call session_register")
+SESSION_NONE_HEADER = ("project: none — this session has no project, so global is read-only; "
+                       "to save, ask the user to run memriver project init in the directory "
+                       "this session is working in, then call session_register")
 SESSION_PROJECT_GONE_HEADER = ("project: unavailable — this session's project no longer exists "
                                "or became global, so global is read-only; to save, ask the "
                                "user to start a new session")
@@ -112,6 +118,7 @@ class World:
         session = SessionService(
             self.session_store, project_store, lambda: self.policy,
             canonical_directory=canonical_directory,
+            usable_directory=usable_directory, transcript_moved=transcript_moved,
             main_tree_path=lambda path: self.main_tree(path),
             current_branch=lambda path: self.branch,
             root_is_intact=intact, header_field_chars=120,
@@ -144,14 +151,20 @@ class World:
             conn.execute(statement, params)
 
     def start(self, source: str = "startup", entry: Path | None = None, key=KEY,
-              transcript: str | None = "/t/1.jsonl") -> ProjectContext:
-        return self.services.session.start_session(key, source=source,
-                                          entry_dir=str(entry or self.work),
-                                          transcript_path=transcript)
+              transcript: str | None = "/t/1.jsonl", cwd: object = None) -> ProjectContext:
+        """The context; the move outcome is kept in `self.outcome`."""
+        context, self.outcome = self.services.session.start_session(
+            key, source=source, entry_dir=str(entry or self.work), transcript_path=transcript,
+            current_dir=str(cwd) if isinstance(cwd, Path) else cwd)
+        return context
 
-    def prompt(self, text: object = "hello", entry: Path | None = None, key=KEY):
-        return self.services.session.observe_prompt(key, prompt=text, entry_dir=str(entry or self.work),
-                                           transcript_path=None)
+    def prompt(self, text: object = "hello", entry: Path | None = None, key=KEY,
+               transcript: str | None = None, cwd: object = None):
+        """(context, created); the move outcome is kept in `self.outcome`."""
+        context, created, self.outcome = self.services.session.observe_prompt(
+            key, prompt=text, entry_dir=str(entry or self.work), transcript_path=transcript,
+            current_dir=str(cwd) if isinstance(cwd, Path) else cwd)
+        return context, created
 
     def write(self, context: ProjectContext, content: str = "uv manages python"):
         return self.services.memory.record(content=content, type="project", sync=False,
@@ -329,7 +342,7 @@ def test_a_first_start_and_a_first_prompt_racing_share_one_row(world, first_writ
                               entry_dir=str(world.work), transcript_path=None)
         prompted = pool.submit(services.session.observe_prompt, KEY, prompt="first",
                                entry_dir=str(world.work), transcript_path=None)
-        start_context, (prompt_context, created) = started.result(), prompted.result()
+        (start_context, _), (prompt_context, created, _) = started.result(), prompted.result()
     [row] = services.session.list_sessions()
     assert (row.key, row.status, row.prompt_count, row.first_prompt.text) == (
         KEY, status, 1, "first")
@@ -614,12 +627,14 @@ def test_register_makes_a_pending_session_without_a_candidate_registered(world):
         "registered", "first-seen", project.id, None)
 
 
-def test_register_refuses_a_pending_session_with_a_candidate(world):
+def test_register_pending_with_candidate_refused(world):
     world.prompt()
     before = world.row()
-    with pytest.raises(ProjectUnavailable) as caught:
-        world.services.session.register_session(KEY)
-    assert caught.value.reason == "pending"
+    other = _init(world, world.base / "other", "other")
+    for current_dir in (None, other.root):
+        with pytest.raises(ProjectUnavailable) as caught:
+            world.services.session.register_session(KEY, current_dir=current_dir)
+        assert caught.value.reason == "pending"
     assert world.row() == before
 
 
@@ -721,7 +736,7 @@ def test_a_candidate_whose_root_went_missing_in_the_main_tree_still_confirms(tmp
     services.project.ensure_global()
     project = services.project.init_project("demo", services.project.plan_root(str(main / "sub")))
     services.session.observe_prompt(KEY, prompt="hi", entry_dir=str(base / "wt" / "sub"),
-                           transcript_path=None)
+                                    transcript_path=None)
     assert services.session.pending_candidate(services.session.session_context(KEY)) == project
     (main / "sub").rmdir()          # the main tree's checkout no longer has it
     context = services.session.confirm_session(KEY)
@@ -746,12 +761,12 @@ def test_a_symlinked_alias_registers_and_proposes_its_targets_project(tmp_path):
     target = services.project.init_project("a", services.project.plan_root(str(base / "a")))
     services.project.init_project("b", services.project.plan_root(str(base / "b")))
     assert services.project.open_project_context(str(alias)).project == target
-    context = services.session.start_session(KEY, source="startup", entry_dir=str(alias),
-                                    transcript_path=None)
+    context, _ = services.session.start_session(KEY, source="startup", entry_dir=str(alias),
+                                                transcript_path=None)
     assert context.project == target
     assert services.session.list_sessions()[0].entry_cwd == str(base / "a" / "sub")
-    pending, _ = services.session.observe_prompt(OTHER_KEY, prompt="hi", entry_dir=str(alias),
-                                        transcript_path=None)
+    pending, _, _ = services.session.observe_prompt(OTHER_KEY, prompt="hi",
+                                                    entry_dir=str(alias), transcript_path=None)
     assert pending.state == "pending" and services.session.pending_candidate(pending) == target
 
 
@@ -767,8 +782,8 @@ def test_an_alias_into_a_linked_worktree_registers_the_main_trees_project_and_br
     (base / "link").symlink_to(base / "wt" / "sub")
     services = _real_services(base)
     project = services.project.init_project("demo", services.project.plan_root(str(main)))
-    context = services.session.start_session(KEY, source="startup", entry_dir=str(base / "link"),
-                                    transcript_path=None)
+    context, _ = services.session.start_session(KEY, source="startup",
+                                                entry_dir=str(base / "link"), transcript_path=None)
     assert context.project == project
     row = services.session.list_sessions()[0]
     assert (row.entry_cwd, row.branch) == (str(base / "wt" / "sub"), "feature")
@@ -778,9 +793,9 @@ def test_an_entry_with_a_nul_is_degraded_and_writes_nothing(tmp_path):
     services = _real_services(Path(os.path.realpath(tmp_path)))
     entry = "/tmp/x" + chr(0) + "y"
     assert services.session.start_session(KEY, source="startup", entry_dir=entry,
-                                 transcript_path=None).state == "degraded"
-    context, created = services.session.observe_prompt(KEY, prompt="hi", entry_dir=entry,
-                                              transcript_path=None)
+                                          transcript_path=None)[0].state == "degraded"
+    context, created, _ = services.session.observe_prompt(KEY, prompt="hi", entry_dir=entry,
+                                                          transcript_path=None)
     assert (context.state, created) == ("degraded", False)
     assert services.session.list_sessions() == []
 
@@ -936,3 +951,425 @@ def test_a_pending_session_without_a_candidate_is_refused_with_its_own_reason(wo
         with pytest.raises(ProjectUnavailable) as caught:
             attempt()
         assert caught.value.reason == "pending-no-candidate"
+
+
+# --- a /cd moves the session (Claude Code) ------------------------------------------------
+
+T_A = "/t/a/s.jsonl"                    # the transcript under the start directory's projects dir
+T_B = "/t/b/s.jsonl"                    # the same file after a /cd
+
+
+def _moved_to(world, directory: Path, name: str):
+    return _init(world, directory, name)
+
+
+def _where(world, key=KEY) -> tuple:
+    row = world.row(key)
+    return (row.status, row.project_id, row.candidate_id, row.entry_cwd, row.branch,
+            row.transcript_path)
+
+
+def test_cd_moves_registered_session_to_other_project(world):
+    context = world.start(transcript=T_A)
+    memory = world.write(context)
+    world.prompt("before the move", transcript=T_A, cwd=world.work)
+    assert world.outcome is None
+    b = _moved_to(world, world.base / "b", "b")
+    before = world.row()
+    world.branch = "feature"
+    assert world.prompt("after the move", transcript=T_B, cwd=world.base / "b") == (
+        _registered_to(world, b), False)
+    assert world.outcome == MoveOutcome(world.project.id, b.id, None, None,
+                                        str(world.base / "b"), pending=False, degraded=False)
+    assert world.outcome.changed
+    after = world.row()
+    assert _where(world) == ("registered", b.id, None, str(world.base / "b"), "feature", T_B)
+    assert after.last_active_at > before.last_active_at
+    assert after.prompt_count == before.prompt_count + 1
+    [move] = world.services.session.moves(KEY)
+    assert (move.seq, move.from_entry_cwd, move.from_project_id, move.to_entry_cwd,
+            move.to_project_id) == (1, str(world.work), world.project.id,
+                                    str(world.base / "b"), b.id)
+    # what was written before the move stays in A; the row itself now belongs to B
+    assert world.services.memory.show(memory.id).project_id == world.project.id
+    b_context = world.services.session.session_context(KEY)
+    assert [s.key for s in world.services.session.search_sessions("before", b_context)] == [KEY]
+    assert world.services.session.search_sessions("before", _registered(world)) == []
+
+
+def test_cd_into_unregistered_dir_unbinds(world):
+    world.start(transcript=T_A)
+    unbound = world.base / "c"
+    unbound.mkdir()
+    assert world.prompt(transcript=T_B, cwd=unbound) == (
+        _no_project(world, "none", SESSION_NONE_HEADER), False)
+    assert world.outcome == MoveOutcome(world.project.id, None, None, None, str(unbound),
+                                        pending=False, degraded=False)
+    assert world.outcome.changed
+    assert _where(world) == ("registered", None, None, str(unbound), "main", T_B)
+
+
+def test_cd_within_same_project_updates_entry_without_change(world):
+    world.start(transcript=T_A)
+    (world.work / "sub").mkdir()
+    assert world.prompt(transcript=T_B, cwd=world.work / "sub") == (_registered(world), False)
+    assert world.outcome is not None and not world.outcome.changed
+    assert _where(world) == ("registered", world.project.id, None, str(world.work / "sub"),
+                             "main", T_B)
+    assert len(world.services.session.moves(KEY)) == 1
+
+
+def test_cd_degraded_unbinds_at_target(world):
+    world.start(transcript=T_A)
+    b = _moved_to(world, world.base / "b", "b")
+    world.main_tree = lambda path: None
+    spelled = str(world.base / "b") + "/."
+    context, _ = world.prompt(transcript=T_B, cwd=spelled)
+    assert context == _no_project(world, "none", SESSION_NONE_HEADER)
+    assert world.outcome == MoveOutcome(world.project.id, None, None, None, spelled,
+                                        pending=False, degraded=True)
+    assert world.outcome.changed
+    assert _where(world) == ("registered", None, None, spelled, None, T_B)
+    [move] = world.services.session.moves(KEY)
+    assert (move.to_entry_cwd, move.to_project_id) == (spelled, None) and b.id != world.project.id
+
+
+def test_degraded_then_shell_cd_does_not_retarget(world):
+    world.start(transcript=T_A)
+    unbound = world.base / "c"
+    unbound.mkdir()
+    b = _moved_to(world, world.base / "b", "b")
+    world.main_tree = lambda path: None
+    world.prompt(transcript=T_B, cwd=unbound)
+    world.main_tree = lambda path: path
+    before = _where(world)
+    # a later shell cd into B: the transcript stays where /cd put it
+    assert world.prompt(transcript=T_B, cwd=world.base / "b")[0].read_write_set.project_id \
+        is None
+    assert world.outcome is None
+    assert _where(world) == before and before[3] == str(unbound) and b.root != before[3]
+    assert len(world.services.session.moves(KEY)) == 1
+
+
+def test_shell_cd_is_not_a_move(world):
+    world.start(transcript=T_A)
+    b = _moved_to(world, world.base / "b", "b")
+    before = _where(world)
+    assert world.prompt(transcript=T_A, cwd=b.root) == (_registered(world), False)
+    assert world.outcome is None
+    assert _where(world) == before
+    assert world.services.session.moves(KEY) == []
+
+
+def test_transcript_same_dir_other_spelling_is_not_a_move(world):
+    real = world.base / "projects" / "x"
+    real.mkdir(parents=True)
+    (world.base / "alias").symlink_to(world.base / "projects")
+    stored = str(real / "s.jsonl")
+    world.start(transcript=stored)
+    b = _moved_to(world, world.base / "b", "b")
+    for spelling in (str(world.base / "alias" / "x" / "s.jsonl"),
+                     f"{world.base}/projects/./x/s.jsonl",
+                     f"{world.base}/projects/x/../x/s.jsonl"):
+        assert not transcript_moved(stored, spelling)
+        assert world.prompt(transcript=spelling, cwd=b.root) == (_registered(world), False)
+        assert world.outcome is None
+    assert _where(world) == ("registered", world.project.id, None, str(world.work), "main",
+                             stored)
+    assert world.services.session.moves(KEY) == []
+
+
+@pytest.mark.parametrize("via", ["prompt", "compact"])
+@pytest.mark.parametrize("cwd", [None, "rel", "/a\x00"])
+def test_move_needs_absolute_cwd(world, via, cwd):
+    world.start(transcript=T_A)
+    b = _moved_to(world, world.base / "b", "b")
+    before = _where(world)
+    if via == "prompt":
+        context, _ = world.prompt(transcript=T_B, cwd=cwd)
+    else:
+        context = world.start("compact", transcript=T_B, cwd=cwd)
+    assert context == _registered(world) and world.outcome is None
+    assert _where(world) == before                      # the stored path stays the old one
+    assert world.services.session.moves(KEY) == []
+    assert world.prompt(transcript=T_B, cwd=b.root) == (_registered_to(world, b), False)
+    assert world.outcome.changed and _where(world)[1] == b.id
+
+
+def test_transcript_backfilled_then_cd_moves(world):
+    world.start(transcript=None)
+    assert world.row().transcript_path is None
+    b = _moved_to(world, world.base / "b", "b")
+    world.prompt(transcript=T_A, cwd=world.work)
+    assert world.outcome is None
+    assert _where(world) == ("registered", world.project.id, None, str(world.work), "main", T_A)
+    assert world.services.session.moves(KEY) == []
+    assert world.prompt(transcript=T_B, cwd=b.root) == (_registered_to(world, b), False)
+    assert _where(world)[1] == b.id and _where(world)[5] == T_B
+
+
+def test_compact_backfills_null_transcript_only_when_null(world):
+    world.start(transcript=None)
+    assert world.start("compact", transcript="rel.jsonl", cwd=world.work) == _registered(world)
+    assert world.row().transcript_path is None          # only an absolute path is adopted
+    world.start("compact", transcript=T_A, cwd=world.work)
+    assert world.row().transcript_path == T_A and world.outcome is None
+    # a path that is already stored is never overwritten by a compact
+    world.start("compact", transcript="/t/a/other.jsonl", cwd=world.work)
+    assert world.row().transcript_path == T_A
+
+    other = SessionKey("claude-code", "session-4")
+    world.start(key=other, transcript=None)
+
+    class PathArrivesMeanwhile:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+
+        def adopt_transcript(self, key, path):
+            world.sql("UPDATE sessions SET transcript_path = ? WHERE session_id = ?",
+                      "/t/c/s.jsonl", key.session_id)
+            return self._inner.adopt_transcript(key, path)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    world.session_store = PathArrivesMeanwhile(world.session_store)
+    world.services = world.build()
+    world.start("compact", key=other, transcript=T_A, cwd=world.work)
+    assert world.row(other).transcript_path == "/t/c/s.jsonl"
+
+
+def test_codex_rows_never_move(world):
+    world.start(key=OTHER_KEY, transcript=T_A)
+    b = _moved_to(world, world.base / "b", "b")
+    before = _where(world, OTHER_KEY)
+    world.prompt(key=OTHER_KEY, transcript=T_B, cwd=b.root)
+    assert world.outcome is None
+    world.start("compact", key=OTHER_KEY, transcript=T_B, cwd=b.root)
+    assert world.outcome is None
+    assert _where(world, OTHER_KEY) == before
+    assert world.services.session.moves(OTHER_KEY) == []
+
+
+def test_resume_absorbs_new_transcript(world):
+    world.start(transcript=T_A)
+    b = _moved_to(world, world.base / "b", "b")
+    assert world.start("resume", transcript=T_B, cwd=b.root) == _registered(world)
+    assert world.outcome is None
+    assert _where(world) == ("registered", world.project.id, None, str(world.work), "main", T_B)
+    world.prompt(transcript=T_B, cwd=b.root)
+    assert world.outcome is None and world.services.session.moves(KEY) == []
+
+
+def test_compact_detects_move_before_touch(world):
+    world.start(transcript=T_A)
+    b = _moved_to(world, world.base / "b", "b")
+    assert world.start("compact", transcript=T_B, cwd=b.root) == _registered_to(world, b)
+    assert world.outcome.changed and world.outcome.to_project_id == b.id
+    assert _where(world) == ("registered", b.id, None, b.root, "main", T_B)
+    assert len(world.services.session.moves(KEY)) == 1
+
+
+def test_compact_move_loser_keeps_stored_path(world):
+    world.start(transcript=T_A)
+    b = _moved_to(world, world.base / "b", "b")
+
+    class MovedMeanwhile:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+
+        def move(self, key, **fields):
+            world.sql("UPDATE sessions SET transcript_path = ?", "/t/c/s.jsonl")
+            return self._inner.move(key, **fields)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    world.session_store = MovedMeanwhile(world.session_store)
+    world.services = world.build()
+    assert world.start("compact", transcript=T_B, cwd=b.root) == _registered(world)
+    assert world.outcome is None
+    assert _where(world) == ("registered", world.project.id, None, str(world.work), "main",
+                             "/t/c/s.jsonl")
+    assert world.services.session.moves(KEY) == []
+
+
+def test_pending_session_moves_candidate(world):
+    world.prompt(transcript=T_A, cwd=world.work)
+    b = _moved_to(world, world.base / "b", "b")
+    assert world.prompt(transcript=T_B, cwd=b.root) == (
+        _no_project(world, "pending", PENDING_HEADER), False)
+    assert world.outcome == MoveOutcome(None, None, world.project.id, b.id, b.root,
+                                        pending=True, degraded=False)
+    assert world.outcome.changed
+    row = world.row()
+    assert (row.status, row.candidate_id, row.candidate_root, row.entry_cwd) == (
+        "pending", b.id, b.root, b.root)
+    [move] = world.services.session.moves(KEY)
+    assert (move.from_project_id, move.to_project_id) == (None, None)
+    assert world.services.session.confirm_session(KEY) == _registered_to(world, b)
+
+
+def test_confirmed_row_moved_unbound_then_registered(world):
+    world.prompt(transcript=T_A, cwd=world.work)
+    world.services.session.confirm_session(KEY)
+    assert (world.row().project_id, world.row().candidate_id) == (world.project.id,
+                                                                 world.project.id)
+    unbound = world.base / "c"
+    unbound.mkdir()
+    assert world.prompt(transcript=T_B, cwd=unbound)[0] == _no_project(world, "none",
+                                                                      SESSION_NONE_HEADER)
+    assert _where(world) == ("registered", None, None, str(unbound), "main", T_B)
+    project = _init(world, unbound, "c")
+    assert world.services.session.register_session(KEY) == _registered_to(world, project)
+
+
+def test_move_between_resolve_and_assign_wins(world):
+    entry = _projectless_start(world)
+    _init(world, entry)
+    unbound = world.base / "c"
+    unbound.mkdir()
+    stored = world.row()
+
+    class MovedMeanwhile:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+
+        def assign_project(self, key, project_id, **expected):
+            self._inner.move(key, expected_transcript_path=stored.transcript_path,
+                             entry_cwd=str(unbound), branch=None, transcript_path=T_B,
+                             project_id=None, project_root=None, at=stored.last_active_at)
+            return self._inner.assign_project(key, project_id, **expected)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    world.session_store = MovedMeanwhile(world.session_store)
+    context = world.build().session.register_session(KEY)
+    assert context == _no_project(world, "none", SESSION_NONE_HEADER)
+    assert (world.row().project_id, world.row().entry_cwd) == (None, str(unbound))
+
+
+def test_confirm_rejects_candidate_moved_by_move(world):
+    world.prompt(transcript=T_A, cwd=world.work)
+    b = _moved_to(world, world.base / "b", "b")
+    stored = world.row()
+
+    class MovedMeanwhile:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+
+        def confirm(self, key, **expected):
+            self._inner.move(key, expected_transcript_path=stored.transcript_path,
+                             entry_cwd=b.root, branch="main", transcript_path=T_B,
+                             project_id=b.id, project_root=b.root, at=stored.last_active_at)
+            return self._inner.confirm(key, **expected)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    world.session_store = MovedMeanwhile(world.session_store)
+    with pytest.raises(ProjectUnavailable) as caught:
+        world.build().session.confirm_session(KEY)
+    assert caught.value.reason == "candidate-moved"
+    assert (world.row().status, world.row().candidate_id) == ("pending", b.id)
+
+
+def test_early_returns_carry_no_outcome(world, tmp_path):
+    (tmp_path / "bare").mkdir()
+    storeless = World(tmp_path / "bare")
+    session = storeless.services.session
+    assert session.start_session(KEY, source="compact", entry_dir=str(storeless.work),
+                                 transcript_path=T_B, current_dir=str(storeless.work))[1] is None
+    assert session.observe_prompt(KEY, prompt="hi", entry_dir=str(storeless.work),
+                                  transcript_path=T_B, current_dir=str(storeless.work))[1:] == (
+        False, None)
+    # a new row
+    assert world.prompt(transcript=T_A, cwd=world.work)[1] is True and world.outcome is None
+    world.start("compact", key=OTHER_KEY_CLAUDE, transcript=T_A, cwd=world.work)
+    assert world.outcome is None
+    # a store failure
+    world.start(key=SessionKey("claude-code", "session-5"), transcript=T_A)
+    world.session_store = Broken(world.session_store, "get")
+    broken = world.build().session
+    started = broken.start_session(SessionKey("claude-code", "session-5"), source="compact",
+                                   entry_dir=str(world.work), transcript_path=T_B,
+                                   current_dir=str(world.work))
+    assert (started[0].state, started[1]) == ("unavailable", None)
+    prompted = broken.observe_prompt(SessionKey("claude-code", "session-5"), prompt="hi",
+                                     entry_dir=str(world.work), transcript_path=T_B,
+                                     current_dir=str(world.work))
+    assert (prompted[0].state, prompted[1:]) == ("unavailable", (False, None))
+
+
+def test_headers_name_working_directory():
+    assert contexts.SESSION_NONE_HEADER == SESSION_NONE_HEADER
+    assert contexts.PENDING_NO_CANDIDATE_HEADER == PENDING_NO_CANDIDATE_HEADER
+    for header in (SESSION_NONE_HEADER, PENDING_NO_CANDIDATE_HEADER):
+        assert "the directory this session is working in" in header
+        assert "started" not in header and "first observed" not in header
+
+
+# --- register_session by the call's directory --------------------------------------------
+
+def test_register_uses_entry_first(world):
+    entry = _projectless_start(world)
+    at_entry = _init(world, entry)
+    elsewhere = _init(world, world.base / "x", "x")
+    assert world.services.session.register_session(KEY, current_dir=elsewhere.root) == \
+        _registered_to(world, at_entry)
+
+
+def test_register_falls_back_to_current_dir(world):
+    entry = _projectless_start(world)
+    before = world.row()
+    here = _init(world, world.base / "x", "x")
+    (world.base / "x" / "sub").mkdir()
+    assert world.services.session.register_session(
+        KEY, current_dir=str(world.base / "x" / "sub")) == _registered_to(world, here)
+    after = world.row()
+    assert (after.status, after.project_id) == ("registered", here.id)
+    # a registration, not a move: where the session started stays recorded
+    assert (after.entry_cwd, after.transcript_path) == (str(entry), before.transcript_path)
+    assert world.services.session.moves(KEY) == []
+
+
+@pytest.mark.parametrize("current_dir", [None, "rel", "/a\x00", "uncovered"])
+def test_register_nothing_covers(world, current_dir):
+    _projectless_start(world)
+    _init(world, world.base / "x", "x")
+    if current_dir == "uncovered":
+        (world.base / "c").mkdir()
+        current_dir = str(world.base / "c")
+    before = world.row()
+    assert world.services.session.register_session(KEY, current_dir=current_dir) == \
+        _no_project(world, "none", SESSION_NONE_HEADER)
+    assert world.row() == before
+
+
+def test_register_degraded_entry_does_not_try_current_dir(world):
+    _projectless_start(world)
+    here = _init(world, world.base / "x", "x")
+    world.sql("UPDATE sessions SET entry_cwd = ?", str(world.base / "gone"))
+    before = world.row()
+    context = world.services.session.register_session(KEY, current_dir=here.root)
+    assert context.state == "degraded" and context.read_write_set.project_id is None
+    assert world.row() == before
+
+
+def test_register_degraded_current_dir(world):
+    _projectless_start(world)
+    before = world.row()
+    context = world.services.session.register_session(
+        KEY, current_dir=str(world.base / "missing"))
+    assert context.state == "degraded" and context.session_key == KEY
+    assert world.row() == before
+
+
+def test_register_leftover_candidate_does_not_block(world):
+    entry = _projectless_start(world)
+    world.sql("UPDATE sessions SET candidate_id = ?, candidate_root = ?", world.project.id,
+              world.project.root)
+    project = _init(world, entry)
+    assert world.services.session.register_session(KEY) == _registered_to(world, project)
+    assert world.row().project_id == project.id

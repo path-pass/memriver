@@ -27,12 +27,14 @@ from memriver_core.application.contexts import (
 )
 from memriver_core.models import (
     CallRecord,
+    MoveOutcome,
     Project,
     ProjectContext,
     PromptEntry,
     ReadWriteSet,
     Session,
     SessionKey,
+    SessionMove,
     now,
     single_line,
 )
@@ -60,6 +62,8 @@ class SessionService:
     def __init__(self, session_store: SessionStore, project_store: ProjectStore,
                  content_policy_factory: Callable[[], ContentPolicy], *,
                  canonical_directory: Callable[[str], str | None],
+                 usable_directory: Callable[[object], bool],
+                 transcript_moved: Callable[[object, object], bool],
                  main_tree_path: Callable[[str], str | None],
                  current_branch: Callable[[str], str | None],
                  root_is_intact: Callable[[str], bool], header_field_chars: int,
@@ -73,6 +77,10 @@ class SessionService:
         # the directory questions a session registration asks (spec §5.1),
         # injected so this layer runs no git and reads no filesystem
         self._canonical_directory = canonical_directory
+        # a payload path is used only when absolute; a /cd is told from a
+        # shell cd by the transcript's directory (spec §4.2)
+        self._usable_directory = usable_directory
+        self._transcript_moved = transcript_moved
         self._main_tree_path = main_tree_path
         self._current_branch = current_branch
         self._root_is_intact = root_is_intact
@@ -106,51 +114,91 @@ class SessionService:
             return True
 
     def start_session(self, key: SessionKey, *, source: str, entry_dir: str,
-                      transcript_path: str | None) -> ProjectContext:
-        """SessionStart: the stored row's context, registering the session when it has none."""
+                      transcript_path: str | None,
+                      current_dir: str | None = None) -> tuple[ProjectContext, MoveOutcome | None]:
+        """SessionStart: the stored row's context, registering the session when it has none.
+
+        With the move a `compact` applied first (spec §4.2), else None.
+        """
         # first: without a store no directory question (git included) is asked
         if not self.store_exists():
-            return self._storeless_context(key)
+            return self._storeless_context(key), None
         try:
             stored = self._session_store.get(key)
             if stored is not None:
-                touched = self._session_store.touch(key, now(),
-                                                    transcript_path=transcript_path)
-                return self._context_of(touched or stored)
+                return self._continue_session(key, stored, source=source,
+                                              transcript_path=transcript_path,
+                                              current_dir=current_dir)
             seed = self._new_session(key, entry_dir, transcript_path,
                                      fresh=source in _FRESH_SOURCES)
             if isinstance(seed, ProjectContext):
-                return seed
+                return seed, None
             # the stored winner answers, never this call's own computation
             winner = self._session_store.register(seed)
             if winner is None:
-                return self._storeless_context(key)
-            return self._context_of(winner)
+                return self._storeless_context(key), None
+            return self._context_of(winner), None
         except StorageFailure:
-            return unavailable_context(key)
+            return unavailable_context(key), None
+
+    def _continue_session(self, key: SessionKey, stored: Session, *, source: str,
+                          transcript_path: str | None,
+                          current_dir: str | None) -> tuple[ProjectContext, MoveOutcome | None]:
+        """SessionStart on an existing row: touch it, after a `compact`'s move."""
+        if source == "resume":
+            # a session keeps its row however and wherever it is resumed: the
+            # new transcript path is adopted, the session never moves
+            touched = self._session_store.touch(key, now(), transcript_path=transcript_path)
+            return self._context_of(touched or stored), None
+        outcome = None
+        if source == "compact":
+            # before the touch: a /cd then /compact before any prompt must not
+            # have its new transcript path absorbed
+            moved, outcome, _ = self._apply_move(key, stored, current_dir, transcript_path)
+            if isinstance(moved, ProjectContext):
+                return moved, None
+        touched = self._session_store.touch(key, now(), transcript_path=None)
+        # a signal needs a stored path, so a NULL one means none was seen
+        if touched is not None and stored.transcript_path is None \
+                and self._usable_directory(transcript_path):
+            touched = self._session_store.adopt_transcript(key, transcript_path) or touched
+        return self._context_of(touched or stored), outcome
 
     def observe_prompt(self, key: SessionKey, *, prompt: str, entry_dir: str,
-                       transcript_path: str | None) -> tuple[ProjectContext, bool]:
-        """UserPromptSubmit: count and record one prompt; True when this call created the row."""
+                       transcript_path: str | None, current_dir: str | None = None,
+                       ) -> tuple[ProjectContext, bool, MoveOutcome | None]:
+        """UserPromptSubmit: count and record one prompt.
+
+        True when this call created the row; the move it applied first (spec
+        §4.2), else None.
+        """
         # first: without a store neither the scanner nor git runs
         if not self.store_exists():
-            return self._storeless_context(key), False
+            return self._storeless_context(key), False, None
         entry = self._prompt_entry(prompt, now())
+        outcome = None
         try:
             seed = self._session_store.get(key)
             if seed is None:
                 pending = self._new_session(key, entry_dir, transcript_path, fresh=False)
                 if isinstance(pending, ProjectContext):
-                    return pending, False
+                    return pending, False, None
                 seed = pending
+            else:
+                moved, outcome, _ = self._apply_move(key, seed, current_dir, transcript_path)
+                if isinstance(moved, ProjectContext):
+                    return moved, False, None
+                # a signal needs a stored path, so a NULL one means none was seen
+                if seed.transcript_path is None and self._usable_directory(transcript_path):
+                    self._session_store.adopt_transcript(key, transcript_path)
             added = self._session_store.add_prompt(key, entry, seed=seed,
                                                    keep_recent=self._session_recent_prompts)
             if added is None:
-                return self._storeless_context(key), False
+                return self._storeless_context(key), False, None
             session, created = added
-            return self._context_of(session), created
+            return self._context_of(session), created, outcome
         except StorageFailure:
-            return unavailable_context(key), False
+            return unavailable_context(key), False, None
 
     def end_session(self, key: SessionKey) -> None:
         self._session_store.end(key, now())
@@ -211,12 +259,13 @@ class SessionService:
             raise ProjectUnavailable(reason="unidentified")
         return self._context_of(confirmed)
 
-    def register_session(self, key: SessionKey) -> ProjectContext:
-        """On request: give a session with no project the one covering where it started.
+    def register_session(self, key: SessionKey, current_dir: str | None = None) -> ProjectContext:
+        """On request: give a session with no project the one covering its directory.
 
-        Resolved from the stored entry directory exactly like a first
-        registration (spec §5.1, U14); a row that already has a project, or
-        nothing covering the entry, answers unchanged.
+        The stored entry directory first, then the directory the call came
+        from, each resolved exactly like a first registration (spec §4.5); a
+        row that already has a project, or nothing covering either, answers
+        unchanged. A registration, never a move: the entry stays as stored.
         """
         # first: without a store no directory question (git included) is asked
         if not self.store_exists():
@@ -226,21 +275,31 @@ class SessionService:
             raise ProjectUnavailable(reason="unidentified")
         if stored.project_id is not None:
             return self._context_of(stored)
-        if stored.candidate_id is not None:
+        if stored.status == "pending" and stored.candidate_id is not None:
             raise ProjectUnavailable(reason="pending")      # session_confirm's to decide
-        # outside any transaction: git may run here
-        resolved = self._resolve_entry(key, stored.entry_cwd)
-        if isinstance(resolved, ProjectContext):
-            return resolved
-        _, project = resolved
-        if project is None:
-            return self._context_of(stored)
-        assigned = self._session_store.assign_project(
-            key, project.id, expected_status=stored.status, expected_entry_cwd=stored.entry_cwd,
-            expected_transcript_path=stored.transcript_path)
-        if assigned is None:
-            return self._storeless_context(key)
-        return self._context_of(assigned)
+        # a candidate left on a registered row (confirmed before moves) is ignored
+        directories = [stored.entry_cwd] + (
+            [current_dir] if self._usable_directory(current_dir) else [])
+        for directory in directories:
+            # outside any transaction: git may run here; a degraded answer is
+            # final (fail closed), never a reason to try the next directory
+            resolved = self._resolve_entry(key, directory)
+            if isinstance(resolved, ProjectContext):
+                return resolved
+            _, project = resolved
+            if project is not None:
+                assigned = self._session_store.assign_project(
+                    key, project.id, expected_status=stored.status,
+                    expected_entry_cwd=stored.entry_cwd,
+                    expected_transcript_path=stored.transcript_path)
+                if assigned is None:
+                    return self._storeless_context(key)
+                return self._context_of(assigned)
+        return self._context_of(stored)
+
+    def moves(self, key: SessionKey) -> list[SessionMove]:
+        """A session's applied moves, oldest first."""
+        return self._session_store.moves(key)
 
     def search_sessions(self, query: str, context: ProjectContext,
                         limit: int | None = None) -> list[Session]:
@@ -346,6 +405,45 @@ class SessionService:
     def _storeless_context(self, key: SessionKey) -> ProjectContext:
         # no store: nothing was written, and no project exists to grant
         return no_project_context("none", NONE_HEADER, None, key)
+
+    def _apply_move(self, key: SessionKey, stored: Session, current_dir: str | None,
+                    transcript_path: str | None,
+                    ) -> tuple[Session | ProjectContext, MoveOutcome | None, bool]:
+        """Move a Claude Code session whose transcript changed directory (spec §4.2, §4.3).
+
+        The row (or a context when it is gone), what the move did, and whether
+        a move signal was seen. A signal with an unusable `current_dir` writes
+        nothing, so the next event with a usable one applies the move.
+        """
+        if key.harness != "claude-code" \
+                or not self._transcript_moved(stored.transcript_path, transcript_path):
+            return stored, None, False
+        if not self._usable_directory(current_dir):
+            return stored, None, True
+        # outside any transaction: git may run here
+        resolved = self._resolve_entry(key, current_dir)
+        degraded = isinstance(resolved, ProjectContext)
+        if degraded:
+            # moved to "no project" where /cd went: never left on the old one
+            entry, branch, project = current_dir, None, None
+        else:
+            entry, project = resolved
+            branch = self._current_branch(entry)
+        applied = self._session_store.move(
+            key, expected_transcript_path=stored.transcript_path, entry_cwd=entry,
+            branch=branch, transcript_path=transcript_path,
+            project_id=None if project is None else project.id,
+            project_root=None if project is None else project.root, at=now())
+        if applied is None:
+            return self._storeless_context(key), None, True
+        row, record = applied
+        if record is None:
+            return row, None, True          # the row changed meanwhile: it answers
+        return row, MoveOutcome(
+            from_project_id=record.from_project_id, to_project_id=row.project_id,
+            from_candidate_id=stored.candidate_id, to_candidate_id=row.candidate_id,
+            to_entry_cwd=row.entry_cwd, pending=row.status == "pending",
+            degraded=degraded), True
 
     def _new_session(self, key: SessionKey, entry_dir: str, transcript_path: str | None, *,
                      fresh: bool) -> Session | ProjectContext:

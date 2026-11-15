@@ -43,7 +43,7 @@ def _out(fn, *args, **kwargs) -> tuple[int, str]:
 def _start(world, key, directory, source="startup"):
     """Start a session the way the SessionStart hook does, through the service."""
     return world["services"].session.start_session(key, source=source, entry_dir=str(directory),
-                                          transcript_path=None)
+                                                   transcript_path=None)[0]
 
 
 def _observe(world, key, directory, prompt):
