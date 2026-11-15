@@ -42,8 +42,8 @@ decides each session's project at its `SessionStart` (only a Claude Code
 `/cd` moves it later), and every hook and every MCP call for that session
 then read the same stored decision, so the hook and the server always agree
 on it. A resumed or compacted session with no row yet gets a proposed project
-from its `SessionStart` itself -- no prompt needed -- and stays pending until the user agrees and the agent
-calls `session_confirm`; only a session `SessionStart` never got to record
+from its `SessionStart` itself -- no prompt needed -- and stays pending until
+the user agrees and the agent calls `session_confirm`; only a session `SessionStart` never got to record
 (one memriver truly never saw start) waits for its first observed prompt to
 get that same proposal instead (see *What your agent sees*). Cursor and
 Kiro stay directory mode: `--harness cursor|kiro` resolves `--project-dir`
