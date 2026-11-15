@@ -67,10 +67,11 @@ _NO_PROJECT = {
                    "store. No memory was saved. Ask the user to run memriver project explain."),
 }
 
-# The same states for a context that came from a session row: its project was
-# fixed when the session registered and never re-resolves on its own, so the
-# way out is session_register from where it started (no project yet) or a new
-# session (its project is gone), never the directory the session happens to be in.
+# The same states for a context that came from a session row: its project is
+# fixed when the session registers and changes on its own only when a Claude
+# Code /cd moves the session, so the way out is session_register (no project
+# yet: its recorded directory, else the directory the call came from) or a new
+# session (its project is gone).
 _SESSION_NO_PROJECT = {
     "none": ("no writable project: this session has no project. No memory was saved. Ask the "
              "user to run memriver project init in the directory this session is working in, "

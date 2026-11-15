@@ -260,6 +260,7 @@ def run_sessions(query: str, *, root: Path | None, project_id: str | None, limit
         services = _services(root, home)
         sessions = services.session.list_sessions(project_id=project_id, query=query,
                                                   limit=limit)
+        moves = {s.key: services.session.moves(s.key) for s in sessions}
     except ProjectNotFound:
         stdout.write(f"no such project: {visible((project_id or '')[:255])}\n")
         return 2
@@ -271,7 +272,7 @@ def run_sessions(query: str, *, root: Path | None, project_id: str | None, limit
             {"moved_at": m.moved_at, "from_entry_cwd": m.from_entry_cwd,
              "from_project_id": m.from_project_id, "to_entry_cwd": m.to_entry_cwd,
              "to_project_id": m.to_project_id}
-            for m in services.session.moves(s.key)]} for s in sessions]
+            for m in moves[s.key]]} for s in sessions]
         stdout.write(json.dumps(items, indent=2) + "\n")
         return 0
     if not sessions:
@@ -283,7 +284,7 @@ def run_sessions(query: str, *, root: Path | None, project_id: str | None, limit
         names = {}
     reference = now if now is not None else _now()
     stdout.write("\n".join(
-        _session_block(s, names=names, reference=reference, moves=services.session.moves(s.key))
+        _session_block(s, names=names, reference=reference, moves=moves[s.key])
         for s in sessions) + "\n")
     return 0
 

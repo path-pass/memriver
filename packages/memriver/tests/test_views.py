@@ -554,3 +554,21 @@ def test_session_search_item_has_no_moves_key(world, tmp_path):
     key, _ = _moved_session(world, tmp_path)
     session = next(s for s in world["services"].session.list_sessions() if s.key == key)
     assert "moves" not in session_item(session)
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_sessions_report_an_unreadable_move_record_as_store_unreadable(world, tmp_path,
+                                                                       monkeypatch, json_output):
+    from memriver import views
+    from memriver_core.application.sessions import SessionService
+    from memriver_core.models.errors import StorageFailure
+
+    _moved_session(world, tmp_path)
+
+    def _boom(self, key):
+        raise StorageFailure
+
+    monkeypatch.setattr(SessionService, "moves", _boom)
+    code, out = _sessions("", root=world["store"], home=world["home"], json_output=json_output)
+    assert code == 2
+    assert out == views.STORE_UNREADABLE + "\n"
