@@ -387,16 +387,36 @@ def test_v5_upgrade_rolls_back_on_failure(tmp_path, monkeypatch):
 
 
 def test_two_upgraders_upgrade_once(tmp_path, monkeypatch):
-    from memriver_core.repository.sqlite import database
     _v5_store(tmp_path)
-    seen = []
-    real = database._UPGRADE
-    monkeypatch.setattr(database, "_UPGRADE", tuple(seen.append(s) or s for s in real))
-    first, second = _db(tmp_path), _db(tmp_path)
-    first.upgrade()
-    second.upgrade()
-    assert len(seen) == len(real)
-    with second.read() as conn:
+    executed: list[str] = []
+    real_connect = Database._connect
+
+    def traced(self, *args, **kwargs):
+        conn = real_connect(self, *args, **kwargs)
+        conn.set_trace_callback(executed.append)    # list.append is atomic
+        return conn
+
+    monkeypatch.setattr(Database, "_connect", traced)
+    barrier = threading.Barrier(2)
+    errors: list[BaseException] = []
+
+    def upgrade() -> None:
+        try:
+            db = _db(tmp_path)
+            barrier.wait(timeout=10)
+            db.upgrade()
+        except BaseException as err:  # noqa: BLE001 - reported to the test thread
+            errors.append(err)
+
+    threads = [threading.Thread(target=upgrade) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert errors == []
+    for ddl in ("ALTER TABLE tool_calls ADD COLUMN cwd", "CREATE TABLE session_moves"):
+        assert sum(stmt.startswith(ddl) for stmt in executed) == 1
+    with closing(sqlite3.connect(tmp_path / "memriver.db")) as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
 
 
