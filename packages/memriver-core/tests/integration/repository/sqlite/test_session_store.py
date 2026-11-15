@@ -749,7 +749,6 @@ def test_adopt_transcript_only_when_null(session_store):
 # --- move ---
 
 
-
 def _move(store, **fields):
     args = {"expected_transcript_path": "/t/a", "entry_cwd": "/work/other/x", "branch": "dev",
             "transcript_path": "/t/b", "project_id": OTHER, "project_root": "/work/other",
@@ -757,7 +756,7 @@ def _move(store, **fields):
     return store.move(KEY, **args)
 
 
-def test_move_registered_to_other_project(session_store, initialized):
+def test_move_registered_to_other_project(session_store):
     session_store.register(_session(transcript_path="/t/a"))
     updated, move = _move(session_store)
     assert (updated.project_id, updated.entry_cwd, updated.branch, updated.transcript_path,
@@ -810,8 +809,7 @@ def test_move_seq_increments(session_store):
 
 @pytest.mark.parametrize("at", [_at(10), _at(5)])
 def test_move_last_active_strictly_after(session_store, at):
-    session_store.register(_session(last_active_at=_at(10), transcript_path="/t/a",
-                                    ))
+    session_store.register(_session(last_active_at=_at(10), transcript_path="/t/a"))
     updated, move = _move(session_store, at=at)
     assert updated.last_active_at > _at(10) and move.moved_at == updated.last_active_at
     with pytest.raises(SessionMoved):
@@ -856,6 +854,23 @@ def test_assign_project_ignores_leftover_candidate_on_registered_row(session_sto
     assert _assign(session_store, OTHER).project_id == OTHER
 
 
+def test_assign_project_cas_rejects_moved_transcript(session_store):
+    before = session_store.register(_session(project_id=None, transcript_path="/t/new"))
+    assert session_store.assign_project(
+        KEY, PROJECT, expected_status="registered", expected_entry_cwd=before.entry_cwd,
+        expected_transcript_path="/t/old") == before
+    assert session_store.get(KEY) == before
+
+
+def test_assign_project_cas_rejects_status_change(session_store):
+    session_store.register(_pending(candidate_id=None, candidate_root=None))
+    before = _confirm(session_store)            # registered with no project meanwhile
+    assert session_store.assign_project(
+        KEY, PROJECT, expected_status="pending", expected_entry_cwd=before.entry_cwd,
+        expected_transcript_path=None) == before
+    assert session_store.get(KEY).project_id is None
+
+
 # --- confirm compare-and-set ---
 
 def test_confirm_rejects_moved_candidate(session_store):
@@ -872,3 +887,12 @@ def test_confirm_with_matching_candidate_registers(session_store):
     confirmed = session_store.confirm(KEY, expected_candidate_id=PROJECT,
                                       expected_candidate_root=PROJECT_ROOT)
     assert (confirmed.status, confirmed.project_id) == ("registered", PROJECT)
+
+
+def test_confirm_rejects_same_candidate_with_another_root(session_store):
+    before = session_store.register(_pending())
+    with pytest.raises(ProjectUnavailable) as caught:
+        session_store.confirm(KEY, expected_candidate_id=PROJECT,
+                              expected_candidate_root="/work/elsewhere")
+    assert caught.value.reason == "candidate-moved"
+    assert session_store.get(KEY) == before
