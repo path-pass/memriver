@@ -44,6 +44,7 @@ _BACKEND_SUGGESTIONS = {
     "legacy-layout": "migrate it, or remove it once migrated",
     "session-orphan": ("restore the missing project from a backup; until then the session's "
                        "project is unreachable"),
+    "session-move-damaged": "restore the database from a backup",
     "version-gap": "restore the database from a backup",
     "version-mismatch": "restore the database from a backup",
     "unrecorded-version": "restore the database from a backup",

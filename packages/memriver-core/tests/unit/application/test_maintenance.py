@@ -277,6 +277,7 @@ def test_a_legacy_store_is_degraded_and_still_says_it_is_not_initialized():
         ("legacy-layout", "migrate it, or remove it once migrated"),
         ("session-orphan", ("restore the missing project from a backup; until then the "
                             "session's project is unreachable")),
+        ("session-move-damaged", "restore the database from a backup"),
     ],
 )
 def test_new_backend_kinds_get_their_own_suggestion(kind, suggestion):

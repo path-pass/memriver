@@ -38,7 +38,12 @@ from .database import (
     project_from_row,
 )
 from .memory_store import _decode_history_state
-from .session_store import SESSION_COLUMNS, session_from_row
+from .session_store import (
+    SESSION_COLUMNS,
+    SESSION_MOVE_COLUMNS,
+    session_from_row,
+    session_move_from_row,
+)
 
 # the names the file store of earlier versions used at the store root
 _LEGACY_NAMES = ("global", "memories", "projects", "registry", "store.toml")
@@ -54,6 +59,7 @@ _REASONS = {
     "legacy-layout": "file-store layout from an earlier version; this version does not read it",
     "root-conflict": "two projects are bound to the same directory under different spellings",
     "session-orphan": "session refers to a project that does not exist",
+    "session-move-damaged": "session move record is damaged or names no session",
     "version-gap": "stored versions of this memory are not numbered 1 to its current version",
     "version-mismatch": "memory row differs from its latest stored version",
     "unrecorded-version": "a version names a change that holds no step for it",
@@ -77,7 +83,7 @@ def _shaped_id(value: object) -> str | None:
     return value if isinstance(value, str) and ID_RE.fullmatch(value) else None
 
 
-def _session_location(harness: object, session_id: object) -> str:
+def _session_location(harness: object, session_id: object, table: str = "sessions") -> str:
     """`sessions/<harness>/<session_id>`, or the bare table name when either
     column is not a session id memriver could have written (never runs
     `SessionKey`'s printability check against a non-str, and never shows a raw
@@ -88,8 +94,8 @@ def _session_location(harness: object, session_id: object) -> str:
         except ValueError:
             pass
         else:
-            return f"sessions/{key.harness}/{key.session_id}"
-    return "sessions"
+            return f"{table}/{key.harness}/{key.session_id}"
+    return table
 
 
 def _on_cycles(edges: dict[object, set[object]]) -> set[object]:
@@ -226,6 +232,7 @@ class SqliteStoreInspector:
                 entries.append(InspectedMemory(memory=memory,
                                                location_hint=f"memories/{memory.id}"))
         self._sessions(conn, findings)
+        self._session_moves(conn, findings)
         incomplete = self._history(conn, findings, valid)
         return initialized, entries, rows, incomplete
 
@@ -253,6 +260,20 @@ class SqliteStoreInspector:
                 session_from_row(row)
             except ValueError:
                 findings.append(_finding("invalid-row", _session_location(*key)))
+
+    def _session_moves(self, conn: sqlite3.Connection, findings: list[StoreFinding]) -> None:
+        """A move row that does not decode, or whose session is gone."""
+        for row in conn.execute(f"SELECT {SESSION_MOVE_COLUMNS} FROM session_moves "
+                                "ORDER BY harness, session_id, seq"):
+            where = _session_location(row[0], row[1], "session_moves")
+            try:
+                session_move_from_row(row)
+                held = conn.execute("SELECT 1 FROM sessions WHERE harness = ? AND session_id = ?",
+                                    (row[0], row[1])).fetchone()
+            except ValueError:
+                held = None
+            if held is None:
+                findings.append(_finding("session-move-damaged", where))
 
     def _history(self, conn: sqlite3.Connection, findings: list[StoreFinding],
                  memories: list[Memory]) -> tuple[str, ...]:

@@ -38,9 +38,9 @@ from memriver_core.models.memory import tags_from_json, tags_to_json
 
 from ..directories import DATABASE_FILENAME
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 # the one older schema brought forward in place; anything older is refused
-UPGRADABLE_VERSION = 4
+UPGRADABLE_VERSION = 5
 
 # spec §3.5: the session rows of v2, plus the published summary
 _SESSIONS_TABLE = """CREATE TABLE sessions (
@@ -77,6 +77,7 @@ _TOOL_CALLS_TABLE = """CREATE TABLE tool_calls (
   call_id     TEXT NOT NULL CHECK (length(call_id) BETWEEN 1 AND 256),
   session_id  TEXT NOT NULL CHECK (length(session_id) BETWEEN 1 AND 128),
   recorded_at TEXT NOT NULL,
+  cwd         TEXT,                   -- the payload's absolute working directory, or NULL
   PRIMARY KEY (harness, call_id)
 ) STRICT"""
 _TOOL_CALLS_INDEX = "CREATE INDEX tool_calls_by_recorded_at ON tool_calls(recorded_at)"
@@ -90,10 +91,23 @@ _TAGS_TABLE = """CREATE TABLE tags (
   updated     TEXT NOT NULL,
   PRIMARY KEY (project_id, name)
 ) STRICT"""
+# append-only: one row per applied move of a session to another directory
+_SESSION_MOVES_TABLE = """CREATE TABLE session_moves (
+  harness        TEXT NOT NULL CHECK (harness IN ('claude-code','codex')),
+  session_id     TEXT NOT NULL,
+  seq            INTEGER NOT NULL CHECK (seq >= 1),   -- per session: 1, 2, ...
+  moved_at       TEXT NOT NULL,
+  from_entry_cwd TEXT NOT NULL,
+  from_project_id TEXT REFERENCES projects(id),
+  to_entry_cwd   TEXT NOT NULL,
+  to_project_id  TEXT REFERENCES projects(id),
+  PRIMARY KEY (harness, session_id, seq),
+  FOREIGN KEY (harness, session_id) REFERENCES sessions(harness, session_id)
+) STRICT"""
 _LEVEL_COLUMN = "level INTEGER CHECK (level IS NULL OR level >= 1)"
 _TAGS_COLUMN = "tags TEXT NOT NULL DEFAULT '[]'"
 
-# schema v5, copied from the specs: the one definition a fresh store runs
+# schema v6, copied from the specs: the one definition a fresh store runs
 # (create_schema)
 _SCHEMA = (
     """CREATE TABLE projects (
@@ -184,16 +198,14 @@ _SCHEMA = (
     _TOOL_CALLS_TABLE,
     _TOOL_CALLS_INDEX,
     _TAGS_TABLE,
+    _SESSION_MOVES_TABLE,
 )
 
-# v4 -> v5: the columns land last, as in _SCHEMA, with NULL and '[]' in
-# every existing row; no version row is written
+# v5 -> v6: the column lands last, as in _SCHEMA, NULL in every existing row;
+# no version row is written
 _UPGRADE = (
-    f"ALTER TABLE memories ADD COLUMN {_LEVEL_COLUMN}",
-    f"ALTER TABLE memories ADD COLUMN {_TAGS_COLUMN}",
-    f"ALTER TABLE memory_versions ADD COLUMN {_LEVEL_COLUMN}",
-    f"ALTER TABLE memory_versions ADD COLUMN {_TAGS_COLUMN}",
-    _TAGS_TABLE,
+    "ALTER TABLE tool_calls ADD COLUMN cwd TEXT",
+    _SESSION_MOVES_TABLE,
 )
 
 MEMORY_COLUMNS = ("id, project_id, type, source_harness, source_method, trust, sync, "
@@ -284,7 +296,7 @@ def project_from_row(row: Sequence[object]) -> tuple[Project, bool]:
 
 
 def create_schema(conn: sqlite3.Connection) -> None:
-    """Every v5 table and index, on `conn`: no transaction control, no user_version.
+    """Every v6 table and index, on `conn`: no transaction control, no user_version.
 
     The caller owns the transaction and the version stamp -- `Database.write`
     for a fresh store.
@@ -416,7 +428,7 @@ class Database:
                     create_schema(conn)
                     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                 elif state == "upgradable":
-                    # SQLite's DDL is transactional: a failure rolls back to v4 intact
+                    # SQLite's DDL is transactional: a failure rolls back to v5 intact
                     for statement in _UPGRADE:
                         conn.execute(statement)
                     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

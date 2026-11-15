@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, get_args
 
-from .helpers import is_timestamp
+from .helpers import ID_RE, is_timestamp
 
 # only the harnesses that hand memriver a session id of their own (spec §3.1)
 Harness = Literal["claude-code", "codex"]
@@ -87,3 +87,57 @@ class Session:
     # produced is the producer's business, never stored here
     summary: str | None = None
     summary_at: str | None = None
+
+
+@dataclass(frozen=True)
+class CallRecord:
+    """A recorded tool call: its session and the working directory its payload named."""
+
+    key: SessionKey
+    cwd: str | None
+
+
+@dataclass(frozen=True)
+class SessionMove:
+    """One applied move of a session to another directory (append-only, `seq` per session)."""
+
+    key: SessionKey
+    seq: int
+    moved_at: str
+    from_entry_cwd: str
+    from_project_id: str | None
+    to_entry_cwd: str
+    to_project_id: str | None
+
+    def __post_init__(self) -> None:
+        if type(self.seq) is not int or self.seq < 1:
+            raise ValueError("move sequence is not a positive integer")
+        if not is_timestamp(self.moved_at):
+            raise ValueError("move time is not a timestamp")
+        if not (isinstance(self.from_entry_cwd, str) and isinstance(self.to_entry_cwd, str)):
+            raise ValueError("a move directory is not text")  # noqa: TRY004 - a bad row
+        for project in (self.from_project_id, self.to_project_id):
+            if project is not None and not (isinstance(project, str)
+                                            and ID_RE.fullmatch(project)):
+                raise ValueError("a move project id is not addressable")
+
+
+@dataclass(frozen=True)
+class MoveOutcome:
+    """What a move did, for the caller to answer from (a pending row compares candidates)."""
+
+    from_project_id: str | None
+    to_project_id: str | None
+    from_candidate_id: str | None
+    to_candidate_id: str | None
+    to_entry_cwd: str
+    pending: bool
+    degraded: bool
+
+    @property
+    def changed(self) -> bool:
+        if self.degraded:
+            return True
+        if self.pending:
+            return self.to_candidate_id != self.from_candidate_id
+        return self.to_project_id != self.from_project_id

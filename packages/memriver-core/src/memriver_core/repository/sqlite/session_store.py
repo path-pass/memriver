@@ -15,6 +15,7 @@ from memriver_core.models import (
     PromptEntry,
     Session,
     SessionKey,
+    SessionMove,
     SessionOrigin,
     SessionStatus,
     is_call_id,
@@ -92,6 +93,17 @@ def session_to_row(session: Session) -> tuple:
             session.last_write_prompt_count, session.last_nudge_prompt_count, first_prompt,
             _dumps([_entry_object(entry) for entry in session.recent_prompts]), session.summary,
             session.summary_at)
+
+
+SESSION_MOVE_COLUMNS = ("harness, session_id, seq, moved_at, from_entry_cwd, from_project_id, "
+                        "to_entry_cwd, to_project_id")
+
+
+def session_move_from_row(row: Sequence[object]) -> SessionMove:
+    """A validated SessionMove; ValueError for a row memriver could not have written."""
+    harness, session_id, seq, moved_at, from_cwd, from_project, to_cwd, to_project = row
+    return SessionMove(SessionKey(harness, session_id), seq, moved_at, from_cwd, from_project,
+                       to_cwd, to_project)
 
 
 def session_from_row(row: Sequence[object]) -> Session:

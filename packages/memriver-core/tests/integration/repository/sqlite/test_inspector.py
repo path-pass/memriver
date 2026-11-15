@@ -313,8 +313,8 @@ def test_an_unknown_schema_is_one_finding(world):
     assert [f.kind for f in report.findings] == ["unknown-schema"]
 
 
-@pytest.mark.parametrize("version", [1, 2, 3])
-def test_a_store_below_v4_is_one_unknown_schema_finding_and_is_left_untouched(tmp_path,
+@pytest.mark.parametrize("version", [1, 2, 3, 4])
+def test_a_store_below_v5_is_one_unknown_schema_finding_and_is_left_untouched(tmp_path,
                                                                               version):
     store = tmp_path / "store"
     store.mkdir()
@@ -494,21 +494,47 @@ def test_a_version_with_tags_memriver_could_not_have_written_is_a_finding(world)
     assert _kinds(_inspect(world)) == [("invalid-row", memory.id)]
 
 
-def test_a_v4_store_is_upgraded_before_it_is_inspected(world):
-    _sql(world["store"], "PRAGMA user_version = 4")
-    for table in ("memories", "memory_versions"):
-        _sql(world["store"], f"ALTER TABLE {table} RENAME TO old_{table}")
-    _sql(world["store"], "DROP TABLE tags")
-    # the v4 shape: the same tables less the two metadata columns
-    for table in ("memories", "memory_versions"):
-        columns = [row[1] for row in _sql(world["store"], f"PRAGMA table_info(old_{table})")
-                   if row[1] not in ("level", "tags")]
-        _sql(world["store"], f"CREATE TABLE {table} AS SELECT {', '.join(columns)} "
-             f"FROM old_{table} WHERE 0")
-        _sql(world["store"], f"DROP TABLE old_{table}")
+def test_doctor_upgrades_v5(world):
+    _sql(world["store"], "DROP TABLE session_moves")
+    _sql(world["store"], "ALTER TABLE tool_calls DROP COLUMN cwd")
+    _sql(world["store"], "PRAGMA user_version = 5")
     report = _inspect(world)
     assert not any(f.kind == "unknown-schema" for f in report.findings)
-    assert _sql(world["store"], "PRAGMA user_version") == [(5,)]
+    assert _sql(world["store"], "PRAGMA user_version") == [(6,)]
+    assert _sql(world["store"], "SELECT count(*) FROM session_moves") == [(0,)]
+
+
+def _plant_move(store: Path, **overrides: object) -> None:
+    row: dict[str, object] = {
+        "harness": "codex", "session_id": "s1", "seq": 1,
+        "moved_at": "2026-11-16T00:00:00.000000Z", "from_entry_cwd": "/a",
+        "from_project_id": None, "to_entry_cwd": "/b", "to_project_id": None}
+    row.update(overrides)
+    with closing(sqlite3.connect(store / "memriver.db")) as conn, conn:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute(f"INSERT INTO session_moves ({', '.join(row)}) "
+                     f"VALUES ({', '.join('?' for _ in row)})", tuple(row.values()))
+
+
+def test_a_healthy_session_move_is_not_a_finding(world):
+    _plant_session(world["store"], session_id="s1", project_id=world["project"])
+    _plant_move(world["store"], to_project_id=world["project"])
+    assert _inspect(world).findings == ()
+
+
+def test_damaged_session_move_reported(world):
+    _plant_session(world["store"], session_id="s1", project_id=world["project"])
+    _plant_move(world["store"], moved_at="not a time")
+    report = _inspect(world)
+    assert [(f.kind, f.location_hint) for f in report.findings] == [
+        ("session-move-damaged", "session_moves/codex/s1")]
+
+
+def test_session_move_without_session_reported(world):
+    _plant_move(world["store"], session_id="ghost")
+    report = _inspect(world)
+    assert [(f.kind, f.location_hint) for f in report.findings] == [
+        ("session-move-damaged", "session_moves/codex/ghost")]
 
 
 def test_a_version_naming_a_change_without_its_step_is_a_finding(world):
