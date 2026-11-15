@@ -13,6 +13,13 @@ from memriver.protocol_text import (
     INDEX_BEGIN_DELIMITER,
     INDEX_END_DELIMITER,
     INSTRUCTIONS,
+    MOVE_NOTICE_NONE,
+    MOVE_NOTICE_PENDING,
+    MOVE_NOTICE_PROJECT,
+    MOVE_SOURCE_NONE,
+    MOVE_SOURCE_PROJECT,
+    MOVE_WHY_UNREGISTERED,
+    MOVE_WHY_UNRESOLVED,
     PENDING_NOTICE,
     PENDING_NOTICE_NO_PROJECT,
     PENDING_TARGET_PROJECT,
@@ -55,16 +62,19 @@ def test_mcp_server_instructions_are_the_same_object(tmp_path):
 
 def test_session_instructions_are_the_spec_copy():
     assert SESSION_INSTRUCTIONS == (
-        "In this harness memriver fixes the session's project when the session starts. "
-        "If memriver says this session is awaiting confirmation, ask the user whether to "
-        "register it to the named project, and call session_confirm only after they agree. "
-        "Call session_register when the user asks you to register this session or tells you "
-        "they ran memriver project init, or right after you ran memriver project init at the "
-        "user's request; it registers the project covering where this session started and "
-        "never changes a session that already has a project. session_confirm and session_register are the only registrations you may "
-        "perform; never run memriver project init/adopt unless the user asks you to. "
-        "session_search finds the session that worked on something and returns resume "
-        "commands; whether to run them is the user's decision."
+        "In this harness memriver fixes the session's project when the session starts; a /cd "
+        "in Claude Code moves the session to the project of its new directory, and memriver "
+        "then injects the new project's index. If memriver says this session is awaiting "
+        "confirmation, ask the user whether to register it to the named project, and call "
+        "session_confirm only after they agree. Call session_register when the user asks you "
+        "to register this session or tells you they ran memriver project init, or right after "
+        "you ran memriver project init at the user's request; it registers the project "
+        "covering this session's recorded directory or, failing that, the directory the call "
+        "came from, and never changes a session that already has a project. session_confirm "
+        "and session_register are the only registrations you may perform; never run memriver "
+        "project init/adopt unless the user asks you to. session_search finds the session that "
+        "worked on something and returns resume commands; whether to run them is the user's "
+        "decision."
     )
     assert "session_confirm" not in INSTRUCTIONS
 
@@ -86,17 +96,53 @@ def test_pending_notice_is_the_spec_copy():
     assert PENDING_NOTICE.format(
         entry_cwd="/work/app",
         target=PENDING_TARGET_PROJECT.format(name="app", id="abcdefghij")) == (
-        "[memriver] This session is not registered yet. It was first observed in "
-        "/work/app, which resolves to project app [abcdefghij]." + expected_tail)
+        "[memriver] This session is not registered yet. Its recorded directory "
+        "/work/app resolves to project app [abcdefghij]." + expected_tail)
 
 
 def test_a_pending_notice_without_a_candidate_never_offers_confirmation():
     assert PENDING_NOTICE_NO_PROJECT.format(entry_cwd="/work/app") == (
-        "[memriver] This session is not registered yet. It was first observed in "
-        "/work/app, which is not in any registered project, so only global memories are "
-        "readable. To save memories, the user must run memriver project init there; then "
-        "call session_register.")
+        "[memriver] This session is not registered yet. Its recorded directory /work/app "
+        "is not in any registered project, so only global memories are readable. To save "
+        "memories, the user must run memriver project init in the directory this session is "
+        "working in; then call session_register.")
     assert "session_confirm" not in PENDING_NOTICE_NO_PROJECT
+
+
+def test_move_sources_are_the_spec_copy():
+    assert MOVE_SOURCE_PROJECT.format(name="app", id="abcdefghij") == \
+        "project app [abcdefghij]"
+    assert MOVE_SOURCE_NONE == "no project"
+
+
+def test_move_notice_to_a_project_is_the_spec_copy():
+    assert MOVE_NOTICE_PROJECT.format(source="no project", name="web", id="klmnopqrst",
+                                      entry_cwd="/work/web") == (
+        "[memriver] This session moved with /cd from no project to project web [klmnopqrst] "
+        "in /work/web. The memory index injected earlier in this session no longer applies; "
+        "the index below replaces it. This session now reads web and global memories and "
+        "saves to web.")
+
+
+def test_move_notice_to_no_project_is_the_spec_copy():
+    assert MOVE_WHY_UNREGISTERED == "is not in any registered project"
+    assert MOVE_WHY_UNRESOLVED == "memriver could not resolve to a project"
+    assert MOVE_NOTICE_NONE.format(source="project app [abcdefghij]", entry_cwd="/tmp/x",
+                                   why=MOVE_WHY_UNREGISTERED) == (
+        "[memriver] This session moved with /cd from project app [abcdefghij] to /tmp/x, "
+        "which is not in any registered project, so only global memories are readable and "
+        "nothing can be saved. The memory index injected earlier in this session no longer "
+        "applies; the index below replaces it. To save memories, the user must run memriver "
+        "project init there; then call session_register.")
+
+
+def test_move_notice_while_pending_is_the_spec_copy():
+    assert MOVE_NOTICE_PENDING.format(entry_cwd="/work/web", old="project app [abcdefghij]",
+                                      new="no project") == (
+        "[memriver] This session moved with /cd to /work/web; the project proposed for it "
+        "changed from project app [abcdefghij] to no project. Only global memories are "
+        "readable and nothing is saved until the user confirms.")
+    assert "saves to" not in MOVE_NOTICE_PENDING
 
 
 def test_untrusted_data_notice_is_the_spec_copy():

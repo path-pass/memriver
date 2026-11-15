@@ -41,16 +41,19 @@ INSTRUCTIONS = (
 # Appended to the MCP server instructions in session-routed mode only (Claude
 # Code, Codex): INSTRUCTIONS stays mode-neutral for the Cursor/Kiro block.
 SESSION_INSTRUCTIONS = (
-    "In this harness memriver fixes the session's project when the session starts. "
-    "If memriver says this session is awaiting confirmation, ask the user whether to "
-    "register it to the named project, and call session_confirm only after they agree. "
-    "Call session_register when the user asks you to register this session or tells you "
-    "they ran memriver project init, or right after you ran memriver project init at the "
-    "user's request; it registers the project covering where this session started and "
-    "never changes a session that already has a project. session_confirm and session_register are the only registrations you may "
-    "perform; never run memriver project init/adopt unless the user asks you to. "
-    "session_search finds the session that worked on something and returns resume "
-    "commands; whether to run them is the user's decision."
+    "In this harness memriver fixes the session's project when the session starts; a /cd "
+    "in Claude Code moves the session to the project of its new directory, and memriver "
+    "then injects the new project's index. If memriver says this session is awaiting "
+    "confirmation, ask the user whether to register it to the named project, and call "
+    "session_confirm only after they agree. Call session_register when the user asks you "
+    "to register this session or tells you they ran memriver project init, or right after "
+    "you ran memriver project init at the user's request; it registers the project "
+    "covering this session's recorded directory or, failing that, the directory the call "
+    "came from, and never changes a session that already has a project. session_confirm "
+    "and session_register are the only registrations you may perform; never run memriver "
+    "project init/adopt unless the user asks you to. session_search finds the session that "
+    "worked on something and returns resume commands; whether to run them is the user's "
+    "decision."
 )
 
 # The static Cursor/Kiro surface renders this heading + INSTRUCTIONS into a
@@ -88,22 +91,51 @@ COMPACT_RESCUE_SUFFIX = (
 
 # --- pending session: SessionStart, or the first prompt of a row it never saw ---
 
-# filled by hooks.py: `entry_cwd` is the stored entry directory after the
-# display neutralizer, `target` the PENDING_TARGET_PROJECT phrase
+# filled by hooks.py: every field is shown through the display neutralizer and
+# cut to the header's field cap; `entry_cwd` is the stored entry directory,
+# `target` the PENDING_TARGET_PROJECT phrase
 PENDING_NOTICE = (
-    "[memriver] This session is not registered yet. It was first observed in "
-    "{entry_cwd}, which resolves to {target}. This may differ from where the session "
-    "originally started. Ask the user whether to register this session there; call "
-    "session_confirm only if they agree. Until then only global memories are readable."
+    "[memriver] This session is not registered yet. Its recorded directory {entry_cwd} "
+    "resolves to {target}. This may differ from where the session originally started. "
+    "Ask the user whether to register this session there; call session_confirm only if "
+    "they agree. Until then only global memories are readable."
 )
 PENDING_TARGET_PROJECT = "project {name} [{id}]"
 # no candidate: there is nothing to confirm, so the agent is not asked to offer
 # it; a project inited there later is registered with session_register
 PENDING_NOTICE_NO_PROJECT = (
-    "[memriver] This session is not registered yet. It was first observed in "
-    "{entry_cwd}, which is not in any registered project, so only global memories are "
-    "readable. To save memories, the user must run memriver project init there; then "
-    "call session_register."
+    "[memriver] This session is not registered yet. Its recorded directory {entry_cwd} is "
+    "not in any registered project, so only global memories are readable. To save "
+    "memories, the user must run memriver project init in the directory this session is "
+    "working in; then call session_register."
+)
+
+# --- a Claude Code /cd moved the session: the event that applied the move ---
+
+# filled by hooks.py like the pending notices; a project that vanished shows
+# its id as its name
+MOVE_SOURCE_PROJECT = "project {name} [{id}]"
+MOVE_SOURCE_NONE = "no project"
+MOVE_NOTICE_PROJECT = (
+    "[memriver] This session moved with /cd from {source} to project {name} [{id}] in "
+    "{entry_cwd}. The memory index injected earlier in this session no longer applies; the "
+    "index below replaces it. This session now reads {name} and global memories and saves "
+    "to {name}."
+)
+MOVE_NOTICE_NONE = (
+    "[memriver] This session moved with /cd from {source} to {entry_cwd}, which {why}, so "
+    "only global memories are readable and nothing can be saved. The memory index injected "
+    "earlier in this session no longer applies; the index below replaces it. To save "
+    "memories, the user must run memriver project init there; then call session_register."
+)
+MOVE_WHY_UNREGISTERED = "is not in any registered project"
+MOVE_WHY_UNRESOLVED = "memriver could not resolve to a project"
+# a pending session: followed by the pending notice for the new proposal, so
+# nothing here claims the new project's access
+MOVE_NOTICE_PENDING = (
+    "[memriver] This session moved with /cd to {entry_cwd}; the project proposed for it "
+    "changed from {old} to {new}. Only global memories are readable and nothing is saved "
+    "until the user confirms."
 )
 
 # --- stop hook: at most one continuation per nudge interval ---
