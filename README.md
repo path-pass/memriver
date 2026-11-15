@@ -41,9 +41,8 @@ Claude Code and Codex are session-routed: `--harness claude-code|codex`
 decides each session's project at its `SessionStart` (only a Claude Code
 `/cd` moves it later), and every hook and every MCP call for that session
 then read the same stored decision, so the hook and the server always agree
-on it. A resumed or compacted session
-with no row yet gets a proposed project from its `SessionStart` itself --
-no prompt needed -- and stays pending until the user agrees and the agent
+on it. A resumed or compacted session with no row yet gets a proposed project
+from its `SessionStart` itself -- no prompt needed -- and stays pending until the user agrees and the agent
 calls `session_confirm`; only a session `SessionStart` never got to record
 (one memriver truly never saw start) waits for its first observed prompt to
 get that same proposal instead (see *What your agent sees*). Cursor and
@@ -125,9 +124,15 @@ reports go to stderr.
   memriver never looks again on its own: it gets one only when the agent calls
   `session_register` -- because you asked it to, or right after it ran
   `memriver project init` at your request -- which resolves the directory the
-  session was registered in and, when no project covers that, the directory
-  that call came from, and registers the project covering it. A session that
-  already has a project is never changed by `session_register`.
+  session was registered in and, in Claude Code only, when no project covers
+  that, the directory that call came from (its `PreToolUse` hook records it;
+  Codex has no such hook, so Codex uses the registered directory alone), and
+  registers the project covering it. A session that already has a project is
+  never changed by `session_register`. A session awaiting confirmation stays
+  pending after a `/cd`, its proposal following the new directory;
+  `session_register` refuses a pending session that has a proposed project
+  (that one is `session_confirm`'s to decide), while a pending session with no
+  proposal can still be registered.
 - **A session memriver has never registered** (typically one resumed for the
   first time since before you installed) is not silently bound to whatever
   directory it happens to be resumed in. It is
@@ -279,7 +284,7 @@ Known limits:
 | `memory_delete(memory_id, expected_version)` | Remove a memory that is no longer true or wanted; returns `{deleted: memory_id}`; refused for global memories or a stale `expected_version` |
 | `session_search(query="", limit=None)` | Claude Code/Codex only: find this project's recorded sessions by space-separated keywords in their prompts, summary, branch or entry directory -- an entry matching any keyword is returned, entries matching more keywords first, newest activity first among equals; an empty query lists them, newest activity first; each result carries a `resume_command` to show the user -- whether to run it is the user's decision |
 | `session_confirm()` | Claude Code/Codex only: register the calling session to the project memriver proposed for it; call only after the user agrees; returns the session's new project header |
-| `session_register()` | Claude Code/Codex only: register the calling session, when it has no project, to the registered project covering the directory it registered in, else the directory this call came from; called when the user asks, or right after the agent ran `memriver project init` at the user's request; never changes a session that already has a project; returns the session's project header, with a note when no project covers either directory |
+| `session_register()` | Claude Code/Codex only: register the calling session, when it has no project, to the registered project covering the directory it registered in, else (Claude Code only) the directory this call came from; called when the user asks, or right after the agent ran `memriver project init` at the user's request; never changes a session that already has a project; returns the session's project header, with a note when no project covers either directory |
 
 `memory_search`, `session_search`, `memriver search` and `memriver sessions`
 take space-separated keywords: an entry matching any keyword is returned,
@@ -667,7 +672,7 @@ run prints one line instead). It exits 0 when
 the run completed (failures of single items included), was skipped, or only
 scanned because no `[dream]` table exists; and 1 on a store failure, an
 invalid `[dream]` table, `--phase` with no executor configured, a store below
-schema version 4, or a missing Codex provider variable (below).
+schema version 5, or a missing Codex provider variable (below).
 
 **Executors.** `init` picks Claude Code or Codex (`--executor`; default the
 configured one, else whichever of `claude` and `codex` is on `PATH`) and
