@@ -8,7 +8,7 @@ import threading
 from contextlib import closing
 
 import pytest
-from memriver_core.models import PromptEntry, Session, SessionKey
+from memriver_core.models import PromptEntry, Session, SessionKey, SessionMove
 from memriver_core.models.errors import ProjectUnavailable, SessionMoved, StorageFailure
 from memriver_core.repository.sqlite import SqliteSessionStore
 from memriver_core.repository.sqlite.database import DATABASE_FILENAME, Database
@@ -67,6 +67,28 @@ def _store(root) -> SqliteSessionStore:
 @pytest.fixture
 def session_store(initialized):
     return _store(initialized)
+
+
+def _confirm(store, key: SessionKey = KEY):
+    stored = store.get(key)
+    return store.confirm(key, expected_candidate_id=stored and stored.candidate_id,
+                         expected_candidate_root=stored and stored.candidate_root)
+
+
+def _assign(store, project_id: str = PROJECT, key: SessionKey = KEY):
+    stored = store.get(key)
+    if stored is None:
+        return store.assign_project(key, project_id, expected_status="registered",
+                                    expected_entry_cwd="/work/app/src",
+                                    expected_transcript_path=None)
+    return store.assign_project(key, project_id, expected_status=stored.status,
+                                expected_entry_cwd=stored.entry_cwd,
+                                expected_transcript_path=stored.transcript_path)
+
+
+def _call_key(store, harness, call_id):
+    record = store.call_record(harness, call_id)
+    return None if record is None else record.key
 
 
 def _raw(root, sql: str, params: tuple = ()) -> list[tuple]:
@@ -329,14 +351,14 @@ def test_two_concurrent_checks_at_one_watermark_nudge_at_most_once(initialized, 
 
 def test_confirm_binds_a_pending_row_to_its_unchanged_candidate(session_store):
     session_store.register(_pending())
-    confirmed = session_store.confirm(KEY)
+    confirmed = _confirm(session_store)
     assert (confirmed.status, confirmed.project_id) == ("registered", PROJECT)
     assert session_store.get(KEY) == confirmed
 
 
 def test_confirm_without_a_candidate_registers_the_row_with_no_project(session_store):
     session_store.register(_pending(candidate_id=None, candidate_root=None))
-    confirmed = session_store.confirm(KEY)
+    confirmed = _confirm(session_store)
     assert (confirmed.status, confirmed.project_id) == ("registered", None)
 
 
@@ -354,36 +376,36 @@ def test_confirm_refuses_a_candidate_that_changed_and_leaves_the_row(session_sto
         conn.execute("PRAGMA ignore_check_constraints = ON")
         conn.execute(change)
     with pytest.raises(ProjectUnavailable) as exc_info:
-        session_store.confirm(KEY)
+        _confirm(session_store)
     assert exc_info.value.reason == "candidate-changed"
     assert session_store.get(KEY) == before
 
 
 def test_confirming_a_registered_row_returns_it_unchanged(session_store):
     session_store.register(_pending())
-    confirmed = session_store.confirm(KEY)
-    assert session_store.confirm(KEY) == confirmed
+    confirmed = _confirm(session_store)
+    assert _confirm(session_store) == confirmed
     registered = session_store.register(_session(SessionKey("codex", "other"),
                                                  project_id=OTHER))
-    assert session_store.confirm(registered.key) == registered
+    assert _confirm(session_store, registered.key) == registered
 
 
 def test_confirm_of_an_unknown_key_is_none(session_store):
-    assert session_store.confirm(KEY) is None
+    assert _confirm(session_store) is None
 
 
 # --- assign_project ---
 
 def test_assign_project_binds_a_registered_row_with_no_project(session_store):
     before = session_store.register(_session(project_id=None))
-    assigned = session_store.assign_project(KEY, PROJECT)
+    assigned = _assign(session_store)
     assert assigned == dataclasses.replace(before, project_id=PROJECT)
     assert session_store.get(KEY) == assigned
 
 
 def test_assign_project_registers_a_pending_row_without_a_candidate(session_store):
     before = session_store.register(_pending(candidate_id=None, candidate_root=None))
-    assigned = session_store.assign_project(KEY, PROJECT)
+    assigned = _assign(session_store)
     assert assigned == dataclasses.replace(before, status="registered", project_id=PROJECT)
     assert assigned.origin == "first-seen"
 
@@ -392,12 +414,12 @@ def test_assign_project_registers_a_pending_row_without_a_candidate(session_stor
                          ids=["has-a-project", "pending-with-a-candidate"])
 def test_assign_project_leaves_a_row_with_a_project_or_candidate_unchanged(session_store, row):
     before = session_store.register(row)
-    assert session_store.assign_project(KEY, PROJECT) == before
+    assert _assign(session_store) == before
     assert session_store.get(KEY) == before
 
 
 def test_assign_project_of_an_unknown_key_is_none(session_store, initialized):
-    assert session_store.assign_project(KEY, PROJECT) is None
+    assert _assign(session_store) is None
     assert _raw(initialized, "SELECT count(*) FROM sessions") == [(0,)]
 
 
@@ -507,8 +529,8 @@ def test_every_write_to_an_absent_store_is_a_no_op_that_creates_nothing(root):
     assert session_store.end(KEY, _at(1)) is None
     assert session_store.nudge_if_due(KEY, _at(1), min_prompts=5, interval=5) is False
     assert session_store.mark_saved(KEY) is None
-    assert session_store.confirm(KEY) is None
-    assert session_store.assign_project(KEY, PROJECT) is None
+    assert _confirm(session_store) is None
+    assert _assign(session_store) is None
     assert not root.exists()
 
 
@@ -561,16 +583,16 @@ def _hour(hour: int, minute: int = 0) -> str:
 def test_a_recorded_call_names_its_session(session_store):
     session_store.record_call(KEY, "call-1", _hour(10), retention_s=HOUR)
     session_store.record_call(OTHER_KEY, "call-2", _hour(10), retention_s=HOUR)
-    assert session_store.session_for_call("claude-code", "call-1") == KEY
-    assert session_store.session_for_call("claude-code", "call-2") == OTHER_KEY
-    assert session_store.session_for_call("claude-code", "call-3") is None
-    assert session_store.session_for_call("codex", "call-1") is None
+    assert _call_key(session_store, "claude-code", "call-1") == KEY
+    assert _call_key(session_store, "claude-code", "call-2") == OTHER_KEY
+    assert _call_key(session_store, "claude-code", "call-3") is None
+    assert _call_key(session_store, "codex", "call-1") is None
 
 
 def test_recording_a_call_again_moves_it_to_the_latest_session(session_store, initialized):
     session_store.record_call(KEY, "call-1", _hour(10), retention_s=HOUR)
     session_store.record_call(OTHER_KEY, "call-1", _hour(10, 5), retention_s=HOUR)
-    assert session_store.session_for_call("claude-code", "call-1") == OTHER_KEY
+    assert _call_key(session_store, "claude-code", "call-1") == OTHER_KEY
     assert _raw(initialized, "SELECT count(*) FROM tool_calls") == [(1,)]
 
 
@@ -578,15 +600,15 @@ def test_recording_a_call_prunes_calls_older_than_the_retention(session_store, i
     session_store.record_call(KEY, "old", _hour(9), retention_s=HOUR)
     session_store.record_call(KEY, "edge", _hour(10), retention_s=HOUR)
     session_store.record_call(KEY, "new", _hour(11), retention_s=HOUR)
-    assert session_store.session_for_call("claude-code", "old") is None
-    assert session_store.session_for_call("claude-code", "edge") == KEY
-    assert session_store.session_for_call("claude-code", "new") == KEY
+    assert _call_key(session_store, "claude-code", "old") is None
+    assert _call_key(session_store, "claude-code", "edge") == KEY
+    assert _call_key(session_store, "claude-code", "new") == KEY
 
 
 def test_recording_a_call_on_an_absent_store_is_a_no_op_that_creates_nothing(root):
     session_store = _store(root)
     assert session_store.record_call(KEY, "call-1", _hour(10), retention_s=HOUR) is None
-    assert session_store.session_for_call("claude-code", "call-1") is None
+    assert _call_key(session_store, "claude-code", "call-1") is None
     assert not root.exists()
 
 
@@ -607,13 +629,13 @@ def test_a_malformed_call_is_a_value_error_and_records_nothing(session_store, in
 
 @pytest.mark.parametrize("call_id", ["a b", "", "x" * 257, None, 17])
 def test_looking_up_an_impossible_call_id_finds_nothing(session_store, call_id):
-    assert session_store.session_for_call("claude-code", call_id) is None
+    assert _call_key(session_store, "claude-code", call_id) is None
 
 
 def test_a_call_row_naming_an_invalid_session_is_ignored(session_store, initialized):
     session_store.record_call(KEY, "call-1", _hour(10), retention_s=HOUR)
     _raw(initialized, "UPDATE tool_calls SET session_id = 'a b'")
-    assert session_store.session_for_call("claude-code", "call-1") is None
+    assert _call_key(session_store, "claude-code", "call-1") is None
 
 
 # --- the published summary (spec §3.5, §4.3) ----------------------------------
@@ -688,3 +710,165 @@ def test_search_matches_the_summary(session_store):
     session_store.publish_summary(KEY, "Rotated the staging certificates.",
                                   expected_last_active_at=_at(0), at=_at(5))
     assert [s.key for s in session_store.search(PROJECT, "CERTIFICATES", 10)] == [KEY]
+
+
+# --- call cwd, call_record ---
+
+def test_record_call_keeps_absolute_cwd(session_store):
+    session_store.record_call(KEY, "call-1", _hour(10), retention_s=HOUR, cwd="/work/other")
+    assert session_store.call_record("claude-code", "call-1").cwd == "/work/other"
+
+
+@pytest.mark.parametrize("cwd", ["rel/dir", "/a\x00b", 42, None])
+def test_record_call_drops_relative_or_nul_cwd(session_store, cwd):
+    session_store.record_call(KEY, "call-1", _hour(10), retention_s=HOUR, cwd=cwd)
+    assert session_store.call_record("claude-code", "call-1").cwd is None
+
+
+def test_call_record_returns_key_and_cwd(session_store):
+    session_store.record_call(KEY, "call-1", _hour(10), retention_s=HOUR, cwd="/w")
+    record = session_store.call_record("claude-code", "call-1")
+    assert (record.key, record.cwd) == (KEY, "/w")
+
+
+@pytest.mark.parametrize("call_id", ["a b", "", None, 17, "missing"])
+def test_call_record_invalid_id_or_missing(session_store, call_id):
+    assert session_store.call_record("claude-code", call_id) is None
+
+
+# --- adopt_transcript ---
+
+def test_adopt_transcript_only_when_null(session_store):
+    session_store.register(_session())
+    assert session_store.adopt_transcript(KEY, "/t/a.jsonl").transcript_path == "/t/a.jsonl"
+    assert session_store.adopt_transcript(KEY, "/t/b.jsonl").transcript_path == "/t/a.jsonl"
+    assert session_store.get(KEY).transcript_path == "/t/a.jsonl"
+    assert session_store.adopt_transcript(OTHER_KEY, "/t/c") is None
+
+
+# --- move ---
+
+
+
+def _move(store, **fields):
+    args = {"expected_transcript_path": "/t/a", "entry_cwd": "/work/other/x", "branch": "dev",
+            "transcript_path": "/t/b", "project_id": OTHER, "project_root": "/work/other",
+            "at": _at(50)} | fields
+    return store.move(KEY, **args)
+
+
+def test_move_registered_to_other_project(session_store, initialized):
+    session_store.register(_session(transcript_path="/t/a"))
+    updated, move = _move(session_store)
+    assert (updated.project_id, updated.entry_cwd, updated.branch, updated.transcript_path,
+            updated.last_active_at) == (OTHER, "/work/other/x", "dev", "/t/b", _at(50))
+    assert move == SessionMove(KEY, 1, _at(50), "/work/app/src", PROJECT, "/work/other/x", OTHER)
+    assert session_store.get(KEY) == updated
+
+
+def test_move_registered_to_none(session_store):
+    session_store.register(_session(transcript_path="/t/a"))
+    updated, move = _move(session_store, project_id=None, project_root=None, branch=None)
+    assert (updated.project_id, updated.branch, move.to_project_id) == (None, None, None)
+    assert updated.status == "registered"
+
+
+def test_move_clears_leftover_candidate(session_store):
+    session_store.register(_pending(transcript_path="/t/a"))
+    _confirm(session_store)
+    assert session_store.get(KEY).candidate_id == PROJECT
+    updated, _ = _move(session_store)
+    assert (updated.candidate_id, updated.candidate_root) == (None, None)
+
+
+def test_move_pending_sets_new_candidate(session_store):
+    session_store.register(_pending(transcript_path="/t/a"))
+    updated, move = _move(session_store)
+    assert (updated.status, updated.project_id, updated.candidate_id,
+            updated.candidate_root) == ("pending", None, OTHER, "/work/other")
+    assert (move.from_project_id, move.to_project_id) == (None, None)
+
+
+def test_move_cas_loser_changes_nothing(session_store, initialized):
+    before = session_store.register(_session(transcript_path="/t/zzz"))
+    assert _move(session_store) == (before, None)
+    assert session_store.get(KEY) == before
+    assert _raw(initialized, "SELECT count(*) FROM session_moves") == [(0,)]
+
+
+def test_move_of_unknown_or_absent_is_none(session_store, root):
+    assert _move(session_store) is None
+    assert _move(_store(root / "nope")) is None
+
+
+def test_move_seq_increments(session_store):
+    session_store.register(_session(transcript_path="/t/a"))
+    assert _move(session_store)[1].seq == 1
+    assert _move(session_store, expected_transcript_path="/t/b", transcript_path="/t/c",
+                 at=_at(60))[1].seq == 2
+
+
+@pytest.mark.parametrize("at", [_at(10), _at(5)])
+def test_move_last_active_strictly_after(session_store, at):
+    session_store.register(_session(last_active_at=_at(10), transcript_path="/t/a",
+                                    ))
+    updated, move = _move(session_store, at=at)
+    assert updated.last_active_at > _at(10) and move.moved_at == updated.last_active_at
+    with pytest.raises(SessionMoved):
+        session_store.publish_summary(KEY, "s", expected_last_active_at=_at(10), at=_at(70))
+
+
+def test_moves_ordered_by_seq(session_store, initialized):
+    session_store.register(_session(transcript_path="/t/a"))
+    _move(session_store)
+    _move(session_store, expected_transcript_path="/t/b", transcript_path="/t/c", at=_at(60))
+    assert [m.seq for m in session_store.moves(KEY)] == [1, 2]
+    _raw(initialized, "UPDATE session_moves SET moved_at = 'bad' WHERE seq = 1")
+    assert [m.seq for m in session_store.moves(KEY)] == [2]
+
+
+# --- assign_project compare-and-set ---
+
+def test_assign_project_cas_rejects_moved_row(session_store):
+    before = session_store.register(_session(project_id=None))
+    assert session_store.assign_project(
+        KEY, PROJECT, expected_status="registered", expected_entry_cwd="/elsewhere",
+        expected_transcript_path=None) == before
+    assert session_store.get(KEY) == before
+
+
+def test_assign_project_rejects_new_candidate(session_store):
+    before = session_store.register(_pending())
+    assert session_store.assign_project(
+        KEY, OTHER, expected_status="pending", expected_entry_cwd=before.entry_cwd,
+        expected_transcript_path=None) == before
+
+
+def test_assign_project_registers_pending_without_candidate(session_store):
+    session_store.register(_pending(candidate_id=None, candidate_root=None))
+    assert _assign(session_store).status == "registered"
+
+
+def test_assign_project_ignores_leftover_candidate_on_registered_row(session_store):
+    session_store.register(_pending())
+    _confirm(session_store)
+    session_store._write(lambda c: c.execute("UPDATE sessions SET project_id = NULL"))
+    assert _assign(session_store, OTHER).project_id == OTHER
+
+
+# --- confirm compare-and-set ---
+
+def test_confirm_rejects_moved_candidate(session_store):
+    before = session_store.register(_pending())
+    with pytest.raises(ProjectUnavailable) as caught:
+        session_store.confirm(KEY, expected_candidate_id=OTHER,
+                              expected_candidate_root="/work/other")
+    assert caught.value.reason == "candidate-moved"
+    assert session_store.get(KEY) == before
+
+
+def test_confirm_with_matching_candidate_registers(session_store):
+    session_store.register(_pending())
+    confirmed = session_store.confirm(KEY, expected_candidate_id=PROJECT,
+                                      expected_candidate_root=PROJECT_ROOT)
+    assert (confirmed.status, confirmed.project_id) == ("registered", PROJECT)

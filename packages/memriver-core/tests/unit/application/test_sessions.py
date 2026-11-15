@@ -641,9 +641,9 @@ def test_register_keeps_a_project_the_row_got_in_the_meantime(world):
         def __init__(self, inner) -> None:
             self._inner = inner
 
-        def assign_project(self, key, project_id):
+        def assign_project(self, key, project_id, **expected):
             world.sql("UPDATE sessions SET project_id = ?", other.id)
-            return self._inner.assign_project(key, project_id)
+            return self._inner.assign_project(key, project_id, **expected)
 
         def __getattr__(self, name):
             return getattr(self._inner, name)
@@ -875,16 +875,16 @@ def test_delete_never_moves_the_watermark(world):
 def test_a_recorded_tool_call_names_its_session(world):
     world.start()
     world.services.session.record_tool_call(OTHER_KEY_CLAUDE, "call-1")
-    assert world.services.session.session_key_for_call("claude-code", "call-1") == OTHER_KEY_CLAUDE
-    assert world.services.session.session_key_for_call("claude-code", "call-2") is None
+    assert world.services.session.call_record("claude-code", "call-1").key == OTHER_KEY_CLAUDE
+    assert world.services.session.call_record("claude-code", "call-2") is None
 
 
 def test_the_tool_call_mapping_never_fails_its_caller(world):
     world.start()
-    world.session_store = Broken(world.session_store, "record_call", "session_for_call")
+    world.session_store = Broken(world.session_store, "record_call", "call_record")
     services = world.build()
     assert services.session.record_tool_call(KEY, "call-1") is None
-    assert services.session.session_key_for_call("claude-code", "call-1") is None
+    assert services.session.call_record("claude-code", "call-1") is None
 
 
 def test_only_read_records_last_read_at(world):

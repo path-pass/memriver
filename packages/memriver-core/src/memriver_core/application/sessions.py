@@ -26,6 +26,7 @@ from memriver_core.application.contexts import (
     unavailable_context,
 )
 from memriver_core.models import (
+    CallRecord,
     Project,
     ProjectContext,
     PromptEntry,
@@ -163,21 +164,21 @@ class SessionService:
         except StorageFailure:
             return False
 
-    def record_tool_call(self, key: SessionKey, call_id: str) -> None:
+    def record_tool_call(self, key: SessionKey, call_id: str, cwd: str | None = None) -> None:
         """Claude Code's PreToolUse: remember which session made this call (spec U15).
 
         Best effort: a failure only leaves the MCP server on its fallback.
         """
         try:
             self._session_store.record_call(key, call_id, now(),
-                                            retention_s=self._tool_call_retention_s)
+                                            retention_s=self._tool_call_retention_s, cwd=cwd)
         except StorageFailure:
             pass
 
-    def session_key_for_call(self, harness: str, call_id: str) -> SessionKey | None:
-        """The session a recorded tool call belongs to; None when none is known."""
+    def call_record(self, harness: str, call_id: object) -> CallRecord | None:
+        """The recorded tool call (its session and cwd); None when none is known."""
         try:
-            return self._session_store.session_for_call(harness, call_id)
+            return self._session_store.call_record(harness, call_id)
         except StorageFailure:
             return None
 
@@ -203,7 +204,9 @@ class SessionService:
                 and (stored.candidate_root is None
                      or not self._root_is_intact(stored.candidate_root)):
             raise ProjectUnavailable(reason="candidate-changed")
-        confirmed = self._session_store.confirm(key)
+        confirmed = self._session_store.confirm(
+            key, expected_candidate_id=None if stored is None else stored.candidate_id,
+            expected_candidate_root=None if stored is None else stored.candidate_root)
         if confirmed is None:
             raise ProjectUnavailable(reason="unidentified")
         return self._context_of(confirmed)
@@ -232,7 +235,9 @@ class SessionService:
         _, project = resolved
         if project is None:
             return self._context_of(stored)
-        assigned = self._session_store.assign_project(key, project.id)
+        assigned = self._session_store.assign_project(
+            key, project.id, expected_status=stored.status, expected_entry_cwd=stored.entry_cwd,
+            expected_transcript_path=stored.transcript_path)
         if assigned is None:
             return self._storeless_context(key)
         return self._context_of(assigned)

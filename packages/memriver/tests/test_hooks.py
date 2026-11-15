@@ -934,10 +934,8 @@ def test_pre_tool_use_records_the_call_silently(tmp_path):
     assert pre_tool_use(root=store, tool_use_id="toolu_2", session_id="session-2") == \
         HookResult()
     services = _real_services(store)
-    assert services.session.session_key_for_call("claude-code", "toolu_1") == \
-        SessionKey("claude-code", SESSION_ID)
-    assert services.session.session_key_for_call("claude-code", "toolu_2") == \
-        SessionKey("claude-code", "session-2")
+    assert services.session.call_record("claude-code", "toolu_1").key == SessionKey("claude-code", SESSION_ID)
+    assert services.session.call_record("claude-code", "toolu_2").key == SessionKey("claude-code", "session-2")
 
 
 @pytest.mark.parametrize("fields", [

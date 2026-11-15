@@ -255,10 +255,9 @@ def _session_key(harness: str, ctx: Context, session_service: Any) -> SessionKey
         # Claude Code keeps this server across /clear and an in-app /resume,
         # so its environment keeps naming the startup session; the PreToolUse
         # hook mapped this call's id to the session making it (spec U15)
-        mapped = session_service.session_key_for_call(harness,
-                                                      data.get("claudecode/toolUseId"))
-        if mapped is not None:
-            return mapped
+        record = session_service.call_record(harness, data.get("claudecode/toolUseId"))
+        if record is not None:
+            return record.key
         session_id = os.environ.get("CLAUDE_CODE_SESSION_ID")
     else:
         # Codex nests its turn metadata as an object, and anything else (a

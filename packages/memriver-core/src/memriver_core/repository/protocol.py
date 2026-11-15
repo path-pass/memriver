@@ -4,6 +4,7 @@ from collections.abc import Callable, Sequence
 from typing import Protocol
 
 from memriver_core.models import (
+    CallRecord,
     Memory,
     Project,
     PromptEntry,
@@ -12,6 +13,8 @@ from memriver_core.models import (
     RootPlan,
     Session,
     SessionKey,
+    SessionMove,
+    SessionStatus,
     UnbindPlan,
 )
 from memriver_core.models.changes import (
@@ -227,13 +230,25 @@ class SessionStore(Protocol):
       has no candidate, else with its candidate, provided that project still
       exists, is not global and has the root the candidate was computed
       from; otherwise `ProjectUnavailable(reason="candidate-changed")` and
-      the row is unchanged. A registered row is returned unchanged; None for
-      an unknown key.
-    - `assign_project`: a row with no project and no candidate (registered,
-      or pending with a NULL candidate) becomes registered with `project_id`;
-      any other row is returned unchanged -- a project set meanwhile is never
-      overwritten. `origin`, `entry_cwd` and `branch` stay. None for an
+      the row is unchanged. A pending row whose candidate id/root differ from
+      the expected ones is `ProjectUnavailable(reason="candidate-moved")`,
+      also unchanged. A registered row is returned unchanged; None for an
       unknown key.
+    - `assign_project`: compare-and-set. Applies only if the stored row has
+      `status == expected_status`, no project, no candidate when pending, and
+      `entry_cwd`/`transcript_path` equal to the expected ones (a leftover
+      candidate on a registered row does not block); it becomes registered
+      with `project_id`. Otherwise the stored row is returned unchanged.
+      `origin`, `entry_cwd` and `branch` stay. None for an unknown key.
+    - `adopt_transcript`: sets `transcript_path` only while the stored one is
+      NULL; returns the stored row (None: no store or no row).
+    - `move`: compare-and-set on `transcript_path == expected_transcript_path`
+      (else `(stored, None)`, nothing written). Sets `entry_cwd`, `branch`,
+      `transcript_path`; a registered row gets `project_id` and no candidate,
+      a pending row gets the candidate id/root; `last_active_at` is `at`
+      when later than the stored value, else strictly after it. Appends a
+      `SessionMove` with the next `seq`. None: no store or no row.
+    - `moves`: a session's moves by `seq`; undecodable rows skipped.
     - `search`: `project_id=None` is every row (the human CLI); otherwise
       that project's registered rows. The query's keywords
       (`models.search.search_terms`) are matched against the prompt texts,
@@ -247,8 +262,9 @@ class SessionStore(Protocol):
       mapping recorded more than `retention_s` seconds before `at`, in the
       same transaction. A call id that is not a harness id (see
       `is_call_id`), a malformed `at` or a non-positive `retention_s` is a
-      `ValueError`, and nothing is written.
-    - `session_for_call`: the session a call id was mapped to, or None --
+      `ValueError`, and nothing is written. `cwd` is kept only when it is an
+      absolute path without NUL; otherwise NULL.
+    - `call_record`: the session (and cwd) a call id was mapped to, or None --
       also for an impossible call id and for a stored row whose session id
       is invalid. Read-only.
     - `bound`: registered rows whose project exists and is not global, newest
@@ -271,12 +287,20 @@ class SessionStore(Protocol):
     def nudge_if_due(self, key: SessionKey, at: str, *, min_prompts: int,
                      interval: int) -> bool: ...
     def mark_saved(self, key: SessionKey) -> None: ...
-    def confirm(self, key: SessionKey) -> Session | None: ...
-    def assign_project(self, key: SessionKey, project_id: str) -> Session | None: ...
+    def confirm(self, key: SessionKey, *, expected_candidate_id: str | None,
+                expected_candidate_root: str | None) -> Session | None: ...
+    def assign_project(self, key: SessionKey, project_id: str, *,
+                       expected_status: SessionStatus, expected_entry_cwd: str,
+                       expected_transcript_path: str | None) -> Session | None: ...
+    def adopt_transcript(self, key: SessionKey, transcript_path: str) -> Session | None: ...
+    def move(self, key: SessionKey, *, expected_transcript_path: str, entry_cwd: str,
+             branch: str | None, transcript_path: str, project_id: str | None,
+             project_root: str | None, at: str) -> tuple[Session, SessionMove | None] | None: ...
+    def moves(self, key: SessionKey) -> list[SessionMove]: ...
     def search(self, project_id: str | None, query: str, limit: int) -> list[Session]: ...
     def record_call(self, key: SessionKey, call_id: str, at: str, *,
-                    retention_s: int) -> None: ...
-    def session_for_call(self, harness: str, call_id: str) -> SessionKey | None: ...
+                    retention_s: int, cwd: str | None = None) -> None: ...
+    def call_record(self, harness: str, call_id: object) -> CallRecord | None: ...
     def bound(self) -> list[Session]: ...
     def publish_summary(self, key: SessionKey, text: str, *, expected_last_active_at: str,
                         at: str) -> None: ...
