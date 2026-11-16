@@ -49,11 +49,14 @@ from .project_context import ProjectContext, ProjectContextState
 from .read_write_set import ReadWriteSet
 from .resolution import Resolution, ResolutionState
 from .session import (
+    CallRecord,
     Harness,
+    MoveOutcome,
     PromptEntry,
     PromptOmission,
     Session,
     SessionKey,
+    SessionMove,
     SessionOrigin,
     SessionStatus,
     is_call_id,
@@ -76,6 +79,7 @@ __all__ = [
     "TAG_NAME_MAX_CHARS",
     "TAG_NAME_RE",
     "BatchConflict",
+    "CallRecord",
     "CapExceeded",
     "Change",
     "Citation",
@@ -92,6 +96,7 @@ __all__ = [
     "MemoryType",
     "MemoryVersion",
     "MetadataCaps",
+    "MoveOutcome",
     "Op",
     "OpName",
     "PlanChanged",
@@ -110,6 +115,7 @@ __all__ = [
     "RootState",
     "Session",
     "SessionKey",
+    "SessionMove",
     "SessionMoved",
     "SessionOrigin",
     "SessionStatus",

@@ -13,6 +13,7 @@ from memriver.views import (
     run_search,
     run_sessions,
     run_show,
+    session_item,
 )
 from memriver_core.bootstrap import build_services
 from memriver_core.models import SessionKey
@@ -43,7 +44,7 @@ def _out(fn, *args, **kwargs) -> tuple[int, str]:
 def _start(world, key, directory, source="startup"):
     """Start a session the way the SessionStart hook does, through the service."""
     return world["services"].session.start_session(key, source=source, entry_dir=str(directory),
-                                          transcript_path=None)
+                                                   transcript_path=None)[0]
 
 
 def _observe(world, key, directory, prompt):
@@ -431,7 +432,8 @@ def test_sessions_json_matches_the_session_search_item_shape(world):
     assert set(item) == {"harness", "session_id", "project", "branch", "entry_cwd",
                          "first_recorded", "last_active_at", "last_end_event_at",
                          "first_prompt", "recent_prompts", "resume_command",
-                         "summary", "summary_at"}
+                         "summary", "summary_at", "moves"}
+    assert item["moves"] == []
     assert (item["summary"], item["summary_at"]) == (None, None)
     assert item["resume_command"] == "codex resume sess-3"
     assert item["project"] == world["project"].id
@@ -508,3 +510,65 @@ def test_sessions_show_a_published_summary_as_one_line(world):
     assert code == 0 and "  summary: Fixed the build. Then the docs." in out
     code, out = _sessions("", root=world["store"], home=world["home"], json_output=True)
     assert json.loads(out)[0]["summary"] == "Fixed the build.\nThen the docs."
+
+
+def _moved_session(world, tmp_path):
+    """A claude-code session started in the demo project, then /cd'd to an
+    unregistered directory (the way the UserPromptSubmit hook reports it)."""
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    key = SessionKey("claude-code", "moved-1")
+    session = world["services"].session
+    session.start_session(key, source="startup", entry_dir=str(world["work"]),
+                          transcript_path="/t/a/moved-1.jsonl")
+    session.observe_prompt(key, prompt="go", entry_dir=str(world["work"]),
+                           transcript_path="/t/b/moved-1.jsonl", current_dir=str(other))
+    return key, other
+
+
+def test_sessions_text_shows_moves(world, tmp_path):
+    key, _ = _moved_session(world, tmp_path)
+    move = world["services"].session.moves(key)[0]
+    code, out = _sessions("", root=world["store"], home=world["home"])
+    assert code == 0
+    work = move.from_entry_cwd
+    assert (f"  moved: {move.moved_at} from {work} (demo ({world['project'].id})) "
+            f"to {move.to_entry_cwd} (-)\n") in out
+    assert out.index("  branch:") < out.index("  moved:") < out.index("  first recorded:")
+
+
+def test_sessions_json_has_moves_list(world, tmp_path):
+    key, _ = _moved_session(world, tmp_path)
+    _start(world, SessionKey("codex", "still"), world["work"])
+    move = world["services"].session.moves(key)[0]
+    _, out = _sessions("", root=world["store"], home=world["home"], json_output=True)
+    items = {item["session_id"]: item for item in json.loads(out)}
+    assert items["still"]["moves"] == []
+    assert items["moved-1"]["moves"] == [{
+        "moved_at": move.moved_at, "from_entry_cwd": move.from_entry_cwd,
+        "from_project_id": world["project"].id, "to_entry_cwd": move.to_entry_cwd,
+        "to_project_id": None}]
+
+
+def test_session_search_item_has_no_moves_key(world, tmp_path):
+    key, _ = _moved_session(world, tmp_path)
+    session = next(s for s in world["services"].session.list_sessions() if s.key == key)
+    assert "moves" not in session_item(session)
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_sessions_report_an_unreadable_move_record_as_store_unreadable(world, tmp_path,
+                                                                       monkeypatch, json_output):
+    from memriver import views
+    from memriver_core.application.sessions import SessionService
+    from memriver_core.models.errors import StorageFailure
+
+    _moved_session(world, tmp_path)
+
+    def _boom(self, key):
+        raise StorageFailure
+
+    monkeypatch.setattr(SessionService, "moves", _boom)
+    code, out = _sessions("", root=world["store"], home=world["home"], json_output=json_output)
+    assert code == 2
+    assert out == views.STORE_UNREADABLE + "\n"

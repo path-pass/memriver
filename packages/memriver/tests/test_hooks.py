@@ -36,6 +36,13 @@ from memriver.hooks import (
 from memriver.protocol_text import (
     INDEX_BEGIN_DELIMITER,
     INDEX_END_DELIMITER,
+    MOVE_NOTICE_NONE,
+    MOVE_NOTICE_PENDING,
+    MOVE_NOTICE_PROJECT,
+    MOVE_SOURCE_NONE,
+    MOVE_SOURCE_PROJECT,
+    MOVE_WHY_UNREGISTERED,
+    MOVE_WHY_UNRESOLVED,
     PENDING_NOTICE,
     PENDING_NOTICE_NO_PROJECT,
     PENDING_TARGET_PROJECT,
@@ -44,22 +51,22 @@ from memriver.protocol_text import (
 )
 from memriver_core import bootstrap
 from memriver_core.bootstrap import build_services
-from memriver_core.models import Create, Memory, ReadWriteSet, SessionKey
-from memriver_core.settings import Settings
+from memriver_core.models import Create, Memory, MoveOutcome, ReadWriteSet, SessionKey
+from memriver_core.settings import HEADER_FIELD_CHARS, Settings
 
 INDEX_LINE = "- [user] likes-tea: drinks oolong (2026-01-01)"
 
 # a session started outside every project is registered with none, until
 # session_register assigns it one
-SESSION_NONE_HEADER = ("project: none — this session was registered with no project, so "
-                       "global is read-only; to save, ask the user to run memriver project "
-                       "init where this session started, then call session_register")
+SESSION_NONE_HEADER = ("project: none — this session has no project, so global is read-only; "
+                       "to save, ask the user to run memriver project init in the directory "
+                       "this session is working in, then call session_register")
 PENDING_HEADER = ("project: awaiting confirmation — this session is not registered; "
                   "ask the user, then call session_confirm")
 PENDING_NO_CANDIDATE_HEADER = (
-    "project: none — this session is not registered, and the directory it was first "
-    "observed in is not in any registered project, so global is read-only; to save, ask "
-    "the user to run memriver project init there, then call session_register")
+    "project: none — this session is not registered, and its recorded directory is not in any "
+    "registered project, so global is read-only; to save, ask the user to run memriver "
+    "project init in the directory this session is working in, then call session_register")
 
 SESSION_ID = "session-1"
 MISSING = object()          # a payload key left out
@@ -928,15 +935,23 @@ def _call_rows(store) -> list[tuple]:
         return conn.execute("SELECT harness, call_id, session_id FROM tool_calls").fetchall()
 
 
+@pytest.mark.parametrize(("cwd", "recorded"), [("/work/app", "/work/app"),
+                                               (17, None), ("relative", None)])
+def test_pre_tool_use_records_cwd(cwd, recorded, tmp_path):
+    store = _store(tmp_path)
+    assert pre_tool_use(root=store, cwd=cwd) == HookResult()
+    assert _real_services(store).session.call_record("claude-code", "toolu_1").cwd == recorded
+
+
 def test_pre_tool_use_records_the_call_silently(tmp_path):
     store = _store(tmp_path)
     assert pre_tool_use(root=store, tool_use_id="toolu_1") == HookResult()
     assert pre_tool_use(root=store, tool_use_id="toolu_2", session_id="session-2") == \
         HookResult()
     services = _real_services(store)
-    assert services.session.session_key_for_call("claude-code", "toolu_1") == \
+    assert services.session.call_record("claude-code", "toolu_1").key == \
         SessionKey("claude-code", SESSION_ID)
-    assert services.session.session_key_for_call("claude-code", "toolu_2") == \
+    assert services.session.call_record("claude-code", "toolu_2").key == \
         SessionKey("claude-code", "session-2")
 
 
@@ -1054,7 +1069,7 @@ def test_the_pending_notice_reaches_a_resumed_unregistered_session_once(harness,
                                                                         registered):
     store = tmp_path / "mem"
     notice = PENDING_NOTICE.format(
-        entry_cwd=str(registered.resolve()),
+        entry_cwd=_field(registered.resolve()),
         target=PENDING_TARGET_PROJECT.format(name="demo", id=_project_id(store, "demo")))
     payload = {"cwd": str(registered), "prompt": "carry on"}
 
@@ -1098,7 +1113,7 @@ def test_a_resume_without_a_row_injects_the_pending_notice_naming_the_stored_ent
         harness, tmp_path, registered):
     store = tmp_path / "mem"
     notice = PENDING_NOTICE.format(
-        entry_cwd=str(registered.resolve()),
+        entry_cwd=_field(registered.resolve()),
         target=PENDING_TARGET_PROJECT.format(name="demo", id=_project_id(store, "demo")))
 
     text = additional_context(
@@ -1118,7 +1133,7 @@ def test_a_pending_notice_without_a_candidate_says_so_and_offers_no_confirmation
     text = additional_context(
         session_start("codex", {"cwd": str(elsewhere), "source": "resume"}, root=store))
     assert text.startswith(
-        PENDING_NOTICE_NO_PROJECT.format(entry_cwd=str(elsewhere.resolve())) + "\n")
+        PENDING_NOTICE_NO_PROJECT.format(entry_cwd=_field(elsewhere.resolve())) + "\n")
     assert _line_after_begin(text) == PENDING_NO_CANDIDATE_HEADER
     assert "session_confirm" not in text
 
@@ -1129,7 +1144,7 @@ def test_the_pending_notice_survives_index_fitting(tmp_path, fake_service):
     text = additional_context(
         session_start("codex", {"cwd": str(tmp_path), "source": "resume"}, root=store))
     assert text.startswith(
-        PENDING_NOTICE_NO_PROJECT.format(entry_cwd=str(tmp_path.resolve())) + "\n")
+        PENDING_NOTICE_NO_PROJECT.format(entry_cwd=_field(tmp_path.resolve())) + "\n")
     assert codex_tokens(text) <= 2_500
     assert text.count("more entries omitted") == 1
 
@@ -1140,7 +1155,9 @@ def test_an_invisible_character_in_the_entry_is_neutralised_in_the_notice(tmp_pa
     text = additional_context(
         session_start("claude-code", {"cwd": str(tricky), "source": "resume"}, root=store))
     assert chr(0x202E) not in text
-    assert str(tricky.resolve()).replace(chr(0x202E), " ") in text
+    assert _field(str(tricky.resolve()).replace(chr(0x202E), " ")) in text
+    # the cap can cut a long temporary path before the character itself
+    assert hooks._field("left" + chr(0x202E) + "right") == "left right"
 
 
 def test_a_resume_from_elsewhere_keeps_the_sessions_project(tmp_path):
@@ -1274,3 +1291,190 @@ def test_hook_and_memory_index_render_the_same_project_identically(tmp_path):
     injected = text.split(INDEX_BEGIN_DELIMITER + "\n", 1)[1].split(
         "\n" + INDEX_END_DELIMITER, 1)[0]
     assert injected == asyncio.run(index())
+
+
+# --- a /cd moves the session ----------------------------------------------
+
+# Claude Code keeps a session's transcript under a directory named after its
+# working directory: a /cd changes that directory, a shell cd does not
+TRANSCRIPT_A = "/transcripts/-work-a/session-1.jsonl"
+TRANSCRIPT_B = "/transcripts/-work-b/session-1.jsonl"
+
+
+def _field(text) -> str:
+    """A path or name as a notice shows it: capped like a header field."""
+    return str(text)[:HEADER_FIELD_CHARS]
+
+
+def _source(store, name) -> str:
+    return MOVE_SOURCE_PROJECT.format(name=name, id=_project_id(store, name))
+
+
+def _context_header(store) -> str:
+    return _real_services(store).session.session_context(
+        SessionKey("claude-code", SESSION_ID)).header
+
+
+@pytest.fixture
+def two_projects(tmp_path):
+    """Projects a and b in one store, and a session started in a."""
+    a, b = a_directory(tmp_path, "a"), a_directory(tmp_path, "b")
+    store = tmp_path / "mem"
+    _bind_new(store, a, "a")
+    _bind_new(store, b, "b")
+    session_start("claude-code", {"cwd": str(a), "transcript_path": TRANSCRIPT_A}, root=store)
+    return store, a, b
+
+
+def _prompt(store, cwd, transcript_path=TRANSCRIPT_B, prompt="go on"):
+    return hook("user-prompt-submit", "claude-code",
+                {"cwd": str(cwd), "transcript_path": transcript_path, "prompt": prompt},
+                root=store)
+
+
+def test_ups_after_cd_injects_move_notice_and_new_index(fake_service, two_projects):
+    memory = fake_service()
+    store, _, b = two_projects
+    result = _prompt(store, b)
+    notice = MOVE_NOTICE_PROJECT.format(source=_source(store, "a"), name="b",
+                                        id=_project_id(store, "b"),
+                                        entry_cwd=_field(b.resolve()))
+    assert result == HookResult(stdout=json.dumps(encode_claude_user_prompt_submit(
+        notice + "\n" + normal_context(_registered_header(store, b))),
+        ensure_ascii=False) + "\n")
+    assert memory.read_write_sets[-1].project_id == _project_id(store, "b")
+    assert "go on" not in result.stdout
+    assert _session(store).prompt_count == 1
+
+
+def test_ups_move_notice_only_once(two_projects):
+    store, _, b = two_projects
+    assert _prompt(store, b) != HookResult()
+    assert _prompt(store, b) == HookResult()
+
+
+def test_ups_cd_to_unregistered_injects_none_notice(tmp_path, two_projects):
+    store = two_projects[0]
+    elsewhere = a_directory(tmp_path, "elsewhere")
+    text = additional_context(_prompt(store, elsewhere))
+    assert text.startswith(MOVE_NOTICE_NONE.format(
+        source=_source(store, "a"), entry_cwd=_field(elsewhere.resolve()),
+        why=MOVE_WHY_UNREGISTERED) + "\n[memriver] Your persistent memory index")
+    assert _line_after_begin(text) == SESSION_NONE_HEADER
+    assert _session(store).project_id is None
+
+
+def test_ups_cd_degraded_injects_unresolved_notice(tmp_path):
+    store = _store(tmp_path)
+    start = a_directory(tmp_path, "start")
+    session_start("claude-code", {"cwd": str(start), "transcript_path": TRANSCRIPT_A},
+                  root=store)
+    moved = _re_point(store, tmp_path)      # resolution degrades from here on
+    text = additional_context(_prompt(store, moved))
+    assert text.startswith(MOVE_NOTICE_NONE.format(
+        source=MOVE_SOURCE_NONE, entry_cwd=_field(moved), why=MOVE_WHY_UNRESOLVED) + "\n")
+    assert _line_after_begin(text) == _context_header(store)
+    assert _session(store).project_id is None
+
+
+def test_ups_cd_pending_notice_claims_no_access(tmp_path):
+    a, b = a_directory(tmp_path, "a"), a_directory(tmp_path, "b")
+    store = tmp_path / "mem"
+    _bind_new(store, a, "a")
+    _bind_new(store, b, "b")
+    session_start("claude-code", {"cwd": str(a), "source": "resume",
+                                  "transcript_path": TRANSCRIPT_A}, root=store)
+    text = additional_context(_prompt(store, b))
+    move = MOVE_NOTICE_PENDING.format(entry_cwd=_field(b.resolve()), old=_source(store, "a"),
+                                      new=_source(store, "b"))
+    pending = PENDING_NOTICE.format(entry_cwd=_field(b.resolve()), target=_source(store, "b"))
+    assert text.startswith(move + "\n" + pending + "\n[memriver] Your persistent")
+    assert _line_after_begin(text) == PENDING_HEADER
+    assert "saves to" not in text
+    assert (_session(store).status, _session(store).candidate_id) == (
+        "pending", _project_id(store, "b"))
+
+
+def test_ups_same_project_cd_silent(two_projects):
+    store, a, _ = two_projects
+    inner = a_directory(a, "inner")
+    assert _prompt(store, inner) == HookResult()
+    assert _session(store).entry_cwd == str(inner.resolve())
+    assert _session(store).project_id == _project_id(store, "a")
+
+
+def test_ups_shell_cd_silent(two_projects):
+    store, _, b = two_projects
+    assert _prompt(store, b, transcript_path=TRANSCRIPT_A) == HookResult()
+    assert _session(store).project_id == _project_id(store, "a")
+
+
+def test_compact_after_cd_leads_with_move_notice(fake_service, two_projects):
+    fake_service()
+    store, _, b = two_projects
+    text = additional_context(session_start(
+        "claude-code", {"cwd": str(b), "source": "compact", "transcript_path": TRANSCRIPT_B},
+        root=store))
+    notice = MOVE_NOTICE_PROJECT.format(source=_source(store, "a"), name="b",
+                                        id=_project_id(store, "b"),
+                                        entry_cwd=_field(b.resolve()))
+    assert text == notice + "\n" + compact_context(_registered_header(store, b))
+
+
+def test_ups_index_failure_after_move_is_silent_and_not_resent(fake_service, two_projects):
+    memory = fake_service()
+    store, _, b = two_projects
+
+    def broken(context):
+        raise OSError("index unreadable")
+
+    memory.index = broken
+    assert _prompt(store, b) == HookResult()
+    assert _session(store).project_id == _project_id(store, "b")
+    del memory.index
+    assert _prompt(store, b) == HookResult()
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_move_notice_long_fields_fit_budget(pending):
+    """The widest names and directories a notice can carry, under
+    compact with a pending notice too, leave the header and fit Claude Code's cap."""
+    from types import SimpleNamespace
+
+    name, entry = "茶🍵" * 400, "/" + "目录😀/" * 400
+    project = SimpleNamespace(id="b" * 10, name=name)
+    services = SimpleNamespace(
+        project=SimpleNamespace(read_project=lambda project_id: project),
+        session=SimpleNamespace(pending_candidate=lambda context: project,
+                                entry_of=lambda context: entry))
+    outcome = MoveOutcome(from_project_id=None if pending else "a" * 10,
+                          to_project_id=None if pending else "b" * 10,
+                          from_candidate_id="a" * 10 if pending else None,
+                          to_candidate_id="b" * 10 if pending else None,
+                          to_entry_cwd=entry, pending=pending, degraded=False)
+    context = SimpleNamespace(state="pending" if pending else "registered")
+    header = "project: " + "茶" * 600
+    notice = hooks._notice(services, context, outcome)
+
+    text = hooks._compose(header + "\n" + full_index(100, CUES["emoji"]), "compact",
+                          "claude-code", notice)
+
+    budget = hooks.INLINE_CONTEXT_BUDGET["claude-code"]
+    assert budget.measure(text) <= budget.limit
+    assert utf16_units(text) <= 10_000
+    assert _line_after_begin(text) == header
+    assert len(notice.splitlines()) == (2 if pending else 1)
+    assert name not in notice and entry not in notice
+    assert _field(name) in notice and _field(entry) in notice
+
+
+def test_a_vanished_project_is_named_by_its_id():
+    from types import SimpleNamespace
+
+    from memriver_core import ProjectNotFound
+
+    def gone(project_id):
+        raise ProjectNotFound(project_id)
+
+    services = SimpleNamespace(project=SimpleNamespace(read_project=gone))
+    assert hooks._project_name(services, "abcdefghij") == "abcdefghij"

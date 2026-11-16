@@ -47,9 +47,9 @@ UNIDENTIFIED_HEADER = ("project: none — this session is not registered with me
                        "hooks may not be installed (memriver install) or trusted (Codex asks "
                        "on start), or the harness sent no session id; ask the user to fix "
                        "that, then start a new session")
-SESSION_NONE_HEADER = ("project: none — this session was registered with no project, so global "
-                       "is read-only; to save, ask the user to run memriver project init where "
-                       "this session started, then call session_register")
+SESSION_NONE_HEADER = ("project: none — this session has no project, so global is read-only; "
+                       "to save, ask the user to run memriver project init in the directory "
+                       "this session is working in, then call session_register")
 SESSION_PROJECT_GONE_HEADER = ("project: unavailable — this session's project no longer exists "
                                "or became global, so global is read-only; to save, ask the "
                                "user to start a new session")
@@ -58,16 +58,24 @@ PENDING = ("this session is awaiting the user's confirmation; ask the user, then
 UNIDENTIFIED = ("this session is not registered with memriver: its hooks may not be installed "
                 "(memriver install) or trusted (Codex asks on start), or the harness sent no "
                 "session id; ask the user to fix that, then start a new session")
-SESSION_NO_PROJECT = ("no writable project: this session was registered with no project. No "
-                      "memory was saved. Ask the user to run memriver project init where this "
-                      "session started, then call session_register; do not run memriver "
-                      "project init yourself unless they ask.")
-PENDING_NO_CANDIDATE = ("this session is not registered, and the directory it was first observed "
-                        "in is not in any registered project; once the user has run memriver "
-                        "project init covering this session's start directory, call "
-                        "session_register")
-NOTHING_TO_REGISTER = ("no registered project covers the directory this session started in; "
-                       "nothing was registered")
+SESSION_NO_PROJECT = ("no writable project: this session has no project. No memory was saved. "
+                      "Ask the user to run memriver project init in the directory this session "
+                      "is working in, then call session_register; do not run memriver project "
+                      "init yourself unless they ask.")
+PENDING_NO_CANDIDATE = ("this session is not registered, and its recorded directory is not in "
+                        "any registered project; once the user has run memriver project init "
+                        "in the directory this session is working in, call session_register")
+NOTHING_TO_REGISTER = ("no registered project covers this session's directory or the one this "
+                       "call came from; nothing was registered")
+CANDIDATE_MOVED = ("the project proposed for this session changed after a /cd before it was "
+                   "confirmed; nothing was registered. Ask the user again about the project "
+                   "the latest memriver notice names, and call session_confirm only if they "
+                   "agree")
+REGISTER_DOC = ("Register this session, when it has no project, to the registered project "
+                "covering its recorded directory or, failing that, the directory this call "
+                "came from. Call when the user asks you to, or right after you ran memriver "
+                "project init at their request; a session that already has a project never "
+                "changes. Returns the session's project header.")
 COULD_NOT_REGISTER = "could not register this session; ask the user to run memriver doctor"
 SESSION_PROJECT_GONE = ("no writable project: this session's project no longer exists or became "
                         "global. No memory was saved. Ask the user to start a new session.")
@@ -784,8 +792,8 @@ def _codex_meta(session_id, base="root"):
 def _start(world, key, directory, source="startup"):
     """Start a session the way the SessionStart hook does, through the service."""
     return _services(world["store"]).session.start_session(key, source=source,
-                                                  entry_dir=str(directory),
-                                                  transcript_path=None)
+                                                           entry_dir=str(directory),
+                                                           transcript_path=None)[0]
 
 
 def _registered_header(world, directory) -> str:
@@ -1438,3 +1446,122 @@ async def test_an_undecided_classifier_refuses_an_update_but_never_a_delete(worl
                                           "(timeout); no change was made; see memriver doctor")
     assert await _call(server, "memory_delete", memory_id=written["id"],
                        expected_version=1) == {"deleted": written["id"]}
+
+
+# --- session_register by the call's directory (/cd) -------------------------------
+
+
+def _record_call(world, key, call_id, cwd):
+    _services(world["store"]).session.record_tool_call(key, call_id, cwd=str(cwd))
+
+
+async def test_session_register_uses_call_cwd(world, monkeypatch):
+    key = SessionKey("claude-code", "s-cd")
+    unregistered = world["dir"].parent / "elsewhere-unregistered"
+    unregistered.mkdir()
+    _start(world, key, unregistered)
+    _record_call(world, key, "call-cd", world["dir"])
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "other-session")
+    server = build_server(root=world["store"], project_dir=world["dir"], harness="claude-code")
+    result = await _call(server, "session_register", meta=_claude_meta("call-cd"))
+    assert result == {"header": _registered_header(world, world["dir"])}
+    written = await _call(server, "memory_write", meta=_claude_meta("call-cd"),
+                          content="fact", type="project")
+    assert written["project_id"] == world["project"]
+
+
+@pytest.mark.parametrize("tool, args", [
+    ("memory_index", {}), ("memory_write", {"content": "x", "type": "project"}),
+    ("session_confirm", {}), ("session_register", {})])
+async def test_route_reads_call_record_once(world, monkeypatch, tool, args):
+    from memriver import server as server_module
+    key = SessionKey("claude-code", "s-once")
+    _start(world, key, world["dir"])
+    _record_call(world, key, "call-1", world["dir"])
+    real_build = server_module.build_services
+    reads: list[object] = []
+
+    def spying_build(*a, **kw):
+        built = real_build(*a, **kw)
+        original = built.session.call_record
+
+        def counting(harness, call_id):
+            reads.append(call_id)
+            return original(harness, call_id)
+        built.session.call_record = counting
+        return built
+
+    monkeypatch.setattr(server_module, "build_services", spying_build)
+    server = build_server(root=world["store"], project_dir=world["dir"], harness="claude-code")
+    async with Client(server) as c:
+        await c.call_tool(tool, args, raise_on_error=False, meta=_claude_meta("call-1"))
+    assert reads == ["call-1"]
+
+
+async def test_env_fallback_never_gets_cwd(world, monkeypatch):
+    from memriver import server as server_module
+    key = SessionKey("claude-code", "s-env")
+    _start(world, key, world["dir"].parent)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "s-env")
+    real_build = server_module.build_services
+    seen: list[object] = []
+
+    def spying_build(*a, **kw):
+        built = real_build(*a, **kw)
+        original_record, original_register = built.session.call_record, \
+            built.session.register_session
+
+        def record_then_appear(harness, call_id):
+            result = original_record(harness, call_id)
+            _record_call(world, key, call_id, world["dir"])
+            return result
+
+        def register(k, current_dir=None):
+            seen.append(current_dir)
+            return original_register(k, current_dir=current_dir)
+        built.session.call_record = record_then_appear
+        built.session.register_session = register
+        return built
+
+    monkeypatch.setattr(server_module, "build_services", spying_build)
+    server = build_server(root=world["store"], project_dir=world["dir"], harness="claude-code")
+    await _call(server, "session_register", meta=_claude_meta("call-late"))
+    assert seen == [None]
+
+
+async def test_session_register_codex_entry_only(world):
+    from memriver import server as server_module
+    _start(world, SessionKey("codex", CODEX_ID), world["dir"].parent)
+    real_build = server_module.build_services
+    seen: list[object] = []
+
+    def spying_build(*a, **kw):
+        built = real_build(*a, **kw)
+        original = built.session.register_session
+
+        def register(k, current_dir=None):
+            seen.append(current_dir)
+            return original(k, current_dir=current_dir)
+        built.session.register_session = register
+        return built
+
+    import pytest as _pytest
+    with _pytest.MonkeyPatch.context() as mp:
+        mp.setattr(server_module, "build_services", spying_build)
+        server = build_server(root=world["store"], project_dir=world["dir"], harness="codex")
+    meta = CODEX_META["root"] | _claude_meta("c")
+    result = await _call(server, "session_register", meta=meta)
+    assert result["note"] == NOTHING_TO_REGISTER
+    assert seen == [None]
+
+
+def test_candidate_moved_refusal_text():
+    from memriver.server import _map_error
+    from memriver_core.models.errors import ProjectUnavailable
+    assert _map_error("confirm", ProjectUnavailable(reason="candidate-moved")) == CANDIDATE_MOVED
+
+
+async def test_session_register_docstring_is_pinned(server):
+    async with Client(server) as c:
+        tool = next(t for t in await c.list_tools() if t.name == "session_register")
+    assert " ".join(tool.description.split()) == REGISTER_DOC

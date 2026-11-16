@@ -69,3 +69,64 @@ def test_a_rejected_prompt_entry_never_echoes_its_text():
     with pytest.raises(ValueError) as exc_info:
         PromptEntry("not a time", text="my secret prompt")
     assert "my secret prompt" not in str(exc_info.value)
+
+
+# --- session moves ---------------------------------------------------------------
+
+from memriver_core.models import CallRecord, MoveOutcome, SessionMove
+
+_KEY = SessionKey("claude-code", "s1")
+_STAMP = "2026-11-16T00:00:00.000000Z"
+
+
+def _move(**overrides):
+    fields = {"key": _KEY, "seq": 1, "moved_at": _STAMP, "from_entry_cwd": "/a",
+              "from_project_id": "0123456789", "to_entry_cwd": "/b", "to_project_id": None}
+    return SessionMove(**{**fields, **overrides})
+
+
+def test_a_session_move_holds_what_it_was_given():
+    move = _move()
+    assert (move.seq, move.from_project_id, move.to_project_id) == (1, "0123456789", None)
+
+
+@pytest.mark.parametrize("overrides", [
+    {"seq": 0}, {"seq": -1}, {"seq": "1"}, {"seq": True}, {"seq": 1.0},
+    {"moved_at": "yesterday"}, {"moved_at": None},
+    {"from_entry_cwd": None}, {"to_entry_cwd": 3},
+    {"from_project_id": "short"}, {"to_project_id": "ABCDEFGHIJ"}, {"from_project_id": 5},
+])
+def test_a_session_move_rejects_a_value_it_could_not_hold(overrides):
+    with pytest.raises(ValueError):
+        _move(**overrides)
+
+
+def test_a_call_record_is_a_key_and_an_optional_directory():
+    assert CallRecord(_KEY, "/w").cwd == "/w"
+    assert CallRecord(_KEY, None).cwd is None
+
+
+def _outcome(**overrides):
+    fields = {"from_project_id": None, "to_project_id": None, "from_candidate_id": None,
+              "to_candidate_id": None, "to_entry_cwd": "/b", "pending": False,
+              "degraded": False}
+    return MoveOutcome(**{**fields, **overrides})
+
+
+@pytest.mark.parametrize(("overrides", "changed"), [
+    ({}, False),
+    ({"from_project_id": "a" * 10, "to_project_id": "a" * 10}, False),
+    ({"from_project_id": "a" * 10}, True),
+    ({"to_project_id": "b" * 10}, True),
+    ({"from_project_id": "a" * 10, "to_project_id": "b" * 10}, True),
+    ({"degraded": True}, True),
+    ({"pending": True}, False),
+    ({"pending": True, "from_candidate_id": "a" * 10, "to_candidate_id": "a" * 10}, False),
+    ({"pending": True, "to_candidate_id": "b" * 10}, True),
+    # a pending row compares candidates, never project ids
+    ({"pending": True, "from_project_id": "a" * 10}, False),
+    # a registered row compares project ids, never candidates
+    ({"to_candidate_id": "b" * 10}, False),
+])
+def test_a_move_outcome_changed_truth_table(overrides, changed):
+    assert _outcome(**overrides).changed is changed

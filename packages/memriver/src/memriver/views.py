@@ -19,7 +19,14 @@ from memriver_core import (
     ProjectNotFound,
     StorageFailure,
 )
-from memriver_core.models import Memory, Project, PromptEntry, Session, single_line
+from memriver_core.models import (
+    Memory,
+    Project,
+    PromptEntry,
+    Session,
+    SessionMove,
+    single_line,
+)
 from memriver_core.models import now as _now
 from memriver_core.settings import INDEX_CUE_CHARS
 
@@ -210,6 +217,12 @@ def _project_cell(session: Session, names: dict[str, str]) -> str:
     return f"{name} ({session.project_id})"
 
 
+def _named(project_id: str | None, names: dict[str, str]) -> str:
+    if project_id is None:
+        return "-"
+    return f"{names.get(project_id, 'unknown project')} ({project_id})"
+
+
 def _prompt_cell(entry: PromptEntry | None) -> str:
     if entry is None:
         return "-"
@@ -218,7 +231,8 @@ def _prompt_cell(entry: PromptEntry | None) -> str:
     return f"(omitted: {entry.omitted})"
 
 
-def _session_block(session: Session, *, names: dict[str, str], reference: str) -> str:
+def _session_block(session: Session, *, names: dict[str, str], reference: str,
+                   moves: list[SessionMove] | tuple[()] = ()) -> str:
     key = session.key
     latest = session.recent_prompts[-1] if session.recent_prompts else None
     lines = [
@@ -227,6 +241,9 @@ def _session_block(session: Session, *, names: dict[str, str], reference: str) -
          f"({_relative_age(session.last_active_at, reference)})"),
         f"  project: {visible(_project_cell(session, names))}",
         f"  branch: {visible(session.branch) if session.branch else '-'}",
+        *(visible(f"  moved: {m.moved_at} from {m.from_entry_cwd} "
+                  f"({_named(m.from_project_id, names)}) to {m.to_entry_cwd} "
+                  f"({_named(m.to_project_id, names)})") for m in moves),
         f"  first recorded: {visible(session.started_at)}",
         f"  last end event: {visible(session.ended_at) if session.ended_at else '-'}",
         f"  first prompt: {visible(_prompt_cell(session.first_prompt))}",
@@ -243,6 +260,7 @@ def run_sessions(query: str, *, root: Path | None, project_id: str | None, limit
         services = _services(root, home)
         sessions = services.session.list_sessions(project_id=project_id, query=query,
                                                   limit=limit)
+        moves = {s.key: services.session.moves(s.key) for s in sessions}
     except ProjectNotFound:
         stdout.write(f"no such project: {visible((project_id or '')[:255])}\n")
         return 2
@@ -250,7 +268,12 @@ def run_sessions(query: str, *, root: Path | None, project_id: str | None, limit
         stdout.write(STORE_UNREADABLE + "\n")
         return 2
     if json_output:
-        stdout.write(json.dumps([session_item(s) for s in sessions], indent=2) + "\n")
+        items = [session_item(s) | {"moves": [
+            {"moved_at": m.moved_at, "from_entry_cwd": m.from_entry_cwd,
+             "from_project_id": m.from_project_id, "to_entry_cwd": m.to_entry_cwd,
+             "to_project_id": m.to_project_id}
+            for m in moves[s.key]]} for s in sessions]
+        stdout.write(json.dumps(items, indent=2) + "\n")
         return 0
     if not sessions:
         stdout.write("(no sessions)\n")
@@ -260,8 +283,9 @@ def run_sessions(query: str, *, root: Path | None, project_id: str | None, limit
     except StorageFailure:
         names = {}
     reference = now if now is not None else _now()
-    stdout.write("\n".join(_session_block(s, names=names, reference=reference)
-                          for s in sessions) + "\n")
+    stdout.write("\n".join(
+        _session_block(s, names=names, reference=reference, moves=moves[s.key])
+        for s in sessions) + "\n")
     return 0
 
 

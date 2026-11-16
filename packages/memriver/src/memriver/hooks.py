@@ -1,11 +1,13 @@
 """Harness hooks: five events on the session's row in the store.
 
 SessionStart registers the session (or finds its row) and injects the index
-its row grants; UserPromptSubmit counts and records the prompt; Stop decides
-the save nudge; SessionEnd records the end; Claude Code's PreToolUse, matched
-to memriver's own tools, records which session is making the call, because
-Claude Code keeps its MCP server across ``/clear`` and an in-app ``/resume``
-and only the call names the current session. Every event names its session by
+its row grants; UserPromptSubmit counts and records the prompt, and after a
+Claude Code ``/cd`` that moved the session injects the new project's index;
+Stop decides the save nudge; SessionEnd records the end; Claude Code's
+PreToolUse, matched to memriver's own tools, records which session is making
+the call and the directory it came from, because Claude Code keeps its MCP
+server across ``/clear`` and an in-app ``/resume`` and only the call names the
+current session. Every event names its session by
 the payload's ``session_id``: without a valid one, or without a store (asked
 first, through ``store_exists``), a hook does nothing -- and no hook ever
 creates the store. A store below the schema this memriver needs is refused the
@@ -55,6 +57,13 @@ from .protocol_text import (
     COMPACT_RESCUE_SUFFIX,
     INDEX_BEGIN_DELIMITER,
     INDEX_END_DELIMITER,
+    MOVE_NOTICE_NONE,
+    MOVE_NOTICE_PENDING,
+    MOVE_NOTICE_PROJECT,
+    MOVE_SOURCE_NONE,
+    MOVE_SOURCE_PROJECT,
+    MOVE_WHY_UNREGISTERED,
+    MOVE_WHY_UNRESOLVED,
     PENDING_NOTICE,
     PENDING_NOTICE_NO_PROJECT,
     PENDING_TARGET_PROJECT,
@@ -63,7 +72,7 @@ from .protocol_text import (
 )
 
 if TYPE_CHECKING:
-    from memriver_core.models import ProjectContext, SessionKey
+    from memriver_core.models import MoveOutcome, ProjectContext, SessionKey
 
 Harness = Literal["claude-code", "codex"]
 HookEvent = Literal["session-start", "user-prompt-submit", "stop", "session-end",
@@ -232,6 +241,12 @@ def _transcript_path(payload: dict[str, Any]) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _payload_cwd(payload: dict[str, Any]) -> str | None:
+    """The directory the harness says it is in now (core validates it further)."""
+    value = payload.get("cwd")
+    return value if isinstance(value, str) else None
+
+
 def _stop(harness: Harness, payload_text: str, *, root: Path | None) -> HookResult:
     try:
         payload = json.loads(payload_text)
@@ -277,7 +292,8 @@ def _pre_tool_use(harness: Harness, payload_text: str, *, root: Path | None) -> 
             return HookResult()
         # the mapping write only: no content policy, and a missing store
         # stays missing (the write is a no-op without one)
-        _light_services(root).session.record_tool_call(key, call_id)
+        _light_services(root).session.record_tool_call(key, call_id,
+                                                       cwd=_payload_cwd(payload))
         return HookResult()
     except Exception:  # noqa: BLE001 - a missed mapping falls back to the server's session id
         return HookResult()
@@ -298,19 +314,27 @@ def _user_prompt_submit(harness: Harness, payload_text: str, *, root: Path | Non
         if key is None:
             return HookResult()
         with quiet_core_logging():
-            session_service = _open_services(root).session
+            services = _open_services(root)
+            session_service = services.session
             if not session_service.store_exists():
                 return HookResult()
-            context, created = session_service.observe_prompt(
+            context, created, outcome = session_service.observe_prompt(
                 key, prompt=payload.get("prompt"),
                 entry_dir=str(_resolve_dir(harness, payload, project_dir, cwd)),
-                transcript_path=_transcript_path(payload))
+                transcript_path=_transcript_path(payload),
+                current_dir=_payload_cwd(payload))
+            if outcome is not None and outcome.changed:
+                # best effort: a failure from here on loses the notice, and
+                # the next prompt (no move left to apply) stays silent
+                text = _compose(context.header + "\n" + services.memory.index(context),
+                                None, harness, _notice(services, context, outcome))
             # only the prompt that created a pending row says so: SessionStart
             # already told a session whose row it made
-            if not (created and context.state == "pending"):
+            elif created and context.state == "pending":
+                text = _pending_notice(session_service, context)
+            else:
                 return HookResult()
-            notice = _pending_notice(session_service, context)
-        return HookResult(stdout=_emit(_USER_PROMPT_SUBMIT_ENCODERS[harness](notice)))
+        return HookResult(stdout=_emit(_USER_PROMPT_SUBMIT_ENCODERS[harness](text)))
     except Exception as err:  # noqa: BLE001 - never a message: the prompt must not leak
         return _settings_failure(err) or HookResult()
 
@@ -353,12 +377,12 @@ def _session_start(harness: Harness, payload_text: str, *, root: Path | None,
             # no store, nothing to route: silent, and nothing is created
             if not services.session.store_exists():
                 return HookResult()
-            context = services.session.start_session(
+            context, outcome = services.session.start_session(
                 key, source=source if isinstance(source, str) else "",
                 entry_dir=str(_resolve_dir(harness, payload, project_dir, cwd)),
-                transcript_path=_transcript_path(payload))
-            notice = (_pending_notice(services.session, context)
-                      if context.state == "pending" else "")
+                transcript_path=_transcript_path(payload),
+                current_dir=_payload_cwd(payload))
+            notice = _notice(services, context, outcome)
             # the same header and body the MCP server shows for this context
             index = context.header + "\n" + services.memory.index(context)
         text = _compose(index, source, harness, notice)
@@ -382,7 +406,9 @@ def _resolve_dir(harness: Harness, payload: dict[str, Any], project_dir: Path | 
     ``CLAUDE_PROJECT_DIR`` > the harness's payload cwd > the process cwd.
 
     Only a session with no row yet uses it; an existing row keeps its project
-    wherever the session is resumed.
+    wherever the session is resumed. A ``/cd`` moves a session by the payload
+    cwd alone (``_payload_cwd``): ``CLAUDE_PROJECT_DIR`` still names where it
+    started.
     """
     if project_dir is not None:
         return Path(project_dir)
@@ -394,15 +420,63 @@ def _resolve_dir(harness: Harness, payload: dict[str, Any], project_dir: Path | 
     return Path(payload_cwd) if isinstance(payload_cwd, str) else Path(cwd)
 
 
+def _field(text: str) -> str:
+    """A stored name or directory as a notice shows it: neutralised, capped like the header."""
+    from memriver_core.settings import HEADER_FIELD_CHARS
+
+    return visible(text)[:HEADER_FIELD_CHARS]
+
+
 def _pending_notice(session_service: Any, context: ProjectContext) -> str:
     """The pending notice for ``context``, naming the stored entry and its candidate."""
     candidate = session_service.pending_candidate(context)
-    entry_cwd = visible(session_service.entry_of(context) or "")
+    entry_cwd = _field(session_service.entry_of(context) or "")
     if candidate is None:
         return PENDING_NOTICE_NO_PROJECT.format(entry_cwd=entry_cwd)
     return PENDING_NOTICE.format(
         entry_cwd=entry_cwd,
-        target=PENDING_TARGET_PROJECT.format(name=visible(candidate.name), id=candidate.id))
+        target=PENDING_TARGET_PROJECT.format(name=_field(candidate.name), id=candidate.id))
+
+
+def _project_name(services: Any, project_id: str) -> str:
+    """The project's name; its id when the project is gone or cannot be read."""
+    try:
+        return _field(services.project.read_project(project_id).name)
+    except Exception:  # noqa: BLE001 - a name is cosmetic; the id still identifies it
+        return project_id
+
+
+def _move_notice(services: Any, outcome: MoveOutcome) -> str:
+    """What a /cd did to the session, worded for the state it left."""
+    def source(project_id: str | None) -> str:
+        if project_id is None:
+            return MOVE_SOURCE_NONE
+        return MOVE_SOURCE_PROJECT.format(name=_project_name(services, project_id),
+                                          id=project_id)
+
+    entry_cwd = _field(outcome.to_entry_cwd)
+    if outcome.pending:
+        return MOVE_NOTICE_PENDING.format(entry_cwd=entry_cwd,
+                                          old=source(outcome.from_candidate_id),
+                                          new=source(outcome.to_candidate_id))
+    if outcome.to_project_id is None:
+        return MOVE_NOTICE_NONE.format(
+            source=source(outcome.from_project_id), entry_cwd=entry_cwd,
+            why=MOVE_WHY_UNRESOLVED if outcome.degraded else MOVE_WHY_UNREGISTERED)
+    return MOVE_NOTICE_PROJECT.format(
+        source=source(outcome.from_project_id),
+        name=_project_name(services, outcome.to_project_id), id=outcome.to_project_id,
+        entry_cwd=entry_cwd)
+
+
+def _notice(services: Any, context: ProjectContext, outcome: MoveOutcome | None) -> str:
+    """What leads the index: the move a /cd made, then the pending notice."""
+    parts = []
+    if outcome is not None and outcome.changed:
+        parts.append(_move_notice(services, outcome))
+    if context.state == "pending":
+        parts.append(_pending_notice(services.session, context))
+    return "\n".join(parts)
 
 
 def _neutralize_delimiters(index: str) -> str:

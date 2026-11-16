@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import sqlite3
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
@@ -12,13 +13,16 @@ from typing import TypeVar, get_args
 
 from memriver_core.models import (
     ID_RE,
+    CallRecord,
     PromptEntry,
     Session,
     SessionKey,
+    SessionMove,
     SessionOrigin,
     SessionStatus,
     is_call_id,
     is_timestamp,
+    now_strictly_after,
 )
 from memriver_core.models.errors import ProjectUnavailable, SessionMoved, StorageFailure
 from memriver_core.models.search import Rank, rank_key, search_terms
@@ -43,9 +47,10 @@ _UPDATE = ("UPDATE sessions SET "
            + ", ".join(f"{column.strip()} = ?" for column in SESSION_COLUMNS.split(",")[2:])
            + _BY_KEY)
 
-_UPSERT_CALL = ("INSERT INTO tool_calls (harness, call_id, session_id, recorded_at) "
-                "VALUES (?, ?, ?, ?) ON CONFLICT(harness, call_id) DO UPDATE SET "
-                "session_id = excluded.session_id, recorded_at = excluded.recorded_at")
+_UPSERT_CALL = ("INSERT INTO tool_calls (harness, call_id, session_id, recorded_at, cwd) "
+                "VALUES (?, ?, ?, ?, ?) ON CONFLICT(harness, call_id) DO UPDATE SET "
+                "session_id = excluded.session_id, recorded_at = excluded.recorded_at, "
+                "cwd = excluded.cwd")
 _TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 
 _T = TypeVar("_T")
@@ -92,6 +97,17 @@ def session_to_row(session: Session) -> tuple:
             session.last_write_prompt_count, session.last_nudge_prompt_count, first_prompt,
             _dumps([_entry_object(entry) for entry in session.recent_prompts]), session.summary,
             session.summary_at)
+
+
+SESSION_MOVE_COLUMNS = ("harness, session_id, seq, moved_at, from_entry_cwd, from_project_id, "
+                        "to_entry_cwd, to_project_id")
+
+
+def session_move_from_row(row: Sequence[object]) -> SessionMove:
+    """A validated SessionMove; ValueError for a row memriver could not have written."""
+    harness, session_id, seq, moved_at, from_cwd, from_project, to_cwd, to_project = row
+    return SessionMove(SessionKey(harness, session_id), seq, moved_at, from_cwd, from_project,
+                       to_cwd, to_project)
 
 
 def session_from_row(row: Sequence[object]) -> Session:
@@ -267,11 +283,15 @@ class SqliteSessionStore:
             "UPDATE sessions SET last_write_prompt_count = prompt_count" + _BY_KEY,
             (key.harness, key.session_id)))
 
-    def confirm(self, key: SessionKey) -> Session | None:
+    def confirm(self, key: SessionKey, *, expected_candidate_id: str | None,
+                expected_candidate_root: str | None) -> Session | None:
         def confirm(conn: sqlite3.Connection) -> Session | None:
             stored = _stored(conn, key)
             if stored is None or stored.status == "registered":
                 return stored
+            if (stored.candidate_id, stored.candidate_root) \
+                    != (expected_candidate_id, expected_candidate_root):
+                raise ProjectUnavailable(reason="candidate-moved")
             if stored.candidate_id is not None:
                 # the filesystem side was checked by the caller; the store's
                 # side is decided here, under the write lock
@@ -283,46 +303,107 @@ class SqliteSessionStore:
                                                    project_id=stored.candidate_id))
         return self._write(confirm)
 
-    def assign_project(self, key: SessionKey, project_id: str) -> Session | None:
+    def assign_project(self, key: SessionKey, project_id: str, *,
+                       expected_status: SessionStatus, expected_entry_cwd: str,
+                       expected_transcript_path: str | None) -> Session | None:
         def assign(conn: sqlite3.Connection) -> Session | None:
             stored = _stored(conn, key)
-            # decided under the write lock: a project set meanwhile is never
-            # overwritten, and a candidate is session_confirm's to decide
+            # decided under the write lock: a project, a move or (on a pending
+            # row) a candidate that arrived meanwhile wins
             if stored is None or stored.project_id is not None \
-                    or stored.candidate_id is not None:
+                    or stored.status != expected_status \
+                    or (stored.status == "pending" and stored.candidate_id is not None) \
+                    or stored.entry_cwd != expected_entry_cwd \
+                    or stored.transcript_path != expected_transcript_path:
                 return stored
             return _save(conn, dataclasses.replace(stored, status="registered",
                                                    project_id=project_id))
         return self._write(assign)
 
+    def adopt_transcript(self, key: SessionKey, transcript_path: str) -> Session | None:
+        def adopt(conn: sqlite3.Connection) -> Session | None:
+            stored = _stored(conn, key)
+            if stored is None or stored.transcript_path is not None:
+                return stored
+            return _save(conn, dataclasses.replace(stored, transcript_path=transcript_path))
+        return self._write(adopt)
+
+    def move(self, key: SessionKey, *, expected_transcript_path: str, entry_cwd: str,
+             branch: str | None, transcript_path: str, project_id: str | None,
+             project_root: str | None, at: str) -> tuple[Session, SessionMove | None] | None:
+        _require_timestamp(at)
+
+        def move(conn: sqlite3.Connection) -> tuple[Session, SessionMove | None] | None:
+            stored = _stored(conn, key)
+            if stored is None:
+                return None
+            if stored.transcript_path != expected_transcript_path:
+                return stored, None
+            active = at if at > stored.last_active_at \
+                else now_strictly_after(stored.last_active_at)
+            if stored.status == "registered":
+                fields = {"project_id": project_id, "candidate_id": None,
+                          "candidate_root": None}
+            else:
+                fields = {"candidate_id": project_id, "candidate_root": project_root}
+            updated = _save(conn, dataclasses.replace(
+                stored, entry_cwd=entry_cwd, branch=branch, transcript_path=transcript_path,
+                last_active_at=active, **fields))
+            seq = conn.execute("SELECT coalesce(max(seq), 0) + 1 FROM session_moves "
+                               "WHERE harness = ? AND session_id = ?",
+                               (key.harness, key.session_id)).fetchone()[0]
+            record = SessionMove(key, seq, active, stored.entry_cwd, stored.project_id,
+                                 entry_cwd, updated.project_id)
+            conn.execute(f"INSERT INTO session_moves ({SESSION_MOVE_COLUMNS}) "
+                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                         (key.harness, key.session_id, seq, active, record.from_entry_cwd,
+                          record.from_project_id, record.to_entry_cwd, record.to_project_id))
+            return updated, record
+        return self._write(move)
+
+    def moves(self, key: SessionKey) -> list[SessionMove]:
+        found: list[SessionMove] = []
+        with self._database.read() as conn:
+            if conn is None:
+                return []
+            for row in conn.execute(f"SELECT {SESSION_MOVE_COLUMNS} FROM session_moves"
+                                    + _BY_KEY + " ORDER BY seq", (key.harness, key.session_id)):
+                try:
+                    found.append(session_move_from_row(row))
+                except ValueError:
+                    continue                # a bad row is skipped here, a doctor finding
+        return found
+
     def record_call(self, key: SessionKey, call_id: str, at: str, *,
-                    retention_s: int) -> None:
+                    retention_s: int, cwd: str | None = None) -> None:
         if not is_call_id(call_id):
             raise ValueError("invalid call id")
         _require_timestamp(at)
         if type(retention_s) is not int or retention_s < 1:
             raise ValueError("retention_s is not a positive integer")
+        if not (isinstance(cwd, str) and os.path.isabs(cwd) and "\x00" not in cwd):
+            cwd = None
         # the same fixed-width form, so the prune compares text chronologically
         expired = (datetime.strptime(at, _TIMESTAMP_FORMAT).replace(tzinfo=UTC)
                    - timedelta(seconds=retention_s)).strftime(_TIMESTAMP_FORMAT)
 
         def record(conn: sqlite3.Connection) -> None:
-            conn.execute(_UPSERT_CALL, (key.harness, call_id, key.session_id, at))
+            conn.execute(_UPSERT_CALL, (key.harness, call_id, key.session_id, at, cwd))
             conn.execute("DELETE FROM tool_calls WHERE recorded_at < ?", (expired,))
         self._write(record)
 
-    def session_for_call(self, harness: str, call_id: str) -> SessionKey | None:
+    def call_record(self, harness: str, call_id: object) -> CallRecord | None:
         if not is_call_id(call_id):
             return None                     # an id no call can have names no session
         with self._database.read() as conn:
             if conn is None:
                 return None
-            row = conn.execute("SELECT session_id FROM tool_calls "
+            row = conn.execute("SELECT session_id, cwd FROM tool_calls "
                                "WHERE harness = ? AND call_id = ?", (harness, call_id)).fetchone()
         if row is None:
             return None
         try:
-            return SessionKey(harness, row[0])
+            return CallRecord(SessionKey(harness, row[0]), row[1])
         except ValueError:
             return None                     # a bad row routes nothing
 

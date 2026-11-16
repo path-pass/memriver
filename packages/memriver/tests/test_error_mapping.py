@@ -71,15 +71,19 @@ def test_write_without_a_project_states_the_project_context_not_a_path(state, fr
     assert "/" not in result.replace("memriver project", "")
 
 
-@pytest.mark.parametrize("state, fragment, way_out", [
-    ("none", "this session was registered with no project", "call session_register"),
-    ("degraded", "this session's project no longer exists or became global",
-     "start a new session"),
-])
-def test_a_session_without_a_project_never_points_at_its_directory(state, fragment, way_out):
-    result = _map_error("write", ProjectUnavailable(), context_state=state, session_keyed=True)
-    assert fragment in result and "No memory was saved" in result
-    assert way_out in result and "directory" not in result
+def test_a_session_without_a_project_asks_for_init_in_its_working_directory():
+    result = _map_error("write", ProjectUnavailable(), context_state="none", session_keyed=True)
+    assert result.startswith("no writable project: this session has no project. ")
+    assert "in the directory this session is working in, then call session_register" in result
+    assert "started" not in result and "first observed" not in result
+
+
+def test_a_session_whose_project_is_gone_never_points_at_its_directory():
+    result = _map_error("write", ProjectUnavailable(), context_state="degraded",
+                        session_keyed=True)
+    assert "this session's project no longer exists or became global" in result
+    assert "No memory was saved" in result and "start a new session" in result
+    assert "directory" not in result
 
 
 @pytest.mark.parametrize("operation", ["read", "update", "delete"])

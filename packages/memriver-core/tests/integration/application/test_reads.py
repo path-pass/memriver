@@ -22,7 +22,7 @@ def test_a_read_records_the_version_handed_out_the_harness_and_the_session(world
     memory.update(written.id, "a newer fact", world["context"], expected_version=1)
     assert memory.read(written.id, world["context"], harness="cursor").version == 2
     key = SessionKey("claude-code", "session-9")
-    session_context = world["services"].session.start_session(
+    session_context, _ = world["services"].session.start_session(
         key, source="startup", entry_dir=str(world["work"]), transcript_path=None)
     memory.read(written.id, session_context, harness="claude-code")
     assert _reads(world, written.id) == [(2, "cursor", None), (2, "claude-code", "session-9")]

@@ -38,14 +38,15 @@ Symlinked targets are refused. What it writes, per harness:
 | Kiro | `uvx memriver serve --harness kiro` | — | `.kiro/steering/memriver.md` |
 
 Claude Code and Codex are session-routed: `--harness claude-code|codex`
-decides each session's project once, at its `SessionStart`, and every hook
-and every MCP call for that session then read the same stored decision, so
-the hook and the server always agree on it. A resumed or compacted session
-with no row yet gets a proposed project from its `SessionStart` itself --
-no prompt needed -- and stays pending until the user agrees and the agent
-calls `session_confirm`; only a session `SessionStart` never got to record
-(one memriver truly never saw start) waits for its first observed prompt to
-get that same proposal instead (see *What your agent sees*). Cursor and
+decides each session's project at its `SessionStart` (only a Claude Code
+`/cd` moves it later), and every hook and every MCP call for that session
+then read the same stored decision, so the hook and the server always agree
+on it. A resumed or compacted session with no row yet gets a proposed project
+from its `SessionStart` itself -- no prompt needed -- and stays pending until
+the user agrees and the agent calls `session_confirm`; only a session
+`SessionStart` never got to record (one memriver truly never saw start)
+waits for its first observed prompt to get that same proposal instead (see
+*What your agent sees*). Cursor and
 Kiro stay directory mode: `--harness cursor|kiro` resolves `--project-dir`
 once, when the server starts, and that never changes for the life of the
 process.
@@ -98,19 +99,41 @@ reports go to stderr.
   that carry no tag -- and the project's entries last, so a cut drops project
   lines first.
   An agent opens a tag with `memory_index(tag=...)`.
-- **A session's project is fixed at its start.** A Claude Code or Codex
-  session gets its project once -- from its first `SessionStart` -- and keeps
-  it for the session's whole life: opening a sub-directory of a monorepo
-  later never moves it, and a session started inside a linked git worktree
-  registers under the project of the worktree's main working tree, keeping
-  the sub-directory it started in. The same session id keeps its row however
-  and wherever it is later resumed. A session started in no registered
-  project has none, and memriver never looks again on its own: it gets one
-  only when the agent calls `session_register` -- because you asked it to,
-  or right after it ran `memriver project init` at your request -- which
-  resolves the directory the session started in (as stored when it
-  registered, not wherever it is now) and registers the project covering
-  it. A session that already has a project never changes.
+- **A session's project is set at its start; a Claude Code `/cd` moves it.**
+  A Claude Code or Codex session gets its project from its first
+  `SessionStart` and keeps it: opening a sub-directory of a monorepo later
+  never moves it, a shell `cd` never moves it, and a session started inside a
+  linked git worktree registers under the project of the worktree's main
+  working tree, keeping the sub-directory it started in. The same session id
+  keeps its row however and wherever it is later resumed. The one exception
+  is Claude Code's `/cd <path>`, which keeps the conversation and the session
+  id: memriver notices it on the next prompt (or on a `/compact`) because the
+  session's transcript moved to another directory, and moves the session to
+  the project covering the new directory -- or to no project when none covers
+  it, leaving the session read-only on global memory. A `/cd` within one
+  project (a sub-directory, a worktree of the same repository) changes no
+  project. When the project changed, that prompt's context starts with a
+  short notice -- moved from A (or no project) to B, the index injected
+  earlier no longer applies -- followed by B's index in the same format and
+  size cap as at session start. The notice is best effort like every hook
+  output: if it is lost, `memory_index` returns the current project and index,
+  and writes already go to the right project. The session row itself, with
+  its earlier prompts and any summary, now belongs to the new project (so
+  `session_search` from there finds it); memories written before the move stay
+  where they were saved. Each move is recorded and shown by `memriver
+  sessions`. A session started in no registered project has none, and
+  memriver never looks again on its own: it gets one only when the agent calls
+  `session_register` -- because you asked it to, or right after it ran
+  `memriver project init` at your request -- which resolves the directory the
+  session was registered in and, in Claude Code only, when no project covers
+  that, the directory that call came from (its `PreToolUse` hook records it;
+  Codex has no such hook, so Codex uses the registered directory alone), and
+  registers the project covering it. A session that already has a project is
+  never changed by `session_register`. A session awaiting confirmation stays
+  pending after a `/cd`, its proposal following the new directory;
+  `session_register` refuses a pending session that has a proposed project
+  (that one is `session_confirm`'s to decide), while a pending session with no
+  proposal can still be registered.
 - **A session memriver has never registered** (typically one resumed for the
   first time since before you installed) is not silently bound to whatever
   directory it happens to be resumed in. It is
@@ -118,8 +141,9 @@ reports go to stderr.
   is refused, and the agent is told to ask you and call `session_confirm`
   only once you agree to the project it proposes. When the directory it was
   first observed in is in no registered project there is nothing to propose:
-  the agent is told that saving needs `memriver project init` there followed
-  by `session_register`, and is not asked to confirm.
+  the agent is told that saving needs `memriver project init` in the
+  directory the session is working in, followed by `session_register`, and is
+  not asked to confirm.
 - **Stop**: a reminder to save durable facts, but only for a session's own
   prompts (not a sub-agent's) and only once it has made at least 5 prompts
   since its last save -- a successful `memory_write` or `memory_update`
@@ -148,7 +172,7 @@ Two deliberate exceptions: an invalid `settings.toml` or `MEMRIVER_*` value
 makes `SessionStart`, `UserPromptSubmit` and `SessionEnd` print their one-line
 settings error and exit 1 -- a failing, non-blocking hook the harness shows --
 because a broken settings file needs fixing rather than being silently
-ignored (see *Settings*); and a store below schema version 4 is refused --
+ignored (see *Settings*); and a store below schema version 5 is refused --
 every hook does nothing. If memories seem to
 be missing, `memriver doctor` shows what the store actually holds.
 
@@ -193,9 +217,10 @@ A binding change reaches Cursor/Kiro at their MCP server's next
 start. It reaches Claude Code/Codex in a new session, or in a session that
 has no project yet once its agent calls `session_register` (on your request,
 or right after running `memriver project init` for you): a session's stored
-project never changes once it has one, existing and resumed sessions
-included, so a session already registered to another project has to be
-replaced by a new session to save under the new binding.
+project changes only through a Claude Code `/cd` (see *What your agent
+sees*), never through a new binding: existing and resumed sessions included,
+a session already registered to another project has to be replaced by a new
+session to save under the new binding.
 
 Known limits:
 
@@ -214,19 +239,27 @@ Known limits:
   started there is not registered to any project; and a repository created
   with `git init --separate-git-dir <X>/.git <work>` maps its linked
   worktrees into `<X>`, not `<work>`.
+- `/cd` then `/clear`: the new session id registers from the original start
+  directory, not the one `/cd` went to. A `/cd` followed by leaving without a
+  prompt is not applied by a later `--resume`, which adopts the transcript
+  without moving the session. The move notice is best effort; `memory_index`
+  recovers it. Directories whose Claude Code transcript folders look alike
+  (`/x/b-c` and `/x/b/c`) are not told apart, so a `/cd` between them is not
+  detected.
 - After upgrading memriver, run `memriver install` again: the harness
   configuration an earlier release wrote lacks the newer hooks and the
   `serve --harness` argument, so without it prompts are not counted, `Stop`
   never nudges, and the MCP server stays in directory mode. Then restart
   every harness session and MCP server that shares the store; a running
-  server keeps its old rules. This release's store is schema version 5: a
-  version-4 store is upgraded in place on its first read, write or `doctor`
-  run (two columns and a table, no version rows; one write lock, once). A store
-  below version 4 is refused as before -- hooks do nothing, MCP tools answer
+  server keeps its old rules. This release's store is schema version 6: a
+  version-5 store is upgraded in place on its first read, write or `doctor`
+  run (a `cwd` column on tool calls and a table of session moves, no version
+  rows; one write lock, once). A store
+  below version 5 is refused -- hooks do nothing, MCP tools answer
   that the store's schema version is not supported and change nothing, and
   every other command, `doctor`, `memriver dream run` and `dream report`
   included, exits 1 with one line naming the store's schema version. An earlier
-  memriver meets a version-5 store as an unknown schema: its hooks inject no
+  memriver meets a version-6 store as an unknown schema: its hooks inject no
   memories (`SessionStart` shows the store as unavailable), its MCP tools
   fail with a generic could-not-read (or could-not-write) message, and its
   `doctor` reports `unknown-schema`. So after upgrading, update every harness
@@ -252,7 +285,7 @@ Known limits:
 | `memory_delete(memory_id, expected_version)` | Remove a memory that is no longer true or wanted; returns `{deleted: memory_id}`; refused for global memories or a stale `expected_version` |
 | `session_search(query="", limit=None)` | Claude Code/Codex only: find this project's recorded sessions by space-separated keywords in their prompts, summary, branch or entry directory -- an entry matching any keyword is returned, entries matching more keywords first, newest activity first among equals; an empty query lists them, newest activity first; each result carries a `resume_command` to show the user -- whether to run it is the user's decision |
 | `session_confirm()` | Claude Code/Codex only: register the calling session to the project memriver proposed for it; call only after the user agrees; returns the session's new project header |
-| `session_register()` | Claude Code/Codex only: register the calling session, when it has no project, to the registered project covering the directory it started in (the one stored when it registered); called when the user asks, or right after the agent ran `memriver project init` at the user's request; never changes a session that already has a project; returns the session's project header, with a note when no project covers that directory |
+| `session_register()` | Claude Code/Codex only: register the calling session, when it has no project, to the registered project covering the directory it registered in, else (Claude Code only) the directory this call came from; called when the user asks, or right after the agent ran `memriver project init` at the user's request; never changes a session that already has a project; returns the session's project header, with a note when no project covers either directory |
 
 `memory_search`, `session_search`, `memriver search` and `memriver sessions`
 take space-separated keywords: an entry matching any keyword is returned,
@@ -492,7 +525,9 @@ first-plus-five, 512-characters-each scope `session_search` has -- see its
 Known limits above), its summary, branch or entry directory, and ranked the
 same way `session_search` ranks the calling session's own project; unlike
 `session_search`, this sees every project. `--json` emits the same item shape
-`session_search` returns.
+`session_search` returns, plus a `moves` list. A session that a Claude Code
+`/cd` moved shows one `moved:` line per move, oldest first: when, from
+directory (project), to directory (project).
 
 ## Dream: offline maintenance
 
@@ -638,7 +673,7 @@ run prints one line instead). It exits 0 when
 the run completed (failures of single items included), was skipped, or only
 scanned because no `[dream]` table exists; and 1 on a store failure, an
 invalid `[dream]` table, `--phase` with no executor configured, a store below
-schema version 4, or a missing Codex provider variable (below).
+schema version 5, or a missing Codex provider variable (below).
 
 **Executors.** `init` picks Claude Code or Codex (`--executor`; default the
 configured one, else whichever of `claude` and `codex` is on `PATH`) and
@@ -777,10 +812,10 @@ uvx memriver doctor --stale-days 30   # flag memories not updated in 30 days (de
 uvx memriver doctor --root /path      # check a non-default store
 ```
 
-A store below schema version 4 is refused before any of the checks below run:
+A store below schema version 5 is refused before any of the checks below run:
 `doctor` prints the one line naming the store's schema version to stderr and
 exits 1, with `--json` still emitting `{"error": ...}` on stdout -- no report
-either way. On a store at schema version 5 (`doctor` upgrades a version-4
+either way. On a store at schema version 6 (`doctor` upgrades a version-5
 store first), `doctor` diagnoses problems in
 more detail than a tool call reports: a schema version this build does not
 recognize as current (`unknown-schema`; when the check cannot complete at
@@ -790,7 +825,8 @@ branch below instead, exit 2), a failed SQLite integrity check (`integrity`),
 (`unsafe-database`), a memory whose project row no longer exists (`orphan`), a
 session whose project or proposed project no longer exists (`session-orphan`),
 a memory, project, or session row holding a value memriver could not have
-written (`invalid-row`), a bound directory that is no longer canonical or
+written (`invalid-row`), a session-move row that does not decode or whose
+session is gone (`session-move-damaged`), a bound directory that is no longer canonical or
 could not be checked, two projects
 bound to the same directory under different spellings (`root-conflict`), the
 pre-SQLite file layout (`legacy-layout`), invalid `updated` timestamps, stale

@@ -76,6 +76,22 @@ def canonical_directory(path: str) -> str | None:
     return str(canonical)
 
 
+def usable_directory(value: object) -> bool:
+    """An absolute path string a harness payload may name (realpath raises on a NUL)."""
+    return isinstance(value, str) and os.path.isabs(value) and "\x00" not in value
+
+
+def transcript_moved(stored: object, current: object) -> bool:
+    """A Claude Code /cd: the transcript now lives under another projects directory.
+
+    The only signal that tells /cd from a shell cd, which keeps the transcript
+    where it is. Spellings of one directory (a symlink, `/./`) compare equal.
+    """
+    return usable_directory(stored) and usable_directory(current) \
+        and os.path.realpath(os.path.dirname(stored)) \
+        != os.path.realpath(os.path.dirname(current))
+
+
 RootState = Literal["ok", "missing", "not-canonical", "unverifiable"]
 
 

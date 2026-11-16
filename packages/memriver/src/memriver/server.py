@@ -67,15 +67,16 @@ _NO_PROJECT = {
                    "store. No memory was saved. Ask the user to run memriver project explain."),
 }
 
-# The same states for a context that came from a session row: its project was
-# fixed when the session registered and never re-resolves on its own, so the
-# way out is session_register from where it started (no project yet) or a new
-# session (its project is gone), never the directory the session happens to be in.
+# The same states for a context that came from a session row: its project is
+# fixed when the session registers and changes on its own only when a Claude
+# Code /cd moves the session, so the way out is session_register (no project
+# yet: its recorded directory, else the directory the call came from) or a new
+# session (its project is gone).
 _SESSION_NO_PROJECT = {
-    "none": ("no writable project: this session was registered with no project. No memory "
-             "was saved. Ask the user to run memriver project init where this session "
-             "started, then call session_register; do not run memriver project init "
-             "yourself unless they ask."),
+    "none": ("no writable project: this session has no project. No memory was saved. Ask the "
+             "user to run memriver project init in the directory this session is working in, "
+             "then call session_register; do not run memriver project init yourself unless "
+             "they ask."),
     "degraded": ("no writable project: this session's project no longer exists or became "
                  "global. No memory was saved. Ask the user to start a new session."),
 }
@@ -88,24 +89,28 @@ _SESSION_REFUSAL = {
                 "session_confirm"),
     # nothing to confirm: confirming would register no project, which only
     # session_register can change
-    "pending-no-candidate": ("this session is not registered, and the directory it was first "
-                             "observed in is not in any registered project; once the user has "
-                             "run memriver project init covering this session's start "
-                             "directory, call session_register"),
+    "pending-no-candidate": ("this session is not registered, and its recorded directory is "
+                             "not in any registered project; once the user has run memriver "
+                             "project init in the directory this session is working in, call "
+                             "session_register"),
     "unidentified": ("this session is not registered with memriver: its hooks may not be "
                      "installed (memriver install) or trusted (Codex asks on start), or the "
                      "harness sent no session id; ask the user to fix that, then start a new "
                      "session"),
     "candidate-changed": ("the proposed project changed since memriver proposed it; ask the "
                           "user to start a new session"),
+    "candidate-moved": ("the project proposed for this session changed after a /cd before it "
+                        "was confirmed; nothing was registered. Ask the user again about the "
+                        "project the latest memriver notice names, and call session_confirm "
+                        "only if they agree"),
 }
 
 _SESSION_TOOLS_UNAVAILABLE = "session tools are not available for this harness registration"
 
 # session_register found no project to register: the header alone would only
 # repeat the state, not that the call looked and found nothing
-_NOTHING_TO_REGISTER = ("no registered project covers the directory this session started in; "
-                        "nothing was registered")
+_NOTHING_TO_REGISTER = ("no registered project covers this session's directory or the one this "
+                        "call came from; nothing was registered")
 
 
 def _map_error(operation: Operation, err: Exception, *, memory_id: str | None = None,
@@ -248,6 +253,13 @@ def _meta_as_dict(meta: Any) -> dict:
 
 def _session_key(harness: str, ctx: Context, session_service: Any) -> SessionKey | None:
     """The calling session, read from this call alone; None when it names none validly."""
+    return _route(harness, ctx, session_service)[0]
+
+
+def _route(harness: str, ctx: Context, session_service: Any) -> tuple[SessionKey | None,
+                                                                       str | None]:
+    """The calling session and, only when the call's record named it, the directory the
+    call came from; one read of the call record serves both."""
     request_context = ctx.request_context
     meta = request_context.meta if request_context is not None else None
     data = _meta_as_dict(meta)
@@ -255,10 +267,9 @@ def _session_key(harness: str, ctx: Context, session_service: Any) -> SessionKey
         # Claude Code keeps this server across /clear and an in-app /resume,
         # so its environment keeps naming the startup session; the PreToolUse
         # hook mapped this call's id to the session making it (spec U15)
-        mapped = session_service.session_key_for_call(harness,
-                                                      data.get("claudecode/toolUseId"))
-        if mapped is not None:
-            return mapped
+        record = session_service.call_record(harness, data.get("claudecode/toolUseId"))
+        if record is not None:
+            return record.key, record.cwd
         session_id = os.environ.get("CLAUDE_CODE_SESSION_ID")
     else:
         # Codex nests its turn metadata as an object, and anything else (a
@@ -266,11 +277,11 @@ def _session_key(harness: str, ctx: Context, session_service: Any) -> SessionKey
         nested = data.get("x-codex-turn-metadata")
         session_id = nested.get("session_id") if isinstance(nested, dict) else None
     if session_id is None:
-        return None
+        return None, None
     try:
-        return SessionKey(harness, session_id)
+        return SessionKey(harness, session_id), None
     except ValueError:
-        return None
+        return None, None
 
 
 _SESSION_SEARCH_DESCRIPTION = (
@@ -496,16 +507,17 @@ def build_server(root: Path, project_dir: Path, settings: Settings | None = None
     @mcp.tool
     def session_register(ctx: Context) -> dict:
         """Register this session, when it has no project, to the registered project
-        covering the directory it started in. Call when the user asks you to, or right
-        after you ran memriver project init at their request; a session that already
-        has a project never changes. Returns the session's project header."""
+        covering its recorded directory or, failing that, the directory this call came
+        from. Call when the user asks you to, or right after you ran memriver project init
+        at their request; a session that already has a project never changes. Returns the
+        session's project header."""
         if not session_mode:
             raise ToolError(_SESSION_TOOLS_UNAVAILABLE, log_level=logging.DEBUG)
         try:
-            key = _session_key(harness, ctx, session_service)
+            key, current_dir = _route(harness, ctx, session_service)
             if key is None:
                 raise ProjectUnavailable(reason="unidentified")
-            context = session_service.register_session(key)
+            context = session_service.register_session(key, current_dir=current_dir)
         except Exception as err:  # noqa: BLE001
             _fail("register", err)
         if context.state in ("none", "pending"):

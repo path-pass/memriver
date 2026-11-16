@@ -12,7 +12,8 @@ KEY = SessionKey("codex", "session-1")
 
 def _start(world, key=KEY, directory=None):
     return world["services"].session.start_session(
-        key, source="startup", entry_dir=str(directory or world["work"]), transcript_path=None)
+        key, source="startup", entry_dir=str(directory or world["work"]),
+        transcript_path=None)[0]
 
 
 def _stored(world, key=KEY):

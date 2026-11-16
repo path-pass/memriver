@@ -12,6 +12,8 @@ from memriver_core.repository.directories import (
     integrity_diagnostic,
     nearest_bound,
     root_state,
+    transcript_moved,
+    usable_directory,
 )
 
 A = "aaaaaaaaaa"
@@ -42,6 +44,27 @@ def test_canonical_directory_is_strict_and_never_raises(tmp_path):
     assert canonical_directory(str(tmp_path / "link")) == str((tmp_path / "d").resolve())
     for bad in (tmp_path / "f", tmp_path / "missing", Path("/x\x00y")):
         assert canonical_directory(str(bad)) is None
+
+
+def test_usable_directory_is_an_absolute_string_without_nul():
+    assert usable_directory("/a/b") and usable_directory("/")
+    for bad in (None, "", "rel", "a/b", "/a\x00b", 42, b"/a"):
+        assert not usable_directory(bad)
+
+
+def test_transcript_moved_compares_real_parent_directories(tmp_path):
+    (tmp_path / "projects" / "x").mkdir(parents=True)
+    (tmp_path / "alias").symlink_to(tmp_path / "projects")
+    stored = str(tmp_path / "projects" / "x" / "s.jsonl")
+    assert transcript_moved("/t/a/s.jsonl", "/t/b/s.jsonl")
+    assert not transcript_moved("/t/a/s.jsonl", "/t/a/other.jsonl")
+    for spelling in (str(tmp_path / "alias" / "x" / "s.jsonl"),
+                     f"{tmp_path}/projects/./x/s.jsonl",
+                     f"{tmp_path}/projects/x/../x/s.jsonl"):
+        assert not transcript_moved(stored, spelling)
+    for bad in (None, "", "rel/s.jsonl", "/a\x00/s.jsonl", 42):
+        assert not transcript_moved(bad, "/t/b/s.jsonl")
+        assert not transcript_moved("/t/a/s.jsonl", bad)
 
 
 def test_nearest_registered_ancestor_wins(tmp_path):

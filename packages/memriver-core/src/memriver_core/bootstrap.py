@@ -26,6 +26,8 @@ from .repository.directories import (
     plan_purge,
     purge,
     root_state,
+    transcript_moved,
+    usable_directory,
 )
 from .repository.sqlite import (
     SqliteMemoryStore,
@@ -95,6 +97,8 @@ def build_services(settings: Settings, *, root: Path | None = None,
         SqliteSessionStore(store_root, busy_timeout_ms=BUSY_TIMEOUT_MS), project_store,
         content_policy,
         canonical_directory=canonical_directory,
+        usable_directory=usable_directory,
+        transcript_moved=transcript_moved,
         main_tree_path=partial(main_tree_path, timeout_s=GIT_QUERY_TIMEOUT_S),
         current_branch=partial(current_branch, timeout_s=GIT_QUERY_TIMEOUT_S),
         # the integrity rule resolution applies: an offline root is fine, a
