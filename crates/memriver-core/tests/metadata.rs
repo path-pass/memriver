@@ -529,6 +529,13 @@ fn a_tag_description_passes_the_policy_and_the_classifier() {
         .map(|(text, by)| (text.to_string(), by.to_string()))
     );
     assert_eq!(described(&env, global)["git"], "a b c");
+    // a description has the budget of metadata, whatever a body may be
+    let short = env.limited(|settings| settings.max_body_chars = 10);
+    short
+        .memory
+        .describe_tag(global, "git", &"x".repeat(50), "dream")
+        .unwrap();
+    assert_eq!(described(&env, global)["git"], "x".repeat(50));
 }
 
 #[test]

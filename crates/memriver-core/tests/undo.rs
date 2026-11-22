@@ -168,6 +168,20 @@ fn undo_of_an_undo() {
     let env = setup();
     let (merge, merged, alpha, beta) = merge(&env);
     let undone = undo(&env, &merge.change_id).unwrap();
+    // a step for each step of the change, in the same order
+    let steps: Vec<_> = undone
+        .steps
+        .iter()
+        .map(|step| (step.step, step.memory_id.as_str(), step.op))
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            (1, merged.as_str(), OpName::SoftDelete),
+            (2, alpha.as_str(), OpName::Restore),
+            (3, beta.as_str(), OpName::Restore)
+        ]
+    );
     assert_eq!(state(&env, &merged), is(2, "alpha and beta", true));
     assert_eq!(state(&env, &alpha), is(3, "alpha", false));
     assert_eq!(state(&env, &beta), is(3, "beta", false));

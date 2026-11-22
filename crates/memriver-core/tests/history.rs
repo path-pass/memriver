@@ -206,6 +206,20 @@ fn memories_lists_current_states_across_projects_and_global() {
         sorted([&mine, &rule, &theirs, &gone])
     );
     assert_eq!(service.memories(Some("zzzzzzzzzz"), true), Ok(vec![]));
+    // changed at the same instant: the larger id first
+    env.raw()
+        .execute(
+            "UPDATE memories SET updated = '9999-01-01T00:00:00.000000Z' WHERE id IN (?1, ?2)",
+            [&mine, &theirs],
+        )
+        .unwrap();
+    let newest = service.memories(None, true).unwrap();
+    let mut tied = [mine.as_str(), theirs.as_str()];
+    tied.sort();
+    assert_eq!(
+        [newest[0].id.as_str(), newest[1].id.as_str()],
+        [tied[1], tied[0]]
+    );
     // a row memriver could not have written is passed over, not a failure
     env.raw()
         .execute("UPDATE memories SET tags = '[1]' WHERE id = ?1", [&mine])
@@ -240,6 +254,31 @@ fn citing_lists_the_versions_of_other_memories_that_cite_any_version() {
     for nothing in [derived.as_str(), "zzzzzzzzzz", "nope"] {
         assert_eq!(service.citing(nothing), Ok(vec![]));
     }
+    // by the citing memory first, then by its version
+    let another = env.made(
+        draft(&env.project.id, "another")
+            .citing(&[(&source, 1)])
+            .op(),
+    );
+    human(&env, &[body(&another, 1, "another, edited")]);
+    let mut citers = [derived.as_str(), another.as_str()];
+    citers.sort();
+    let listed: Vec<(String, i64)> = service
+        .citing(&source)
+        .unwrap()
+        .into_iter()
+        .map(|citation| (citation.memory_id, citation.version))
+        .collect();
+    let expected = [
+        (citers[0], 1),
+        (citers[0], 2),
+        (citers[1], 1),
+        (citers[1], 2),
+    ];
+    assert_eq!(
+        listed,
+        expected.map(|(memory_id, version)| (memory_id.to_string(), version))
+    );
 }
 
 #[test]
@@ -282,6 +321,14 @@ fn usage_counts_reads_and_reports_the_stored_high_water_mark() {
         }
     );
     assert!(service.usage(&[]).unwrap().is_empty());
+    // the mark is the memory's own: it stands when no read fact was written with it
+    service
+        .read(&never_read, &env.context(), &"h".repeat(65))
+        .unwrap();
+    let marked = service.usage(&[&never_read]).unwrap().remove(&never_read);
+    let marked = marked.unwrap();
+    assert_eq!(marked.reads, 0);
+    assert!(marked.last_read_at.is_some());
 }
 
 #[test]
@@ -399,6 +446,57 @@ fn a_text_column_that_is_not_text_is_a_storage_failure_and_nothing_is_written() 
         assert_eq!(env.count("changes"), changes);
         assert_eq!(service.show(&memory_id, false).unwrap().version, 2);
     }
+    // what a change undoes, and the memory a step names
+    let env = setup();
+    let service = env.services().memory;
+    let memory_id = fact(&env, "v1");
+    let edit = service
+        .apply(&[body(&memory_id, 1, "v2")], "human", None)
+        .unwrap();
+    let undone = service.undo(&edit.change_id, "human", None).unwrap();
+    let conn = env.unkeyed();
+    conn.execute(
+        "UPDATE changes SET undoes = CAST(X'80' AS TEXT) WHERE change_id = ?1",
+        [&undone.change_id],
+    )
+    .unwrap();
+    assert_eq!(service.change(&undone.change_id), Err(failure.clone()));
+    assert_eq!(service.versions(&memory_id), Err(failure.clone()));
+    assert_eq!(
+        service.undo(&undone.change_id, "human", None),
+        Err(failure.clone().into())
+    );
+    conn.execute(
+        "UPDATE change_steps SET memory_id = CAST(X'80' AS TEXT) WHERE change_id = ?1",
+        [&edit.change_id],
+    )
+    .unwrap();
+    assert_eq!(service.change(&edit.change_id), Err(failure.clone()));
+    assert_eq!(
+        service.undo(&edit.change_id, "human", None),
+        Err(failure.clone().into())
+    );
+    assert_eq!(service.show(&memory_id, false).unwrap().version, 3);
+    // the memory a citation is made by
+    let env = setup();
+    let source = fact(&env, "source");
+    env.made(
+        draft(&env.project.id, "citing")
+            .citing(&[(&source, 1)])
+            .op(),
+    );
+    let conn = env.unkeyed();
+    for (table, column) in [("memories", "id"), ("memory_sources", "memory_id")] {
+        conn.execute(
+            &format!(
+                "UPDATE {table} SET {column} = CAST(X'FFFFFFFFFFFFFFFFFFFF' AS TEXT) \
+                 WHERE {column} <> ?1"
+            ),
+            [&source],
+        )
+        .unwrap();
+    }
+    assert_eq!(env.services().memory.citing(&source), Err(failure.clone()));
     // the project of a memory a hard delete would take, and the mark of a last read
     let env = setup();
     let memory_id = fact(&env, "a fact");
