@@ -9,3 +9,5 @@ dist/
 .idea/
 e2e/wheels/
 .env
+target/
+.cargo-home/
