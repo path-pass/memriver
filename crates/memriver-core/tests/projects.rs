@@ -444,7 +444,7 @@ fn a_directory_bound_elsewhere_is_refused_and_names_the_owner() {
 }
 
 #[test]
-fn a_case_alias_of_a_bound_directory_is_bound_elsewhere() {
+fn on_a_file_system_that_ignores_case_a_case_alias_of_a_bound_directory_is_bound_elsewhere() {
     let env = setup();
     let owner = init(&env.projects, &env.work, "demo");
     let Some(alias) = case_alias(&env) else {
@@ -1063,7 +1063,7 @@ fn open_project_context_registered_names_the_project_and_its_root() {
     let global = service.ensure_global().unwrap();
     let plan = service.plan_root(&env.work, None).unwrap();
     let project = service.init_project("demo", &plan).unwrap();
-    let context = service.open_project_context(&env.dir("work/src"));
+    let context = service.open_project_context(&env.dir("work/src")).unwrap();
     assert_eq!(context.state, ProjectContextState::Registered);
     assert_eq!(
         context.header,
@@ -1085,7 +1085,7 @@ fn open_project_context_none_and_degraded_keep_global_readable_and_write_nothing
     let env = setup();
     let service = env.service();
     // no store at all
-    let nothing = service.open_project_context(&env.work);
+    let nothing = service.open_project_context(&env.work).unwrap();
     assert_eq!(
         (nothing.state, nothing.header.as_str()),
         (ProjectContextState::None, NONE_HEADER)
@@ -1104,14 +1104,14 @@ fn open_project_context_none_and_degraded_keep_global_readable_and_write_nothing
         project_id: None,
         global_project_id: Some(global),
     };
-    let none = service.open_project_context(&env.work);
+    let none = service.open_project_context(&env.work).unwrap();
     assert_eq!(
         (none.state, none.header.as_str()),
         (ProjectContextState::None, NONE_HEADER)
     );
     assert_eq!(none.read_write_set, no_project);
 
-    let degraded = service.open_project_context(&env.tmp.join("nope"));
+    let degraded = service.open_project_context(&env.tmp.join("nope")).unwrap();
     assert_eq!(degraded.state, ProjectContextState::Degraded);
     assert_eq!(degraded.read_write_set, no_project);
     assert_eq!(
@@ -1142,7 +1142,7 @@ fn open_project_context_turns_a_storage_failure_into_an_unavailable_project_cont
         Some(text(&env.dir("elsewhere"))),
         false,
     );
-    let context = service.open_project_context(&env.work);
+    let context = service.open_project_context(&env.work).unwrap();
     assert_eq!(context.state, ProjectContextState::Unavailable);
     assert_eq!(context.header, STORE_UNREADABLE_HEADER);
     assert_eq!(context.read_write_set, nothing);
@@ -1158,7 +1158,7 @@ fn open_project_context_turns_a_storage_failure_into_an_unavailable_project_cont
             [],
         )
         .unwrap();
-    let context = service.open_project_context(&env.work);
+    let context = service.open_project_context(&env.work).unwrap();
     assert_eq!(context.state, ProjectContextState::Unavailable);
     assert_eq!(
         (context.read_write_set, context.project),
@@ -1168,7 +1168,7 @@ fn open_project_context_turns_a_storage_failure_into_an_unavailable_project_cont
     // something that is no database stands where the store is
     let env = setup();
     fs::create_dir_all(env.store.join(DATABASE_FILENAME)).unwrap();
-    let context = env.service().open_project_context(&env.work);
+    let context = env.service().open_project_context(&env.work).unwrap();
     assert_eq!(context.state, ProjectContextState::Unavailable);
     assert_eq!(context.read_write_set, nothing);
 }
@@ -1187,7 +1187,7 @@ fn a_directory_bound_to_the_global_project_by_hand_grants_nothing() {
         [text(&env.work)],
     )
     .unwrap();
-    let context = service.open_project_context(&env.work);
+    let context = service.open_project_context(&env.work).unwrap();
     assert_eq!(
         (context.state, context.header.as_str()),
         (ProjectContextState::None, NONE_HEADER)
@@ -1229,4 +1229,29 @@ fn binding_calls_reach_the_store_through_the_service() {
             project_id: Some(project.id),
         }
     );
+}
+
+#[test]
+fn a_store_of_an_older_schema_is_not_an_unreadable_store() {
+    // the caller must learn the version: it answers with what the store needs, not with
+    // "run memriver doctor"
+    for version in [1, 3, 5] {
+        let env = setup();
+        let service = env.service();
+        service.ensure_global().unwrap();
+        init(&env.projects, &env.work, "demo");
+        env.raw()
+            .execute_batch(&format!("PRAGMA user_version = {version}"))
+            .unwrap();
+        let before = fs::read(env.store.join(DATABASE_FILENAME)).unwrap();
+        assert_eq!(
+            service.open_project_context(&env.work),
+            Err(CoreError::StoreNeedsUpgrade(version))
+        );
+        assert_eq!(
+            service.open_project_context(&env.tmp.join("nope")),
+            Err(CoreError::StoreNeedsUpgrade(version))
+        );
+        assert_eq!(fs::read(env.store.join(DATABASE_FILENAME)).unwrap(), before);
+    }
 }

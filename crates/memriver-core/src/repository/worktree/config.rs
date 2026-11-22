@@ -53,7 +53,7 @@ pub fn boolean(value: Option<&str>) -> Option<bool> {
     match value.to_ascii_lowercase().as_str() {
         "true" | "yes" | "on" => Some(true),
         "false" | "no" | "off" | "" => Some(false),
-        number => number.parse::<i64>().ok().map(|number| number != 0),
+        number => number.parse::<i32>().ok().map(|number| number != 0),
     }
 }
 
@@ -156,9 +156,11 @@ pub fn parse(text: &str) -> Option<GitConfig> {
             .unwrap_or(line.len());
         let (name, rest) = line.split_at(end);
         let rest = rest.trim_start_matches(is_blank);
+        // after the name: the end of the line or `=`; git takes nothing else, a comment
+        // included
         let value = match rest.strip_prefix('=') {
             Some(rest) => Some(value(rest)?),
-            None if ends(rest) => None,
+            None if rest.is_empty() => None,
             None => return None,
         };
         config.variables.push(Variable {
@@ -226,7 +228,16 @@ mod tests {
     #[test]
     fn a_bare_variable_has_no_value() {
         assert_eq!(one("[core]\nx\n"), None);
-        assert_eq!(one("[core]\nx   ; said so\n"), None);
+        assert_eq!(one("[core]\nx"), None);
+        assert_eq!(one("[core]\nx \t \r\n"), None);
+        // after the name git takes the end of the line or `=`, and nothing else
+        for text in [
+            "[core]\nx   ; said so\n",
+            "[core]\nx # why\n",
+            "[core]\nx;\n",
+        ] {
+            assert_eq!(parse(text), None, "{text:?}");
+        }
         assert_eq!(boolean(one("[core]\nx\n").as_deref()), Some(true));
     }
 

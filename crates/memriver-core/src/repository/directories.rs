@@ -18,7 +18,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use crate::models::errors::named;
-use crate::models::helpers::{py_normpath, py_repr};
+use crate::models::helpers::py_repr;
 
 /// The one file name the database lives at, shared here so a purge target can be
 /// recognized as a store.
@@ -134,21 +134,78 @@ fn path_of(bytes: Vec<u8>) -> PathBuf {
 
 // --- resolving a path ---
 
-/// One pass of the walk: `rest` resolved from `path`, which is absolute and resolved.
-fn join_real(
-    mut path: PathBuf,
-    mut rest: &[u8],
-    strict: bool,
-    seen: &mut HashMap<PathBuf, Option<PathBuf>>,
-) -> Result<PathBuf, OsFailure> {
-    if rest.first() == Some(&b'/') {
-        path = PathBuf::from("/");
+/// `path` as Python's `pathlib` writes it: repeated and trailing slashes and every `.`
+/// dropped, `..` kept -- it is resolved through the file system, never read off the text.
+///
+/// A name that ends in `/` or `/.` is looked through to what a link points at; tidied, it
+/// is the name itself, and a link is seen as a link.
+pub fn tidied(path: &Path) -> PathBuf {
+    let bytes = path.as_os_str().as_bytes();
+    let root: &[u8] = match bytes {
+        [b'/', b'/', b'/', ..] => b"/",
+        [b'/', b'/', ..] => b"//",
+        [b'/', ..] => b"/",
+        _ => b"",
+    };
+    let parts: Vec<&[u8]> = bytes
+        .split(|byte| *byte == b'/')
+        .filter(|part| !matches!(*part, b"" | b"."))
+        .collect();
+    match [root, &parts.join(&b'/')].concat() {
+        tidy if tidy.is_empty() => PathBuf::from("."),
+        tidy => path_of(tidy),
     }
-    while !rest.is_empty() {
-        let end = rest.iter().position(|byte| *byte == b'/');
-        let name = &rest[..end.unwrap_or(rest.len())];
-        rest = end.map_or(&[], |end| &rest[end + 1..]);
-        match name {
+}
+
+/// What is still to be resolved: a name of the path, or the mark that everything a link
+/// led to has been resolved.
+enum Part {
+    Name(Vec<u8>),
+    Resolved(PathBuf),
+}
+
+fn parts_of(path: &[u8]) -> impl Iterator<Item = Part> {
+    path.split(|byte| *byte == b'/')
+        .rev()
+        .map(|name| Part::Name(name.to_vec()))
+}
+
+/// Python's `os.path.realpath` (as of 3.13): `path` with every link on the way read.
+/// Strict, anything that is missing or cannot be looked at is a failure, and so is a name
+/// with anything written after it -- an empty part, `.` and `..` included -- that is no
+/// directory; otherwise the walk goes on with the name as written, and only a path the
+/// system cannot address fails.
+pub fn realpath(path: &Path, strict: bool) -> Result<PathBuf, OsFailure> {
+    let bytes = path.as_os_str().as_bytes();
+    if bytes.contains(&0) {
+        return Err(OsFailure {
+            errno: None,
+            path: path.to_path_buf(),
+        });
+    }
+    // the names still to come, the next one last; `waiting` counts the names among them
+    let mut rest: Vec<Part> = parts_of(bytes).collect();
+    let mut waiting = rest.len();
+    // absolute and resolved throughout
+    let mut path = if bytes.first() == Some(&b'/') {
+        PathBuf::from("/")
+    } else {
+        std::env::current_dir().map_err(|err| OsFailure::new(&err, path))?
+    };
+    // a link and what it resolved to; None while it is being resolved, which is how a
+    // loop is noticed
+    let mut seen: HashMap<PathBuf, Option<PathBuf>> = HashMap::new();
+    while waiting > 0 {
+        let name = match rest.pop() {
+            Some(Part::Name(name)) => name,
+            Some(Part::Resolved(link)) => {
+                seen.insert(link, Some(path.clone()));
+                continue;
+            }
+            None => break,
+        };
+        waiting -= 1;
+        match name.as_slice() {
             b"" | b"." => continue,
             b".." => {
                 path.pop();
@@ -156,7 +213,7 @@ fn join_real(
             }
             _ => {}
         }
-        let newpath = path.join(OsStr::from_bytes(name));
+        let newpath = path.join(OsStr::from_bytes(&name));
         let found = match lstat(&newpath) {
             Ok(found) => found,
             Err(failure) if strict => return Err(failure),
@@ -168,9 +225,7 @@ fn join_real(
         };
         if !found.file_type().is_symlink() {
             // nothing lies below what is no directory
-            let more = rest.split(|byte| *byte == b'/');
-            if strict && !found.is_dir() && more.into_iter().any(|name| !matches!(name, b"" | b"."))
-            {
+            if strict && waiting > 0 && !found.is_dir() {
                 return Err(OsFailure {
                     errno: Some(libc::ENOTDIR),
                     path: newpath,
@@ -186,10 +241,10 @@ fn join_real(
             }
             // the link is being resolved right now: a loop
             Some(None) if strict => {
-                return Err(stat(&newpath).err().unwrap_or(OsFailure {
+                return Err(OsFailure {
                     errno: Some(libc::ELOOP),
                     path: newpath,
-                }));
+                });
             }
             Some(None) => {
                 path = newpath;
@@ -205,37 +260,23 @@ fn join_real(
                 continue;
             }
         };
+        let target = target.as_os_str().as_bytes();
+        if target.first() == Some(&b'/') {
+            path = PathBuf::from("/");
+        }
         seen.insert(newpath.clone(), None);
-        path = join_real(path, target.as_os_str().as_bytes(), strict, seen)?;
-        seen.insert(newpath, Some(path.clone()));
+        rest.push(Part::Resolved(newpath));
+        let before = rest.len();
+        rest.extend(parts_of(target));
+        waiting += rest.len() - before;
     }
     Ok(path)
-}
-
-/// Python's `os.path.realpath`: `path` with every link on the way read. Strict, anything
-/// that is missing or cannot be looked at is a failure; otherwise the walk goes on with
-/// the name as written, and only a path the system cannot address fails.
-pub fn realpath(path: &Path, strict: bool) -> Result<PathBuf, OsFailure> {
-    let bytes = path.as_os_str().as_bytes();
-    if bytes.contains(&0) {
-        return Err(OsFailure {
-            errno: None,
-            path: path.to_path_buf(),
-        });
-    }
-    let start = if bytes.first() == Some(&b'/') {
-        PathBuf::from("/")
-    } else {
-        std::env::current_dir().map_err(|err| OsFailure::new(&err, path))?
-    };
-    let resolved = join_real(start, bytes, strict, &mut HashMap::new())?;
-    Ok(path_of(py_normpath(resolved.as_os_str().as_bytes())))
 }
 
 /// The strict real path of an existing directory; None for anything else. Never fails:
 /// the hooks take a start directory from the harness payload.
 pub fn canonical(path: &Path) -> Option<PathBuf> {
-    let canonical = realpath(path, true).ok()?;
+    let canonical = realpath(&tidied(path), true).ok()?;
     stat(&canonical)
         .is_ok_and(|found| found.is_dir())
         .then_some(canonical)
@@ -266,6 +307,24 @@ pub fn transcript_moved(stored: &str, current: &str) -> bool {
 
 // --- one directory under two names ---
 
+#[cfg(test)]
+thread_local! {
+    static IGNORE_CASE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// For a test, on its thread from now on: two paths that differ only in the case of
+/// their letters are one directory, as on a file system that ignores case. The branches
+/// that pool two spellings of one directory can then be reached on any file system.
+#[cfg(test)]
+pub(crate) fn ignore_case() {
+    IGNORE_CASE.set(true);
+}
+
+#[cfg(test)]
+fn lower(path: &Path) -> String {
+    path.to_string_lossy().to_lowercase()
+}
+
 /// Whether `a` and `b` are one directory, with "absent" and "could not check" told
 /// apart.
 ///
@@ -274,6 +333,10 @@ pub fn transcript_moved(stored: &str, current: &str) -> bool {
 /// (permission, I/O) -- no caller may read that as "no match". The first path is looked
 /// at first, and what happens there decides before the second is looked at.
 pub fn same_directory(a: &Path, b: &Path) -> Option<bool> {
+    #[cfg(test)]
+    if IGNORE_CASE.get() && a != b && lower(a) == lower(b) {
+        return Some(true);
+    }
     let mut identities = [(0, 0); 2];
     for (path, identity) in [a, b].into_iter().zip(&mut identities) {
         match stat(path) {
@@ -766,7 +829,10 @@ fn plan_purge_with(
     dry_run: bool,
     before_open: &mut dyn FnMut(),
 ) -> Result<PurgePlan, PurgeRefusal> {
-    let given = cwd.join(given);
+    // tidied before anything looks at it: `link/` would be looked through to the directory
+    // behind the link, and the link would pass as no link
+    let (home, cwd) = (&tidied(home), &tidied(cwd));
+    let given = tidied(&cwd.join(given));
     let canonical = resolve(&given).map_err(|failure| PurgeRefusal {
         kind: PurgeRefusalKind::Unresolvable,
         path: given.clone(),
@@ -938,7 +1004,13 @@ fn empty_directory(
     emptied: &mut dyn FnMut(&Path),
 ) -> Result<(), i32> {
     for name in names_in(fd)? {
-        if !identity_at(fd, &name).is_ok_and(|(_, is_directory)| is_directory) {
+        let is_directory = match identity_at(fd, &name) {
+            Ok((_, is_directory)) => is_directory,
+            // gone since it was listed: removing it says so
+            Err(libc::ENOENT) => false,
+            Err(errno) => return Err(errno),
+        };
+        if !is_directory {
             remove_at(fd, &name, false)?;
             continue;
         }

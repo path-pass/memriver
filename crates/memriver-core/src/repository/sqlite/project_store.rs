@@ -481,7 +481,7 @@ fn adoptable(conn: Option<&Connection>, project_id: &str) -> Result<Project, Cor
 /// path; the path need not exist.
 fn names_root(given: &str, stored: &str) -> bool {
     given == stored
-        || directories::realpath(Path::new(given), true)
+        || directories::realpath(&directories::tidied(Path::new(given)), true)
             .is_ok_and(|real| real.as_os_str() == stored)
 }
 
@@ -555,5 +555,70 @@ mod tests {
                 .unwrap();
             assert_eq!(asked("/held"), Ok(CoreError::StorageFailure), "{planted}");
         }
+    }
+
+    /// A store, a home and a directory `work` with a second spelling `WORK` that counts
+    /// as the same directory, on any file system.
+    fn aliased() -> (Sandbox, ProjectStore, PathBuf, PathBuf) {
+        let sandbox = Sandbox::new();
+        let base = directories::realpath(sandbox.dir.path(), true).unwrap();
+        let (work, alias) = (base.join("work"), base.join("WORK"));
+        for directory in [&work, &alias, &base.join("home")] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        directories::ignore_case();
+        let projects = ProjectStore::new(&base.join("store"), &base.join("home"));
+        (sandbox, projects, work, alias)
+    }
+
+    #[test]
+    fn an_alias_of_a_bound_directory_is_bound_elsewhere() {
+        let (_sandbox, projects, work, alias) = aliased();
+        let owner = Project::new("demo", 120).unwrap();
+        let plan = projects.plan_root(&work, None).unwrap();
+        projects.create(&owner, &plan).unwrap();
+        assert_eq!(
+            projects.plan_root(&alias, None),
+            Err(bound_elsewhere_to(&owner.id))
+        );
+        // a plan made before the peer bound the other spelling is refused when used
+        let late = RootPlan {
+            root: alias.to_str().unwrap().to_string(),
+            ..plan
+        };
+        assert_eq!(
+            projects.create(&Project::new("x", 120).unwrap(), &late),
+            Err(bound_elsewhere_to(&owner.id))
+        );
+    }
+
+    #[test]
+    fn adopting_an_alias_of_the_held_directory_is_a_no_op() {
+        let (sandbox, projects, work, alias) = aliased();
+        let owner = Project::new("demo", 120).unwrap();
+        projects
+            .create(&owner, &projects.plan_root(&work, None).unwrap())
+            .unwrap();
+        let plan = projects.plan_root(&alias, Some(&owner.id)).unwrap();
+        assert!(plan.already_bound);
+        assert_eq!(plan.root, alias.to_str().unwrap());
+        let file = directories::realpath(sandbox.dir.path(), true)
+            .unwrap()
+            .join("store")
+            .join(directories::DATABASE_FILENAME);
+        let before = std::fs::read(&file).unwrap();
+        projects.bind(&owner.id, &plan).unwrap();
+        assert_eq!(
+            projects.read(&owner.id).unwrap().root.as_deref(),
+            work.to_str()
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), before);
+        // a third directory is not the held one
+        let other = work.parent().unwrap().join("other");
+        std::fs::create_dir(&other).unwrap();
+        assert_eq!(
+            projects.plan_root(&other, Some(&owner.id)),
+            Err(refused(BindingReason::HasDirectory))
+        );
     }
 }

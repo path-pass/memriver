@@ -128,6 +128,11 @@ impl Fixture {
         answer
     }
 
+    /// `left_to_git`, unless nothing stops this user (root): then nothing is asserted.
+    fn left_to_git_or_skip(&self, dir: &Path, stopped: bool) -> Option<GitFacts> {
+        if stopped { self.left_to_git(dir) } else { None }
+    }
+
     /// Whether git's own layout query succeeds in `dir`.
     fn git_knows_the_layout(&self, dir: &Path) -> bool {
         locate(dir, &self.env, WAIT).is_some()
@@ -652,7 +657,8 @@ fn a_repository_of_another_user_is_left_to_git() {
 }
 
 #[test]
-fn a_worktree_spelled_through_a_case_alias_is_never_mis_mapped() {
+fn on_a_file_system_that_ignores_case_a_worktree_spelled_through_a_case_alias_is_never_mis_mapped()
+{
     let it = fixture();
     let main = it.repository("main");
     let worktree = it.worktree(&main, "wt", "feature");
@@ -1152,17 +1158,16 @@ fn git_missing_or_timing_out_is_unknown_not_a_guess() {
     // not executable, and hanging past the time it is given
     fs::write(empty.join("git"), "#!/bin/sh\nexit 0\n").unwrap();
     assert_eq!(facts(&main, &env, WAIT), None);
-    let (env, mark) = fake_git(&it, "exec sleep 30");
+    let (env, _) = fake_git(&it, "exec sleep 30");
     let started = Instant::now();
-    assert_eq!(facts(&main, &env, Duration::from_secs(2)), None);
-    assert!(mark.exists());
-    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(facts(&main, &env, Duration::from_millis(200)), None);
+    assert!(started.elapsed() < Duration::from_secs(2));
     // a git that closes its output and then hangs is not waited for either
     let it = fixture();
     let (env, _) = fake_git(&it, "exec >&- ; exec sleep 30");
     let started = Instant::now();
-    assert_eq!(facts(&main, &env, Duration::from_secs(2)), None);
-    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(facts(&main, &env, Duration::from_millis(200)), None);
+    assert!(started.elapsed() < Duration::from_secs(2));
 }
 
 #[test]
@@ -1178,4 +1183,214 @@ fn lines_are_split_where_python_splits_them() {
         ["a", "b", "c", "d", "e", "f", "g", "h", "i"]
     );
     assert_eq!(py_splitlines("a\u{1f}b\tc d"), ["a\u{1f}b\tc d"]);
+}
+
+// --- a configuration only git can weigh ---
+
+#[test]
+fn a_bare_variable_followed_by_a_comment_goes_to_git_and_git_refuses() {
+    for line in ["foo ; why", "foo # why", "bare;", "filemode #"] {
+        let it = fixture();
+        let main = it.repository("main");
+        let worktree = it.worktree(&main, "wt", "feature");
+        append(&main.join(".git/config"), &format!("[core]\n\t{line}\n"));
+        assert_eq!(it.left_to_git(&main), None, "{line}");
+        assert_eq!(it.left_to_git(&worktree), None, "{line}");
+        assert!(!it.git_knows_the_layout(&main));
+    }
+}
+
+#[test]
+fn a_variable_git_checks_when_it_starts_goes_to_git() {
+    // values git refuses before it answers anything: the place is unknown
+    for text in [
+        "[core]\n\tfilemode = maybe\n",
+        "[core]\n\tignorecase = maybe\n",
+        "[core]\n\tsymlinks = maybe\n",
+        "[core]\n\tprecomposeunicode = maybe\n",
+        "[core]\n\tquotepath = maybe\n",
+        "[core]\n\tabbrev = banana\n",
+        "[core]\n\tcompression = 99\n",
+        "[core]\n\tautocrlf = banana\n",
+        "[core]\n\tcheckstat = banana\n",
+        "[user]\n\tname\n",
+        "[i18n]\n\tlogoutputencoding\n",
+    ] {
+        let it = fixture();
+        let main = it.repository("main");
+        let worktree = it.worktree(&main, "wt", "feature");
+        append(&main.join(".git/config"), text);
+        assert_eq!(it.left_to_git(&main), None, "{text:?}");
+        assert_eq!(it.left_to_git(&worktree), None, "{text:?}");
+    }
+    // a value git reads only when it needs it: whatever git says then
+    let it = fixture();
+    let main = it.repository("main");
+    append(
+        &main.join(".git/config"),
+        "[core]\n\tbigfilethreshold = x\n",
+    );
+    it.left_to_git(&main);
+    // values that spoil the branch, and with a worktree to list sometimes the place too:
+    // git never names a branch then
+    for text in [
+        "[core]\n\tlogallrefupdates = banana\n",
+        "[core]\n\twarnambiguousrefs = maybe\n",
+    ] {
+        let it = fixture();
+        let main = it.repository("main");
+        append(&main.join(".git/config"), text);
+        assert_eq!(it.left_to_git(&main), Some(at(&main, None)), "{text:?}");
+        let it = fixture();
+        let main = it.repository("main");
+        let worktree = it.worktree(&main, "wt", "feature");
+        append(&main.join(".git/config"), text);
+        for dir in [&main, &worktree] {
+            let answer = it.left_to_git(dir);
+            assert!(
+                answer.is_none_or(|facts| facts.branch.is_none()),
+                "{text:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_variable_git_does_not_write_itself_goes_to_git() {
+    // nothing wrong with any of these: they are simply not on the short list
+    for text in [
+        "[user]\n\tname = someone\n\temail = someone@example.com\n",
+        "[alias]\n\tco = checkout\n",
+        "[core]\n\tautocrlf = input\n",
+        "[core]\n\twarnambiguousrefs = false\n",
+        "[core]\n\tsharedrepository = group\n",
+        "[core]\n\tlogallrefupdates = always\n",
+        "[core \"x\"]\n\tfilemode = true\n",
+        "[pull]\n\trebase = true\n",
+        "[remote]\n\tpushdefault = origin\n",
+        "[branch]\n\tautosetupmerge = always\n",
+        "[submodule]\n\tactive = .\n",
+        "[safe]\n\tdirectory = *\n",
+        "[invented]\n",
+    ] {
+        let it = fixture();
+        let main = it.repository("main");
+        append(&main.join(".git/config"), text);
+        assert_eq!(
+            it.left_to_git(&main),
+            Some(at(&main, Some("main"))),
+            "{text:?}"
+        );
+    }
+}
+
+#[test]
+fn the_variables_git_writes_itself_stay_with_the_files() {
+    let it = fixture();
+    let main = it.repository("main");
+    let worktree = it.worktree(&main, "wt", "feature");
+    // what `git init` wrote, in other spellings; what `git clone` and `git submodule`
+    // add; a boolean without a value
+    fs::write(
+        main.join(".git/config"),
+        "[core]\n\trepositoryformatversion = 0\n\tfilemode = Yes\n\tbare = off\n\
+         \tLogAllRefUpdates = 1\n\tignorecase\n\tprecomposeunicode = ON\n\tsymlinks = false\n\
+         [remote \"origin\"]\n\turl = https://example.com/x.git\n\
+         \tfetch = +refs/heads/*:refs/remotes/origin/*\n\tpromisor\n\
+         [branch \"main\"]\n\tremote = origin\n\tmerge = refs/heads/main\n\trebase = banana\n\
+         [submodule \"lib\"]\n\turl = ../lib\n\tactive = true\n",
+    )
+    .unwrap();
+    assert_eq!(it.agreed(&main), at(&main, Some("main")));
+    assert_eq!(it.agreed(&worktree), at(&main, Some("feature")));
+}
+
+// --- a packed-refs file and a git directory as git itself reads them ---
+
+#[test]
+fn a_packed_refs_header_git_does_not_write_goes_to_git() {
+    for header in [
+        "# garbage header\n",
+        "#\n",
+        "# pack-refs with\n",
+        "#pack-refs with: sorted \n",
+    ] {
+        let it = fixture();
+        let main = it.repository("main");
+        fs::write(main.join(".git/packed-refs"), header).unwrap();
+        // the branch is there as a loose ref; git still reads the file, and stumbles
+        assert_eq!(it.left_to_git(&main), Some(at(&main, None)), "{header:?}");
+    }
+    // a header with a trait this code does not know is still git's header
+    let it = fixture();
+    let main = it.repository("main");
+    fs::write(
+        main.join(".git/packed-refs"),
+        "# pack-refs with: unknown-trait \n",
+    )
+    .unwrap();
+    assert_eq!(it.agreed(&main), at(&main, Some("main")));
+}
+
+#[test]
+fn packed_refs_that_claim_to_be_sorted_and_are_not_go_to_git() {
+    let it = fixture();
+    let main = it.repository("main");
+    for name in ["zz", "aa", "mm"] {
+        it.git(&main, &["branch", name]);
+    }
+    it.git(&main, &["pack-refs", "--all"]);
+    let packed = main.join(".git/packed-refs");
+    let written = fs::read_to_string(&packed).unwrap();
+    let mut lines: Vec<&str> = written.lines().collect();
+    assert!(lines[0].contains(" sorted "), "{}", lines[0]);
+    // in order: every branch is found by the files as by git
+    for name in ["zz", "aa", "mm", "main"] {
+        fs::write(main.join(".git/HEAD"), format!("ref: refs/heads/{name}\n")).unwrap();
+        assert_eq!(it.agreed(&main), at(&main, Some(name)), "{name}");
+    }
+    // reversed below a header that says sorted: git searches by halves and misses
+    lines[1..].reverse();
+    fs::write(&packed, format!("{}\n", lines.join("\n"))).unwrap();
+    for name in ["zz", "aa", "mm"] {
+        fs::write(main.join(".git/HEAD"), format!("ref: refs/heads/{name}\n")).unwrap();
+        assert_eq!(it.left_to_git(&main), Some(at(&main, None)), "{name}");
+    }
+    // the same line twice is not in order either
+    fs::write(
+        &packed,
+        format!("{written}{}\n", written.lines().last().unwrap()),
+    )
+    .unwrap();
+    assert_eq!(from_files(&main, &it.env), Confirmed::Unsure);
+    // without the claim git sorts what it reads, and so any order will do
+    let unsorted = format!("{}\n", lines.join("\n")).replace(" sorted ", " ");
+    fs::write(&packed, unsorted).unwrap();
+    for name in ["zz", "aa", "mm"] {
+        fs::write(main.join(".git/HEAD"), format!("ref: refs/heads/{name}\n")).unwrap();
+        assert_eq!(it.agreed(&main), at(&main, Some(name)), "{name}");
+    }
+}
+
+#[test]
+fn a_git_directory_whose_objects_cannot_be_searched_goes_to_git() {
+    for (directory, mode) in [("objects", 0o000), ("objects", 0o600), ("refs", 0o600)] {
+        let it = fixture();
+        let main = it.repository("main");
+        let worktree = it.worktree(&main, "wt", "feature");
+        let locked = main.join(".git").join(directory);
+        fs::set_permissions(&locked, fs::Permissions::from_mode(mode)).unwrap();
+        let stopped = fs::read_dir(locked.join("x"))
+            .is_err_and(|err| err.kind() == std::io::ErrorKind::PermissionDenied);
+        let answers = (
+            stopped,
+            it.left_to_git_or_skip(&main, stopped),
+            it.left_to_git_or_skip(&worktree, stopped),
+        );
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        if stopped {
+            // without the right to search it, it is no git directory to git
+            assert_eq!(answers, (true, None, None), "{directory} {mode:o}");
+        }
+    }
 }

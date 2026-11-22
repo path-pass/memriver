@@ -146,7 +146,7 @@ fn an_unregistered_directory_is_none() {
 }
 
 #[test]
-fn a_case_alias_of_a_root_is_that_root() {
+fn on_a_file_system_that_ignores_case_a_case_alias_of_a_root_is_that_root() {
     let (_sandbox, base) = base();
     if !case_insensitive(&base) {
         return;

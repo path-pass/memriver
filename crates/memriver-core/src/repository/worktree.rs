@@ -182,19 +182,29 @@ fn packed_refs(common: &Path) -> Option<HashSet<Vec<u8>>> {
         return Some(names);
     }
     let mut after_ref = false;
+    // in the order of their names when the header says so: git then searches by halves,
+    // and does not find what is out of place
+    let mut sorted = false;
+    let mut last: Option<&[u8]> = None;
     for (number, line) in content
         .strip_suffix(b"\n")?
         .split(|byte| *byte == b'\n')
         .enumerate()
     {
         match line {
-            [b'#', ..] if number == 0 => {}
+            [b'#', ..] if number == 0 => {
+                let traits = line.strip_prefix(b"# pack-refs with: ")?;
+                sorted = traits
+                    .split(|byte| *byte == b' ')
+                    .any(|name| name == b"sorted");
+            }
             [b'^', peeled @ ..] if after_ref && is_object_id(peeled) => after_ref = false,
             line if line.len() > 41 && line[40] == b' ' && is_object_id(&line[..40]) => {
                 let name = &line[41..];
-                if name.iter().any(|byte| *byte <= b' ') {
+                if name.iter().any(|byte| *byte <= b' ') || (sorted && last >= Some(name)) {
                     return None;
                 }
+                last = Some(name);
                 names.insert(name.to_vec());
                 after_ref = true;
             }
@@ -246,24 +256,51 @@ fn branch(head: Head, git_dir: &Path, common: &Path) -> Option<Option<String>> {
     Some(Some(name))
 }
 
-/// Whether the repository's configuration says nothing that changes what a working tree
-/// is or how refs are stored: not bare, no `core.worktree`, no include, format version 0
-/// and no extension at all.
+/// The variables of `core` that `git init` writes and that hold a boolean.
+const CORE_BOOLEANS: [&str; 5] = [
+    "filemode",
+    "logallrefupdates",
+    "ignorecase",
+    "precomposeunicode",
+    "symlinks",
+];
+
+/// Whether the repository's configuration holds only what git itself writes when it
+/// makes a repository, clones one or adds a worktree, with values git reads: format
+/// version 0, not bare, the booleans of `git init` in one of git's spellings, and whatever
+/// stands under a named remote, branch or submodule (git does not weigh those when it
+/// looks for the working tree).
+///
+/// Everything else -- `core.worktree`, an include, an extension, and any variable that is
+/// simply not on this list -- is git's to weigh: it checks many values when it starts, and
+/// refuses the repository for one it cannot read.
 fn plain_configuration(common: &Path) -> Option<bool> {
     let text = String::from_utf8(fs::read(common.join("config")).ok()?).ok()?;
     let config = config::parse(&text)?;
-    Some(
-        !["include", "includeif", "extensions"]
-            .iter()
-            .any(|section| config.has_section(section))
-            && config
-                .values("core", "bare")
-                .all(|value| config::boolean(value) == Some(false))
-            && config.values("core", "worktree").next().is_none()
-            && config
-                .values("core", "repositoryformatversion")
-                .all(|value| value == Some("0")),
-    )
+    let known = |section: &str| matches!(section, "core" | "remote" | "branch" | "submodule");
+    let plain = |variable: &config::Variable| {
+        let value = variable.value.as_deref();
+        match (variable.section.as_str(), &variable.subsection) {
+            ("remote" | "branch" | "submodule", Some(_)) => true,
+            ("core", None) => match variable.name.as_str() {
+                "repositoryformatversion" => value == Some("0"),
+                "bare" => config::boolean(value) == Some(false),
+                name => CORE_BOOLEANS.contains(&name) && config::boolean(value).is_some(),
+            },
+            _ => false,
+        }
+    };
+    Some(config.sections.iter().all(|section| known(section)) && config.variables.iter().all(plain))
+}
+
+/// A directory this user may search, which is what git asks of `objects` and `refs`.
+fn searchable(path: &Path) -> bool {
+    let Ok(name) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `name` is a C string that outlives the call
+    let allowed = unsafe { libc::access(name.as_ptr(), libc::X_OK) } == 0;
+    allowed && fs::metadata(path).is_ok_and(|found| found.is_dir())
 }
 
 /// The path the system itself gives for the open directory `dir`.
@@ -363,9 +400,7 @@ fn read_files(dir: &Path, env: &Env, user: u32) -> Option<GitFacts> {
     // 3, 8: nothing in the configuration that only git can weigh
     plain_configuration(common)?.then_some(())?;
     // what makes a directory a git directory, besides its HEAD
-    let is_directory =
-        |name: &str| fs::metadata(common.join(name)).is_ok_and(|found| found.is_dir());
-    (is_directory("objects") && is_directory("refs")).then_some(())?;
+    (searchable(&common.join("objects")) && searchable(&common.join("refs"))).then_some(())?;
     // 5, 6, 7
     let branch = branch(head(&git_dir)?, &git_dir, common)?;
     let main_tree = match main {

@@ -53,17 +53,22 @@ impl ProjectService {
         }
     }
 
-    /// The header, state and read/write set for one directory. Never fails for a store
-    /// problem: an unreadable store is an empty, clearly labelled project context.
-    pub fn open_project_context(&self, start: &Path) -> ProjectContext {
+    /// The header, state and read/write set for one directory.
+    ///
+    /// A store that cannot be read is no error here: it is an empty, clearly labelled
+    /// project context. Every other error comes back as it is -- above all a store of an
+    /// older schema, whose version the caller needs to say what the store requires.
+    pub fn open_project_context(&self, start: &Path) -> Result<ProjectContext, CoreError> {
         let read = || {
             let resolution = self.project_store.resolve(start, None, None)?;
-            Ok::<_, CoreError>((resolution, self.project_store.global_project_id()?))
+            Ok((resolution, self.project_store.global_project_id()?))
         };
-        let Ok((resolution, global_project_id)) = read() else {
-            return unavailable_context(None);
+        let (resolution, global_project_id) = match read() {
+            Ok(read) => read,
+            Err(CoreError::StorageFailure) => return Ok(unavailable_context(None)),
+            Err(other) => return Err(other),
         };
-        match resolution {
+        Ok(match resolution {
             Resolution {
                 state: ResolutionState::Registered,
                 project: Some(project),
@@ -87,7 +92,7 @@ impl ProjectService {
                 global_project_id,
                 None,
             ),
-        }
+        })
     }
 
     pub fn global_project_id(&self) -> Result<Option<String>, CoreError> {

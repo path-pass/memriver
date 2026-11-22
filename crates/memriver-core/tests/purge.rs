@@ -391,3 +391,41 @@ fn a_protected_base_changed_after_confirmation_is_looked_at_again() {
         assert!(at.store.join("sub/f").exists());
     }
 }
+
+#[test]
+fn a_symlinked_target_is_refused_however_its_name_ends() {
+    // `link/` is what a shell completes a link to a directory to; looked at as written,
+    // it is the directory behind the link
+    for ending in ["/", "/.", "//", "/./", "/.//."] {
+        for dry_run in [true, false] {
+            let at = places();
+            let link = at.base.join("link");
+            symlink(&at.store, &link).unwrap();
+            let written = PathBuf::from(format!("{}{ending}", link.display()));
+            let refusal = plan_purge(&written, &at.home, &at.cwd, dry_run).unwrap_err();
+            assert_eq!(
+                (refusal.kind, &refusal.path),
+                (PurgeRefusalKind::Symlink, &link),
+                "{ending:?} {dry_run}"
+            );
+            assert!(at.store.join(DATABASE_FILENAME).exists() && at.store.join("sub/f").exists());
+        }
+    }
+    // relative to the working directory, too
+    let at = places();
+    symlink(&at.store, at.cwd.join("link")).unwrap();
+    let refusal = plan_purge(Path::new("./link/"), &at.home, &at.cwd, false).unwrap_err();
+    assert_eq!(
+        (refusal.kind, &refusal.path),
+        (PurgeRefusalKind::Symlink, &at.cwd.join("link"))
+    );
+    assert!(at.store.join(DATABASE_FILENAME).exists());
+    // a real directory is found under any of these spellings, and shown tidied
+    let plan = plan_purge(&at.base.join("store/./"), &at.home, &at.cwd, true).unwrap();
+    assert_eq!((&plan.given, &plan.canonical), (&at.store, &at.store));
+    // `..` is kept: it is resolved, not read off the text
+    symlink(at.store.join("sub"), at.base.join("into")).unwrap();
+    let plan = plan_purge(&at.base.join("into/.."), &at.home, &at.cwd, true).unwrap();
+    assert_eq!(plan.given, at.base.join("into/.."));
+    assert_eq!(plan.canonical, at.store);
+}

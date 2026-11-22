@@ -328,7 +328,8 @@ fn a_main_tree_whose_git_names_another_toplevel_is_unknown() {
 }
 
 #[test]
-fn a_worktree_spelled_through_a_case_alias_is_unknown_never_mis_mapped() {
+fn on_a_file_system_that_ignores_case_a_worktree_spelled_through_a_case_alias_is_unknown_never_mis_mapped()
+ {
     let it = fixture();
     let main = it.repository("main");
     let worktree = it.worktree(&main, "wt", "feature");

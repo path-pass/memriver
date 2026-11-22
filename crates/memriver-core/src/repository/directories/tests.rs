@@ -105,14 +105,56 @@ fn realpath_reads_every_link_and_takes_missing_names_as_written() {
             "{written}"
         );
     }
-    // the failure names the component it happened at
-    for written in ["file/below", "file/.."] {
+    // nothing lies below what is no directory, whatever is written after it: answers
+    // recorded from Python 3.13 (strict: the component the failure names; else the path)
+    symlink("file", base.join("linkfile")).unwrap();
+    symlink("linkfile", base.join("link2")).unwrap();
+    for (written, named, loose) in [
+        ("file/", "file", "file"),
+        ("file/./", "file", "file"),
+        ("linkfile/", "file", "file"),
+        ("linkfile/..", "file", ""),
+        ("linkfile/x", "file", "file/x"),
+        ("file/..", "file", ""),
+        ("file/.", "file", "file"),
+        ("file//", "file", "file"),
+        ("file/below", "file", "file/below"),
+        ("link2/", "file", "file"),
+        ("rel/../file/", "file", "file"),
+    ] {
+        let failure = realpath(&base.join(written), true).unwrap_err();
         assert_eq!(
-            realpath(&base.join(written), true).unwrap_err().path,
-            base.join("file")
+            (failure.errno, &failure.path),
+            (Some(libc::ENOTDIR), &base.join(named)),
+            "{written}"
+        );
+        let loose = match loose {
+            "" => base.clone(),
+            loose => base.join(loose),
+        };
+        assert_eq!(realpath(&base.join(written), false), Ok(loose), "{written}");
+    }
+    for (written, real) in [
+        ("file", "file"),
+        ("linkfile", "file"),
+        ("link2", "file"),
+        ("rel/", "real"),
+        ("rel/.", "real"),
+        ("real/sub/", "real/sub"),
+    ] {
+        assert_eq!(
+            realpath(&base.join(written), true),
+            Ok(base.join(real)),
+            "{written}"
         );
     }
-    assert_eq!(realpath(&base.join("file/./"), true), Ok(base.join("file")));
+    // so a start written through a file is no directory, where its text alone names one
+    assert_eq!(canonical(&base.join("linkfile/..")), None);
+    assert_eq!(canonical(&base.join("file/..")), None);
+    assert_eq!(
+        canonical(&base.join("rel/../real/sub/.")),
+        Some(base.join("real/sub"))
+    );
     assert_eq!(
         realpath(&base.join("rel/missing/x"), true)
             .unwrap_err()
@@ -321,4 +363,69 @@ fn a_child_that_changes_hands_while_it_is_emptied_is_named_and_left() {
     assert_eq!(result.detail, "Directory not empty");
     assert!(child.join("stranger").exists());
     assert!(!store.join(DATABASE_FILENAME).exists());
+}
+
+// --- one directory under two spellings, on any file system ---
+
+/// Two directories whose names differ only in case, made to count as one.
+fn alias(base: &Path, real: &str, other: &str) -> (PathBuf, PathBuf) {
+    for name in [real, other] {
+        fs::create_dir_all(base.join(name)).unwrap();
+    }
+    ignore_case();
+    (base.join(real), base.join(other))
+}
+
+fn pairs(bound: &[(&str, &Path)]) -> Vec<(String, String)> {
+    bound
+        .iter()
+        .map(|(id, root)| (id.to_string(), root.to_str().unwrap().to_string()))
+        .collect()
+}
+
+#[test]
+fn a_root_under_another_spelling_is_matched_by_identity() {
+    let (_sandbox, base) = base();
+    let (real, other) = alias(&base, "Work", "work");
+    assert_eq!(same_directory(&real, &other), Some(true));
+    assert_eq!(covers(&other, &real.join("x")), Some(true));
+    assert_eq!(
+        nearest_bound(&real, &pairs(&[("aaaaaaaaaa", &other)]), None),
+        Match::Registered("aaaaaaaaaa".to_string())
+    );
+    // without the pretence the two are different directories, or one: either way the
+    // answer above did not come from the text
+    assert_ne!(real.as_os_str(), other.as_os_str());
+}
+
+#[test]
+fn a_nearer_alias_beats_a_farther_exact_match() {
+    let (_sandbox, base) = base();
+    let parent = base.join("work");
+    let (child, other) = alias(&base, "work/Child", "work/child");
+    let bound = pairs(&[("aaaaaaaaaa", &parent), ("bbbbbbbbbb", &other)]);
+    assert_eq!(
+        nearest_bound(&child, &bound, None),
+        Match::Registered("bbbbbbbbbb".to_string())
+    );
+}
+
+#[test]
+fn an_exact_root_and_an_alias_of_two_projects_at_one_level_is_degraded() {
+    let (_sandbox, base) = base();
+    let (real, other) = alias(&base, "Work", "work");
+    let bound = pairs(&[("aaaaaaaaaa", &real), ("bbbbbbbbbb", &other)]);
+    assert_eq!(
+        nearest_bound(&real, &bound, None),
+        Match::Degraded(format!(
+            "{}: matched by more than one project",
+            real.display()
+        ))
+    );
+    // the same project under both spellings is one project
+    let twice = pairs(&[("aaaaaaaaaa", &real), ("aaaaaaaaaa", &other)]);
+    assert_eq!(
+        nearest_bound(&real, &twice, None),
+        Match::Registered("aaaaaaaaaa".to_string())
+    );
 }
