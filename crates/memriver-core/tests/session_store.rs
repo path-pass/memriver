@@ -166,10 +166,10 @@ impl Fixture {
     }
 
     fn add(&self, key: &SessionKey, entry: &PromptEntry, seed: &Session) -> (Session, bool) {
-        self.store
-            .add_prompt(key, entry, seed, 5, Activity::First)
-            .unwrap()
-            .unwrap()
+        let added = self.store.add_prompt(key, entry, seed, 5, None, None);
+        let (session, created, moved) = added.unwrap().unwrap();
+        assert_eq!(moved, None);
+        (session, created)
     }
 
     fn prompts_until(&self, count: i64) {
@@ -572,30 +572,82 @@ fn the_write_that_follows_a_rows_making_or_move_in_one_event_does_not_move_its_t
     // on a row that is there the same prompt is an event of its own
     let (made, created) = fixture.add(&key(), &prompt(9, "x"), &seed);
     assert!(!created && made.last_active_at > at(10));
-    // after a move of the same event: the time the move left, or the event's when later
+    // a prompt that brings a move: one write, and the move's time for both
     let fixture = initialized();
-    fixture.register(session(|session| session.last_active_at = at(10)));
+    let before = started_at_a(&fixture, session(|session| session.last_active_at = at(10)));
     let store = &fixture.store;
-    let following = |second| {
-        let added = store.add_prompt(
-            &key(),
-            &prompt(second, "x"),
-            &pending(),
-            5,
-            Activity::Following,
-        );
-        added.unwrap().unwrap().0.last_active_at
+    let bringing = |second, to: &MoveTo<'_>| {
+        let added = store.add_prompt(&key(), &prompt(second, "x"), &pending(), 5, Some(to), None);
+        let (session, created, moved) = added.unwrap().unwrap();
+        assert!(!created);
+        (session, moved)
     };
-    assert_eq!(following(9), at(10));
-    assert_eq!(following(10), at(10));
-    assert_eq!(following(11), at(11));
-    let touched = |second| {
-        let touched = store.touch(&key(), &at(second), None, Activity::Following);
+    let (row, moved) = bringing(40, &to_other());
+    let moved = moved.unwrap();
+    assert_eq!(
+        (row.last_active_at.as_str(), moved.seq),
+        (moved.moved_at.as_str(), 1)
+    );
+    assert_eq!(moved.moved_at, at(50));
+    assert_eq!(
+        (
+            row.project_id.as_deref(),
+            row.transcript_path.as_deref(),
+            row.prompt_count
+        ),
+        (Some(OTHER), Some("/t/b"), before.prompt_count + 1)
+    );
+    assert_eq!(fixture.get(), row);
+    assert_eq!(fixture.store.moves(&key()).unwrap(), [moved]);
+    // a move whose expected path is no longer the stored one is not applied; the prompt
+    // is an event of its own then
+    let (row, moved) = bringing(41, &to_other());
+    assert_eq!((moved, row.prompt_count), (None, before.prompt_count + 2));
+    assert_eq!(row.project_id.as_deref(), Some(OTHER));
+    assert!(row.last_active_at > at(50));
+    assert_eq!(fixture.count("SELECT count(*) FROM session_moves"), 1);
+    // a clock that is behind: the move steps once, the prompt with it does not step again
+    let fixture = initialized();
+    started_at_a(
+        &fixture,
+        session(|session| session.last_active_at = "2999-01-01T00:00:00.000000Z".to_string()),
+    );
+    let added = fixture.store.add_prompt(
+        &key(),
+        &prompt(40, "x"),
+        &pending(),
+        5,
+        Some(&to_other()),
+        None,
+    );
+    let (row, _, moved) = added.unwrap().unwrap();
+    assert_eq!(row.last_active_at, "2999-01-01T00:00:00.000001Z");
+    assert_eq!(moved.unwrap().moved_at, row.last_active_at);
+    // a first transcript path comes with the prompt, and only where none is stored
+    let fixture = initialized();
+    fixture.register(session(|_| {}));
+    let adopting = |path| {
+        let added =
+            fixture
+                .store
+                .add_prompt(&key(), &prompt(1, "x"), &pending(), 5, None, Some(path));
+        added.unwrap().unwrap().0.transcript_path
+    };
+    assert_eq!(adopting("/t/a").as_deref(), Some("/t/a"));
+    assert_eq!(adopting("/t/b").as_deref(), Some("/t/a"));
+    // the touch that follows a move in another write of the same event: the time that
+    // write left, or the touch's own when that is later
+    let touched = |at: &str| {
+        let touched = fixture.store.touch(&key(), at, None, Activity::Following);
         touched.unwrap().unwrap().last_active_at
     };
-    assert_eq!(touched(5), at(11));
-    assert_eq!(touched(12), at(12));
-    assert_eq!(fixture.get().prompt_count, 3);
+    let stands = fixture.get().last_active_at;
+    assert_eq!(touched(&at(0)), stands);
+    assert_eq!(touched(&stands), stands);
+    assert_eq!(
+        touched("2999-01-01T00:00:00.000000Z"),
+        "2999-01-01T00:00:00.000000Z"
+    );
 }
 
 #[test]
@@ -607,7 +659,7 @@ fn activity_on_a_session_whose_time_has_no_later_one_is_a_storage_failure_and_wr
             let added =
                 fixture
                     .store
-                    .add_prompt(&key(), &prompt(9, "x"), &pending(), 5, Activity::First);
+                    .add_prompt(&key(), &prompt(9, "x"), &pending(), 5, None, None);
             added.map(drop)
         }),
         ("a start", |fixture| {
@@ -639,14 +691,29 @@ fn activity_on_a_session_whose_time_has_no_later_one_is_a_storage_failure_and_wr
         assert_eq!(fixture.get(), before, "{name}");
         assert_eq!(fixture.count("SELECT count(*) FROM session_moves"), 0);
     }
-    // what follows a row's making or move in one event has nothing to move, and is written
+    // a prompt that brings a move or a first transcript path is refused whole
     let fixture = initialized();
-    fixture.register(session(|session| session.last_active_at = LAST.to_string()));
+    let before = fixture.register(session(|session| session.last_active_at = LAST.to_string()));
     let added =
         fixture
             .store
-            .add_prompt(&key(), &prompt(9, "x"), &pending(), 5, Activity::Following);
-    assert_eq!(added.unwrap().unwrap().0.last_active_at, LAST);
+            .add_prompt(&key(), &prompt(9, "x"), &pending(), 5, None, Some("/t/a"));
+    assert_eq!(added.unwrap_err(), CoreError::StorageFailure.into());
+    let to = MoveTo {
+        expected_transcript_path: None,
+        ..to_other()
+    };
+    let added = fixture
+        .store
+        .add_prompt(&key(), &prompt(9, "x"), &pending(), 5, Some(&to), None);
+    assert_eq!(added.unwrap_err(), CoreError::StorageFailure.into());
+    assert_eq!(fixture.get(), before);
+    assert_eq!(fixture.count("SELECT count(*) FROM session_moves"), 0);
+    // what follows a move in another write of the same event has nothing to move
+    let touched = fixture
+        .store
+        .touch(&key(), &at(9), None, Activity::Following);
+    assert_eq!(touched.unwrap().unwrap().last_active_at, LAST);
     // and the instant before the last still has one after it
     let fixture = initialized();
     fixture.register(session(|session| {
@@ -690,13 +757,8 @@ fn concurrent_first_prompts_create_one_row_and_exactly_one_reports_it() {
         let stores = stores(&fixture, shared);
         let results = run_together(|index| {
             let entry = prompt(index as u32 + 1, "x");
-            let added = stores[index % stores.len()].add_prompt(
-                &key(),
-                &entry,
-                &pending(),
-                5,
-                Activity::First,
-            );
+            let added =
+                stores[index % stores.len()].add_prompt(&key(), &entry, &pending(), 5, None, None);
             added.unwrap().unwrap().1
         });
         assert_eq!(results.iter().filter(|created| **created).count(), 1);
@@ -712,7 +774,7 @@ fn a_prompt_count_with_no_next_one_is_a_storage_failure_and_writes_nothing() {
     let before = fixture.get();
     let added = fixture
         .store
-        .add_prompt(&key(), &prompt(1, "x"), &pending(), 5, Activity::First);
+        .add_prompt(&key(), &prompt(1, "x"), &pending(), 5, None, None);
     assert_eq!(added.unwrap_err(), CoreError::StorageFailure.into());
     assert_eq!(fixture.get(), before);
 }
@@ -1188,7 +1250,7 @@ fn a_bad_row_fails_a_write_too_and_is_left_as_it_was() {
     );
     assert_eq!(
         store
-            .add_prompt(&key(), &prompt(50, "x"), &pending(), 5, Activity::First)
+            .add_prompt(&key(), &prompt(50, "x"), &pending(), 5, None, None)
             .unwrap_err(),
         failure
     );
@@ -1305,7 +1367,7 @@ fn session_writes_into_a_missing_store_are_silent() {
     );
     assert_eq!(
         store
-            .add_prompt(&key(), &prompt(1, "x"), &pending(), 5, Activity::First)
+            .add_prompt(&key(), &prompt(1, "x"), &pending(), 5, None, None)
             .unwrap(),
         None
     );
@@ -1346,9 +1408,10 @@ fn a_malformed_argument_is_a_value_error_and_writes_nothing() {
         &prompt(1, "x"),
         &pending_of(codex("x"), |_| {}),
         5,
-        Activity::First,
+        None,
+        None,
     ));
-    is_value_error(store.add_prompt(&key(), &prompt(1, "x"), &pending(), 0, Activity::First));
+    is_value_error(store.add_prompt(&key(), &prompt(1, "x"), &pending(), 0, None, None));
     is_value_error(store.move_(
         &key(),
         &MoveTo {

@@ -67,6 +67,44 @@ struct Entry {
     branch: Option<String>,
 }
 
+/// A move as resolved outside the store: where to, and the transcript path that
+/// signalled it.
+struct PlannedMove<'a> {
+    entry: Entry,
+    degraded: bool,
+    transcript_path: &'a str,
+}
+
+impl PlannedMove<'_> {
+    /// The move for the store, which applies it only while the row's transcript path is
+    /// still the one `stored` had.
+    fn to<'a>(&'a self, stored: &'a Session, at: &'a str) -> MoveTo<'a> {
+        let project = self.entry.project.as_ref();
+        MoveTo {
+            expected_transcript_path: stored.transcript_path.as_deref(),
+            entry_cwd: &self.entry.cwd,
+            branch: self.entry.branch.as_deref(),
+            transcript_path: self.transcript_path,
+            project_id: project.map(|project| project.id.as_str()),
+            project_root: project.and_then(|project| project.root.as_deref()),
+            at,
+        }
+    }
+
+    /// What the applied move did, from the row before it, the row after and its record.
+    fn outcome(&self, stored: &Session, row: &Session, record: SessionMove) -> MoveOutcome {
+        MoveOutcome {
+            from_project_id: record.from_project_id,
+            to_project_id: row.project_id.clone(),
+            from_candidate_id: stored.candidate_id.clone(),
+            to_candidate_id: row.candidate_id.clone(),
+            to_entry_cwd: row.entry_cwd.clone(),
+            pending: row.status == SessionStatus::Pending,
+            degraded: self.degraded,
+        }
+    }
+}
+
 pub struct SessionService {
     session_store: SessionStore,
     project_store: ProjectStore,
@@ -235,30 +273,38 @@ impl SessionService {
         let entry = self.prompt_entry(prompt, &now());
         let observed = || -> Result<PromptOutcome, CoreError> {
             let store = &self.session_store;
-            let mut moved = None;
-            let seed = match store.get(key)? {
+            let (seed, plan) = match store.get(key)? {
                 None => match self.new_session(key, entry_dir, transcript_path, false)? {
-                    Ok(seed) => seed,
+                    Ok(seed) => (seed, None),
                     Err(context) => return answer(context, false, None),
                 },
+                // outside any transaction: git may run here
                 Some(seed) => {
-                    match self.apply_move(key, &seed, current_dir, transcript_path)? {
-                        Ok(outcome) => moved = outcome,
-                        Err(context) => return answer(context, false, None),
-                    }
-                    // a signal needs a stored path, so a NULL one means none was seen
-                    if seed.transcript_path.is_none()
-                        && let Some(path) = usable(transcript_path)
-                    {
-                        store.adopt_transcript(key, path).map_err(core)?;
-                    }
-                    seed
+                    let plan = self.planned_move(key, &seed, current_dir, transcript_path)?;
+                    (seed, plan)
                 }
             };
-            let activity = following(&moved);
-            let added = store.add_prompt(key, &entry, &seed, SESSION_RECENT_PROMPTS, activity);
+            // the move, a first transcript path (a signal needs a stored path, so a
+            // NULL one means none was seen) and the prompt are one write: nobody reads
+            // the session between them
+            let at = now();
+            let to = plan.as_ref().map(|plan| plan.to(&seed, &at));
+            let added = store.add_prompt(
+                key,
+                &entry,
+                &seed,
+                SESSION_RECENT_PROMPTS,
+                to.as_ref(),
+                usable(transcript_path),
+            );
             match added.map_err(core)? {
-                Some((session, created)) => answer(self.context_of(&session)?, created, moved),
+                Some((session, created, record)) => {
+                    let moved = match (&plan, record) {
+                        (Some(plan), Some(record)) => Some(plan.outcome(&seed, &session, record)),
+                        _ => None,
+                    };
+                    answer(self.context_of(&session)?, created, moved)
+                }
                 None => answer(self.storeless_context(key), false, None),
             }
         };
@@ -607,8 +653,7 @@ impl SessionService {
 
     /// Move a Claude Code session whose transcript changed directory: what the move
     /// did, None when there was none to apply; the context instead when the row is
-    /// gone. A signal with an unusable `current_dir` writes nothing, so the next event
-    /// with a usable one applies the move.
+    /// gone.
     fn apply_move(
         &self,
         key: &SessionKey,
@@ -616,16 +661,38 @@ impl SessionService {
         current_dir: Option<&str>,
         transcript_path: Option<&str>,
     ) -> Result<Result<Option<MoveOutcome>, ProjectContext>, CoreError> {
+        let Some(plan) = self.planned_move(key, stored, current_dir, transcript_path)? else {
+            return Ok(Ok(None));
+        };
+        let moved = self.session_store.move_(key, &plan.to(stored, &now()));
+        Ok(match moved.map_err(core)? {
+            None => Err(self.storeless_context(key)),
+            // the row changed meanwhile: it answers
+            Some((_, None)) => Ok(None),
+            Some((row, Some(record))) => Ok(Some(plan.outcome(stored, &row, record))),
+        })
+    }
+
+    /// Where a Claude Code session whose transcript changed directory is to be moved;
+    /// None when there is no move to apply. Nothing is written here, and git may run. A
+    /// signal with an unusable `current_dir` plans nothing, so the next event with a
+    /// usable one applies the move.
+    fn planned_move<'a>(
+        &self,
+        key: &SessionKey,
+        stored: &Session,
+        current_dir: Option<&str>,
+        transcript_path: Option<&'a str>,
+    ) -> Result<Option<PlannedMove<'a>>, CoreError> {
         // a Codex row is never checked, and without a directory to go to there is no
         // move to apply: the transcript's directory is not looked at for either
         let (Harness::ClaudeCode, Some(current_dir)) = (key.harness(), usable(current_dir)) else {
-            return Ok(Ok(None));
+            return Ok(None);
         };
-        let signal = match (&stored.transcript_path, transcript_path) {
+        let transcript_path = match (&stored.transcript_path, transcript_path) {
             (Some(stored), Some(current)) if transcript_moved(stored, current) => current,
-            _ => return Ok(Ok(None)),
+            _ => return Ok(None),
         };
-        // outside any transaction: git may run here
         let (entry, degraded) = match self.resolve_entry(key, current_dir)? {
             Ok(entry) => (entry, false),
             // moved to "no project" where /cd went: never left on the old one
@@ -638,30 +705,11 @@ impl SessionService {
                 true,
             ),
         };
-        let project = entry.project.as_ref();
-        let to = MoveTo {
-            expected_transcript_path: stored.transcript_path.as_deref(),
-            entry_cwd: &entry.cwd,
-            branch: entry.branch.as_deref(),
-            transcript_path: signal,
-            project_id: project.map(|project| project.id.as_str()),
-            project_root: project.and_then(|project| project.root.as_deref()),
-            at: &now(),
-        };
-        Ok(match self.session_store.move_(key, &to).map_err(core)? {
-            None => Err(self.storeless_context(key)),
-            // the row changed meanwhile: it answers
-            Some((_, None)) => Ok(None),
-            Some((row, Some(record))) => Ok(Some(MoveOutcome {
-                from_project_id: record.from_project_id,
-                to_project_id: row.project_id,
-                from_candidate_id: stored.candidate_id.clone(),
-                to_candidate_id: row.candidate_id,
-                to_entry_cwd: row.entry_cwd,
-                pending: row.status == SessionStatus::Pending,
-                degraded,
-            })),
-        })
+        Ok(Some(PlannedMove {
+            entry,
+            degraded,
+            transcript_path,
+        }))
     }
 
     /// The row a new session gets from its entry directory. A context instead when the

@@ -502,3 +502,57 @@ fn the_transcript_directory_is_looked_at_only_for_a_claude_code_session_with_a_u
         1
     );
 }
+
+/// Looks at the session's row whenever a write is about to open its transaction, from
+/// now on: what a reader between two writes of one event would be given.
+fn watch(world: &Rc<World>, seen: &Rc<std::cell::RefCell<Vec<Session>>>) {
+    let (world, seen) = (Rc::clone(world), Rc::clone(seen));
+    meanwhile(move || {
+        seen.borrow_mut().push(world.row());
+        watch(&world, &seen);
+    });
+}
+
+#[test]
+fn a_prompt_and_what_it_brings_are_one_write_to_whoever_reads_the_session() {
+    // a prompt that moves the session, and one that brings the first transcript path
+    for moving in [true, false] {
+        let world = world();
+        let b = world.init("b");
+        world.start("startup", moving.then_some(T_A), None);
+        let before = world.row();
+        let seen = Rc::new(std::cell::RefCell::new(Vec::new()));
+        watch(&world, &seen);
+        let observed = if moving {
+            world.prompt(Some(T_B), b.root.as_deref())
+        } else {
+            world.prompt(Some(T_A), Some(&world.work))
+        };
+        meanwhile(|| {});
+        let after = world.row();
+        assert_eq!(observed.moved.is_some(), moving);
+        assert_eq!(after.prompt_count, before.prompt_count + 1);
+        assert_ne!(after.transcript_path, before.transcript_path);
+        // every reading is the session before the event or after it, never between
+        let seen = seen.take();
+        assert_eq!(seen.first(), Some(&before));
+        for reading in &seen {
+            assert!(
+                *reading == before || *reading == after,
+                "{moving}: {reading:?}"
+            );
+        }
+        // and a summary made from a reading before the event is refused after it
+        let published = world.session().publish_summary(
+            &key(),
+            "made before the prompt",
+            &before.last_active_at,
+        );
+        assert_eq!(published.unwrap_err(), CoreError::SessionMoved.into());
+        if moving {
+            let moves = world.session().moves(&key()).unwrap();
+            assert_eq!(moves[0].moved_at, after.last_active_at);
+            assert_eq!(after.project_id, Some(b.id));
+        }
+    }
+}

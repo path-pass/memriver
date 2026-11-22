@@ -231,8 +231,9 @@ fn require_timestamp(at: &str) -> Result<(), ValueError> {
 pub enum Activity {
     /// The event's first write to the row: the time moves strictly forward.
     First,
-    /// The row was made or moved by this same event: the time is the later of the two,
-    /// which is what that write already left unless the clock has moved on.
+    /// The row was made or moved by this same event, in this transaction or an earlier
+    /// one: the time is the later of the two, which is what that already left unless
+    /// the clock has moved on.
     Following,
 }
 
@@ -305,6 +306,70 @@ thread_local! {
 #[cfg(test)]
 pub(crate) fn meanwhile(then: impl FnOnce() + 'static) {
     MEANWHILE.set(Some(Box::new(then)));
+}
+
+/// `session` as the move `to` leaves it, not yet saved, and the record of that move
+/// with the next number; None, and the session untouched, when its stored transcript
+/// path is not the one the move expects.
+fn relocated(
+    conn: &Connection,
+    session: &mut Session,
+    to: &MoveTo<'_>,
+) -> Written<Option<SessionMove>> {
+    if session.transcript_path.as_deref() != to.expected_transcript_path {
+        return Ok(None);
+    }
+    let own = |text: Option<&str>| text.map(str::to_string);
+    let active = later(&session.last_active_at, to.at, Activity::First)?;
+    let (from_entry_cwd, from_project_id) = (session.entry_cwd.clone(), session.project_id.clone());
+    if session.status == SessionStatus::Registered {
+        session.project_id = own(to.project_id);
+        (session.candidate_id, session.candidate_root) = (None, None);
+    } else {
+        session.candidate_id = own(to.project_id);
+        session.candidate_root = own(to.project_root);
+    }
+    session.entry_cwd = to.entry_cwd.to_string();
+    session.branch = own(to.branch);
+    session.transcript_path = Some(to.transcript_path.to_string());
+    session.last_active_at = active.clone();
+    let key = &session.key;
+    let seq: i64 = conn.query_row(
+        &format!("SELECT coalesce(max(seq), 0) + 1 FROM session_moves{BY_KEY}"),
+        params![key.harness().as_str(), key.session_id()],
+        |row| row.get(0),
+    )?;
+    let record = SessionMove::new(
+        key.clone(),
+        seq,
+        &active,
+        &from_entry_cwd,
+        from_project_id,
+        to.entry_cwd,
+        session.project_id.clone(),
+    )?;
+    Ok(Some(record))
+}
+
+/// Stores the record of a move, after the row it belongs to was saved.
+fn record_move(conn: &Connection, record: &SessionMove) -> Result<(), CoreError> {
+    conn.execute(
+        &format!(
+            "INSERT INTO session_moves ({SESSION_MOVE_COLUMNS}) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"
+        ),
+        params![
+            record.key.harness().as_str(),
+            record.key.session_id(),
+            record.seq,
+            record.moved_at,
+            record.from_entry_cwd,
+            record.from_project_id,
+            record.to_entry_cwd,
+            record.to_project_id
+        ],
+    )?;
+    Ok(())
 }
 
 pub struct SessionStore {
@@ -442,26 +507,44 @@ impl SessionStore {
         Ok(changed.flatten())
     }
 
-    /// Counts one prompt, inserting `seed` first when the key has no row. The row, and
-    /// whether this call created it: of several first prompts at once exactly one did.
+    /// Counts one prompt, inserting `seed` first when the key has no row -- and with it,
+    /// in the same transaction, what the prompt's event brings to a row that was there:
+    /// the move `to` when the stored transcript path is still the one it expects, and
+    /// the transcript path `adopt` when none is stored. A reader is given the session
+    /// before the event or after it, never between, and the activity time moves once.
+    ///
+    /// The row, whether this call created it -- of several first prompts at once
+    /// exactly one did -- and the move it applied.
     pub fn add_prompt(
         &self,
         key: &SessionKey,
         entry: &PromptEntry,
         seed: &Session,
         keep_recent: usize,
-        activity: Activity,
-    ) -> Written<Option<(Session, bool)>> {
+        to: Option<&MoveTo<'_>>,
+        adopt: Option<&str>,
+    ) -> Written<Option<(Session, bool, Option<SessionMove>)>> {
         if seed.key != *key {
             return Err(ValueError::new("the seed is another session's").into());
         }
         if keep_recent < 1 {
             return Err(ValueError::new("keep_recent is not a positive integer").into());
         }
+        if let Some(to) = to {
+            require_timestamp(to.at)?;
+        }
         let seed_row = checked_row(seed)?;
         self.written(|conn| {
             let created = insert(conn, &seed_row)?;
             let mut session = stored(conn, key)?.ok_or(CoreError::StorageFailure)?;
+            // a row this call made has nothing to move away from
+            let moved = match to {
+                Some(to) if !created => relocated(conn, &mut session, to)?,
+                _ => None,
+            };
+            if session.transcript_path.is_none() {
+                session.transcript_path = adopt.map(str::to_string);
+            }
             // a count with no next one: nothing is written
             session.prompt_count = session
                 .prompt_count
@@ -471,15 +554,20 @@ impl SessionStore {
             session.recent_prompts.push(entry.clone());
             let surplus = session.recent_prompts.len().saturating_sub(keep_recent);
             session.recent_prompts.drain(..surplus);
-            // a row this call made has no earlier reading to end: it keeps the time it
-            // was made with unless the prompt's is later
-            let activity = if created {
+            // one event moves the time once: the move did, when there was one, and a row
+            // this call made has no earlier reading to end -- it keeps the time it was
+            // made with unless the prompt's is later
+            let activity = if created || moved.is_some() {
                 Activity::Following
             } else {
-                activity
+                Activity::First
             };
             session.last_active_at = later(&session.last_active_at, entry.at(), activity)?;
-            Ok((save(conn, session)?, created))
+            let session = save(conn, session)?;
+            if let Some(record) = &moved {
+                record_move(conn, record)?;
+            }
+            Ok((session, created, moved))
         })
     }
 
@@ -642,60 +730,15 @@ impl SessionStore {
         to: &MoveTo<'_>,
     ) -> Written<Option<(Session, Option<SessionMove>)>> {
         require_timestamp(to.at)?;
-        let own = |text: Option<&str>| text.map(str::to_string);
         let moved = self.written(|conn| {
             let Some(mut session) = stored(conn, key)? else {
                 return Ok(None);
             };
-            if session.transcript_path.as_deref() != to.expected_transcript_path {
+            let Some(record) = relocated(conn, &mut session, to)? else {
                 return Ok(Some((session, None)));
-            }
-            let active = later(&session.last_active_at, to.at, Activity::First)?;
-            let (from_entry_cwd, from_project_id) =
-                (session.entry_cwd.clone(), session.project_id.clone());
-            if session.status == SessionStatus::Registered {
-                session.project_id = own(to.project_id);
-                (session.candidate_id, session.candidate_root) = (None, None);
-            } else {
-                session.candidate_id = own(to.project_id);
-                session.candidate_root = own(to.project_root);
-            }
-            session.entry_cwd = to.entry_cwd.to_string();
-            session.branch = own(to.branch);
-            session.transcript_path = Some(to.transcript_path.to_string());
-            session.last_active_at = active.clone();
+            };
             let session = save(conn, session)?;
-            let by_key = params![key.harness().as_str(), key.session_id()];
-            let seq: i64 = conn.query_row(
-                &format!("SELECT coalesce(max(seq), 0) + 1 FROM session_moves{BY_KEY}"),
-                by_key,
-                |row| row.get(0),
-            )?;
-            let record = SessionMove::new(
-                key.clone(),
-                seq,
-                &active,
-                &from_entry_cwd,
-                from_project_id,
-                to.entry_cwd,
-                session.project_id.clone(),
-            )?;
-            conn.execute(
-                &format!(
-                    "INSERT INTO session_moves ({SESSION_MOVE_COLUMNS}) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"
-                ),
-                params![
-                    key.harness().as_str(),
-                    key.session_id(),
-                    seq,
-                    active,
-                    record.from_entry_cwd,
-                    record.from_project_id,
-                    record.to_entry_cwd,
-                    record.to_project_id
-                ],
-            )?;
+            record_move(conn, &record)?;
             Ok(Some((session, Some(record))))
         })?;
         Ok(moved.flatten())

@@ -2216,6 +2216,49 @@ fn an_event_while_the_clock_is_behind_moves_the_activity_time_by_one_step() {
 }
 
 #[test]
+fn an_event_on_a_session_whose_time_has_no_later_one_writes_nothing_at_all() {
+    let last = "9999-12-31T23:59:59.999999Z";
+    let moves = |world: &World| -> i64 {
+        let count = world
+            .raw()
+            .query_row("SELECT count(*) FROM session_moves", [], |row| row.get(0));
+        count.unwrap()
+    };
+    // a row without a transcript path, and a prompt that brings one; a row with one,
+    // and a prompt whose transcript has moved
+    for stored in [None, Some(T_A)] {
+        let world = world();
+        let b = world.init(&world.base.join("b"), "b");
+        let root = Path::new(b.root.as_deref().unwrap());
+        world.start_as(
+            "startup",
+            Call {
+                transcript: stored,
+                ..call()
+            },
+        );
+        world.sql("UPDATE sessions SET last_active_at = ?1", &[last]);
+        let before = world.row();
+        let session = &world.services.session;
+        for (transcript, cwd) in [(T_A, world.work.as_path()), (T_B, root)] {
+            let observed = world.prompt("hello", at(transcript, cwd));
+            assert_eq!(observed.context.state, ProjectContextState::Unavailable);
+            assert_eq!((observed.created_pending, observed.moved), (false, None));
+            assert_eq!(world.row(), before, "{stored:?} {transcript}");
+            for source in ["compact", "resume", "startup"] {
+                let started = world.start_as(source, at(transcript, cwd));
+                assert_eq!(started.context.state, ProjectContextState::Unavailable);
+                assert_eq!(world.row(), before, "{stored:?} {transcript} {source}");
+            }
+        }
+        assert!(!session.stop_decision(&key()).unwrap());
+        assert_eq!(session.end_session(&key()), Err(CoreError::StorageFailure));
+        assert_eq!(world.row(), before);
+        assert_eq!(moves(&world), 0);
+    }
+}
+
+#[test]
 fn only_a_compact_start_applies_a_move() {
     let world = world();
     world.start(Call {
