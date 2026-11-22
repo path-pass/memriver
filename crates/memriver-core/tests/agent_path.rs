@@ -680,7 +680,9 @@ fn of_two_writers_with_one_version_exactly_one_wins() {
             let (context, id) = (env.context(), memory.id.clone());
             let barrier = Arc::clone(&barrier);
             thread::spawn(move || {
-                let service = memriver_core::build_services(&settings, &home, None).memory;
+                let service =
+                    memriver_core::build_services(&settings, &home, &Default::default(), None)
+                        .memory;
                 barrier.wait();
                 service
                     .update(&id, 1, body, None, &context, Some("codex"))
@@ -1512,7 +1514,7 @@ fn records_from_many_writers_at_once_all_land() {
         .map(|n| {
             let (settings, home, context) = (env.settings.clone(), env.home.clone(), env.context());
             thread::spawn(move || {
-                memriver_core::build_services(&settings, &home, None)
+                memriver_core::build_services(&settings, &home, &Default::default(), None)
                     .memory
                     .record(&format!("fact {n}"), "project", true, "codex", "", &context)
                     .map(|memory| memory.id)

@@ -800,7 +800,8 @@ mod tests {
         projects
             .create(&project, &projects.plan_root(&work, None).unwrap())
             .unwrap();
-        let service = crate::build_services(&Settings::light(root), &home, None).memory;
+        let service =
+            crate::build_services(&Settings::light(root), &home, &Default::default(), None).memory;
         let context = ProjectContext {
             state: ProjectContextState::Registered,
             header: String::new(),

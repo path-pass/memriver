@@ -222,12 +222,12 @@ packages/memriver-core/tests/integration/application/test_sources.py::test_resto
 packages/memriver-core/tests/integration/application/test_sources.py::test_restoring_a_damaged_history_row_is_a_storage_failure_and_writes_nothing -> rust:memriver-core::tests/apply.rs::restoring_a_damaged_history_row_is_a_storage_failure_and_writes_nothing
 packages/memriver-core/tests/integration/application/test_sources.py::test_restoring_a_deleted_version_whose_text_hits_the_policy_is_refused -> rust:memriver-core::tests/undo.rs::an_undo_back_to_a_deleted_version_whose_text_hits_the_policy_is_refused
 packages/memriver-core/tests/integration/application/test_sources.py::test_trust_and_sync_are_derived_on_create_and_update_and_recorded_on_restore -> rust:memriver-core::tests/apply.rs::derived_trust_is_the_lowest_of_its_sources + rust:memriver-core::tests/apply.rs::create_with_sources_ignores_the_given_trust_and_sync + rust:memriver-core::tests/apply.rs::update_trust_can_only_go_down
-packages/memriver-core/tests/integration/application/test_summaries.py::test_a_summary_of_exactly_the_limit_is_published ->
-packages/memriver-core/tests/integration/application/test_summaries.py::test_bound_sessions_lists_only_sessions_bound_to_a_project ->
-packages/memriver-core/tests/integration/application/test_summaries.py::test_publish_refuses_a_session_that_moved_and_writes_nothing ->
-packages/memriver-core/tests/integration/application/test_summaries.py::test_publish_refuses_an_unbound_or_unknown_session ->
-packages/memriver-core/tests/integration/application/test_summaries.py::test_publish_runs_the_content_policy_and_the_length_limit ->
-packages/memriver-core/tests/integration/application/test_summaries.py::test_publish_sets_the_summary_and_its_time_and_search_finds_it ->
+packages/memriver-core/tests/integration/application/test_summaries.py::test_a_summary_of_exactly_the_limit_is_published -> rust:memriver-core::tests/sessions.rs::publish_summary_checks_policy_length_and_last_active
+packages/memriver-core/tests/integration/application/test_summaries.py::test_bound_sessions_lists_only_sessions_bound_to_a_project -> rust:memriver-core::tests/sessions.rs::bound_sessions_lists_only_sessions_bound_to_a_project
+packages/memriver-core/tests/integration/application/test_summaries.py::test_publish_refuses_a_session_that_moved_and_writes_nothing -> rust:memriver-core::tests/sessions.rs::publish_summary_checks_policy_length_and_last_active
+packages/memriver-core/tests/integration/application/test_summaries.py::test_publish_refuses_an_unbound_or_unknown_session -> rust:memriver-core::tests/sessions.rs::publish_summary_checks_policy_length_and_last_active
+packages/memriver-core/tests/integration/application/test_summaries.py::test_publish_runs_the_content_policy_and_the_length_limit -> rust:memriver-core::tests/sessions.rs::publish_summary_checks_policy_length_and_last_active
+packages/memriver-core/tests/integration/application/test_summaries.py::test_publish_sets_the_summary_and_its_time_and_search_finds_it -> rust:memriver-core::tests/sessions.rs::publish_summary_checks_policy_length_and_last_active
 packages/memriver-core/tests/integration/application/test_undo.py::test_a_merge_its_undo_and_the_undo_of_that_undo_round_trip_with_rising_versions -> rust:memriver-core::tests/undo.rs::undo_of_an_undo
 packages/memriver-core/tests/integration/application/test_undo.py::test_a_policy_hit_in_the_restored_content_refuses_the_undo -> rust:memriver-core::tests/undo.rs::a_policy_hit_in_the_restored_content_refuses_the_undo
 packages/memriver-core/tests/integration/application/test_undo.py::test_a_read_does_not_refuse_an_undo -> rust:memriver-core::tests/undo.rs::a_read_does_not_refuse_an_undo
@@ -371,92 +371,92 @@ packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::te
 packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_session_move_without_session_reported ->
 packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_two_orphans_one_with_an_undecodable_id_do_not_crash_the_sort ->
 packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_two_projects_bound_to_one_directory_by_alias_is_a_finding ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_bad_row_fails_a_write_too_and_is_left_as_it_was ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_bad_row_is_skipped_by_search_and_fails_a_direct_get ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_call_row_naming_an_invalid_session_is_ignored ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_malformed_argument_is_a_value_error_and_writes_nothing ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_malformed_call_is_a_value_error_and_records_nothing ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_multi_keyword_search_finds_sessions_holding_any_term ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_pending_row_is_never_nudged_or_touched ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_prompt_on_an_existing_row_ignores_the_seed ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_published_summary_round_trips_and_later_writes_keep_it ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_recorded_call_names_its_session ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_session_without_a_project_is_never_nudged ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_store_removed_after_the_existence_check_is_still_a_no_op ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_summary_memriver_could_not_have_written_is_damage ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_adopt_transcript_only_when_null ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_an_earlier_prompt_never_moves_last_active_at_back ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_an_omitted_prompt_is_counted_and_kept_without_text ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_an_unknown_key_is_never_nudged ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_assign_project_binds_a_registered_row_with_no_project ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_assign_project_cas_rejects_moved_row ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_assign_project_cas_rejects_moved_transcript ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_assign_project_cas_rejects_status_change ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_assign_project_ignores_leftover_candidate_on_registered_row ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_assign_project_leaves_a_row_with_a_project_or_candidate_unchanged ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_assign_project_of_an_unknown_key_is_none ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_assign_project_registers_a_pending_row_without_a_candidate ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_assign_project_registers_pending_without_candidate ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_assign_project_rejects_new_candidate ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_bound_lists_sessions_with_a_writable_project_newest_first ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_call_record_invalid_id_or_missing ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_call_record_returns_key_and_cwd ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_concurrent_first_prompts_create_one_row_and_exactly_one_reports_it ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_concurrent_registers_of_one_key_agree_on_the_stored_row ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_confirm_binds_a_pending_row_to_its_unchanged_candidate ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_confirm_of_an_unknown_key_is_none ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_confirm_refuses_a_candidate_that_changed_and_leaves_the_row ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_confirm_rejects_moved_candidate ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_confirm_rejects_same_candidate_with_another_root ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_confirm_with_matching_candidate_registers ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_confirm_without_a_candidate_registers_the_row_with_no_project ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_confirming_a_registered_row_returns_it_unchanged ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_eight_prompts_keep_the_first_and_the_last_five ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_end_of_an_unknown_key_writes_nothing ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_end_records_ended_at_and_touches_last_active_at ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_every_nudge_check_touches_a_registered_row ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_every_write_to_an_absent_store_is_a_no_op_that_creates_nothing ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_get_answers_none_for_an_unknown_key ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_get_on_an_absent_store_is_none_and_creates_nothing ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_keyword_hits_rank_by_phrase_then_terms_then_recency ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_looking_up_an_impossible_call_id_finds_nothing ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_mark_saved_moves_the_write_watermark_to_the_prompt_count ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_move_cas_loser_changes_nothing ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_move_clears_leftover_candidate ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_move_last_active_strictly_after ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_move_of_unknown_or_absent_is_none ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_move_pending_sets_new_candidate ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_move_registered_to_none ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_move_registered_to_other_project ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_move_seq_increments ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_moves_ordered_by_seq ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_nudges_come_after_min_prompts_and_then_every_interval ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_prompt_json_is_stored_compact_and_unescaped ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_publishing_for_a_moved_unbound_pending_global_or_unknown_session_writes_nothing ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_record_call_drops_relative_or_nul_cwd ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_record_call_keeps_absolute_cwd ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_recording_a_call_again_moves_it_to_the_latest_session ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_recording_a_call_on_an_absent_store_is_a_no_op_that_creates_nothing ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_recording_a_call_prunes_calls_older_than_the_retention ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_register_never_overwrites_an_existing_row ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_register_stores_the_row_and_returns_it ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_registering_a_row_that_would_not_read_back_is_a_value_error_and_writes_nothing ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_registering_a_watermark_above_the_prompt_count_is_a_value_error ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_registering_watermarks_equal_to_the_prompt_count_is_accepted ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_search_across_all_projects_sees_every_row ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_search_honours_the_limit_and_the_query ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_search_in_a_project_sees_only_its_registered_rows_newest_first ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_search_matches_the_summary ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_search_on_an_absent_store_is_empty_and_creates_nothing ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_store_exists_on_an_absent_store_is_false_and_creates_nothing ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_store_exists_on_an_initialized_store_is_true ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_the_empty_query_lists_every_session_and_a_keywordless_one_matches_nothing ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_the_first_prompt_inserts_the_seed_and_says_so ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_the_sessions_table_holds_the_published_summary_and_nothing_about_its_production ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_touch_moves_last_active_at_forward_only ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_touch_of_an_unknown_key_is_none_and_writes_nothing ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_touch_replaces_the_transcript_path_only_when_one_is_given ->
-packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_two_concurrent_checks_at_one_watermark_nudge_at_most_once ->
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_bad_row_fails_a_write_too_and_is_left_as_it_was -> rust:memriver-core::tests/session_store.rs::a_bad_row_fails_a_write_too_and_is_left_as_it_was
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_bad_row_is_skipped_by_search_and_fails_a_direct_get -> rust:memriver-core::tests/session_store.rs::a_bad_row_is_skipped_by_search_and_fails_a_direct_get
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_call_row_naming_an_invalid_session_is_ignored -> rust:memriver-core::tests/session_store.rs::a_call_row_naming_an_invalid_session_is_ignored
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_malformed_argument_is_a_value_error_and_writes_nothing -> rust:memriver-core::tests/session_store.rs::a_malformed_argument_is_a_value_error_and_writes_nothing
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_malformed_call_is_a_value_error_and_records_nothing -> rust:memriver-core::tests/session_store.rs::a_malformed_call_is_a_value_error_and_records_nothing
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_multi_keyword_search_finds_sessions_holding_any_term -> rust:memriver-core::tests/session_store.rs::a_multi_keyword_search_finds_sessions_holding_any_term
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_pending_row_is_never_nudged_or_touched -> rust:memriver-core::tests/session_store.rs::a_pending_row_is_never_nudged_or_touched
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_prompt_on_an_existing_row_ignores_the_seed -> rust:memriver-core::tests/session_store.rs::a_prompt_on_an_existing_row_ignores_the_seed
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_published_summary_round_trips_and_later_writes_keep_it -> rust:memriver-core::tests/session_store.rs::a_published_summary_round_trips_and_later_writes_keep_it
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_recorded_call_names_its_session -> rust:memriver-core::tests/session_store.rs::a_recorded_call_names_its_session
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_session_without_a_project_is_never_nudged -> rust:memriver-core::tests/session_store.rs::a_session_without_a_project_is_never_nudged
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_store_removed_after_the_existence_check_is_still_a_no_op -> rust:memriver-core::application::sessions::tests::a_store_removed_after_the_existence_check_is_still_a_no_op
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_summary_memriver_could_not_have_written_is_damage -> rust:memriver-core::tests/session_store.rs::a_summary_memriver_could_not_have_written_is_damage
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_adopt_transcript_only_when_null -> rust:memriver-core::tests/session_store.rs::adopt_transcript_only_when_null
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_an_earlier_prompt_never_moves_last_active_at_back -> rust:memriver-core::tests/session_store.rs::an_earlier_prompt_never_moves_last_active_at_back
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_an_omitted_prompt_is_counted_and_kept_without_text -> rust:memriver-core::tests/session_store.rs::an_omitted_prompt_is_counted_and_kept_without_text
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_an_unknown_key_is_never_nudged -> rust:memriver-core::tests/session_store.rs::an_unknown_key_is_never_nudged
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_assign_project_binds_a_registered_row_with_no_project -> rust:memriver-core::tests/session_store.rs::assign_project_binds_a_registered_row_with_no_project
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_assign_project_cas_rejects_moved_row -> rust:memriver-core::tests/session_store.rs::assign_project_is_compare_and_set_on_status_entry_and_transcript
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_assign_project_cas_rejects_moved_transcript -> rust:memriver-core::tests/session_store.rs::assign_project_is_compare_and_set_on_status_entry_and_transcript
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_assign_project_cas_rejects_status_change -> rust:memriver-core::tests/session_store.rs::assign_project_is_compare_and_set_on_status_entry_and_transcript
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_assign_project_ignores_leftover_candidate_on_registered_row -> rust:memriver-core::tests/session_store.rs::assign_project_ignores_leftover_candidate_on_registered_row
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_assign_project_leaves_a_row_with_a_project_or_candidate_unchanged -> rust:memriver-core::tests/session_store.rs::assign_project_leaves_a_row_with_a_project_or_candidate_unchanged
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_assign_project_of_an_unknown_key_is_none -> rust:memriver-core::tests/session_store.rs::assign_project_of_an_unknown_key_is_none
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_assign_project_registers_a_pending_row_without_a_candidate -> rust:memriver-core::tests/session_store.rs::assign_project_registers_a_pending_row_without_a_candidate
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_assign_project_registers_pending_without_candidate -> rust:memriver-core::tests/session_store.rs::assign_project_registers_a_pending_row_without_a_candidate
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_assign_project_rejects_new_candidate -> rust:memriver-core::tests/session_store.rs::assign_project_leaves_a_row_with_a_project_or_candidate_unchanged
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_bound_lists_sessions_with_a_writable_project_newest_first -> rust:memriver-core::tests/session_store.rs::bound_lists_sessions_with_a_writable_project_newest_first
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_call_record_invalid_id_or_missing -> rust:memriver-core::tests/session_store.rs::a_malformed_call_is_a_value_error_and_records_nothing
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_call_record_returns_key_and_cwd -> rust:memriver-core::tests/session_store.rs::record_call_keeps_an_absolute_cwd_and_drops_any_other
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_concurrent_first_prompts_create_one_row_and_exactly_one_reports_it -> rust:memriver-core::tests/session_store.rs::concurrent_first_prompts_create_one_row_and_exactly_one_reports_it
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_concurrent_registers_of_one_key_agree_on_the_stored_row -> rust:memriver-core::tests/session_store.rs::concurrent_registers_of_one_key_agree_on_the_stored_row
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_confirm_binds_a_pending_row_to_its_unchanged_candidate -> rust:memriver-core::tests/session_store.rs::confirm_binds_a_pending_row_to_its_unchanged_candidate
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_confirm_of_an_unknown_key_is_none -> rust:memriver-core::tests/session_store.rs::confirming_a_registered_row_returns_it_unchanged
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_confirm_refuses_a_candidate_that_changed_and_leaves_the_row -> rust:memriver-core::tests/session_store.rs::confirm_refuses_a_candidate_that_changed_and_leaves_the_row
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_confirm_rejects_moved_candidate -> rust:memriver-core::tests/session_store.rs::confirm_refuses_candidate_moved
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_confirm_rejects_same_candidate_with_another_root -> rust:memriver-core::tests/session_store.rs::confirm_refuses_candidate_moved
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_confirm_with_matching_candidate_registers -> rust:memriver-core::tests/session_store.rs::confirm_binds_a_pending_row_to_its_unchanged_candidate
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_confirm_without_a_candidate_registers_the_row_with_no_project -> rust:memriver-core::tests/session_store.rs::confirm_without_a_candidate_registers_the_row_with_no_project
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_confirming_a_registered_row_returns_it_unchanged -> rust:memriver-core::tests/session_store.rs::confirming_a_registered_row_returns_it_unchanged
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_eight_prompts_keep_the_first_and_the_last_five -> rust:memriver-core::tests/session_store.rs::recent_prompts_keeps_five_newest_last
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_end_of_an_unknown_key_writes_nothing -> rust:memriver-core::tests/session_store.rs::end_records_ended_at_and_touches_last_active_at
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_end_records_ended_at_and_touches_last_active_at -> rust:memriver-core::tests/session_store.rs::end_records_ended_at_and_touches_last_active_at
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_every_nudge_check_touches_a_registered_row -> rust:memriver-core::tests/session_store.rs::stop_advances_last_active_at_even_when_not_due
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_every_write_to_an_absent_store_is_a_no_op_that_creates_nothing -> rust:memriver-core::tests/session_store.rs::session_writes_into_a_missing_store_are_silent
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_get_answers_none_for_an_unknown_key -> rust:memriver-core::tests/session_store.rs::get_answers_none_for_an_unknown_key
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_get_on_an_absent_store_is_none_and_creates_nothing -> rust:memriver-core::tests/session_store.rs::reads_of_an_absent_store_find_nothing_and_create_nothing
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_keyword_hits_rank_by_phrase_then_terms_then_recency -> rust:memriver-core::tests/session_store.rs::keyword_hits_rank_by_phrase_then_terms_then_recency
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_looking_up_an_impossible_call_id_finds_nothing -> rust:memriver-core::tests/session_store.rs::a_malformed_call_is_a_value_error_and_records_nothing
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_mark_saved_moves_the_write_watermark_to_the_prompt_count -> rust:memriver-core::tests/session_store.rs::mark_saved_moves_the_write_watermark_to_the_prompt_count
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_move_cas_loser_changes_nothing -> rust:memriver-core::tests/session_store.rs::move_is_compare_and_set_on_the_stored_transcript
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_move_clears_leftover_candidate -> rust:memriver-core::tests/session_store.rs::move_clears_leftover_candidate
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_move_last_active_strictly_after -> rust:memriver-core::tests/session_store.rs::move_last_active_strictly_after
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_move_of_unknown_or_absent_is_none -> rust:memriver-core::tests/session_store.rs::move_is_compare_and_set_on_the_stored_transcript + rust:memriver-core::tests/session_store.rs::session_writes_into_a_missing_store_are_silent
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_move_pending_sets_new_candidate -> rust:memriver-core::tests/session_store.rs::move_pending_sets_new_candidate
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_move_registered_to_none -> rust:memriver-core::tests/session_store.rs::move_registered_to_none
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_move_registered_to_other_project -> rust:memriver-core::tests/session_store.rs::move_registered_to_other_project
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_move_seq_increments -> rust:memriver-core::tests/session_store.rs::moves_are_numbered_and_listed_in_order
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_moves_ordered_by_seq -> rust:memriver-core::tests/session_store.rs::moves_are_numbered_and_listed_in_order
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_nudges_come_after_min_prompts_and_then_every_interval -> rust:memriver-core::tests/session_store.rs::stop_nudge_arithmetic
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_prompt_json_is_stored_compact_and_unescaped -> rust:memriver-core::tests/session_store.rs::prompt_json_is_stored_compact_and_unescaped
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_publishing_for_a_moved_unbound_pending_global_or_unknown_session_writes_nothing -> rust:memriver-core::tests/session_store.rs::publishing_for_a_moved_unbound_pending_global_or_unknown_session_writes_nothing
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_record_call_drops_relative_or_nul_cwd -> rust:memriver-core::tests/session_store.rs::record_call_keeps_an_absolute_cwd_and_drops_any_other
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_record_call_keeps_absolute_cwd -> rust:memriver-core::tests/session_store.rs::record_call_keeps_an_absolute_cwd_and_drops_any_other
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_recording_a_call_again_moves_it_to_the_latest_session -> rust:memriver-core::tests/session_store.rs::recording_a_call_again_moves_it_to_the_latest_session
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_recording_a_call_on_an_absent_store_is_a_no_op_that_creates_nothing -> rust:memriver-core::tests/session_store.rs::session_writes_into_a_missing_store_are_silent
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_recording_a_call_prunes_calls_older_than_the_retention -> rust:memriver-core::tests/session_store.rs::tool_call_older_than_3600s_is_not_returned
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_register_never_overwrites_an_existing_row -> rust:memriver-core::tests/session_store.rs::register_never_overwrites_an_existing_row
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_register_stores_the_row_and_returns_it -> rust:memriver-core::tests/session_store.rs::register_stores_the_row_and_returns_it
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_registering_a_row_that_would_not_read_back_is_a_value_error_and_writes_nothing -> rust:memriver-core::tests/session_store.rs::registering_a_row_that_would_not_read_back_is_a_value_error_and_writes_nothing
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_registering_a_watermark_above_the_prompt_count_is_a_value_error -> rust:memriver-core::tests/session_store.rs::registering_a_row_that_would_not_read_back_is_a_value_error_and_writes_nothing
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_registering_watermarks_equal_to_the_prompt_count_is_accepted -> rust:memriver-core::tests/session_store.rs::registering_watermarks_equal_to_the_prompt_count_is_accepted
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_search_across_all_projects_sees_every_row -> rust:memriver-core::tests/session_store.rs::search_across_all_projects_sees_every_row
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_search_honours_the_limit_and_the_query -> rust:memriver-core::tests/session_store.rs::search_across_all_projects_sees_every_row
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_search_in_a_project_sees_only_its_registered_rows_newest_first -> rust:memriver-core::tests/session_store.rs::search_in_a_project_sees_only_its_registered_rows_newest_first
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_search_matches_the_summary -> rust:memriver-core::tests/session_store.rs::a_published_summary_round_trips_and_later_writes_keep_it
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_search_on_an_absent_store_is_empty_and_creates_nothing -> rust:memriver-core::tests/session_store.rs::reads_of_an_absent_store_find_nothing_and_create_nothing
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_store_exists_on_an_absent_store_is_false_and_creates_nothing -> rust:memriver-core::tests/session_store.rs::reads_of_an_absent_store_find_nothing_and_create_nothing
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_store_exists_on_an_initialized_store_is_true -> rust:memriver-core::tests/session_store.rs::reads_of_an_absent_store_find_nothing_and_create_nothing
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_the_empty_query_lists_every_session_and_a_keywordless_one_matches_nothing -> rust:memriver-core::tests/session_store.rs::the_empty_query_lists_every_session_and_a_keywordless_one_matches_nothing
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_the_first_prompt_inserts_the_seed_and_says_so -> rust:memriver-core::tests/session_store.rs::the_first_prompt_inserts_the_seed_and_says_so
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_the_sessions_table_holds_the_published_summary_and_nothing_about_its_production -> rust:memriver-core::tests/session_store.rs::the_sessions_table_holds_the_published_summary_and_nothing_about_its_production
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_touch_moves_last_active_at_forward_only -> rust:memriver-core::tests/session_store.rs::touch_moves_last_active_at_forward_only
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_touch_of_an_unknown_key_is_none_and_writes_nothing -> rust:memriver-core::tests/session_store.rs::touch_of_an_unknown_key_is_none_and_writes_nothing
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_touch_replaces_the_transcript_path_only_when_one_is_given -> rust:memriver-core::tests/session_store.rs::touch_replaces_the_transcript_path_only_when_one_is_given
+packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_two_concurrent_checks_at_one_watermark_nudge_at_most_once -> rust:memriver-core::tests/session_store.rs::two_concurrent_checks_at_one_watermark_nudge_at_most_once
 packages/memriver-core/tests/integration/repository/test_directories.py::test_ancestor_component_replaced_by_symlink_is_degraded -> rust:memriver-core::tests/directories.rs::a_root_below_a_replaced_ancestor_is_repointed_not_offline
 packages/memriver-core/tests/integration/repository/test_directories.py::test_canonical_directory_is_strict_and_never_raises -> rust:memriver-core::tests/directories.rs::canonical_is_strict_and_never_fails
 packages/memriver-core/tests/integration/repository/test_directories.py::test_case_alias_matches_by_samefile -> rust:memriver-core::repository::directories::tests::a_root_under_another_spelling_is_matched_by_identity + rust:memriver-core::tests/directories.rs::on_a_file_system_that_ignores_case_a_case_alias_of_a_root_is_that_root
@@ -581,92 +581,92 @@ packages/memriver-core/tests/unit/application/test_services.py::test_the_index_r
 packages/memriver-core/tests/unit/application/test_services.py::test_there_is_no_dream_and_no_create -> n/a: the shape of a Python class; the memory service has no such method
 packages/memriver-core/tests/unit/application/test_services.py::test_update_and_delete_are_one_restricted_op_each_with_the_expected_version -> rust:memriver-core::tests/agent_path.rs::stale_version_is_a_conflict
 packages/memriver-core/tests/unit/application/test_services.py::test_update_runs_the_content_policy_first -> rust:memriver-core::tests/agent_path.rs::description_budget_is_8000_whatever_the_setting + rust:memriver-core::tests/agent_path.rs::the_classifier_is_sent_only_the_new_text_and_never_a_secret
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_candidate_whose_root_is_not_intact_is_refused_and_stays_pending ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_candidate_whose_root_went_missing_in_the_main_tree_still_confirms ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_candidate_without_its_root_never_confirms_to_a_rootless_project ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_degraded_registration_writes_nothing ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_degraded_resolution_registers_nothing ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_failed_last_read_at_never_fails_the_read ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_failed_save_leaves_the_watermark_alone ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_failed_watermark_never_fails_the_save ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_failed_worktree_mapping_registers_nothing ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_first_prompt_seeds_a_pending_row_and_only_that_call_created_it ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_first_start_and_a_first_prompt_racing_share_one_row ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_fresh_start_registers_the_entry_project_and_its_branch ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_pending_session_can_neither_write_update_nor_delete ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_pending_session_without_a_candidate_is_not_offered_for_confirmation ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_pending_session_without_a_candidate_is_refused_with_its_own_reason ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_prompt_at_the_byte_limit_is_kept ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_prompt_on_a_registered_row_is_counted_and_keeps_its_registration ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_prompt_that_cannot_be_kept_is_recorded_as_omitted ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_prompt_whose_directory_cannot_be_mapped_records_nothing ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_prompt_without_a_store_creates_nothing ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_recorded_tool_call_names_its_session ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_resumed_unknown_session_is_pending_with_the_entry_project_as_candidate ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_scanner_failure_is_recorded_as_a_scan_error ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_session_whose_project_is_gone_or_global_is_degraded ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_start_in_an_unbound_directory_registers_no_project ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_store_failure_is_an_unavailable_session_context ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_store_failure_while_registering_propagates ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_symlinked_alias_registers_and_proposes_its_targets_project ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_a_worktree_entry_registers_the_main_trees_project ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_an_alias_into_a_linked_worktree_registers_the_main_trees_project_and_branch ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_an_entry_with_a_nul_is_degraded_and_writes_nothing ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_an_existing_row_is_touched_and_keeps_its_own_answer ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_an_uncheckable_store_counts_as_present ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_cd_degraded_unbinds_at_target ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_cd_into_unregistered_dir_unbinds ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_cd_moves_registered_session_to_other_project ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_cd_within_same_project_updates_entry_without_change ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_codex_rows_never_move ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_compact_backfills_null_transcript_only_when_null ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_compact_detects_move_before_touch ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_compact_move_loser_keeps_stored_path ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_confirm_rejects_candidate_moved_by_move ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_confirmed_row_moved_unbound_then_registered ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_confirming_a_candidate_registers_its_project ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_confirming_a_null_candidate_registers_no_project ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_confirming_an_unknown_session_is_unidentified ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_degraded_then_shell_cd_does_not_retarget ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_delete_never_moves_the_watermark ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_early_returns_carry_no_outcome ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_end_marks_the_row_and_an_unknown_session_is_left_alone ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_headers_name_working_directory ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_list_sessions_reads_every_row_with_optional_filters ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_move_between_resolve_and_assign_wins ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_move_needs_absolute_cwd ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_only_read_records_last_read_at ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_pending_candidate_and_entry_of_answer_from_the_stored_row ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_pending_session_moves_candidate ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_prompt_text_is_one_line_capped_and_only_the_recent_ones_are_kept ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_record_and_update_move_the_save_watermark ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_register_binds_a_projectless_session_to_a_project_inited_at_its_entry ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_register_binds_the_project_inited_at_an_ancestor_of_the_entry ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_register_degraded_current_dir ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_register_degraded_entry_does_not_try_current_dir ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_register_falls_back_to_current_dir ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_register_keeps_a_project_the_row_got_in_the_meantime ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_register_leftover_candidate_does_not_block ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_register_makes_a_pending_session_without_a_candidate_registered ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_register_maps_a_linked_worktree_entry_to_the_main_trees_project ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_register_never_changes_a_session_that_has_a_project ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_register_nothing_covers ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_register_pending_with_candidate_refused ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_register_uses_entry_first ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_register_with_no_project_covering_the_entry_changes_nothing ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_register_without_a_store_answers_none_and_creates_nothing ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_registering_an_unknown_session_is_unidentified ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_resume_absorbs_new_transcript ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_session_context_follows_the_stored_row ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_session_search_sees_only_the_writable_projects_registered_rows ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_shell_cd_is_not_a_move ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_start_without_a_store_answers_none_and_creates_nothing ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_stop_is_silent_for_pending_projectless_unknown_and_broken_sessions ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_stop_nudges_after_n_unsaved_prompts_then_every_m ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_the_tool_call_mapping_never_fails_its_caller ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_transcript_backfilled_then_cd_moves ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_transcript_same_dir_other_spelling_is_not_a_move ->
-packages/memriver-core/tests/unit/application/test_sessions.py::test_without_a_store_no_directory_question_and_no_scan_is_asked ->
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_candidate_whose_root_is_not_intact_is_refused_and_stays_pending -> rust:memriver-core::tests/sessions.rs::confirm_refuses_candidate_changed_and_candidate_moved
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_candidate_whose_root_went_missing_in_the_main_tree_still_confirms -> rust:memriver-core::tests/sessions.rs::a_candidate_whose_root_went_missing_in_the_main_tree_still_confirms
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_candidate_without_its_root_never_confirms_to_a_rootless_project -> rust:memriver-core::tests/sessions.rs::confirm_refuses_candidate_changed_and_candidate_moved
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_degraded_registration_writes_nothing -> rust:memriver-core::tests/sessions.rs::a_degraded_registration_writes_nothing
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_degraded_resolution_registers_nothing -> rust:memriver-core::tests/sessions.rs::a_directory_that_cannot_be_resolved_registers_nothing
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_failed_last_read_at_never_fails_the_read -> rust:memriver-core::tests/agent_path.rs::read_records_a_read_and_survives_a_failing_touch
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_failed_save_leaves_the_watermark_alone -> rust:memriver-core::tests/sessions.rs::a_failed_save_leaves_the_watermark_alone
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_failed_watermark_never_fails_the_save -> rust:memriver-core::tests/sessions.rs::a_failed_watermark_never_fails_the_save
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_failed_worktree_mapping_registers_nothing -> rust:memriver-core::tests/sessions.rs::a_session_in_a_repository_git_refuses_is_registered_with_no_project_and_the_degraded_diagnostic
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_first_prompt_seeds_a_pending_row_and_only_that_call_created_it -> rust:memriver-core::tests/sessions.rs::first_prompt_from_an_unseen_session_creates_pending
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_first_start_and_a_first_prompt_racing_share_one_row -> rust:memriver-core::application::sessions::tests::a_first_start_and_a_first_prompt_racing_share_one_row
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_fresh_start_registers_the_entry_project_and_its_branch -> rust:memriver-core::tests/sessions.rs::startup_clear_fork_register_at_once + rust:memriver-core::tests/sessions.rs::linked_worktree_registers_under_the_main_tree
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_pending_session_can_neither_write_update_nor_delete -> rust:memriver-core::tests/sessions.rs::a_pending_session_writes_nothing_through_the_built_services_and_a_save_moves_its_mark
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_pending_session_without_a_candidate_is_not_offered_for_confirmation -> rust:memriver-core::tests/sessions.rs::a_pending_session_without_a_candidate_confirms_to_no_project
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_pending_session_without_a_candidate_is_refused_with_its_own_reason -> rust:memriver-core::tests/sessions.rs::a_pending_session_writes_nothing_through_the_built_services_and_a_save_moves_its_mark
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_prompt_at_the_byte_limit_is_kept -> rust:memriver-core::tests/sessions.rs::prompt_recording
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_prompt_on_a_registered_row_is_counted_and_keeps_its_registration -> rust:memriver-core::tests/sessions.rs::a_prompt_on_a_registered_row_is_counted_and_keeps_its_registration
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_prompt_that_cannot_be_kept_is_recorded_as_omitted -> rust:memriver-core::tests/sessions.rs::prompt_recording
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_prompt_whose_directory_cannot_be_mapped_records_nothing -> rust:memriver-core::tests/sessions.rs::a_session_in_a_repository_git_refuses_is_registered_with_no_project_and_the_degraded_diagnostic
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_prompt_without_a_store_creates_nothing -> rust:memriver-core::tests/sessions.rs::start_without_a_store_answers_none_and_creates_nothing
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_recorded_tool_call_names_its_session -> rust:memriver-core::tests/sessions.rs::a_recorded_tool_call_names_its_session
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_resumed_unknown_session_is_pending_with_the_entry_project_as_candidate -> rust:memriver-core::tests/sessions.rs::resume_compact_and_unknown_sources_create_pending
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_scanner_failure_is_recorded_as_a_scan_error -> rust:memriver-core::application::sessions::tests::a_scanner_failure_is_recorded_as_a_scan_error
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_session_whose_project_is_gone_or_global_is_degraded -> rust:memriver-core::tests/sessions.rs::a_session_whose_project_is_gone_or_global_is_degraded
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_start_in_an_unbound_directory_registers_no_project -> rust:memriver-core::tests/sessions.rs::a_start_in_an_unbound_directory_registers_no_project
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_store_failure_is_an_unavailable_session_context -> rust:memriver-core::tests/sessions.rs::a_store_failure_is_an_unavailable_context
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_store_failure_while_registering_propagates -> rust:memriver-core::tests/sessions.rs::a_store_failure_while_registering_propagates
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_symlinked_alias_registers_and_proposes_its_targets_project -> rust:memriver-core::tests/sessions.rs::a_symlinked_alias_registers_and_proposes_its_targets_project
+packages/memriver-core/tests/unit/application/test_sessions.py::test_a_worktree_entry_registers_the_main_trees_project -> rust:memriver-core::tests/sessions.rs::linked_worktree_registers_under_the_main_tree
+packages/memriver-core/tests/unit/application/test_sessions.py::test_an_alias_into_a_linked_worktree_registers_the_main_trees_project_and_branch -> rust:memriver-core::tests/sessions.rs::linked_worktree_registers_under_the_main_tree
+packages/memriver-core/tests/unit/application/test_sessions.py::test_an_entry_with_a_nul_is_degraded_and_writes_nothing -> rust:memriver-core::tests/sessions.rs::a_directory_that_cannot_be_resolved_registers_nothing
+packages/memriver-core/tests/unit/application/test_sessions.py::test_an_existing_row_is_touched_and_keeps_its_own_answer -> rust:memriver-core::tests/sessions.rs::resume_adopts_the_transcript_and_never_moves
+packages/memriver-core/tests/unit/application/test_sessions.py::test_an_uncheckable_store_counts_as_present -> rust:memriver-core::tests/sessions.rs::a_store_failure_is_an_unavailable_context
+packages/memriver-core/tests/unit/application/test_sessions.py::test_cd_degraded_unbinds_at_target -> rust:memriver-core::tests/sessions.rs::move_into_an_unresolvable_directory_is_degraded_no_project
+packages/memriver-core/tests/unit/application/test_sessions.py::test_cd_into_unregistered_dir_unbinds -> rust:memriver-core::tests/sessions.rs::cd_into_unregistered_dir_unbinds
+packages/memriver-core/tests/unit/application/test_sessions.py::test_cd_moves_registered_session_to_other_project -> rust:memriver-core::tests/sessions.rs::cd_moves_registered_session_to_other_project
+packages/memriver-core/tests/unit/application/test_sessions.py::test_cd_within_same_project_updates_entry_without_change -> rust:memriver-core::tests/sessions.rs::cd_within_same_project_updates_entry_without_change
+packages/memriver-core/tests/unit/application/test_sessions.py::test_codex_rows_never_move -> rust:memriver-core::tests/sessions.rs::cd_move_needs_claude_code_a_changed_transcript_directory_and_an_absolute_cwd
+packages/memriver-core/tests/unit/application/test_sessions.py::test_compact_backfills_null_transcript_only_when_null -> rust:memriver-core::tests/sessions.rs::compact_backfills_null_transcript_only_when_null
+packages/memriver-core/tests/unit/application/test_sessions.py::test_compact_detects_move_before_touch -> rust:memriver-core::tests/sessions.rs::compact_detects_move_before_touch
+packages/memriver-core/tests/unit/application/test_sessions.py::test_compact_move_loser_keeps_stored_path -> rust:memriver-core::application::sessions::tests::compact_move_loser_keeps_stored_path
+packages/memriver-core/tests/unit/application/test_sessions.py::test_confirm_rejects_candidate_moved_by_move -> rust:memriver-core::application::sessions::tests::confirm_rejects_candidate_moved_by_move
+packages/memriver-core/tests/unit/application/test_sessions.py::test_confirmed_row_moved_unbound_then_registered -> rust:memriver-core::tests/sessions.rs::confirmed_row_moved_unbound_then_registered
+packages/memriver-core/tests/unit/application/test_sessions.py::test_confirming_a_candidate_registers_its_project -> rust:memriver-core::tests/sessions.rs::confirming_a_candidate_registers_its_project
+packages/memriver-core/tests/unit/application/test_sessions.py::test_confirming_a_null_candidate_registers_no_project -> rust:memriver-core::tests/sessions.rs::a_pending_session_without_a_candidate_confirms_to_no_project
+packages/memriver-core/tests/unit/application/test_sessions.py::test_confirming_an_unknown_session_is_unidentified -> rust:memriver-core::tests/sessions.rs::confirming_a_candidate_registers_its_project
+packages/memriver-core/tests/unit/application/test_sessions.py::test_degraded_then_shell_cd_does_not_retarget -> rust:memriver-core::tests/sessions.rs::move_into_an_unresolvable_directory_is_degraded_no_project
+packages/memriver-core/tests/unit/application/test_sessions.py::test_delete_never_moves_the_watermark -> rust:memriver-core::tests/sessions.rs::a_pending_session_writes_nothing_through_the_built_services_and_a_save_moves_its_mark
+packages/memriver-core/tests/unit/application/test_sessions.py::test_early_returns_carry_no_outcome -> rust:memriver-core::tests/sessions.rs::early_returns_carry_no_outcome
+packages/memriver-core/tests/unit/application/test_sessions.py::test_end_marks_the_row_and_an_unknown_session_is_left_alone -> rust:memriver-core::tests/sessions.rs::end_marks_the_row_and_an_unknown_session_is_left_alone
+packages/memriver-core/tests/unit/application/test_sessions.py::test_headers_name_working_directory -> rust:memriver-core::application::contexts::tests::the_fixed_headers_are_the_sentences_agents_are_given
+packages/memriver-core/tests/unit/application/test_sessions.py::test_list_sessions_reads_every_row_with_optional_filters -> rust:memriver-core::tests/sessions.rs::list_sessions_reads_every_row_with_optional_filters
+packages/memriver-core/tests/unit/application/test_sessions.py::test_move_between_resolve_and_assign_wins -> rust:memriver-core::application::sessions::tests::move_between_resolve_and_assign_wins
+packages/memriver-core/tests/unit/application/test_sessions.py::test_move_needs_absolute_cwd -> rust:memriver-core::tests/sessions.rs::cd_move_needs_claude_code_a_changed_transcript_directory_and_an_absolute_cwd
+packages/memriver-core/tests/unit/application/test_sessions.py::test_only_read_records_last_read_at -> rust:memriver-core::tests/agent_path.rs::read_records_a_read_and_survives_a_failing_touch
+packages/memriver-core/tests/unit/application/test_sessions.py::test_pending_candidate_and_entry_of_answer_from_the_stored_row -> rust:memriver-core::tests/sessions.rs::pending_candidate_and_entry_of_answer_from_the_stored_row
+packages/memriver-core/tests/unit/application/test_sessions.py::test_pending_session_moves_candidate -> rust:memriver-core::tests/sessions.rs::pending_session_moves_candidate
+packages/memriver-core/tests/unit/application/test_sessions.py::test_prompt_text_is_one_line_capped_and_only_the_recent_ones_are_kept -> rust:memriver-core::tests/sessions.rs::prompt_recording + rust:memriver-core::tests/sessions.rs::only_the_recent_prompts_are_kept
+packages/memriver-core/tests/unit/application/test_sessions.py::test_record_and_update_move_the_save_watermark -> rust:memriver-core::tests/sessions.rs::a_pending_session_writes_nothing_through_the_built_services_and_a_save_moves_its_mark
+packages/memriver-core/tests/unit/application/test_sessions.py::test_register_binds_a_projectless_session_to_a_project_inited_at_its_entry -> rust:memriver-core::tests/sessions.rs::register_binds_a_projectless_session_to_a_project_inited_at_its_entry
+packages/memriver-core/tests/unit/application/test_sessions.py::test_register_binds_the_project_inited_at_an_ancestor_of_the_entry -> rust:memriver-core::tests/sessions.rs::register_binds_the_project_inited_at_an_ancestor_of_the_entry
+packages/memriver-core/tests/unit/application/test_sessions.py::test_register_degraded_current_dir -> rust:memriver-core::tests/sessions.rs::register_with_nothing_covering_changes_nothing
+packages/memriver-core/tests/unit/application/test_sessions.py::test_register_degraded_entry_does_not_try_current_dir -> rust:memriver-core::tests/sessions.rs::a_degraded_registration_writes_nothing
+packages/memriver-core/tests/unit/application/test_sessions.py::test_register_falls_back_to_current_dir -> rust:memriver-core::tests/sessions.rs::register_uses_the_entry_first_and_then_the_directory_of_the_call
+packages/memriver-core/tests/unit/application/test_sessions.py::test_register_keeps_a_project_the_row_got_in_the_meantime -> rust:memriver-core::application::sessions::tests::register_keeps_a_project_the_row_got_in_the_meantime
+packages/memriver-core/tests/unit/application/test_sessions.py::test_register_leftover_candidate_does_not_block -> rust:memriver-core::tests/sessions.rs::register_ignores_a_candidate_left_on_a_registered_row
+packages/memriver-core/tests/unit/application/test_sessions.py::test_register_makes_a_pending_session_without_a_candidate_registered -> rust:memriver-core::tests/sessions.rs::register_makes_a_pending_session_without_a_candidate_registered
+packages/memriver-core/tests/unit/application/test_sessions.py::test_register_maps_a_linked_worktree_entry_to_the_main_trees_project -> rust:memriver-core::tests/sessions.rs::register_maps_a_linked_worktree_entry_to_the_main_trees_project
+packages/memriver-core/tests/unit/application/test_sessions.py::test_register_never_changes_a_session_that_has_a_project -> rust:memriver-core::tests/sessions.rs::register_never_changes_a_session_that_has_a_project
+packages/memriver-core/tests/unit/application/test_sessions.py::test_register_nothing_covers -> rust:memriver-core::tests/sessions.rs::register_with_nothing_covering_changes_nothing
+packages/memriver-core/tests/unit/application/test_sessions.py::test_register_pending_with_candidate_refused -> rust:memriver-core::tests/sessions.rs::register_refuses_a_pending_session_with_a_candidate
+packages/memriver-core/tests/unit/application/test_sessions.py::test_register_uses_entry_first -> rust:memriver-core::tests/sessions.rs::register_uses_the_entry_first_and_then_the_directory_of_the_call
+packages/memriver-core/tests/unit/application/test_sessions.py::test_register_with_no_project_covering_the_entry_changes_nothing -> rust:memriver-core::tests/sessions.rs::register_with_nothing_covering_changes_nothing
+packages/memriver-core/tests/unit/application/test_sessions.py::test_register_without_a_store_answers_none_and_creates_nothing -> rust:memriver-core::tests/sessions.rs::start_without_a_store_answers_none_and_creates_nothing
+packages/memriver-core/tests/unit/application/test_sessions.py::test_registering_an_unknown_session_is_unidentified -> rust:memriver-core::tests/sessions.rs::register_refuses_a_pending_session_with_a_candidate
+packages/memriver-core/tests/unit/application/test_sessions.py::test_resume_absorbs_new_transcript -> rust:memriver-core::tests/sessions.rs::resume_adopts_the_transcript_and_never_moves
+packages/memriver-core/tests/unit/application/test_sessions.py::test_session_context_follows_the_stored_row -> rust:memriver-core::tests/sessions.rs::session_context_follows_the_stored_row
+packages/memriver-core/tests/unit/application/test_sessions.py::test_session_search_sees_only_the_writable_projects_registered_rows -> rust:memriver-core::tests/sessions.rs::session_search_sees_only_the_writable_projects_registered_rows
+packages/memriver-core/tests/unit/application/test_sessions.py::test_shell_cd_is_not_a_move -> rust:memriver-core::tests/sessions.rs::cd_move_needs_claude_code_a_changed_transcript_directory_and_an_absolute_cwd
+packages/memriver-core/tests/unit/application/test_sessions.py::test_start_without_a_store_answers_none_and_creates_nothing -> rust:memriver-core::tests/sessions.rs::start_without_a_store_answers_none_and_creates_nothing
+packages/memriver-core/tests/unit/application/test_sessions.py::test_stop_is_silent_for_pending_projectless_unknown_and_broken_sessions -> rust:memriver-core::tests/sessions.rs::stop_is_silent_for_pending_projectless_unknown_and_broken_sessions
+packages/memriver-core/tests/unit/application/test_sessions.py::test_stop_nudges_after_n_unsaved_prompts_then_every_m -> rust:memriver-core::tests/sessions.rs::stop_nudges_after_n_unsaved_prompts_then_every_m
+packages/memriver-core/tests/unit/application/test_sessions.py::test_the_tool_call_mapping_never_fails_its_caller -> rust:memriver-core::tests/sessions.rs::a_recorded_tool_call_names_its_session + rust:memriver-core::tests/sessions.rs::a_store_failure_is_an_unavailable_context
+packages/memriver-core/tests/unit/application/test_sessions.py::test_transcript_backfilled_then_cd_moves -> rust:memriver-core::tests/sessions.rs::a_transcript_that_was_never_stored_is_adopted_and_then_a_cd_moves
+packages/memriver-core/tests/unit/application/test_sessions.py::test_transcript_same_dir_other_spelling_is_not_a_move -> rust:memriver-core::tests/sessions.rs::transcript_same_dir_other_spelling_is_not_a_move
+packages/memriver-core/tests/unit/application/test_sessions.py::test_without_a_store_no_directory_question_and_no_scan_is_asked -> rust:memriver-core::application::sessions::tests::without_a_store_no_directory_question_and_no_scan_is_asked
 packages/memriver-core/tests/unit/models/test_changes.py::test_a_plan_expects_every_item_at_its_current_version -> rust:memriver-core::models::changes::tests::a_plan_expects_every_item_at_its_current_version
 packages/memriver-core/tests/unit/models/test_changes.py::test_create_defaults_match_the_spec -> rust:memriver-core::models::changes::tests::create_defaults_match_the_python_ones
 packages/memriver-core/tests/unit/models/test_changes.py::test_every_operation_is_an_op_and_frozen -> rust:memriver-core::models::changes::tests::every_operation_has_its_stored_name
@@ -766,14 +766,14 @@ packages/memriver-core/tests/unit/test_architecture.py::test_only_bootstrap_name
 packages/memriver-core/tests/unit/test_architecture.py::test_strict_layer_allowlist ->
 packages/memriver-core/tests/unit/test_bootstrap.py::test_an_explicit_root_wins_over_the_settings_root ->
 packages/memriver-core/tests/unit/test_bootstrap.py::test_bootstrap_exports_the_services_builder_the_empty_index_and_the_purge ->
-packages/memriver-core/tests/unit/test_bootstrap.py::test_building_the_services_never_loads_the_secret_scanner ->
-packages/memriver-core/tests/unit/test_bootstrap.py::test_composes_the_directory_callables ->
+packages/memriver-core/tests/unit/test_bootstrap.py::test_building_the_services_never_loads_the_secret_scanner -> rust:memriver-core::application::sessions::tests::building_the_services_and_the_calls_that_check_no_text_never_load_the_policy
+packages/memriver-core/tests/unit/test_bootstrap.py::test_composes_the_directory_callables -> n/a: the session service calls the directory and git functions itself; nothing is handed in
 packages/memriver-core/tests/unit/test_bootstrap.py::test_composes_the_four_services ->
 packages/memriver-core/tests/unit/test_bootstrap.py::test_composes_the_sqlite_adapters ->
 packages/memriver-core/tests/unit/test_bootstrap.py::test_injects_the_configured_limits_and_the_fixed_constants ->
-packages/memriver-core/tests/unit/test_bootstrap.py::test_injects_the_session_constants ->
+packages/memriver-core/tests/unit/test_bootstrap.py::test_injects_the_session_constants -> n/a: the session service takes its limits from the settings module itself; nothing is handed in
 packages/memriver-core/tests/unit/test_bootstrap.py::test_maintenance_shares_the_memory_store_and_the_one_content_policy ->
-packages/memriver-core/tests/unit/test_bootstrap.py::test_memory_writes_ask_the_session_service_through_its_callbacks ->
+packages/memriver-core/tests/unit/test_bootstrap.py::test_memory_writes_ask_the_session_service_through_its_callbacks -> rust:memriver-core::tests/sessions.rs::a_pending_session_writes_nothing_through_the_built_services_and_a_save_moves_its_mark
 packages/memriver-core/tests/unit/test_bootstrap.py::test_the_two_text_checking_services_share_one_content_policy ->
 packages/memriver-core/tests/unit/test_bootstrap.py::test_uses_the_settings_root_by_default ->
 packages/memriver-core/tests/unit/test_settings.py::test_a_cross_field_failure_from_the_environment_alone_blames_the_environment -> rust:memriver-core::tests/settings.rs::default_above_max_blames_max_when_neither_set_the_default

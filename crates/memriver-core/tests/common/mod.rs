@@ -36,6 +36,8 @@ pub struct Env {
     pub other: Project,
     pub global_id: String,
     pub settings: Settings,
+    /// What git is run with.
+    pub env: memriver_core::settings::Env,
 }
 
 pub fn setup() -> Env {
@@ -55,7 +57,9 @@ pub fn setup() -> Env {
     let (project, other) = (bound("work"), bound("elsewhere"));
     let global_id = projects.ensure_global().unwrap();
     let settings = Settings::light(store.clone());
+    let env = sandbox.env();
     Env {
+        env,
         _sandbox: sandbox,
         tmp,
         home,
@@ -84,18 +88,18 @@ pub fn context_of(project_id: Option<&str>, global_id: Option<&str>) -> ProjectC
 
 impl Env {
     pub fn services(&self) -> Services {
-        build_services(&self.settings, &self.home, None)
+        build_services(&self.settings, &self.home, &self.env, None)
     }
 
     pub fn classified(&self, classifier: Box<dyn ContentClassifier>) -> Services {
-        build_services(&self.settings, &self.home, Some(classifier))
+        build_services(&self.settings, &self.home, &self.env, Some(classifier))
     }
 
     /// The services over the same store with some settings changed.
     pub fn limited(&self, change: impl FnOnce(&mut Settings)) -> Services {
         let mut settings = self.settings.clone();
         change(&mut settings);
-        build_services(&settings, &self.home, None)
+        build_services(&settings, &self.home, &self.env, None)
     }
 
     /// The services with a classifier that notes what it is asked and refuses a text

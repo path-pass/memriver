@@ -3,3 +3,4 @@
 pub mod contexts;
 pub mod memory;
 pub mod projects;
+pub mod sessions;
