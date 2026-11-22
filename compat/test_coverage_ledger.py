@@ -20,7 +20,9 @@ def test_a_missing_or_dangling_target_fails(tmp_path):
     (crate / "src" / "lib.rs").write_text("#[test]\nfn at_the_root() {}\n")
     (crate / "src" / "a.rs").write_text(
         "fn helper() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn real_test() {}\n"
-        "    #[test]\n    #[should_panic(expected = \"x\")]\n    fn panics() {}\n}\n")
+        "    #[test]\n    #[should_panic(expected = \"x\")]\n    fn panics() {}\n"
+        "    mod inner {\n        #[test]\n        fn nested() { let _ = \"}\"; }\n    }\n}\n"
+        "#[test]\nfn after_the_module() {}\n")
     (crate / "src" / "deep" / "mod.rs").write_text("#[tokio::test]\nasync fn in_mod_rs() {}\n")
     (crate / "tests" / "it.rs").write_text("#[test]\nfn in_a_file() {}\n")
     ledger = """finished phases: 1
@@ -32,6 +34,10 @@ packages/core/tests/test_a.py::test_attributes -> rust:memriver-core::a::tests::
 packages/core/tests/test_a.py::test_root -> rust:memriver-core::at_the_root
 packages/core/tests/test_a.py::test_mod_rs -> rust:memriver-core::deep::in_mod_rs
 packages/core/tests/test_a.py::test_file -> rust:memriver-core::tests/it.rs::in_a_file
+packages/core/tests/test_a.py::test_file_and_module -> rust:memriver-core::src/a.rs::tests::real_test
+packages/core/tests/test_a.py::test_nested -> rust:memriver-core::a::tests::inner::nested
+packages/core/tests/test_a.py::test_file_and_nested -> rust:memriver-core::src/a.rs::tests::inner::nested
+packages/core/tests/test_a.py::test_after -> rust:memriver-core::a::after_the_module
 packages/core/tests/test_a.py::test_both -> compat:test_x.py::test_real + rust:memriver-core::a::tests::real_test
 packages/core/tests/test_a.py::test_na -> n/a: an import boundary Cargo enforces
 packages/core/tests/sub/test_b.py::test_missing ->
@@ -42,6 +48,11 @@ packages/cli/tests/test_a.py::test_wrong_module -> rust:memriver-core::b::tests:
 packages/cli/tests/test_a.py::test_wrong_file -> rust:memriver-core::tests/other.rs::in_a_file
 packages/cli/tests/test_a.py::test_wrong_crate -> rust:memriver::a::tests::real_test
 packages/cli/tests/test_a.py::test_not_a_test -> rust:memriver-core::a::helper
+packages/cli/tests/test_a.py::test_wrong_inline -> rust:memriver-core::src/a.rs::other::real_test
+packages/cli/tests/test_a.py::test_no_inline -> rust:memriver-core::src/a.rs::real_test
+packages/cli/tests/test_a.py::test_no_inline_by_module -> rust:memriver-core::a::real_test
+packages/cli/tests/test_a.py::test_outer_only -> rust:memriver-core::a::tests::nested
+packages/cli/tests/test_a.py::test_too_deep -> rust:memriver-core::a::tests::after_the_module
 packages/cli/tests/test_a.py::test_no_reason -> n/a:
 packages/cli/tests/test_a.py::test_odd -> somewhere
 packages/cli/tests/test_later.py::test_unfinished ->
@@ -56,6 +67,11 @@ packages/cli/tests/test_later.py::test_unfinished_dangling -> compat:test_x.py::
         "packages/cli/tests/test_a.py::test_wrong_file: rust:memriver-core::tests/other.rs::in_a_file does not exist",
         "packages/cli/tests/test_a.py::test_wrong_crate: rust:memriver::a::tests::real_test does not exist",
         "packages/cli/tests/test_a.py::test_not_a_test: rust:memriver-core::a::helper does not exist",
+        "packages/cli/tests/test_a.py::test_wrong_inline: rust:memriver-core::src/a.rs::other::real_test does not exist",
+        "packages/cli/tests/test_a.py::test_no_inline: rust:memriver-core::src/a.rs::real_test does not exist",
+        "packages/cli/tests/test_a.py::test_no_inline_by_module: rust:memriver-core::a::real_test does not exist",
+        "packages/cli/tests/test_a.py::test_outer_only: rust:memriver-core::a::tests::nested does not exist",
+        "packages/cli/tests/test_a.py::test_too_deep: rust:memriver-core::a::tests::after_the_module does not exist",
         "packages/cli/tests/test_a.py::test_no_reason: n/a without a reason",
         "packages/cli/tests/test_a.py::test_odd: not a target: somewhere",
         "packages/cli/tests/test_later.py::test_unfinished_dangling: compat:test_x.py::test_gone does not exist",
@@ -63,6 +79,21 @@ packages/cli/tests/test_later.py::test_unfinished_dangling -> compat:test_x.py::
     # a glob of a finished phase that matches no test file would demand nothing
     typo = ledger.replace("packages/cli/tests/test_a.py\n", "packages/cli/tests/test_a.py, packages/cil/**\n")
     assert problems(typo, tmp_path)[0] == "phase 1: packages/cil/** matches no test file"
-    assert len(problems(typo, tmp_path)) == 12
+    assert len(problems(typo, tmp_path)) == 17
     # a finished phase must say which files it covers
     assert problems("finished phases: 2\n", tmp_path) == ["phase 2 is finished but has no 'phase 2:' line"]
+
+
+def test_the_documented_forms_name_a_test_of_this_repository():
+    name = "a_variable_name_with_control_characters_is_escaped"
+    lines = [f"x.py::test_{n} -> rust:memriver::{path}::{name}"
+             for n, path in enumerate(["src/main.rs::tests", "main::tests", "src/main.rs", "main"])]
+    assert problems("\n".join(lines) + "\n", REPO) == [
+        f"x.py::test_2: rust:memriver::src/main.rs::{name} does not exist",
+        f"x.py::test_3: rust:memriver::main::{name} does not exist",
+    ]
+    binary = "rust:memriver::tests/cli_version.rs::version_through_the_binary"
+    assert problems(f"x.py::test_a -> {binary}\n", REPO) == []
+    # a file is named inside its crate, never by a path from elsewhere
+    elsewhere = f"rust:memriver-core::{REPO}/crates/memriver/src/main.rs::tests::{name}"
+    assert problems(f"x.py::test_b -> {elsewhere}\n", REPO) == [f"x.py::test_b: {elsewhere} does not exist"]

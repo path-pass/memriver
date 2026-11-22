@@ -88,3 +88,23 @@ def test_a_real_commit_outside_the_watched_paths_starts_nothing(tmp_path):
         (repository / "docs" / "中文.md").write_text("notes\n")
 
     assert changed(tmp_path, edit) == "rust=false\ncompat=false\n"
+
+
+@pytest.mark.parametrize(("name", "expected"), [
+    ("docs/a\ncompat/file.md", "rust=false\ncompat=false\n"),      # one file, under docs
+    ("docs/a\nCargo.toml", "rust=false\ncompat=false\n"),
+    ("docs/a\npackages/x.py", "rust=false\ncompat=false\n"),
+    ("\ncompat/x.json", "rust=false\ncompat=false\n"),            # a directory named "\ncompat"
+    ("compat/a\nb.json", "rust=true\ncompat=true\n"),             # really under compat
+    ("tools/a\nb.py", "rust=false\ncompat=true\n"),
+    ("rust-toolchain.toml\n", "rust=false\ncompat=false\n"),      # not the toolchain file
+    ("uv.lock\n", "rust=false\ncompat=false\n"),
+    ("docs/ two  spaces \\ and a backslash", "rust=false\ncompat=false\n"),
+    ("compat/ two  spaces \\ and a backslash", "rust=true\ncompat=true\n"),
+])
+def test_a_line_break_in_a_file_name_does_not_split_the_path(tmp_path, name, expected):
+    def add(repository, git):
+        (repository / name).parent.mkdir(parents=True, exist_ok=True)
+        (repository / name).write_text("x\n")
+
+    assert changed(tmp_path, add) == expected

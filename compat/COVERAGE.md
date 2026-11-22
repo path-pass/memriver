@@ -6,11 +6,12 @@ already filled in; checked by `compat/test_coverage_ledger.py`.
 
 A target is `compat:<file>::<case>`, `rust:<crate>::<module path>::<test>`, several
 of those joined by ` + `, or `n/a: <reason>`. A target that is named must exist: a
-Rust target's path is its modules from the crate root (`models::helpers::tests::name`
-is in `src/models/helpers.rs` or `src/models/helpers/mod.rs`; a last `tests` is the
-inline module; no module means `src/lib.rs`) or a file of the crate
-(`tests/cli_version.rs::name`, `src/main.rs::tests::name`), and the name must be a
-test function in that file.
+Rust target's path names a file and then the inline modules that contain the test,
+in order. The file is given by its modules from the crate root
+(`models::helpers::tests::name` is in `src/models/helpers.rs` or
+`src/models/helpers/mod.rs`, inside `mod tests`; no module means `src/lib.rs`) or by
+its place in the crate (`tests/cli_version.rs::name`, `src/main.rs::tests::name`).
+The name must be a test function in exactly those inline modules of that file.
 When a phase is finished its number is added to `finished phases:` together with
 a line `phase <n>: <glob>, <glob>, ...` naming the Python test files it covers;
 from then on every function of those files needs a target, and a glob that matches

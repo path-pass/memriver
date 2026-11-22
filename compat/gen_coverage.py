@@ -20,11 +20,12 @@ already filled in; checked by `compat/test_coverage_ledger.py`.
 
 A target is `compat:<file>::<case>`, `rust:<crate>::<module path>::<test>`, several
 of those joined by ` + `, or `n/a: <reason>`. A target that is named must exist: a
-Rust target's path is its modules from the crate root (`models::helpers::tests::name`
-is in `src/models/helpers.rs` or `src/models/helpers/mod.rs`; a last `tests` is the
-inline module; no module means `src/lib.rs`) or a file of the crate
-(`tests/cli_version.rs::name`, `src/main.rs::tests::name`), and the name must be a
-test function in that file.
+Rust target's path names a file and then the inline modules that contain the test,
+in order. The file is given by its modules from the crate root
+(`models::helpers::tests::name` is in `src/models/helpers.rs` or
+`src/models/helpers/mod.rs`, inside `mod tests`; no module means `src/lib.rs`) or by
+its place in the crate (`tests/cli_version.rs::name`, `src/main.rs::tests::name`).
+The name must be a test function in exactly those inline modules of that file.
 When a phase is finished its number is added to `finished phases:` together with
 a line `phase <n>: <glob>, <glob>, ...` naming the Python test files it covers;
 from then on every function of those files needs a target, and a glob that matches
@@ -76,29 +77,61 @@ def _exists(target: str, repo: Path) -> bool:
     if kind == "compat" and len(parts) == 2:
         path = repo / "compat" / parts[0]
         return path.is_file() and re.search(rf"^def {re.escape(parts[1])}\(", path.read_text(), re.MULTILINE) is not None
-    if kind == "rust" and len(parts) >= 2:
-        file = _rust_file(repo / "crates" / parts[0], parts[1:-1])
-        return file is not None and re.search(_RUST_TEST.format(name=re.escape(parts[-1])),
-                                              file.read_text()) is not None
+    if kind == "rust" and len(parts) >= 2 and ".." not in rest:
+        return _rust_test(repo / "crates" / parts[0], parts[1:-1], parts[-1])
     return False
 
 
-# a function with a test attribute, whatever other attributes stand between
-_RUST_TEST = r"#\[(?:\w+::)*test\b[^\]]*\]\s*(?:#\[[^\]]*\]\s*)*(?:pub\s+)?(?:async\s+)?fn\s+{name}\s*\("
-
-
-def _rust_file(crate: Path, modules: list[str]) -> Path | None:
-    """The file a target's path names: `tests/x.rs` (a path ending in .rs, from the
-    crate's directory) or a module path from the crate root, `a::b` -> src/a/b.rs or
-    src/a/b/mod.rs, none -> src/lib.rs. A last module `tests` is the inline one."""
-    if modules and modules[0].endswith(".rs"):
-        candidates = [crate / modules[0]] if len(modules) == 1 else []
+def _rust_test(crate: Path, path: list[str], name: str) -> bool:
+    """Whether `name` is a test function at `path` of the crate. The path names a file
+    and then the inline modules, in order, that contain the test: the file either by its
+    place in the crate (`src/main.rs`, `tests/x.rs`) or by its modules from the crate
+    root (`a::b` is src/a/b.rs or src/a/b/mod.rs, nothing is src/lib.rs), taking as many
+    leading modules as make a file."""
+    if path and path[0].endswith(".rs"):
+        if Path(path[0]).is_absolute():
+            return False
+        file, inline = crate / path[0], path[1:]
     else:
-        if modules and modules[-1] == "tests":
-            modules = modules[:-1]
-        inside = crate.joinpath("src", *modules)
-        candidates = [inside.with_suffix(".rs"), inside / "mod.rs"] if modules else [inside / "lib.rs"]
-    return next((path for path in candidates if path.is_file()), None)
+        for cut in range(len(path), -1, -1):
+            inside = crate.joinpath("src", *path[:cut])
+            file = next((f for f in ([inside.with_suffix(".rs"), inside / "mod.rs"] if cut
+                                     else [inside / "lib.rs"]) if f.is_file()), None)
+            if file is not None:
+                break
+        else:
+            return False
+        inline = path[cut:]
+    return file.is_file() and inline in _tests_named(file.read_text(encoding="utf-8"), name)
+
+
+# string and character literals and comments, which may hold braces
+_RUST_QUIET = re.compile(r'''"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])'|//[^\n]*|/\*.*?\*/''', re.DOTALL)
+# an inline module opening, a function with a test attribute (whatever other attributes
+# stand between), or a brace
+_RUST_TOKEN = re.compile(
+    r"\bmod\s+(?P<module>\w+)\s*\{"
+    r"|#\[(?:\w+::)*test\b[^\]]*\]\s*(?:#\[[^\]]*\]\s*)*(?:pub\s+)?(?:async\s+)?fn\s+(?P<test>\w+)\s*\("
+    r"|(?P<open>\{)|(?P<close>\})")
+
+
+def _tests_named(source: str, name: str) -> list[list[str]]:
+    """The inline-module path of every test function called `name` in a Rust source."""
+    # ponytail: braces are counted after literals and comments are blanked; a raw string
+    # holding an unbalanced brace would shift the count and the test would read as
+    # missing (never as present). Upgrade path: a real tokenizer.
+    found, open_blocks = [], []         # a module's name, or None for any other block
+    for token in _RUST_TOKEN.finditer(_RUST_QUIET.sub("", source)):
+        if token["module"]:
+            open_blocks.append(token["module"])
+        elif token["test"]:
+            if token["test"] == name:
+                found.append([block for block in open_blocks if block is not None])
+        elif token["open"]:
+            open_blocks.append(None)
+        elif open_blocks:
+            open_blocks.pop()
+    return found
 
 
 def problems(text: str, repo: Path) -> list[str]:

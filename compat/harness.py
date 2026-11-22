@@ -149,13 +149,46 @@ TIME_COLUMNS: dict[str, tuple[str, ...]] = {
     "tags": ("updated",),
     "session_moves": ("moved_at",),
 }
-# Columns that only move forward: when the clock has not passed the row's stored time,
+# What identifies a row of a table that has timestamps, so a step's change to one cell
+# can be told from a row that was there before. None: the table has no key and a row is
+# itself (memory_reads only ever gains rows).
+ROW_KEYS: dict[str, tuple[str, ...] | None] = {
+    "memories": ("id",),
+    "changes": ("change_id",),
+    "memory_reads": None,
+    "sessions": ("harness", "session_id"),
+    "tool_calls": ("harness", "call_id"),
+    "tags": ("project_id", "name"),
+    "session_moves": ("harness", "session_id", "seq"),
+}
+
+
+def _new_versions(row: dict, was: dict, then: Snapshot, now: Snapshot) -> int:
+    return row["version"] - was["version"]
+
+
+def _new_moves(row: dict, was: dict, then: Snapshot, now: Snapshot) -> int:
+    """How many moves the step added to the session of `row`: all of them for the session's
+    own row, those up to and including it for the row of one move."""
+    def moves(snap: Snapshot) -> int:
+        return sum(move["harness"] == row["harness"] and move["session_id"] == row["session_id"]
+                   and move["seq"] <= row.get("seq", move["seq"])
+                   for move in snap.tables.get("session_moves", []))
+    return moves(now) - moves(then)
+
+
+# Cells that only move forward: the two places the Python implementation calls
+# now_strictly_after -- a memory's new version (`updated`, and `deleted_at`, which is
+# set to it) and a session's move (`sessions.last_active_at` and the `moved_at` of the
+# move's own row, both the same value). When the clock has not passed the stored time,
 # the new value is that time plus one microsecond per advance, not the clock.
-# table -> (the row's key, {column: the column whose previous value it advances from},
-#           the column counting the advances, or None for one per step)
-MONOTONIC: dict[str, tuple[tuple[str, ...], dict[str, str], str | None]] = {
-    "memories": (("id",), {"updated": "updated", "deleted_at": "updated"}, "version"),
-    "sessions": (("harness", "session_id"), {"last_active_at": "last_active_at"}, None),
+# (table, column) -> (the table and column holding the previous time, the columns that
+#                     find that row, how many advances the step made up to this cell)
+MONOTONIC: dict[tuple[str, str], tuple[str, str, tuple[str, ...], Callable[..., int]]] = {
+    ("memories", "updated"): ("memories", "updated", ("id",), _new_versions),
+    ("memories", "deleted_at"): ("memories", "updated", ("id",), _new_versions),
+    ("sessions", "last_active_at"): ("sessions", "last_active_at", ("harness", "session_id"), _new_moves),
+    ("session_moves", "moved_at"): ("sessions", "last_active_at", ("harness", "session_id"), _new_moves),
 }
 
 
@@ -183,17 +216,44 @@ class Output:
     ids: tuple[tuple[str, str], ...] = ()
     times: tuple[str, ...] = ()
     body_after: str | None = None
+    # for an id that a pattern cannot find because free text stands on its line:
+    # (the text, the side's store) -> [(start, end, kind)], from what the store holds
+    locate: Callable[[str, Snapshot], list[tuple[int, int, str]]] | None = None
 
 
 def _json(key: str, value: str) -> str:
     return rf'"{key}":\s*"({value})"'
 
 
+def _created_project(text: str, store: Snapshot) -> list[tuple[int, int, str]]:
+    """Where `project init` printed the new project's id. Its line is
+    `created project <name> [<id>] and bound <root>`, and both the name and the root are
+    the user's text, which may itself look like `[<id>] and bound`. So the line is not
+    parsed: for each project the store holds, the exact line the command prints for it
+    is built and looked for, and the id is taken from its known offset."""
+    from memriver.project_context import visible  # how the command shows name and root
+
+    found = []
+    for row in store.tables.get("projects", []):
+        if row["root"] is None:
+            continue
+        before = f"created project {visible(row['name'])} ["
+        line = f"{before}{row['id']}] and bound {visible(row['root'])}\n"
+        at = text.find(line)
+        while at != -1:
+            if at == 0 or text[at - 1] == "\n":
+                found.append((at + len(before), at + len(before) + len(row["id"]), "project"))
+            at = text.find(line, at + 1)
+    return found
+
+
 # The caller says which kind of output it compares; nothing is renamed in "plain".
+# A pattern is used only where the value's place on its line is fixed -- first on the
+# line, or last (`history-version`), with any free text on the other side of it -- and
+# these commands print free text with line breaks replaced, so it cannot start a line.
 OUTPUTS: dict[str, Output] = {
     "plain": Output(),
-    # the project's name stands before the id and is free text on the same line
-    "project-init": Output(ids=((rf"^created project .* \[({ID})\] and bound ", "project"),)),
+    "project-init": Output(locate=_created_project),
     "project-explain": Output(ids=((rf"^(?:project|reads|writes): ({ID})(?=,|$)", "project"),)),
     "list": Output(ids=((rf"^({ID})  ", "project"), (rf"^  ({ID})  \[", "memory"))),
     "show": Output(
@@ -355,33 +415,71 @@ class Case:
 
     def _see_times(self, side: Side, then: Snapshot, now: Snapshot,
                    span: tuple[datetime, datetime] | None) -> None:
-        """Names the stored timestamps not seen before, ascending, so their order is
-        compared. Each must be a real time in the stored form. In a step it must also lie
-        within `span`, the clock read before and after that side's action -- or, in a
-        column that only moves forward, be the row's previous time plus one microsecond
-        per advance (what an implementation writes when the clock is behind that time)."""
-        new = set()
+        """Checks every timestamp cell the step wrote, then names the timestamps not seen
+        before, ascending, so their order is compared.
+
+        A cell was written when its row is new or its value differs from the row's value
+        before the step; whether the value itself was seen before does not matter. What it
+        holds must be a real time in the stored form, and:
+        - in a cell that only moves forward (MONOTONIC), with a previous time: later than
+          that time, and either within `span` -- the clock read before and after this
+          side's action -- or exactly that time plus one microsecond for each advance
+          the step made;
+        - anywhere else: within `span`.
+        Without a span (a seed as loaded) only the form is checked."""
         for table, rows in now.tables.items():
-            key, advancing, counter = MONOTONIC.get(table, ((), {}, None))
-            earlier = {tuple(row[k] for k in key): row for row in then.tables.get(table, [])}
+            key = ROW_KEYS[table] if TIME_COLUMNS[table] else None
+            if key is None:     # a row is itself: count the ones that were there
+                there = Counter(repr(row) for row in then.tables.get(table, []))
+                earlier = {}
+            else:
+                earlier = {tuple(row[k] for k in key): row for row in then.tables.get(table, [])}
             for row in rows:
+                if key is None:
+                    there[repr(row)] -= 1
+                    was = row if there[repr(row)] >= 0 else None
+                else:
+                    was = earlier.get(tuple(row[k] for k in key))
                 for name in TIME_COLUMNS[table]:
                     stamp = row[name]
-                    if stamp is None or stamp in side.times:
+                    if stamp is None:
                         continue
                     instant = _instant(stamp)
                     assert instant is not None, f"not a timestamp: {stamp!r}"
-                    new.add(stamp)
-                    if span is None or span[0] <= instant <= span[1]:
+                    if span is None:
                         continue
-                    was = earlier.get(tuple(row[k] for k in key)) if name in advancing else None
-                    base = _instant(was[advancing[name]]) if was else None
-                    advances = (row[counter] - was[counter]) if was and counter else 1
-                    assert base is not None and stamp == _stamp(base + timedelta(microseconds=advances)), \
-                        (f"{table}.{name}: {stamp} is outside the step, which ran from "
-                         f"{_stamp(span[0])} to {_stamp(span[1])}")
-        for stamp in sorted(new):
+                    base, advances = self._previous(table, name, row, was, then, now)
+                    if base is None and was is not None and was[name] == stamp:
+                        continue    # not written by this step
+                    inside = span[0] <= instant <= span[1]
+                    if base is not None:
+                        assert instant > base, f"{table}.{name}: {stamp} is not after {_stamp(base)}"
+                        inside = inside or (advances > 0
+                                            and instant - base == timedelta(microseconds=advances))
+                    assert inside, (f"{table}.{name}: {stamp} is outside the step, which ran from "
+                                    f"{_stamp(span[0])} to {_stamp(span[1])}")
+        seen = {row[name] for table, rows in now.tables.items()
+                for row in rows for name in TIME_COLUMNS[table]}
+        for stamp in sorted(seen - {None} - side.times.keys()):
             side.times[stamp] = f"<t:{len(side.times) + 1}>"
+
+    @staticmethod
+    def _previous(table: str, name: str, row: dict, was: dict | None, then: Snapshot,
+                  now: Snapshot) -> tuple[datetime | None, int]:
+        """For a cell that only moves forward and that this step advanced: the time it
+        advanced from and how many advances the step made. (None, 0) for any other cell."""
+        if (table, name) not in MONOTONIC:
+            return None, 0
+        base_table, base_column, key, count = MONOTONIC[table, name]
+        holder = next((old for old in then.tables.get(base_table, [])
+                       if all(old[k] == row[k] for k in key)), None)
+        if holder is None:      # the row it advances from is new too: the clock applies
+            return None, 0
+        advances = count(row, holder, then, now)
+        unchanged = was is not None and was[name] == row[name]
+        if unchanged and advances == 0:
+            return None, 0
+        return _instant(holder[base_column]), advances
 
     def renamed(self, side: Side) -> dict:
         """The side's store with ids and timestamps renamed in their declared columns only."""
@@ -432,6 +530,9 @@ class Case:
         head, separator, body = text(done.stdout), "", ""
         if output.body_after is not None:
             head, separator, body = head.partition(output.body_after)
+        if output.locate is not None:   # right to left, so the places found stay valid
+            for start, end, of in sorted(output.locate(head, snapshot(side.root)), reverse=True):
+                head = head[:start] + side.names.get((of, head[start:end]), head[start:end]) + head[end:]
         head = head.replace(str(side.root), "<store>")
         for pattern, of in output.ids:
             head = _rename(pattern, head, lambda raw, of=of: side.names.get((of, raw), raw))
@@ -522,26 +623,34 @@ def load_seed(name: str, tmp_path: Path, *, seeds: Path = SEEDS) -> Path:
     `store`) and checks the result before any case may use it. Returns the store."""
     from memriver_core.repository.sqlite.database import _SCHEMA
 
-    home, work, root = tmp_path / "home", tmp_path / "work", tmp_path / "store"
+    # everything is placed from the case's own root, with links followed -- never from
+    # where the caller happens to stand
+    base = tmp_path.resolve()
+    assert TMP_PATH is not None and base.is_relative_to(TMP_PATH.resolve()), \
+        f"seed {name}: {tmp_path} is outside the test's temporary directory"
+    home, work, root = base / "home", base / "work", base / "store"
 
     def text(file: str) -> str:
         return ((seeds / name / file).read_text(encoding="utf-8")
                 .replace("{{WORK}}", str(work)).replace("{{HOME}}", str(home)))
+
+    def place(written: str) -> Path:
+        """Where a path of the layout lies; refused unless that is under the case's root."""
+        path = (base / written).resolve()
+        assert path.is_relative_to(base), f"seed {name}: {written} is outside {tmp_path}"
+        return path
     layout = json.loads(text("layout.json"))
-    # before anything is created: every place the layout names is under tmp_path
-    places = [*layout["directories"],
-              *(place["path"] for repository in layout["git"]
-                for place in (repository, *repository["worktrees"]))]
-    for place in places:
-        assert Path(place).resolve().is_relative_to(tmp_path.resolve()), \
-            f"seed {name}: {place} is outside {tmp_path}"
+    # before anything is created; git is then given only these checked absolute paths
+    directories = [place(directory) for directory in layout["directories"]]
+    repositories = [(place(repository["path"]), repository["branch"],
+                     [{**tree, "path": str(place(tree["path"]))} for tree in repository["worktrees"]])
+                    for repository in layout["git"]]
     for directory in (home, work):
         directory.mkdir(parents=True)
-    for repository in layout["git"]:
-        _repository(Path(repository["path"]), repository["branch"], repository["worktrees"],
-                    home=home, root=root, cwd=work)
-    for directory in layout["directories"]:
-        Path(directory).mkdir(parents=True, exist_ok=True)
+    for path, branch, worktrees in repositories:
+        _repository(path, branch, worktrees, home=home, root=root, cwd=work)
+    for directory in directories:
+        directory.mkdir(parents=True, exist_ok=True)
     root.mkdir(mode=0o700)
     database = root / "memriver.db"
     database.touch(mode=0o600)

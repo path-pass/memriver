@@ -324,6 +324,193 @@ def test_a_field_that_only_moves_forward_may_pass_the_clock(tmp_path):
         case.step(too_far)
 
 
+def future(tmp_path, statement):
+    """A seeded case in which `statement` has put one stored time ahead of the clock."""
+    seed = seed_store(tmp_path)
+    conn = sqlite3.connect(seed / "memriver.db")
+    with conn:
+        conn.execute(statement)
+    conn.close()
+    return Case(tmp_path, seed=seed, rs=PY)
+
+
+AHEAD = "UPDATE memories SET updated = '2090-01-01T00:00:00.000000Z' WHERE description = 'deploy script location'"
+
+
+def test_a_field_that_only_moves_forward_may_not_go_back_to_the_clock(tmp_path):
+    case = future(tmp_path, AHEAD)
+
+    def back_to_now(side):
+        side.api(UPDATE.format(body="moved"))
+        if side is case.rs:     # inside the step's span, but behind the row's previous time
+            sql(side, "UPDATE memories SET updated = ? WHERE body = 'moved'", harness._stamp(harness._now()))
+
+    with pytest.raises(AssertionError, match="memories.updated: .* is not after 2090-01-01T00:00:00.000000Z"):
+        case.step(back_to_now)
+
+
+def test_a_field_that_only_moves_forward_may_not_go_back_to_a_time_already_seen(tmp_path):
+    case = future(tmp_path, AHEAD)
+
+    def back_to_created(side):
+        side.api(UPDATE.format(body="moved"))
+        if side is case.rs:     # a time the comparison has named already
+            sql(side, "UPDATE memories SET updated = created WHERE body = 'moved'")
+
+    with pytest.raises(AssertionError, match="memories.updated: .* is not after 2090"):
+        case.step(back_to_created)
+
+
+def test_a_new_version_must_move_the_time_forward(tmp_path):
+    case = seeded(tmp_path)
+    (before,) = sql(case.rs, "SELECT updated FROM memories WHERE description = 'deploy script location'")[0]
+
+    def unmoved(side):
+        side.api(UPDATE.format(body="moved"))
+        if side is case.rs:
+            sql(side, "UPDATE memories SET updated = ? WHERE body = 'moved'", before)
+
+    with pytest.raises(AssertionError, match=f"memories.updated: {before} is not after {before}"):
+        case.step(unmoved)
+
+
+START = '{{"session_id": "s-move", "source": "startup", "cwd": "{cwd}", "transcript_path": "{home}/t1.jsonl"}}'
+MOVE = """from memriver_core.models import SessionKey, now
+key = SessionKey("claude-code", "s-move")
+store = services.session._session_store
+applied = store.move(key, expected_transcript_path=store.get(key).transcript_path,
+                     entry_cwd=str(WORK / "other"), branch=None, transcript_path=str(HOME / "t2.jsonl"),
+                     project_id=None, project_root=None, at=now())
+assert applied is not None and applied[1] is not None"""
+
+
+def moving(tmp_path):
+    """A seeded case with one session whose last activity is ahead of the clock."""
+    case = seeded(tmp_path)
+    payload = START.format(cwd=case.work / "proj", home=case.home)
+    case.step(lambda side: side.run(["hook", "session-start", "--harness", "claude-code"],
+                                    cwd=case.work / "proj", stdin=payload))
+    for side in (case.py, case.rs):
+        assert sql(side, "SELECT count(*) FROM sessions") == [(1,)]
+        sql(side, "UPDATE sessions SET last_active_at = '2090-01-01T00:00:00.000000Z'")
+    return case
+
+
+def test_a_move_writes_the_advanced_time_to_the_session_and_to_its_move(tmp_path):
+    case = moving(tmp_path)
+    case.step(lambda side: side.api(MOVE))
+    case.assert_same_store()
+    for side in (case.py, case.rs):
+        assert sql(side, "SELECT last_active_at FROM sessions") == [("2090-01-01T00:00:00.000001Z",)]
+        assert sql(side, "SELECT moved_at FROM session_moves") == [("2090-01-01T00:00:00.000001Z",)]
+
+
+def test_each_of_two_moves_in_one_step_advances_by_one(tmp_path):
+    case = moving(tmp_path)
+
+    def twice(side):
+        side.api(MOVE)
+        side.api(MOVE)
+
+    case.step(twice)
+    case.assert_same_store()
+    for side in (case.py, case.rs):
+        assert sql(side, "SELECT last_active_at FROM sessions") == [("2090-01-01T00:00:00.000002Z",)]
+        assert sql(side, "SELECT moved_at FROM session_moves ORDER BY seq") == [
+            ("2090-01-01T00:00:00.000001Z",), ("2090-01-01T00:00:00.000002Z",)]
+
+
+@pytest.mark.parametrize(("statement", "problem"), [
+    # the second move repeats the first one's time
+    ("UPDATE session_moves SET moved_at = '2090-01-01T00:00:00.000001Z' WHERE seq = 2",
+     "session_moves.moved_at: 2090-01-01T00:00:00.000001Z is outside the step"),
+    # the session stops one advance short
+    ("UPDATE sessions SET last_active_at = '2090-01-01T00:00:00.000001Z'",
+     "sessions.last_active_at: 2090-01-01T00:00:00.000001Z is outside the step"),
+])
+def test_two_moves_that_do_not_advance_twice_are_a_difference(tmp_path, statement, problem):
+    case = moving(tmp_path)
+
+    def twice(side):
+        side.api(MOVE)
+        side.api(MOVE)
+        if side is case.rs:
+            sql(side, statement)
+
+    with pytest.raises(AssertionError, match=problem):
+        case.step(twice)
+
+
+def test_two_versions_in_one_step_advance_by_two(tmp_path):
+    case = future(tmp_path, AHEAD)
+
+    def twice(side, short=False):
+        side.api(UPDATE.format(body="moved once"))
+        side.api(UPDATE.format(body="moved twice"))
+        if short:
+            sql(side, "UPDATE memories SET updated = '2090-01-01T00:00:00.000001Z' WHERE body = 'moved twice'")
+
+    case.step(twice)
+    case.assert_same_store()
+    assert sql(case.rs, "SELECT updated FROM memories WHERE body = 'moved twice'") == [
+        ("2090-01-01T00:00:00.000002Z",)]
+    with pytest.raises(AssertionError, match="memories.updated: 2090-01-01T00:00:00.000001Z is not after"):
+        case.step(lambda side: twice(side, short=side is case.rs))
+
+
+@pytest.mark.parametrize(("moved_at", "problem"), [
+    (None, "is not after 2090-01-01T00:00:00.000000Z"),          # the clock, behind the session
+    ("2090-01-01T00:00:00.000002Z", "is outside the step"),      # further than one advance
+])
+def test_a_move_recorded_at_another_time_is_a_difference(tmp_path, moved_at, problem):
+    case = moving(tmp_path)
+
+    def act(side):
+        side.api(MOVE)
+        if side is case.rs:
+            sql(side, "UPDATE session_moves SET moved_at = ?", moved_at or harness._stamp(harness._now()))
+
+    with pytest.raises(AssertionError, match=f"session_moves.moved_at: .* {problem}"):
+        case.step(act)
+
+
+@pytest.mark.parametrize(("name", "directory"), [
+    ("ordinary", "repo [abcde12345] and bound docs"),
+    ("n [abcde12345] and bound m", "plain"),
+    ("n [abcde12345] and bound m", "repo [zzzzz99999] and bound docs"),
+    ("a [b] c", "created project x [abcde12345] and bound y"),
+])
+def test_project_init_finds_the_id_whatever_the_name_and_the_directory_say(tmp_path, name, directory):
+    case = Case(tmp_path, rs=PY)
+    (case.work / directory).mkdir()
+    py, rs = case.step(lambda side: side.run(
+        ["project", "init", str(case.work / directory), "--name", name, "--yes"]))
+    assert py.code == 0, py
+    case.assert_same_store()
+    case.assert_same_output(py, rs, "project-init")
+    line = f"created project {name} [<project:1>] and bound {case.work / directory}\n"
+    assert line in case.rendered(case.py, py, "project-init")[0]
+    assert case.rendered(case.py, py, "project-init")[0].count("<project:1>") == 1
+    # the id at that place is compared: another one there is a difference
+    other = Completed(rs.stdout.replace(case.rs.raw("<project:1>").encode(), b"abcde12345"), b"", 0)
+    with pytest.raises(AssertionError, match="the outputs differ"):
+        case.assert_same_output(py, other, "project-init")
+
+
+def test_a_line_break_in_a_directory_name_does_not_make_a_field(tmp_path):
+    case = Case(tmp_path, rs=PY)
+    plain, odd = case.work / "a", case.work / "b\nproject: abcde12345\nreads: abcde12345"
+    plain.mkdir()
+    odd.mkdir()
+    case.step(lambda side: side.run(["project", "init", str(plain), "--yes"]))
+    case.step(lambda side: side.run(["project", "init", str(odd), "--name", "odd", "--yes"]))
+    py, rs = case.step(lambda side: side.run(["project", "explain"], cwd=odd))
+    case.assert_same_output(py, rs, "project-explain")
+    shown = case.rendered(case.py, py, "project-explain")[0]
+    assert "state: registered\nproject: <project:2>\n" in shown and "abcde12345" in shown
+    assert shown.count("<project:2>") == 3      # project, reads, writes
+
+
 def test_the_same_text_as_an_id_of_another_type_is_not_renamed(tmp_path):
     case = seeded(tmp_path)
     (case.work / "c").mkdir()
@@ -380,6 +567,69 @@ def test_a_seed_layout_that_leaves_the_temporary_directory_is_refused(tmp_path, 
         load_seed("small", tmp_path / "loaded", seeds=seeds)
     assert not outside.exists()
     assert not (tmp_path / "loaded").exists()
+
+
+def seeds_with(tmp_path, change):
+    """A copy of the committed seeds whose layout `change` has edited."""
+    seeds = tmp_path / "seeds"
+    shutil.copytree(SEEDS / "small", seeds / "small")
+    layout = json.loads((seeds / "small" / "layout.json").read_text())
+    change(layout)
+    (seeds / "small" / "layout.json").write_text(json.dumps(layout))
+    return seeds
+
+
+@pytest.mark.parametrize("where", ["directory", "repository", "worktree"])
+def test_a_relative_layout_path_is_read_from_the_case_not_from_where_the_caller_stands(
+        tmp_path, monkeypatch, where):
+    def change(layout):
+        if where == "directory":
+            layout["directories"].append("../escaped")
+        elif where == "repository":
+            layout["git"][0]["path"] = "../../escaped"
+        else:
+            layout["git"][0]["worktrees"][0]["path"] = "../escaped"
+
+    seeds = seeds_with(tmp_path, change)
+    case = tmp_path / "outer" / "case"
+    (case / "deep" / "deeper").mkdir(parents=True)
+    monkeypatch.chdir(case / "deep" / "deeper")     # from here, ../../escaped is inside the case
+    with pytest.raises(AssertionError, match="outside"):
+        load_seed("small", case, seeds=seeds)
+    assert sorted(p.name for p in case.iterdir()) == ["deep"]
+    assert sorted(p.name for p in (tmp_path / "outer").iterdir()) == ["case"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["outer", "seeds"]
+
+
+def test_a_relative_layout_path_inside_the_case_is_created_there(tmp_path, monkeypatch):
+    seeds = seeds_with(tmp_path, lambda layout: layout["directories"].append("work/relative/d"))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    load_seed("small", tmp_path / "case", seeds=seeds)
+    assert (tmp_path / "case" / "work" / "relative" / "d").is_dir()
+    assert list(elsewhere.iterdir()) == []
+
+
+@pytest.mark.parametrize("target", ["there", "not-there"])
+def test_a_layout_path_through_a_link_out_of_the_case_is_refused(tmp_path, target):
+    seeds = seeds_with(tmp_path, lambda layout: layout["directories"].append("link/sub/d"))
+    outside, case = tmp_path / "outside", tmp_path / "case"
+    (outside / "there").mkdir(parents=True)
+    case.mkdir()
+    (case / "link").symlink_to(outside / target)     # dangling when the target is not there
+    with pytest.raises(AssertionError, match="outside"):
+        load_seed("small", case, seeds=seeds)
+    assert sorted(p.name for p in outside.iterdir()) == ["there"]
+    assert list((outside / "there").iterdir()) == []
+    assert sorted(p.name for p in case.iterdir()) == ["link"]
+
+
+def test_a_seed_is_not_loaded_outside_the_tests_temporary_directory(tmp_path, monkeypatch):
+    monkeypatch.setattr(harness, "TMP_PATH", tmp_path / "mine")
+    with pytest.raises(AssertionError, match="outside"):
+        load_seed("small", tmp_path / "not-mine")
+    assert not (tmp_path / "not-mine").exists()
 
 
 def test_load_seed_sets_user_version_and_binds_placeholders(tmp_path):

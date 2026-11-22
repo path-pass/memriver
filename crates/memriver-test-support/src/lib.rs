@@ -41,22 +41,53 @@ impl Default for Sandbox {
     }
 }
 
-/// Whether `path`, with every link followed, lies under `dir`. `path` need not exist (a
-/// store is created by its first write): its nearest existing ancestor is resolved and
-/// the rest, which may not climb with `..`, is appended.
-fn is_inside(path: &Path, dir: &Path) -> bool {
-    if path.components().any(|part| part == Component::ParentDir) {
-        return false;
+/// Where an absolute `path` leads once every link on it is followed, whether or not the
+/// place exists: a link is read as a link even when its target is missing, and what is
+/// not there yet is taken as written. None when that cannot be told (a link that leads
+/// back to itself, a component that cannot be examined).
+fn resolve(path: &Path, links_left: u8) -> Option<PathBuf> {
+    let mut at = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::Prefix(_) | Component::RootDir => at.push(part),
+            Component::CurDir => {}
+            Component::ParentDir => drop(at.pop()),
+            Component::Normal(name) => {
+                let next = at.join(name);
+                match next.symlink_metadata() {
+                    Ok(found) if found.file_type().is_symlink() => {
+                        // a relative target starts from the link's directory, an absolute one replaces it
+                        at = resolve(&at.join(next.read_link().ok()?), links_left.checked_sub(1)?)?;
+                    }
+                    Ok(_) => at = next,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => at = next,
+                    Err(_) => return None,
+                }
+            }
+        }
     }
-    let Some(existing) = path.ancestors().find(|ancestor| ancestor.exists()) else {
+    Some(at)
+}
+
+/// Whether `path` stays under `dir` at every step: it is written below `dir` without
+/// `..`, and each of its components -- a link whose target is missing included -- leads
+/// to a place under `dir` once links are followed. `path` need not exist (a store is
+/// created by its first write).
+fn is_inside(path: &Path, dir: &Path) -> bool {
+    let (Ok(below), Some(dir)) = (path.strip_prefix(dir), resolve(dir, 40)) else {
         return false;
     };
-    let (Ok(resolved), Ok(dir)) = (existing.canonicalize(), dir.canonicalize()) else {
-        return false;
-    };
-    resolved
-        .join(path.strip_prefix(existing).unwrap_or(Path::new("")))
-        .starts_with(dir)
+    let mut at = dir.clone();
+    for part in below.components() {
+        let Component::Normal(name) = part else {
+            return false;
+        };
+        match resolve(&at.join(name), 40) {
+            Some(next) if next.starts_with(&dir) => at = next,
+            _ => return false,
+        }
+    }
+    true
 }
 
 /// `program` with exactly `Sandbox::env` as its environment and the sandbox as its
@@ -145,6 +176,88 @@ mod tests {
         let link = sandbox.dir.path().join("link");
         std::os::unix::fs::symlink(other.dir.path(), &link).unwrap();
         sandbox.root = link.join("not-there-yet").join("store");
+        isolated_command(&sandbox, Path::new("/usr/bin/env"));
+    }
+
+    /// A sandbox whose `root` is `rest` below a link named `link` pointing at `target`.
+    fn linked(target: &Path, rest: &str) -> Sandbox {
+        let mut sandbox = Sandbox::new();
+        let link = sandbox.dir.path().join("link");
+        std::os::unix::fs::symlink(target, &link).unwrap();
+        sandbox.root = if rest.is_empty() {
+            link
+        } else {
+            link.join(rest)
+        };
+        sandbox
+    }
+
+    #[test]
+    #[should_panic(expected = "outside the sandbox")]
+    fn isolated_command_refuses_a_root_that_is_a_dangling_link_out() {
+        let other = Sandbox::new();
+        let sandbox = linked(&other.dir.path().join("not-there"), "");
+        isolated_command(&sandbox, Path::new("/usr/bin/env"));
+    }
+
+    #[test]
+    #[should_panic(expected = "outside the sandbox")]
+    fn isolated_command_refuses_a_root_below_a_dangling_link_out() {
+        let other = Sandbox::new();
+        let sandbox = linked(&other.dir.path().join("not-there"), "deeper/store");
+        isolated_command(&sandbox, Path::new("/usr/bin/env"));
+    }
+
+    #[test]
+    #[should_panic(expected = "outside the sandbox")]
+    fn isolated_command_refuses_a_dangling_link_with_a_relative_target_out() {
+        let sandbox = linked(Path::new("../not-there-either"), "");
+        isolated_command(&sandbox, Path::new("/usr/bin/env"));
+    }
+
+    #[test]
+    #[should_panic(expected = "outside the sandbox")]
+    fn isolated_command_refuses_a_link_out_reached_through_a_link_inside() {
+        let other = Sandbox::new();
+        let mut sandbox = Sandbox::new();
+        let (first, second) = (
+            sandbox.dir.path().join("first"),
+            sandbox.dir.path().join("second"),
+        );
+        std::os::unix::fs::symlink("second", &first).unwrap();
+        std::os::unix::fs::symlink(other.dir.path().join("not-there"), &second).unwrap();
+        sandbox.root = first;
+        isolated_command(&sandbox, Path::new("/usr/bin/env"));
+    }
+
+    #[test]
+    #[should_panic(expected = "outside the sandbox")]
+    fn isolated_command_refuses_a_link_that_leads_to_itself() {
+        let mut sandbox = Sandbox::new();
+        let link = sandbox.dir.path().join("loop");
+        std::os::unix::fs::symlink(&link, &link).unwrap();
+        sandbox.root = link.join("store");
+        isolated_command(&sandbox, Path::new("/usr/bin/env"));
+    }
+
+    #[test]
+    #[should_panic(expected = "outside the sandbox")]
+    fn isolated_command_refuses_a_relative_path() {
+        let mut sandbox = Sandbox::new();
+        sandbox.root = PathBuf::from("store");
+        isolated_command(&sandbox, Path::new("/usr/bin/env"));
+    }
+
+    #[test]
+    fn isolated_command_accepts_a_dangling_link_that_stays_inside_the_sandbox() {
+        let inside = Sandbox::new();
+        let target = inside.dir.path().join("later");
+        let mut sandbox = linked(&target, "store");
+        // the link was made in a new sandbox: point it into that one
+        let link = sandbox.dir.path().join("link");
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink("later", &link).unwrap();
+        sandbox.root = link.join("store");
         isolated_command(&sandbox, Path::new("/usr/bin/env"));
     }
 
