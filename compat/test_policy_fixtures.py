@@ -53,7 +53,10 @@ def test_the_ascii_matrix_is_what_python_answers():
         if "measured_hex" in row:
             parts = [bytes.fromhex(part).decode("utf-8") for part in row["measured_hex"]]
             assert measured(row["rule"], text) == parts, text
-    assert (verdicts, entropies) == (16369, 300)
+    assert (verdicts, entropies) == (16469, 300)
+    # the one rule with an entropy threshold is a verdict here, and so is its absence
+    generic = [row["verdict"] for row in rows if "generic" in row]
+    assert (generic.count("generic-api-key"), generic.count(None)) == (52, 48)
 
 
 def test_the_dialect_rows_state_what_python_answers(tmp_path):

@@ -5,11 +5,29 @@
     python -B compat/record_policy_fixtures.py dialect OUT [FILLED]
 
 `recorded` turns the inputs a run of the Python test suite fed the policy (one JSON
-object a line: text, max_chars, rules) into the fixture (the text as hex, see `hidden`): inputs that are not Unicode
-text are dropped and every verdict is asked again here. `matrix` generates ASCII texts
-around every shipped rule -- every kind of white space at every white-space position,
-and what may follow a token at the end of the text -- with the verdict of each, and
-the entropy of 300 random texts as the bits of the float.
+object a line: text, max_chars, rules) into the fixture (the text as hex, see
+`hidden`): inputs that are not Unicode text are dropped and every verdict is asked
+again here.
+
+RAW is not made by this script and its recorder is not in the repository. It was
+recorded once, by running the whole Python test suite (`pytest -q`, a temporary home)
+with a pytest plugin that wraps `SecretScanner.check`: for every call whose text is a
+`str` and whose budget is an `int` it kept the text, the budget and the rule set in
+force, each distinct triple once -- None for the shipped rules; for a test's own rule
+set the TOML sources `_load_rules` had read (the plugin wraps it too and remembers
+them), or, for a rule list a test built by hand, one TOML source written from that
+list's ids, patterns, thresholds, groups and keywords. 787 inputs were recorded; two
+hold a lone surrogate and are dropped here, leaving 785. The plugin changed nothing of
+the interpreter. Recording again is only needed when the Python tests feed the policy
+other inputs; what the fixture says Python answers is asked again on every run of
+`compat/test_policy_fixtures.py`.
+
+`matrix` generates ASCII texts around every shipped rule -- every kind of white space
+at every white-space position, and what may follow a token at the end of the text --
+with the verdict of each; texts only the one rule with an entropy threshold can refuse,
+with values on either side of it; and the entropy of 300 random texts as the bits of the
+float.
+
 `dialect` writes the hand-made rows below, one-rule rule sets that isolate each point
 where the two regular-expression dialects part, with the Python verdict of each; the
 verdict the Rust implementation must give is part of the row. `FILLED` is the fixture
@@ -221,6 +239,50 @@ def _has_dollar(pattern: str) -> bool:
     return False
 
 
+GENERIC = "generic-api-key"
+
+
+def _generic(rng: random.Random) -> list[dict]:
+    """Texts only the one rule with an entropy threshold can refuse: a key name and a
+    separator no floor rule knows, and a value whose entropy lies on either side of the
+    threshold -- because its alphabet is small or large. Then texts with two candidates:
+    a low one before a high one, which is refused, and two low ones, which are not."""
+    names, separators = ["auth", "access", "key", "auth.key"], ["=>", ":=", " => ", " := ", ","]
+
+    def value(symbols: int) -> str:
+        alphabet = rng.sample("abcdefghijklmnopqrstuvwxyz0123456789", symbols)
+        return "".join(rng.choice(alphabet) for _ in range(rng.randint(12, 36)))
+
+    def row(text: str, kind: str) -> dict:
+        return {"rule": GENERIC, "text_hex": hidden(text), "verdict": verdict(text), "subs": [],
+                "generic": kind, "measured_hex": [hidden(part) for part in measured(GENERIC, text)]}
+
+    def candidate(symbols: int) -> str:
+        return f"{rng.choice(names)}{rng.choice(separators)}{value(symbols)}"
+
+    wanted = {(GENERIC, "one"): 40, (None, "one"): 40, (GENERIC, "low-then-high"): 12,
+              (None, "two-low"): 8}
+    rows = []
+    for _ in range(4000):
+        if not any(wanted.values()):
+            break
+        if rng.random() < 0.6:
+            made = row(candidate(rng.randint(6, 18)), "one")
+        else:
+            low, other = candidate(rng.randint(3, 8)), candidate(rng.randint(3, 22))
+            text = f"{low}{rng.choice([chr(10), '; ', ' '])}{other}"
+            parts = [secret_scanner._shannon_entropy(part) for part in measured(GENERIC, text)]
+            if len(parts) != 2 or parts[0] >= 3.5:
+                continue
+            made = row(text, "low-then-high" if parts[1] >= 3.5 else "two-low")
+        key = (made["verdict"], made["generic"])
+        if wanted.get(key, 0) > 0:
+            wanted[key] -= 1
+            rows.append(made)
+    assert not any(wanted.values()), wanted
+    return rows
+
+
 def matrix(out: str) -> None:
     rng = random.Random(117)
     written = {rule["id"]: rule["regex"] for name in ("memriver.toml", "gitleaks.toml")
@@ -247,6 +309,8 @@ def matrix(out: str) -> None:
                 if entropy is not None:
                     row["measured_hex"] = [hidden(part) for part in measured(rule_id, text)]
                 rows.append(row)
+    generic = _generic(random.Random(3500))
+    rows.extend(generic)
     checks = sum(1 + len(row.get("subs", ())) * len(SUBSTITUTES) for row in rows)
     # the entropy itself, as the bits of the float: a threshold is compared with it
     alphabet = _WORD + "-+/=!@ \u00e9\u4e2d"
@@ -255,7 +319,8 @@ def matrix(out: str) -> None:
                        for _ in range(rng.randint(1, 48)))
         rows.append({"entropy": text, "bits": entropy_bits(text)})
     _write(out, rows)
-    print(f"{out}: {len(rows) - 300} texts, {checks} verdicts, 300 entropies; {with_hit} of {len(_SHIPPED)} rules "
+    print(f"{out}: {len(rows) - 300} texts ({len(generic)} of them for {GENERIC}), "
+          f"{checks} verdicts, 300 entropies; {with_hit} of {len(_SHIPPED)} rules "
           f"have a text they refuse; {dollars} rules with a $")
 
 

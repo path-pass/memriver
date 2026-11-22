@@ -110,6 +110,13 @@ impl Policy {
     }
 
     /// The rules of these rule files, read in order.
+    ///
+    /// Success means every pattern could be rewritten, not that it compiles: a pattern
+    /// the `regex` crate refuses (a lookbehind, a backreference, `a{2,1}`) loads here
+    /// and panics in the first `check` that needs its rule. The shipped rules all
+    /// compile, which a test holds. Whoever loads rule files that are not the shipped
+    /// ones while running must call `uncompilable` first and refuse a set for which it
+    /// names a rule.
     pub fn from_sources(sources: &[&str]) -> Result<Policy, String> {
         Ok(Policy {
             rules: load_rules(sources)?,

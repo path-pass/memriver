@@ -151,6 +151,21 @@ pub fn dollar_is_in_tail_position(pattern: &str, at: usize) -> bool {
 /// implementation does on ASCII text. `measured_group` is the `secretGroup` of a rule
 /// whose entropy threshold is honoured (0 when it declares none), None for any other
 /// rule.
+///
+/// A measured rule may not have a `$` where the text that is measured would take in the
+/// line feed the rewritten `$` consumes: inside the declared group, inside the first
+/// group, or anywhere when the pattern has neither (the whole match is measured).
+///
+/// **What this does not check.** A group that is written in the pattern can still take
+/// no part in a match -- it is optional, or stands in an alternative that was not
+/// taken. The scanner then measures the first group, and failing that the whole match,
+/// which here includes the consumed line feed and in Python does not: `(x)?k=[a-z]+$`
+/// on `k=abcdefgh` and a line feed measures the line feed too. Only whether the `$` is
+/// written inside a group is looked at, not whether the group must take part. The one
+/// shipped rule that is measured has its first group in every match and its `$`
+/// outside it, so nothing shipped is affected. Before a second rule's threshold is
+/// honoured, this must be refused as well: a measured rule with a `$` whose measured
+/// group can be absent is `DollarInsideMeasuredGroup`.
 pub fn rewrite(pattern: &str, measured_group: Option<usize>) -> Result<String, RewriteError> {
     let chars: Vec<char> = pattern.chars().collect();
     let mut out = String::with_capacity(pattern.len() + 32);

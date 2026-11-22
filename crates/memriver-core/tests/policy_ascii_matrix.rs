@@ -95,7 +95,7 @@ fn every_ascii_matrix_verdict_equals_python() {
             }
         }
     }
-    assert_eq!(checked, 16369);
+    assert_eq!(checked, 16469);
     // the matrix is not all one answer
     assert!(refused > 2000 && checked - refused > 2000, "{refused}");
 }
@@ -136,26 +136,90 @@ fn u001f_between_key_and_value_is_whitespace_as_in_python() {
 }
 
 #[test]
-fn token_before_one_final_newline_matches_and_before_two_does_not() {
+fn the_six_endings_get_pythons_verdicts_and_the_dollar_decides_them_for_one_rule() {
     let policy = Policy::embedded().with_cache(KEEP);
-    let mut tails = 0;
+    // a token last in the text, then: nothing, a line feed, two, a carriage return and
+    // a line feed, a space, a line feed and another line -- for each rule with a `$`
+    let mut by_rule: Vec<(String, Vec<Option<String>>)> = Vec::new();
     for row in rows().iter().filter(|row| row["tail"] == true) {
         let text = shown(&row["text_hex"]);
-        let text = text.as_str();
-        assert_eq!(
-            verdict(&policy, text).as_deref(),
-            row["verdict"].as_str(),
-            "{text:?}"
-        );
-        tails += 1;
+        let found = verdict(&policy, &text);
+        assert_eq!(found.as_deref(), row["verdict"].as_str(), "{text:?}");
+        let rule = row["rule"].as_str().unwrap();
+        match by_rule.last_mut().filter(|(last, _)| last == rule) {
+            Some((_, verdicts)) => verdicts.push(found),
+            None => by_rule.push((rule.to_string(), vec![found])),
+        }
     }
-    // six endings for each of the 154 rules with a `$`
-    assert_eq!(tails, 154 * 6);
-    // a rule whose `$` decides: one final line feed is the end, two are not
+    assert_eq!(by_rule.len(), 154);
+    assert!(by_rule.iter().all(|(_, verdicts)| verdicts.len() == 6));
+    // What this shows about `$` is little. Nearly every rule ends in the vendored
+    // `(?:[\x60'"\s;]|\\[nr]|$)`, where the white-space branch takes the line feed
+    // itself: all six endings get one verdict, and the `$` decides nothing. It decides
+    // for one rule only, whose token is refused at the end and before one final line
+    // feed and not before anything else
+    let decided: Vec<&str> = by_rule
+        .iter()
+        .filter(|(_, verdicts)| verdicts.iter().any(|verdict| *verdict != verdicts[0]))
+        .map(|(rule, _)| rule.as_str())
+        .collect();
+    assert_eq!(decided, ["sidekiq-sensitive-url"]);
+    let (_, sidekiq) = by_rule.iter().find(|(rule, _)| rule == decided[0]).unwrap();
+    let refused: Vec<bool> = sidekiq.iter().map(Option::is_some).collect();
+    assert_eq!(refused, [true, true, false, false, false, false]);
+    // so the rule is stated on its own: one final line feed is the end, two are not
     let only = Policy::from_sources(&["[[rules]]\nid = \"r\"\nregex = 'tok[0-9]{4}$'\n"]).unwrap();
     let hit = |text: &str| only.check(text, 8000).is_some();
     assert!(hit("tok1234") && hit("tok1234\n"));
     assert!(!hit("tok1234\n\n") && !hit("tok1234\r\n") && !hit("tok1234 ") && !hit("tok1234\nx"));
+}
+
+#[test]
+fn the_rule_with_an_entropy_threshold_refuses_by_the_entropy_of_each_candidate() {
+    // texts no other rule can refuse: what is refused here is refused by the threshold
+    let policy = Policy::embedded().with_cache(KEEP);
+    let (mut refused, mut stored, mut later, mut neither) = (0, 0, 0, 0);
+    for row in rows().iter().filter(|row| row["generic"].is_string()) {
+        let text = shown(&row["text_hex"]);
+        let found = verdict(&policy, &text);
+        assert_eq!(found.as_deref(), row["verdict"].as_str(), "{text:?}");
+        assert!(
+            found.is_none() || found.as_deref() == Some("generic-api-key"),
+            "{text:?}"
+        );
+        let measured = policy.measured("generic-api-key", &text);
+        let expected: Vec<String> = row["measured_hex"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(shown)
+            .collect();
+        assert_eq!(measured, expected, "{text:?}");
+        let reaches: Vec<bool> = measured
+            .iter()
+            .map(|part| shannon_entropy(part) >= 3.5)
+            .collect();
+        // refused exactly when some candidate reaches the threshold
+        assert_eq!(found.is_some(), reaches.contains(&true), "{text:?}");
+        match row["generic"].as_str().unwrap() {
+            "one" => {
+                assert_eq!(reaches.len(), 1, "{text:?}");
+                refused += usize::from(found.is_some());
+                stored += usize::from(found.is_none());
+            }
+            // a first candidate below the threshold does not hide a later one above it
+            "low-then-high" => {
+                assert_eq!(reaches, [false, true], "{text:?}");
+                later += 1;
+            }
+            "two-low" => {
+                assert_eq!(reaches, [false, false], "{text:?}");
+                neither += 1;
+            }
+            other => panic!("unknown kind {other}"),
+        }
+    }
+    assert_eq!((refused, stored, later, neither), (40, 40, 12, 8));
 }
 
 #[test]
