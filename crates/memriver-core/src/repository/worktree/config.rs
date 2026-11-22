@@ -46,6 +46,12 @@ impl GitConfig {
 /// A value as git reads a boolean: no value is true, an empty one false; `true`, `yes`,
 /// `on` and `false`, `no`, `off` in any case; a whole number, true unless it is zero.
 /// None for anything else.
+///
+/// git reads a number as C does, and not every git alike: `08` is no octal number,
+/// `010` is eight, `1k` is 1024, and the smallest 32-bit number is one to git 2.54 and
+/// none to 2.49. So only the plainest spelling is a number here -- `0`, or up to nine
+/// digits that do not start with a zero, with or without a `-` before them -- which git
+/// 2.49.0 and 2.54.0 were both run on. The rest is None, and git's to read.
 pub fn boolean(value: Option<&str>) -> Option<bool> {
     let Some(value) = value else {
         return Some(true);
@@ -53,7 +59,13 @@ pub fn boolean(value: Option<&str>) -> Option<bool> {
     match value.to_ascii_lowercase().as_str() {
         "true" | "yes" | "on" => Some(true),
         "false" | "no" | "off" | "" => Some(false),
-        number => number.parse::<i32>().ok().map(|number| number != 0),
+        "0" => Some(false),
+        number => {
+            let digits = number.strip_prefix('-').unwrap_or(number).as_bytes();
+            let plain = matches!(digits, [b'1'..=b'9', rest @ ..]
+                if rest.len() < 9 && rest.iter().all(u8::is_ascii_digit));
+            plain.then_some(true)
+        }
     }
 }
 
@@ -68,6 +80,7 @@ fn ends(rest: &str) -> bool {
 }
 
 /// `[name]` or `[name "subsection"]`, alone on its line: the section and its subsection.
+/// git takes any white space before the quote; only a space and a tab are read here.
 fn header(line: &str) -> Option<(String, Option<String>)> {
     let inner = line.strip_prefix('[')?;
     let end = inner.find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '.'))?;
@@ -83,7 +96,9 @@ fn header(line: &str) -> Option<(String, Option<String>)> {
             None => (name, None),
         });
     }
-    let mut rest = rest.trim_start_matches(is_blank).strip_prefix('"')?.chars();
+    // a blank must stand between the name and the quote: git refuses `[remote"origin"]`
+    let quoted = rest.strip_prefix(is_blank)?.trim_start_matches(is_blank);
+    let mut rest = quoted.strip_prefix('"')?.chars();
     let mut subsection = String::new();
     loop {
         match rest.next()? {
@@ -288,6 +303,56 @@ mod tests {
         assert_eq!(boolean(None), Some(true));
         for spelling in ["maybe", "tru", "1x", " true", "y"] {
             assert_eq!(boolean(Some(spelling)), None, "{spelling}");
+        }
+    }
+
+    #[test]
+    fn a_whole_number_is_a_boolean_only_in_the_spellings_every_git_reads_alike() {
+        for spelling in ["1", "2", "10", "-1", "999999999", "-999999999"] {
+            assert_eq!(boolean(Some(spelling)), Some(true), "{spelling}");
+        }
+        assert_eq!(boolean(Some("0")), Some(false));
+        // git reads a number as C does: `08` is no octal number, and the smallest 32-bit
+        // number is one to git 2.54 and none to 2.49. Whatever was not tried with both,
+        // or is read by git in a way of its own (octal, hexadecimal, a unit), is git's
+        for spelling in [
+            "08",
+            "09",
+            "-2147483648",
+            "2147483648",
+            "2147483647",
+            "1000000000",
+            "00",
+            "01",
+            "010",
+            "-0",
+            "+1",
+            "0x1",
+            "1k",
+            "-",
+            "1 ",
+            "\u{661}",
+        ] {
+            assert_eq!(boolean(Some(spelling)), None, "{spelling}");
+        }
+    }
+
+    #[test]
+    fn a_quoted_subsection_needs_a_blank_before_it() {
+        for text in [
+            "[remote\"origin\"]\nurl = u\n",
+            "[branch\"main\"]\nmerge = m\n",
+            "[submodule\"part\"]\nurl = u\n",
+        ] {
+            assert_eq!(parse(text), None, "{text:?}");
+        }
+        for text in [
+            "[remote \"origin\"]\nurl = u\n",
+            "[remote\t\"origin\"]\nurl = u\n",
+            "[remote \t \"origin\"]\nurl = u\n",
+        ] {
+            let config = parse(text).unwrap();
+            assert_eq!(config.variables[0].subsection.as_deref(), Some("origin"));
         }
     }
 

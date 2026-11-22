@@ -1489,3 +1489,168 @@ fn an_alias_without_a_value_goes_to_git() {
     assert_eq!(it.left_to_git(&main), Some(at(&main, Some("main"))));
     assert_eq!(it.left_to_git(&worktree), Some(at(&main, Some("feature"))));
 }
+
+// --- u52#43: what git refuses and the files once let through ---
+
+#[test]
+fn a_quoted_subsection_written_without_a_blank_goes_to_git_and_git_refuses() {
+    for header in [
+        "[remote\"origin\"]",
+        "[branch\"main\"]",
+        "[submodule\"part\"]",
+    ] {
+        let it = fixture();
+        let main = it.repository("main");
+        let worktree = it.worktree(&main, "wt", "feature");
+        append(&main.join(".git/config"), &format!("{header}\n\turl = u\n"));
+        assert_eq!(it.left_to_git(&main), None, "{header}");
+        assert_eq!(it.left_to_git(&worktree), None, "{header}");
+        assert!(!it.git_knows_the_layout(&main), "{header}");
+    }
+    // with the blank it is what git writes itself
+    let it = fixture();
+    let main = it.repository("main");
+    append(
+        &main.join(".git/config"),
+        "[remote \"origin\"]\n\turl = u\n",
+    );
+    assert_eq!(it.agreed(&main), at(&main, Some("main")));
+}
+
+#[test]
+fn a_number_git_does_not_read_as_a_boolean_goes_to_git() {
+    for number in ["08", "09", "-2147483648"] {
+        // where git checks the value before it answers anything, the place is unknown
+        // (the last one is read by some versions of git: whatever this one says)
+        let it = fixture();
+        let main = it.repository("main");
+        let worktree = it.worktree(&main, "wt", "feature");
+        append(
+            &main.join(".git/config"),
+            &format!("[core]\n\tfilemode = {number}\n"),
+        );
+        let (in_main, in_worktree) = (it.left_to_git(&main), it.left_to_git(&worktree));
+        if number != "-2147483648" {
+            assert_eq!((in_main, in_worktree), (None, None), "{number}");
+            assert!(!it.git_knows_the_layout(&main), "{number}");
+        }
+        // where git reads it only for the branch, the place is known and the branch is not
+        let it = fixture();
+        let main = it.repository("main");
+        append(
+            &main.join(".git/config"),
+            &format!("[core]\n\tlogallrefupdates = {number}\n"),
+        );
+        let answer = it.left_to_git(&main);
+        if number != "-2147483648" {
+            assert_eq!(answer, Some(at(&main, None)), "{number}");
+        }
+    }
+}
+
+#[test]
+fn a_number_every_git_reads_as_a_boolean_stays_with_the_files() {
+    for number in ["0", "1", "2", "-1", "999999999", "-999999999"] {
+        for name in ["filemode", "logallrefupdates"] {
+            let it = fixture();
+            let main = it.repository("main");
+            append(
+                &main.join(".git/config"),
+                &format!("[core]\n\t{name} = {number}\n"),
+            );
+            assert_eq!(it.agreed(&main), at(&main, Some("main")), "{name} {number}");
+        }
+    }
+}
+
+/// What `work` gives, which it must within `limit`.
+fn within<T: Send + 'static>(limit: Duration, work: impl FnOnce() -> T + Send + 'static) -> T {
+    let (send, receive) = mpsc::channel();
+    std::thread::spawn(move || send.send(work()));
+    receive
+        .recv_timeout(limit)
+        .expect("an answer within the time given")
+}
+
+fn fifo(path: &Path) {
+    let _ = fs::remove_file(path);
+    let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    // SAFETY: `name` is a C string that outlives the call
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+}
+
+#[test]
+fn a_file_of_the_repository_that_is_a_pipe_is_never_waited_on() {
+    // opening a pipe nobody writes to waits for ever; the files are not sure, at once,
+    // and git is given its time and no more
+    for name in [
+        "config",
+        "packed-refs",
+        "HEAD",
+        "refs/heads/main",
+        "commondir",
+    ] {
+        let it = fixture();
+        let main = it.repository("main");
+        let worktree = it.worktree(&main, "wt", "feature");
+        let (dir, pipe) = match name {
+            "commondir" => (worktree, main.join(".git/worktrees/wt/commondir")),
+            _ => (main.clone(), main.join(".git").join(name)),
+        };
+        fifo(&pipe);
+        let (asked, env) = (dir.clone(), it.env.clone());
+        let files = within(Duration::from_secs(2), move || from_files(&asked, &env));
+        assert_eq!(files, Confirmed::Unsure, "{name}");
+        let (asked, env) = (dir.clone(), it.env.clone());
+        let before = Instant::now();
+        let answer = within(WAIT, move || {
+            facts(&asked, &env, Duration::from_millis(200))
+        });
+        assert!(before.elapsed() < Duration::from_secs(3), "{name}");
+        // git waits on its configuration for as long as it is let; what it makes of the
+        // others is its own business, but it never names a branch it could not read
+        match name {
+            "config" => assert_eq!(answer, None),
+            "packed-refs" | "refs/heads/main" => {
+                assert!(answer.is_none_or(|facts| facts.branch.is_none()), "{name}");
+            }
+            _ => {}
+        }
+    }
+    // the `.git` file of a linked worktree, too
+    let it = fixture();
+    let main = it.repository("main");
+    let worktree = it.worktree(&main, "wt", "feature");
+    fifo(&worktree.join(".git"));
+    let (asked, env) = (worktree.clone(), it.env.clone());
+    let files = within(Duration::from_secs(2), move || from_files(&asked, &env));
+    assert_eq!(files, Confirmed::Unsure);
+}
+
+#[test]
+fn a_file_of_the_repository_larger_than_the_limit_is_left_to_git() {
+    let it = fixture();
+    let main = it.repository("main");
+    let comment = format!("# {}\n", "x".repeat(1022));
+    let padding = comment.repeat(GIT_FILE_MAX_BYTES / comment.len());
+    // just under the limit it is read
+    append(&main.join(".git/config"), &padding[..padding.len() - 1024]);
+    assert!(fs::metadata(main.join(".git/config")).unwrap().len() <= GIT_FILE_MAX_BYTES as u64);
+    assert_eq!(it.agreed(&main), at(&main, Some("main")));
+    append(&main.join(".git/config"), &comment.repeat(2));
+    assert!(fs::metadata(main.join(".git/config")).unwrap().len() > GIT_FILE_MAX_BYTES as u64);
+    assert_eq!(it.left_to_git(&main), Some(at(&main, Some("main"))));
+}
+
+#[test]
+fn a_file_of_the_repository_that_is_a_link_is_left_to_git() {
+    for name in ["config", "packed-refs"] {
+        let it = fixture();
+        let main = it.repository("main");
+        it.git(&main, &["pack-refs", "--all"]);
+        let (file, moved) = (main.join(".git").join(name), it.base.join("moved"));
+        fs::rename(&file, &moved).unwrap();
+        symlink(&moved, &file).unwrap();
+        it.left_to_git(&main);
+    }
+}

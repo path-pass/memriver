@@ -29,6 +29,12 @@ fn plant(follow: bool, path: &Path, errno: i32, once: bool) {
     FAULTS.with_borrow_mut(|faults| faults.push((follow, path.to_path_buf(), errno, once)));
 }
 
+/// The directory at `path` counts as lying on another device, or on another mount of the
+/// same one, from now on.
+fn elsewhere(path: &Path, how: Elsewhere) {
+    MOUNTS.with_borrow_mut(|mounts| mounts.push((path.to_path_buf(), how)));
+}
+
 #[test]
 fn a_failure_is_shown_as_python_shows_an_os_error() {
     let failure = OsFailure {
@@ -428,4 +434,119 @@ fn an_exact_root_and_an_alias_of_two_projects_at_one_level_is_degraded() {
         nearest_bound(&real, &twice, None),
         Match::Registered("aaaaaaaaaa".to_string())
     );
+}
+
+// --- a purge target that is a protected directory under another spelling ---
+
+#[test]
+fn a_target_that_is_home_or_the_working_directory_under_another_spelling_is_too_broad() {
+    // the names say "neither is below the other"; the directories say otherwise
+    for protected in ["home", "cwd"] {
+        for below in ["", "deep/er"] {
+            for dry_run in [true, false] {
+                let (_sandbox, base) = base();
+                let (home, cwd, _) = places(&base);
+                let (real, target) = alias(&base, "Kept", "kept");
+                fs::create_dir_all(real.join(below)).unwrap();
+                fs::write(target.join(DATABASE_FILENAME), "x").unwrap();
+                let (home, cwd) = match protected {
+                    "home" => (real.join(below), cwd),
+                    _ => (home, real.join(below)),
+                };
+                let refusal = plan_purge(&target, &home, &cwd, dry_run).unwrap_err();
+                assert_eq!(
+                    (refusal.kind, &refusal.path, &refusal.canonical),
+                    (PurgeRefusalKind::TooBroad, &target, &Some(target.clone())),
+                    "{protected} {below:?} {dry_run}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_protected_base_moved_into_the_target_under_another_spelling_is_seen_before_deleting() {
+    for moved in ["home", "cwd"] {
+        let (_sandbox, base) = base();
+        let (home, cwd, store) = places(&base);
+        fs::create_dir(base.join("outside")).unwrap();
+        let (_, inside) = alias(&base, "store/sub", "STORE/sub");
+        let link = base.join("link");
+        symlink(base.join("outside"), &link).unwrap();
+        let (home, cwd) = match moved {
+            "home" => (link.clone(), cwd),
+            _ => (home, link.clone()),
+        };
+        let plan = plan_purge(&store, &home, &cwd, false).unwrap();
+        fs::remove_file(&link).unwrap();
+        symlink(&inside, &link).unwrap();
+        let result = purge(plan);
+        assert_eq!(result.outcome, PurgeOutcome::Refused, "{moved}");
+        assert_eq!(result.refusal.unwrap().kind, PurgeRefusalKind::TooBroad);
+        assert!(store.join("sub/f").exists() && store.join(DATABASE_FILENAME).exists());
+    }
+}
+
+#[test]
+fn a_protected_directory_that_cannot_be_compared_with_the_target_refuses_the_purge() {
+    // "could not look" is not "another directory"
+    for protected in ["home", "cwd"] {
+        let (_sandbox, base) = base();
+        let (home, cwd, store) = places(&base);
+        let unseen = match protected {
+            "home" => &home,
+            _ => &cwd,
+        };
+        plant(true, unseen, libc::EACCES, false);
+        let refusal = plan_purge(&store, &home, &cwd, true).unwrap_err();
+        assert_eq!(
+            (refusal.kind, &refusal.path, &refusal.canonical),
+            (PurgeRefusalKind::Unresolvable, unseen, &Some(store.clone())),
+            "{protected}"
+        );
+        assert_eq!(
+            refusal.detail,
+            format!(
+                "[Errno {}] Permission denied: '{}'",
+                libc::EACCES,
+                unseen.display()
+            )
+        );
+        // an ancestor of it, too
+        FAULTS.with_borrow_mut(Vec::clear);
+        plant(true, &base, libc::EIO, false);
+        let refusal = plan_purge(&store, &home, &cwd, true).unwrap_err();
+        // home is the first to be compared
+        assert_eq!(
+            (refusal.kind, &refusal.path),
+            (PurgeRefusalKind::Unresolvable, &home)
+        );
+        FAULTS.with_borrow_mut(Vec::clear);
+    }
+}
+
+// --- a mount below the purged directory ---
+
+#[test]
+fn a_directory_on_another_mount_below_the_target_is_not_entered() {
+    for other in [Elsewhere::Device, Elsewhere::Mount] {
+        let (_sandbox, base) = base();
+        let (home, cwd, store) = places(&base);
+        fs::create_dir_all(store.join("sub/deeper")).unwrap();
+        fs::write(store.join("sub/deeper/theirs"), "t").unwrap();
+        elsewhere(&store.join("sub/deeper"), other);
+        let plan = plan_purge(&store, &home, &cwd, false).unwrap();
+        let result = purge(plan);
+        assert_eq!(
+            (result.outcome, &result.path),
+            (PurgeOutcome::PartlyRemoved, &store),
+            "{other:?}"
+        );
+        assert_eq!(result.detail, strerror(libc::EXDEV));
+        assert_eq!(
+            fs::read_to_string(store.join("sub/deeper/theirs")).unwrap(),
+            "t"
+        );
+        MOUNTS.with_borrow_mut(Vec::clear);
+    }
 }

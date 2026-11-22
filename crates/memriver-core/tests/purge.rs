@@ -429,3 +429,146 @@ fn a_symlinked_target_is_refused_however_its_name_ends() {
     assert_eq!(plan.given, at.base.join("into/.."));
     assert_eq!(plan.canonical, at.store);
 }
+
+/// Whether names that differ only in case are one name here.
+fn ignores_case(base: &Path) -> bool {
+    fs::create_dir(base.join("CaseProbe")).unwrap();
+    base.join("caseprobe").exists()
+}
+
+#[test]
+fn on_a_file_system_that_ignores_case_home_or_cwd_under_another_spelling_is_too_broad() {
+    // only where the file system really ignores case; the same branches are reached on
+    // any file system by the unit tests, with a stand-in
+    for protected in ["home", "cwd"] {
+        for below in ["", "deep/er"] {
+            for dry_run in [true, false] {
+                let at = places();
+                if !ignores_case(&at.base) {
+                    return;
+                }
+                let (real, target) = (at.base.join("Kept"), at.base.join("kept"));
+                fs::create_dir_all(real.join(below)).unwrap();
+                fs::write(real.join(DATABASE_FILENAME), "x").unwrap();
+                let (home, cwd) = match protected {
+                    "home" => (real.join(below), at.cwd.clone()),
+                    _ => (at.home.clone(), real.join(below)),
+                };
+                // as written it is refused, and so it is under the other spelling
+                for target in [&real, &target] {
+                    let refusal = plan_purge(target, &home, &cwd, dry_run).unwrap_err();
+                    assert_eq!(
+                        (refusal.kind, &refusal.path),
+                        (PurgeRefusalKind::TooBroad, target),
+                        "{protected} {below:?} {dry_run}"
+                    );
+                }
+                assert!(real.join(DATABASE_FILENAME).exists());
+            }
+        }
+    }
+}
+
+#[test]
+fn on_a_file_system_that_ignores_case_a_base_moved_in_under_another_spelling_stops_the_purge() {
+    for moved in ["home", "cwd"] {
+        let at = places();
+        if !ignores_case(&at.base) {
+            return;
+        }
+        fs::create_dir(at.base.join("outside")).unwrap();
+        let link = at.base.join("link");
+        symlink(at.base.join("outside"), &link).unwrap();
+        let (home, cwd) = match moved {
+            "home" => (&link, &at.cwd),
+            _ => (&at.home, &link),
+        };
+        let plan = plan_purge(&at.store, home, cwd, false).unwrap();
+        fs::remove_file(&link).unwrap();
+        symlink(at.base.join("STORE/sub"), &link).unwrap();
+        let result = purge(plan);
+        assert_eq!(result.outcome, PurgeOutcome::Refused, "{moved}");
+        assert_eq!(result.refusal.unwrap().kind, PurgeRefusalKind::TooBroad);
+        assert!(at.store.join("sub/f").exists() && at.store.join(DATABASE_FILENAME).exists());
+    }
+}
+
+/// `sudo -n <args>`, started as every process of a test is.
+#[cfg(target_os = "linux")]
+fn as_root(sandbox: &Sandbox, args: &[&str], at: &Path) -> std::process::Command {
+    let mut command = memriver_test_support::isolated_command(sandbox, Path::new("/usr/bin/sudo"));
+    command.arg("-n").args(args).arg(at);
+    command
+}
+
+/// A real mount, taken away again when the test ends, however it ends.
+#[cfg(target_os = "linux")]
+struct Mounted(std::process::Command);
+
+#[cfg(target_os = "linux")]
+impl Drop for Mounted {
+    fn drop(&mut self) {
+        let _ = self.0.status();
+    }
+}
+
+/// `mount <args> <at>` as root. Where that cannot be had the caller has nothing to test
+/// with -- except in CI, where it can be had and a mount that fails is a failure.
+#[cfg(target_os = "linux")]
+fn mounted(sandbox: &Sandbox, args: &[&str], at: &Path) -> Option<Mounted> {
+    let done = as_root(sandbox, &[&["mount"], args].concat(), at)
+        .status()
+        .is_ok_and(|status| status.success());
+    if !done {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "mount {args:?} failed in CI"
+        );
+        eprintln!("not run: mount {args:?} needs sudo without a password");
+        return None;
+    }
+    Some(Mounted(as_root(sandbox, &["umount"], at)))
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_mount_below_the_store_is_not_entered() {
+    // the same device mounted a second time, then another file system
+    for kind in ["bind", "tmpfs"] {
+        let at = places();
+        let outside = at.base.join("outside");
+        let held = at.store.join("sub/held");
+        fs::create_dir(&outside).unwrap();
+        fs::create_dir(&held).unwrap();
+        let source = outside.to_str().unwrap();
+        let args = match kind {
+            "bind" => vec!["--bind", source],
+            _ => vec!["-t", "tmpfs", "tmpfs"],
+        };
+        let Some(_mounted) = mounted(&at._sandbox, &args, &held) else {
+            return;
+        };
+        // written through the mount: it is what lies behind it
+        fs::write(held.join("theirs"), "t").unwrap();
+        let plan = plan_purge(&at.store, &at.home, &at.cwd, false).unwrap();
+        let result = purge(plan);
+        assert_eq!(
+            (result.outcome, &result.path),
+            (PurgeOutcome::PartlyRemoved, &at.store),
+            "{kind}"
+        );
+        assert!(
+            result.detail.to_lowercase().contains("cross-device"),
+            "{kind}: {}",
+            result.detail
+        );
+        assert_eq!(
+            fs::read_to_string(held.join("theirs")).unwrap(),
+            "t",
+            "{kind}"
+        );
+        if kind == "bind" {
+            assert_eq!(fs::read_to_string(outside.join("theirs")).unwrap(), "t");
+        }
+    }
+}

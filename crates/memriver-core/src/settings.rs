@@ -43,6 +43,8 @@ pub const SESSION_PROMPT_SCAN_MAX_BYTES: usize = 65536; // a larger prompt is om
 pub const STOP_NUDGE_MIN_PROMPTS: i64 = 5; // unsaved prompts before the first Stop nudge
 pub const STOP_NUDGE_INTERVAL_PROMPTS: i64 = 5; // prompts between two Stop nudges
 pub const GIT_QUERY_TIMEOUT_S: u64 = 2; // one git call mapping a worktree
+// a larger file of a repository (config, packed-refs, a ref) is not read here: git is asked
+pub const GIT_FILE_MAX_BYTES: usize = 4 * 1024 * 1024;
 pub const SESSION_SEARCH_LIMIT_DEFAULT: usize = 10;
 pub const SESSION_SEARCH_LIMIT_MAX: usize = 50;
 pub const TOOL_CALL_RETENTION_S: i64 = 3600; // how long a call -> session mapping is kept

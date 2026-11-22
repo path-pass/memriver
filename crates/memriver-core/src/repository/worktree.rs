@@ -14,9 +14,9 @@ pub mod config;
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs::{self, Metadata};
-use std::io::{ErrorKind, Read};
+use std::io::{self, ErrorKind, Read};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use super::directories::{canonical, same_directory};
 use crate::models::helpers::py_normpath;
-use crate::settings::{Env, GIT_QUERY_TIMEOUT_S};
+use crate::settings::{Env, GIT_FILE_MAX_BYTES, GIT_QUERY_TIMEOUT_S};
 
 /// What git knows about a directory.
 ///
@@ -123,7 +123,7 @@ enum Head {
 /// `HEAD` as git itself writes it: `ref: refs/heads/<name>` or an object id, one line.
 /// Anything else -- empty, cut short, another kind of ref, a link -- is not read here.
 fn head(git_dir: &Path) -> Option<Head> {
-    let content = regular_file(&git_dir.join("HEAD"))?;
+    let content = regular_file(&git_dir.join("HEAD")).ok()?;
     let line = content.strip_suffix(b"\n")?;
     if is_object_id(line) {
         return Some(Head::Detached);
@@ -150,10 +150,33 @@ fn plain_branch_name(name: &str) -> bool {
         && !is_object_id(name.as_bytes())
 }
 
-/// The content of a regular file; None for anything else, a link included.
-fn regular_file(path: &Path) -> Option<Vec<u8>> {
-    fs::symlink_metadata(path).ok()?.is_file().then_some(())?;
-    fs::read(path).ok()
+/// The content of a regular file of at most `GIT_FILE_MAX_BYTES`; an error for anything
+/// else, of the kind `NotFound` only when nothing stands there. Every file of a
+/// repository is read through here, so that nothing found in one can hold the caller up:
+/// git is given a time to answer in, and reading its files must not take longer than
+/// asking it.
+///
+/// The open follows no link and does not wait -- a pipe nobody writes to is opened at
+/// once instead of never. What was opened is then looked at through its descriptor, the
+/// one thing that cannot be swapped under the look: a pipe, a device or a directory is
+/// not read, and neither is a file longer than the limit.
+fn regular_file(path: &Path) -> io::Result<Vec<u8>> {
+    let refused = |what: &str| io::Error::new(ErrorKind::InvalidData, what.to_string());
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+        .open(path)?;
+    let found = file.metadata()?;
+    if !found.is_file() {
+        return Err(refused("not a regular file"));
+    }
+    let limit = GIT_FILE_MAX_BYTES as u64;
+    let mut content = Vec::new();
+    // one byte past the limit is asked for: the length looked at above may have grown
+    if found.len() > limit || file.take(limit + 1).read_to_end(&mut content)? as u64 > limit {
+        return Err(refused("too large"));
+    }
+    Ok(content)
 }
 
 /// Whether something stands at `path`: `Some(false)` only when it is known to be absent.
@@ -172,7 +195,7 @@ fn present(path: &Path) -> Option<bool> {
 // ponytail: reads the whole file; a search in the sorted file when repositories with
 // hundreds of thousands of refs are slow here
 fn packed_refs(common: &Path) -> Option<HashSet<Vec<u8>>> {
-    let content = match fs::read(common.join("packed-refs")) {
+    let content = match regular_file(&common.join("packed-refs")) {
         Ok(content) => content,
         Err(err) if err.kind() == ErrorKind::NotFound => return Some(HashSet::new()),
         Err(_) => return None,
@@ -224,13 +247,9 @@ fn branch(head: Head, git_dir: &Path, common: &Path) -> Option<Option<String>> {
     let packed = packed_refs(common)?;
     let full = format!("refs/heads/{name}");
     let loose = common.join(&full);
-    let exists = match fs::symlink_metadata(&loose) {
+    let exists = match regular_file(&loose) {
         // read and validated, not just found
-        Ok(found) if found.is_file() => {
-            let content = fs::read(&loose).ok()?;
-            is_object_id(content.strip_suffix(b"\n")?).then_some(true)?
-        }
-        Ok(_) => return None,
+        Ok(content) => is_object_id(content.strip_suffix(b"\n")?).then_some(true)?,
         Err(err) if err.kind() == ErrorKind::NotFound => packed.contains(full.as_bytes()),
         Err(_) => return None,
     };
@@ -285,7 +304,7 @@ const CORE_BOOLEANS: [&str; 5] = [
 /// simply not on this list -- is git's to weigh: it checks many values when it starts, and
 /// refuses the repository for one it cannot read.
 fn plain_configuration(common: &Path) -> Option<bool> {
-    let text = String::from_utf8(fs::read(common.join("config")).ok()?).ok()?;
+    let text = String::from_utf8(regular_file(&common.join("config")).ok()?).ok()?;
     let config = config::parse(&text)?;
     let known = |section: &str| {
         matches!(
@@ -375,7 +394,7 @@ fn read_files(dir: &Path, env: &Env, user: u32) -> Option<GitFacts> {
         toplevel.join(".git")
     } else {
         // a file whose single line is `gitdir: <path>`, naming an existing directory
-        let content = String::from_utf8(regular_file(&toplevel.join(".git"))?).ok()?;
+        let content = String::from_utf8(regular_file(&toplevel.join(".git")).ok()?).ok()?;
         let named = content.strip_prefix("gitdir: ")?;
         let named = named.strip_suffix('\n').unwrap_or(named);
         (!named.is_empty() && !named.contains(LINE_BREAKS)).then_some(())?;
@@ -383,7 +402,7 @@ fn read_files(dir: &Path, env: &Env, user: u32) -> Option<GitFacts> {
     };
     owned(&fs::symlink_metadata(&git_dir).ok()?).then_some(())?;
     // 4: a linked worktree's git directory names the shared one in `commondir`
-    let common = match fs::read(git_dir.join("commondir")) {
+    let common = match regular_file(&git_dir.join("commondir")) {
         Err(err) if err.kind() == ErrorKind::NotFound => None,
         Err(_) => return None,
         Ok(content) => {

@@ -102,6 +102,21 @@ fn planted(follow: bool, path: &Path) -> Option<i32> {
     })
 }
 
+/// How a test has a directory lie somewhere else than the directory above it.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+enum Elsewhere {
+    Device,
+    Mount,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Directories a test has put on another device or mount.
+    static MOUNTS: std::cell::RefCell<Vec<(PathBuf, Elsewhere)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// What stands at `path`, following links (`stat`) or not (`lstat`). Every look this
 /// module takes at a name goes through here.
 fn look(path: &Path, follow: bool) -> Result<Metadata, OsFailure> {
@@ -333,30 +348,40 @@ fn lower(path: &Path) -> String {
 /// (permission, I/O) -- no caller may read that as "no match". The first path is looked
 /// at first, and what happens there decides before the second is looked at.
 pub fn same_directory(a: &Path, b: &Path) -> Option<bool> {
-    #[cfg(test)]
-    if IGNORE_CASE.get() && a != b && lower(a) == lower(b) {
-        return Some(true);
-    }
+    one_directory(a, b).ok()
+}
+
+/// `same_directory`, with the look that failed in place of "could not check".
+fn one_directory(a: &Path, b: &Path) -> Result<bool, OsFailure> {
     let mut identities = [(0, 0); 2];
     for (path, identity) in [a, b].into_iter().zip(&mut identities) {
         match stat(path) {
             Ok(found) => *identity = (found.dev(), found.ino()),
-            Err(failure) if failure.is_absent() || failure.errno.is_none() => return Some(false),
-            Err(_) => return None,
+            Err(failure) if failure.is_absent() || failure.errno.is_none() => return Ok(false),
+            Err(failure) => return Err(failure),
         }
     }
-    Some(identities[0] == identities[1])
+    #[cfg(test)]
+    if IGNORE_CASE.get() && a != b && lower(a) == lower(b) {
+        return Ok(true);
+    }
+    Ok(identities[0] == identities[1])
 }
 
 /// `outer` is `inner` or one of its ancestors, by its text or by `same_directory`.
 /// `None` as soon as one comparison could not be checked.
 pub fn covers(outer: &Path, inner: &Path) -> Option<bool> {
+    covering(outer, inner).ok()
+}
+
+/// `covers`, with the look that failed in place of "could not check".
+fn covering(outer: &Path, inner: &Path) -> Result<bool, OsFailure> {
     for candidate in inner.ancestors() {
-        if outer.as_os_str() == candidate.as_os_str() || same_directory(outer, candidate)? {
-            return Some(true);
+        if outer.as_os_str() == candidate.as_os_str() || one_directory(outer, candidate)? {
+            return Ok(true);
         }
     }
-    Some(false)
+    Ok(false)
 }
 
 named! {
@@ -606,6 +631,13 @@ fn resolve(path: &Path) -> Result<PathBuf, OsFailure> {
 /// somewhere the given spelling never named, and a relative path or a `..` chain names it
 /// only after resolution.
 ///
+/// Home and the working directory are protected as directories, not as names: where the
+/// file system ignores case, or one directory is reachable under two names in any other
+/// way, the target's text is no prefix of theirs and it is still one of the directories
+/// above them. So after the text, the target is compared with each of them and with every
+/// directory above each by device and inode, as `covers` does. A comparison that cannot be
+/// made refuses the purge: "could not look" is not "another directory".
+///
 /// A leaf that is itself a symlink is still refused outright rather than followed: the
 /// root names the store, and a link standing in for it is an arrangement memriver will
 /// not delete through.
@@ -647,7 +679,29 @@ fn refuse_purge_target(
                     String::new(),
                 ));
             }
-            Ok(_) => {}
+            Ok(resolved) => match covering(canonical, &resolved) {
+                Ok(true) => {
+                    return Some(refusal(
+                        PurgeRefusalKind::TooBroad,
+                        canonical,
+                        String::new(),
+                    ));
+                }
+                Ok(false) => {}
+                // about the target when it is the target that could not be looked at
+                Err(failure) => {
+                    let unseen = if failure.path == canonical {
+                        canonical
+                    } else {
+                        base
+                    };
+                    return Some(refusal(
+                        PurgeRefusalKind::Unresolvable,
+                        unseen,
+                        failure.to_string(),
+                    ));
+                }
+            },
             Err(failure) => {
                 return Some(refusal(
                     PurgeRefusalKind::Unresolvable,
@@ -704,6 +758,87 @@ fn open_without_following(path: &Path) -> Result<OwnedFd, i32> {
         fd = open_directory(Some(&fd), component)?;
     }
     Ok(fd)
+}
+
+/// `name` below `parent` opened as a directory to be emptied: a link is refused, and so
+/// is a mount where the system can be told to refuse one while it opens -- Linux from
+/// 5.6 on, which also sees a directory of the same device mounted a second time.
+/// Elsewhere, and where that call is not to be had, the directory is opened as any other
+/// and `ground` is what tells.
+fn open_below(parent: &OwnedFd, name: &OsStr) -> Result<OwnedFd, i32> {
+    #[cfg(all(target_os = "linux", any(target_env = "gnu", target_env = "musl")))]
+    {
+        let name = c_name(name)?;
+        // SAFETY: `name` and `how` outlive the call, and `how` is of the size that is
+        // passed; a result that is not negative is a new descriptor nobody else owns
+        unsafe {
+            let mut how: libc::open_how = std::mem::zeroed();
+            how.flags = (DIRECTORY | libc::O_NOFOLLOW) as u64;
+            how.resolve = libc::RESOLVE_NO_XDEV;
+            let fd = libc::syscall(
+                libc::SYS_openat2,
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                &how as *const libc::open_how,
+                std::mem::size_of::<libc::open_how>(),
+            );
+            if fd >= 0 {
+                return Ok(OwnedFd::from_raw_fd(fd as libc::c_int));
+            }
+            match errno() {
+                // an older kernel, or a sandbox that does not know the call
+                libc::ENOSYS | libc::EPERM => {}
+                refused => return Err(refused),
+            }
+        }
+    }
+    open_directory(Some(parent), name)
+}
+
+/// Where an open directory lies: the device it is on and, where the system numbers its
+/// mounts, the mount.
+type Ground = (u64, Option<u64>);
+
+/// The ground of the open directory `fd`; `path` is carried for the tests' sake.
+fn ground(fd: &OwnedFd, path: &Path) -> Result<Ground, i32> {
+    let ground = (identity(fd)?.0, mount_id(fd));
+    #[cfg(test)]
+    let ground =
+        MOUNTS.with_borrow(
+            |mounts| match mounts.iter().find(|(mounted, _)| mounted == path) {
+                Some((_, Elsewhere::Device)) => (ground.0.wrapping_add(1), ground.1),
+                Some((_, Elsewhere::Mount)) => (ground.0, Some(ground.1.map_or(1, |id| id + 1))),
+                None => ground,
+            },
+        );
+    #[cfg(not(test))]
+    let _ = path;
+    Ok(ground)
+}
+
+/// The number of the mount an open directory is on (Linux from 5.8 on); None where the
+/// system does not say.
+#[cfg(all(target_os = "linux", any(target_env = "gnu", target_env = "musl")))]
+fn mount_id(fd: &OwnedFd) -> Option<u64> {
+    // SAFETY: the empty name is a C string, and `found` is written by a successful call
+    // before it is read
+    unsafe {
+        let mut found: libc::statx = std::mem::zeroed();
+        let done = libc::syscall(
+            libc::SYS_statx,
+            fd.as_raw_fd(),
+            c"".as_ptr(),
+            libc::AT_EMPTY_PATH,
+            libc::STATX_MNT_ID,
+            &mut found as *mut libc::statx,
+        );
+        (done == 0 && found.stx_mask & libc::STATX_MNT_ID != 0).then_some(found.stx_mnt_id)
+    }
+}
+
+#[cfg(not(all(target_os = "linux", any(target_env = "gnu", target_env = "musl"))))]
+fn mount_id(_: &OwnedFd) -> Option<u64> {
+    None
 }
 
 #[allow(clippy::unnecessary_cast)] // the fields are narrower on some systems
@@ -953,12 +1088,17 @@ fn purge_with(plan: PurgePlan, emptied: &mut dyn FnMut(&Path)) -> PurgeResult {
             ..PurgeResult::new(PurgeOutcome::Refused, canonical)
         };
     }
+    // nothing below the target is entered that lies on another mount
+    let below = match ground(&leaf_fd, canonical) {
+        Ok(ground) => ground,
+        Err(errno) => return PurgeResult::because(PurgeOutcome::Uncheckable, canonical, errno),
+    };
     let mut replaced = Vec::new();
     let partly = |errno, replaced| PurgeResult {
         replaced,
         ..PurgeResult::because(PurgeOutcome::PartlyRemoved, canonical, errno)
     };
-    if let Err(errno) = empty_directory(&leaf_fd, canonical, &mut replaced, emptied) {
+    if let Err(errno) = empty_directory(&leaf_fd, canonical, below, &mut replaced, emptied) {
         return partly(errno, replaced);
     }
     emptied(canonical);
@@ -993,6 +1133,13 @@ fn purge_with(plan: PurgePlan, emptied: &mut dyn FnMut(&Path)) -> PurgeResult {
 /// original is renamed away *and* unlinked cannot be handed the same inode and pass the
 /// comparison by wearing the confirmed identity.
 ///
+/// A mount is a boundary the walk does not cross: what is mounted below the store is not
+/// the store's, and removing the name of a mount point fails only after everything behind
+/// it would have been deleted. A child is opened so that the system refuses a mount where
+/// it can, and its `ground` is compared with `below`, the ground of the directory the
+/// user confirmed; a child that lies elsewhere stops the walk with `EXDEV`, entered by
+/// nothing and with nothing in it touched. Python's `shutil.rmtree` walks on into it.
+///
 /// What remains is best-effort, not a guarantee: there is no atomic "look and remove", so
 /// a stranger that takes the name in the instant between the two is still removed. The
 /// window needs exact, very short concurrent timing, and removing a directory never
@@ -1000,6 +1147,7 @@ fn purge_with(plan: PurgePlan, emptied: &mut dyn FnMut(&Path)) -> PurgeResult {
 fn empty_directory(
     fd: &OwnedFd,
     directory: &Path,
+    below: Ground,
     replaced: &mut Vec<PathBuf>,
     emptied: &mut dyn FnMut(&Path),
 ) -> Result<(), i32> {
@@ -1014,10 +1162,13 @@ fn empty_directory(
             remove_at(fd, &name, false)?;
             continue;
         }
-        let child_fd = open_directory(Some(fd), &name)?;
-        let opened = identity(&child_fd)?;
         let child = directory.join(&name);
-        empty_directory(&child_fd, &child, replaced, emptied)?;
+        let child_fd = open_below(fd, &name)?;
+        if ground(&child_fd, &child)? != below {
+            return Err(libc::EXDEV);
+        }
+        let opened = identity(&child_fd)?;
+        empty_directory(&child_fd, &child, below, replaced, emptied)?;
         emptied(&child);
         if identity_at(fd, &name)?.0 != opened {
             replaced.push(child);
