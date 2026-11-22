@@ -667,89 +667,89 @@ packages/memriver-core/tests/unit/application/test_sessions.py::test_the_tool_ca
 packages/memriver-core/tests/unit/application/test_sessions.py::test_transcript_backfilled_then_cd_moves ->
 packages/memriver-core/tests/unit/application/test_sessions.py::test_transcript_same_dir_other_spelling_is_not_a_move ->
 packages/memriver-core/tests/unit/application/test_sessions.py::test_without_a_store_no_directory_question_and_no_scan_is_asked ->
-packages/memriver-core/tests/unit/models/test_changes.py::test_a_plan_expects_every_item_at_its_current_version ->
-packages/memriver-core/tests/unit/models/test_changes.py::test_create_defaults_match_the_spec ->
-packages/memriver-core/tests/unit/models/test_changes.py::test_every_operation_is_an_op_and_frozen ->
-packages/memriver-core/tests/unit/models/test_changes.py::test_update_keeps_every_value_it_is_not_given ->
-packages/memriver-core/tests/unit/models/test_errors.py::test_a_below_version_store_error_carries_its_version ->
-packages/memriver-core/tests/unit/models/test_errors.py::test_all_taxonomy_members_subclass_the_base ->
-packages/memriver-core/tests/unit/models/test_errors.py::test_an_unknown_binding_reason_is_a_programming_error ->
-packages/memriver-core/tests/unit/models/test_errors.py::test_base_does_not_subclass_builtin_key_error ->
-packages/memriver-core/tests/unit/models/test_errors.py::test_batch_conflict_carries_index_memory_and_one_known_reason ->
-packages/memriver-core/tests/unit/models/test_errors.py::test_binding_reasons_are_the_eleven_the_spec_lists ->
-packages/memriver-core/tests/unit/models/test_errors.py::test_cap_exceeded_names_a_known_cap_and_maybe_the_memory ->
-packages/memriver-core/tests/unit/models/test_errors.py::test_content_rejected_carries_its_rule_and_memory_as_fields ->
-packages/memriver-core/tests/unit/models/test_errors.py::test_content_rejected_detail_defaults_to_empty ->
-packages/memriver-core/tests/unit/models/test_errors.py::test_id_collision_never_leaves_core ->
-packages/memriver-core/tests/unit/models/test_errors.py::test_identity_proposal_errors_are_gone ->
-packages/memriver-core/tests/unit/models/test_errors.py::test_not_found_errors_carry_only_their_id_field ->
-packages/memriver-core/tests/unit/models/test_errors.py::test_plan_changed_carries_the_new_plan ->
-packages/memriver-core/tests/unit/models/test_errors.py::test_project_unavailable_carries_a_reason_field_that_defaults_to_empty ->
-packages/memriver-core/tests/unit/models/test_errors.py::test_session_moved_takes_no_arguments_and_is_public ->
-packages/memriver-core/tests/unit/models/test_errors.py::test_storage_failure_and_global_read_only_take_no_arguments ->
-packages/memriver-core/tests/unit/models/test_errors.py::test_the_new_errors_are_public ->
-packages/memriver-core/tests/unit/models/test_errors.py::test_the_public_facade_reexports_the_same_class_objects ->
-packages/memriver-core/tests/unit/models/test_errors.py::test_undo_refused_carries_a_known_reason_and_the_memories ->
-packages/memriver-core/tests/unit/models/test_errors.py::test_version_conflict_and_binding_refused_carry_fields_not_words ->
-packages/memriver-core/tests/unit/models/test_memory.py::test_a_new_memory_starts_at_version_one_and_not_deleted ->
-packages/memriver-core/tests/unit/models/test_memory.py::test_description_is_stripped ->
-packages/memriver-core/tests/unit/models/test_memory.py::test_id_rule_is_ten_lowercase_crockford_characters ->
-packages/memriver-core/tests/unit/models/test_memory.py::test_memory_has_exactly_its_fields ->
-packages/memriver-core/tests/unit/models/test_memory.py::test_new_generates_an_id_timestamps_and_keeps_the_project ->
-packages/memriver-core/tests/unit/models/test_memory.py::test_new_memories_draw_fresh_ids ->
-packages/memriver-core/tests/unit/models/test_memory.py::test_new_never_takes_a_caller_id ->
-packages/memriver-core/tests/unit/models/test_memory.py::test_new_rejects_a_project_id_outside_the_id_rule ->
-packages/memriver-core/tests/unit/models/test_memory.py::test_new_rejects_an_unknown_type_or_trust ->
-packages/memriver-core/tests/unit/models/test_memory.py::test_now_emits_microseconds_so_consecutive_calls_can_be_ordered ->
-packages/memriver-core/tests/unit/models/test_memory.py::test_now_strictly_after_advances_even_when_the_clock_stands_still ->
-packages/memriver-core/tests/unit/models/test_memory.py::test_now_strictly_after_falls_back_to_the_clock_for_a_non_canonical_value ->
-packages/memriver-core/tests/unit/models/test_memory.py::test_scope_and_name_helpers_are_gone ->
-packages/memriver-core/tests/unit/models/test_memory.py::test_single_line_collapses_control_and_line_separators ->
-packages/memriver-core/tests/unit/models/test_project.py::test_a_name_longer_than_the_cap_is_refused ->
-packages/memriver-core/tests/unit/models/test_project.py::test_an_empty_name_is_refused ->
-packages/memriver-core/tests/unit/models/test_project.py::test_names_are_not_identities ->
-packages/memriver-core/tests/unit/models/test_project.py::test_new_generates_an_id_and_normalizes_the_name ->
-packages/memriver-core/tests/unit/models/test_project.py::test_plans_are_frozen_values ->
-packages/memriver-core/tests/unit/models/test_project.py::test_project_is_frozen ->
-packages/memriver-core/tests/unit/models/test_project.py::test_the_name_cap_is_not_a_models_constant ->
-packages/memriver-core/tests/unit/models/test_read_write_set.py::test_a_project_session_reads_both_and_writes_its_project ->
-packages/memriver-core/tests/unit/models/test_read_write_set.py::test_an_empty_set_reads_and_writes_nothing ->
-packages/memriver-core/tests/unit/models/test_read_write_set.py::test_an_uninitialized_store_reads_only_the_project ->
-packages/memriver-core/tests/unit/models/test_read_write_set.py::test_global_is_never_writable_even_if_named_as_the_project ->
-packages/memriver-core/tests/unit/models/test_read_write_set.py::test_no_project_reads_global_only_and_writes_nothing ->
-packages/memriver-core/tests/unit/models/test_resolution_and_project_context.py::test_project_context_carries_state_header_and_read_write_set ->
-packages/memriver-core/tests/unit/models/test_resolution_and_project_context.py::test_resolution_defaults ->
-packages/memriver-core/tests/unit/models/test_search.py::test_a_query_with_no_term_has_no_terms ->
-packages/memriver-core/tests/unit/models/test_search.py::test_at_most_sixteen_terms_the_rest_ignored ->
-packages/memriver-core/tests/unit/models/test_search.py::test_case_folding_goes_beyond_lower ->
-packages/memriver-core/tests/unit/models/test_search.py::test_cjk_two_character_terms_match_inside_a_sentence ->
-packages/memriver-core/tests/unit/models/test_search.py::test_duplicates_keep_their_first_occurrence ->
-packages/memriver-core/tests/unit/models/test_search.py::test_full_width_letters_fold_to_ascii ->
-packages/memriver-core/tests/unit/models/test_search.py::test_no_quoting_or_operators ->
-packages/memriver-core/tests/unit/models/test_search.py::test_no_term_found_is_rank_zero ->
-packages/memriver-core/tests/unit/models/test_search.py::test_nul_is_dropped_not_a_separator ->
-packages/memriver-core/tests/unit/models/test_search.py::test_rank_memories_drops_non_matches_and_orders_by_the_four_rules ->
-packages/memriver-core/tests/unit/models/test_search.py::test_rank_memories_with_one_term_keeps_the_given_order_but_puts_cue_hits_first ->
-packages/memriver-core/tests/unit/models/test_search.py::test_terms_are_counted_once_across_every_text ->
-packages/memriver-core/tests/unit/models/test_search.py::test_the_description_counts_its_own_terms ->
-packages/memriver-core/tests/unit/models/test_search.py::test_the_whole_query_is_the_terms_joined_by_one_space ->
-packages/memriver-core/tests/unit/models/test_search.py::test_whitespace_and_the_five_separators_split_terms ->
-packages/memriver-core/tests/unit/models/test_session.py::test_a_call_id_is_never_empty_long_whitespace_or_invisible ->
-packages/memriver-core/tests/unit/models/test_session.py::test_a_call_id_is_printable_up_to_256_characters ->
-packages/memriver-core/tests/unit/models/test_session.py::test_a_call_record_is_a_key_and_an_optional_directory ->
-packages/memriver-core/tests/unit/models/test_session.py::test_a_move_outcome_changed_truth_table ->
-packages/memriver-core/tests/unit/models/test_session.py::test_a_prompt_entry_holds_text_or_an_omission ->
-packages/memriver-core/tests/unit/models/test_session.py::test_a_prompt_entry_needs_a_timestamp ->
-packages/memriver-core/tests/unit/models/test_session.py::test_a_prompt_entry_needs_exactly_one_of_text_and_a_known_omission ->
-packages/memriver-core/tests/unit/models/test_session.py::test_a_rejected_prompt_entry_never_echoes_its_text ->
-packages/memriver-core/tests/unit/models/test_session.py::test_a_session_key_accepts_printable_ids_up_to_128_characters ->
-packages/memriver-core/tests/unit/models/test_session.py::test_a_session_key_accepts_the_two_harnesses_that_supply_ids ->
-packages/memriver-core/tests/unit/models/test_session.py::test_a_session_key_rejects_any_other_harness ->
-packages/memriver-core/tests/unit/models/test_session.py::test_a_session_key_rejects_empty_long_whitespace_and_invisible_ids ->
-packages/memriver-core/tests/unit/models/test_session.py::test_a_session_move_holds_what_it_was_given ->
-packages/memriver-core/tests/unit/models/test_session.py::test_a_session_move_rejects_a_value_it_could_not_hold ->
-packages/memriver-core/tests/unit/models/test_store_diagnostics.py::test_diagnostics_report_carries_projects_with_an_empty_default ->
-packages/memriver-core/tests/unit/models/test_store_diagnostics.py::test_store_report_keeps_memories_projects_and_findings ->
+packages/memriver-core/tests/unit/models/test_changes.py::test_a_plan_expects_every_item_at_its_current_version -> rust:memriver-core::models::changes::tests::a_plan_expects_every_item_at_its_current_version
+packages/memriver-core/tests/unit/models/test_changes.py::test_create_defaults_match_the_spec -> rust:memriver-core::models::changes::tests::create_defaults_match_the_python_ones
+packages/memriver-core/tests/unit/models/test_changes.py::test_every_operation_is_an_op_and_frozen -> rust:memriver-core::models::changes::tests::every_operation_has_its_stored_name
+packages/memriver-core/tests/unit/models/test_changes.py::test_update_keeps_every_value_it_is_not_given -> rust:memriver-core::models::changes::tests::update_keeps_every_value_it_is_not_given
+packages/memriver-core/tests/unit/models/test_errors.py::test_a_below_version_store_error_carries_its_version -> rust:memriver-core::models::errors::tests::display_matches_python_text
+packages/memriver-core/tests/unit/models/test_errors.py::test_all_taxonomy_members_subclass_the_base -> n/a: a Python class hierarchy; the errors are the variants of one enum
+packages/memriver-core/tests/unit/models/test_errors.py::test_an_unknown_binding_reason_is_a_programming_error -> rust:memriver-core::models::errors::tests::the_reasons_are_the_closed_sets_python_names
+packages/memriver-core/tests/unit/models/test_errors.py::test_base_does_not_subclass_builtin_key_error -> n/a: a Python class hierarchy; the errors are the variants of one enum
+packages/memriver-core/tests/unit/models/test_errors.py::test_batch_conflict_carries_index_memory_and_one_known_reason -> rust:memriver-core::models::errors::tests::display_matches_python_text + rust:memriver-core::models::errors::tests::the_reasons_are_the_closed_sets_python_names
+packages/memriver-core/tests/unit/models/test_errors.py::test_binding_reasons_are_the_eleven_the_spec_lists -> rust:memriver-core::models::errors::tests::the_reasons_are_the_closed_sets_python_names
+packages/memriver-core/tests/unit/models/test_errors.py::test_cap_exceeded_names_a_known_cap_and_maybe_the_memory -> rust:memriver-core::models::errors::tests::display_matches_python_text + rust:memriver-core::models::errors::tests::the_reasons_are_the_closed_sets_python_names
+packages/memriver-core/tests/unit/models/test_errors.py::test_content_rejected_carries_its_rule_and_memory_as_fields -> rust:memriver-core::models::errors::tests::display_matches_python_text
+packages/memriver-core/tests/unit/models/test_errors.py::test_content_rejected_detail_defaults_to_empty -> rust:memriver-core::models::errors::tests::display_matches_python_text
+packages/memriver-core/tests/unit/models/test_errors.py::test_id_collision_never_leaves_core -> n/a: the error enum has no id-collision variant to leave
+packages/memriver-core/tests/unit/models/test_errors.py::test_identity_proposal_errors_are_gone -> n/a: names removed from the Python package
+packages/memriver-core/tests/unit/models/test_errors.py::test_not_found_errors_carry_only_their_id_field -> rust:memriver-core::models::errors::tests::display_matches_python_text
+packages/memriver-core/tests/unit/models/test_errors.py::test_plan_changed_carries_the_new_plan -> rust:memriver-core::models::errors::tests::display_matches_python_text
+packages/memriver-core/tests/unit/models/test_errors.py::test_project_unavailable_carries_a_reason_field_that_defaults_to_empty -> rust:memriver-core::models::errors::tests::display_matches_python_text
+packages/memriver-core/tests/unit/models/test_errors.py::test_session_moved_takes_no_arguments_and_is_public -> rust:memriver-core::models::errors::tests::display_matches_python_text
+packages/memriver-core/tests/unit/models/test_errors.py::test_storage_failure_and_global_read_only_take_no_arguments -> rust:memriver-core::models::errors::tests::display_matches_python_text
+packages/memriver-core/tests/unit/models/test_errors.py::test_the_new_errors_are_public -> n/a: re-exports of the Python package
+packages/memriver-core/tests/unit/models/test_errors.py::test_the_public_facade_reexports_the_same_class_objects -> n/a: re-exports of the Python package
+packages/memriver-core/tests/unit/models/test_errors.py::test_undo_refused_carries_a_known_reason_and_the_memories -> rust:memriver-core::models::errors::tests::display_matches_python_text + rust:memriver-core::models::errors::tests::the_reasons_are_the_closed_sets_python_names
+packages/memriver-core/tests/unit/models/test_errors.py::test_version_conflict_and_binding_refused_carry_fields_not_words -> rust:memriver-core::models::errors::tests::display_matches_python_text
+packages/memriver-core/tests/unit/models/test_memory.py::test_a_new_memory_starts_at_version_one_and_not_deleted -> rust:memriver-core::models::memory::tests::a_new_memory_starts_at_version_one_and_not_deleted
+packages/memriver-core/tests/unit/models/test_memory.py::test_description_is_stripped -> rust:memriver-core::models::memory::tests::description_and_body_are_stripped_as_python_strips
+packages/memriver-core/tests/unit/models/test_memory.py::test_id_rule_is_ten_lowercase_crockford_characters -> rust:memriver-core::models::helpers::tests::new_id_uses_the_alphabet
+packages/memriver-core/tests/unit/models/test_memory.py::test_memory_has_exactly_its_fields -> n/a: the fields are the struct definition, which the compiler checks
+packages/memriver-core/tests/unit/models/test_memory.py::test_new_generates_an_id_timestamps_and_keeps_the_project -> rust:memriver-core::models::memory::tests::new_generates_an_id_timestamps_and_keeps_the_project
+packages/memriver-core/tests/unit/models/test_memory.py::test_new_memories_draw_fresh_ids -> rust:memriver-core::models::memory::tests::new_memories_draw_fresh_ids
+packages/memriver-core/tests/unit/models/test_memory.py::test_new_never_takes_a_caller_id -> n/a: the constructor has no id parameter, which the compiler checks
+packages/memriver-core/tests/unit/models/test_memory.py::test_new_rejects_a_project_id_outside_the_id_rule -> rust:memriver-core::models::memory::tests::new_rejects_a_project_id_outside_the_id_rule
+packages/memriver-core/tests/unit/models/test_memory.py::test_new_rejects_an_unknown_type_or_trust -> rust:memriver-core::models::memory::tests::an_unknown_type_or_trust_is_not_one
+packages/memriver-core/tests/unit/models/test_memory.py::test_now_emits_microseconds_so_consecutive_calls_can_be_ordered -> rust:memriver-core::models::helpers::tests::timestamp_is_27_chars_utc
+packages/memriver-core/tests/unit/models/test_memory.py::test_now_strictly_after_advances_even_when_the_clock_stands_still -> rust:memriver-core::models::helpers::tests::now_strictly_after_moves_one_microsecond
+packages/memriver-core/tests/unit/models/test_memory.py::test_now_strictly_after_falls_back_to_the_clock_for_a_non_canonical_value -> rust:memriver-core::models::helpers::tests::now_strictly_after_falls_back_to_the_clock_for_a_non_canonical_value
+packages/memriver-core/tests/unit/models/test_memory.py::test_scope_and_name_helpers_are_gone -> n/a: names removed from the Python package
+packages/memriver-core/tests/unit/models/test_memory.py::test_single_line_collapses_control_and_line_separators -> rust:memriver-core::models::helpers::tests::single_line_collapses_controls_and_u2028
+packages/memriver-core/tests/unit/models/test_project.py::test_a_name_longer_than_the_cap_is_refused -> rust:memriver-core::models::project::tests::a_name_longer_than_the_cap_is_refused
+packages/memriver-core/tests/unit/models/test_project.py::test_an_empty_name_is_refused -> rust:memriver-core::models::project::tests::an_empty_name_is_refused
+packages/memriver-core/tests/unit/models/test_project.py::test_names_are_not_identities -> rust:memriver-core::models::project::tests::names_are_not_identities
+packages/memriver-core/tests/unit/models/test_project.py::test_new_generates_an_id_and_normalizes_the_name -> rust:memriver-core::models::project::tests::new_generates_an_id_and_normalizes_the_name
+packages/memriver-core/tests/unit/models/test_project.py::test_plans_are_frozen_values -> n/a: immutability of a Python dataclass
+packages/memriver-core/tests/unit/models/test_project.py::test_project_is_frozen -> n/a: immutability of a Python dataclass
+packages/memriver-core/tests/unit/models/test_project.py::test_the_name_cap_is_not_a_models_constant -> rust:memriver-core::models::project::tests::a_name_longer_than_the_cap_is_refused
+packages/memriver-core/tests/unit/models/test_read_write_set.py::test_a_project_session_reads_both_and_writes_its_project -> rust:memriver-core::models::context::tests::a_project_session_reads_both_and_writes_its_project
+packages/memriver-core/tests/unit/models/test_read_write_set.py::test_an_empty_set_reads_and_writes_nothing -> rust:memriver-core::models::context::tests::an_empty_set_reads_and_writes_nothing
+packages/memriver-core/tests/unit/models/test_read_write_set.py::test_an_uninitialized_store_reads_only_the_project -> rust:memriver-core::models::context::tests::an_uninitialized_store_reads_only_the_project
+packages/memriver-core/tests/unit/models/test_read_write_set.py::test_global_is_never_writable_even_if_named_as_the_project -> rust:memriver-core::models::context::tests::global_is_never_writable_even_if_named_as_the_project
+packages/memriver-core/tests/unit/models/test_read_write_set.py::test_no_project_reads_global_only_and_writes_nothing -> rust:memriver-core::models::context::tests::no_project_reads_global_only_and_writes_nothing
+packages/memriver-core/tests/unit/models/test_resolution_and_project_context.py::test_project_context_carries_state_header_and_read_write_set -> n/a: a plain value with no rule of its own
+packages/memriver-core/tests/unit/models/test_resolution_and_project_context.py::test_resolution_defaults -> n/a: a plain value with no rule of its own
+packages/memriver-core/tests/unit/models/test_search.py::test_a_query_with_no_term_has_no_terms -> rust:memriver-core::models::search::tests::a_query_with_no_term_has_no_terms
+packages/memriver-core/tests/unit/models/test_search.py::test_at_most_sixteen_terms_the_rest_ignored -> rust:memriver-core::models::search::tests::at_most_sixteen_terms_the_rest_ignored
+packages/memriver-core/tests/unit/models/test_search.py::test_case_folding_goes_beyond_lower -> rust:memriver-core::models::search::tests::case_folding_goes_beyond_lower
+packages/memriver-core/tests/unit/models/test_search.py::test_cjk_two_character_terms_match_inside_a_sentence -> rust:memriver-core::models::search::tests::cjk_two_character_terms_match_inside_a_sentence
+packages/memriver-core/tests/unit/models/test_search.py::test_duplicates_keep_their_first_occurrence -> rust:memriver-core::models::search::tests::duplicates_keep_their_first_occurrence
+packages/memriver-core/tests/unit/models/test_search.py::test_full_width_letters_fold_to_ascii -> rust:memriver-core::models::search::tests::full_width_letters_fold_to_ascii
+packages/memriver-core/tests/unit/models/test_search.py::test_no_quoting_or_operators -> rust:memriver-core::models::search::tests::no_quoting_or_operators
+packages/memriver-core/tests/unit/models/test_search.py::test_no_term_found_is_rank_zero -> rust:memriver-core::models::search::tests::no_term_found_is_rank_zero
+packages/memriver-core/tests/unit/models/test_search.py::test_nul_is_dropped_not_a_separator -> rust:memriver-core::models::search::tests::nul_is_dropped_not_a_separator
+packages/memriver-core/tests/unit/models/test_search.py::test_rank_memories_drops_non_matches_and_orders_by_the_four_rules -> rust:memriver-core::models::search::tests::rank_memories_drops_non_matches_and_orders_by_the_four_rules
+packages/memriver-core/tests/unit/models/test_search.py::test_rank_memories_with_one_term_keeps_the_given_order_but_puts_cue_hits_first -> rust:memriver-core::models::search::tests::rank_memories_with_one_term_keeps_the_given_order_but_puts_cue_hits_first
+packages/memriver-core/tests/unit/models/test_search.py::test_terms_are_counted_once_across_every_text -> rust:memriver-core::models::search::tests::terms_are_counted_once_across_every_text
+packages/memriver-core/tests/unit/models/test_search.py::test_the_description_counts_its_own_terms -> rust:memriver-core::models::search::tests::the_description_counts_its_own_terms
+packages/memriver-core/tests/unit/models/test_search.py::test_the_whole_query_is_the_terms_joined_by_one_space -> rust:memriver-core::models::search::tests::the_whole_query_is_the_terms_joined_by_one_space
+packages/memriver-core/tests/unit/models/test_search.py::test_whitespace_and_the_five_separators_split_terms -> rust:memriver-core::models::search::tests::whitespace_and_the_five_separators_split_terms
+packages/memriver-core/tests/unit/models/test_session.py::test_a_call_id_is_never_empty_long_whitespace_or_invisible -> rust:memriver-core::models::session::tests::a_call_id_is_printable_up_to_256_characters
+packages/memriver-core/tests/unit/models/test_session.py::test_a_call_id_is_printable_up_to_256_characters -> rust:memriver-core::models::session::tests::a_call_id_is_printable_up_to_256_characters
+packages/memriver-core/tests/unit/models/test_session.py::test_a_call_record_is_a_key_and_an_optional_directory -> rust:memriver-core::models::session::tests::a_call_record_is_a_key_and_an_optional_directory
+packages/memriver-core/tests/unit/models/test_session.py::test_a_move_outcome_changed_truth_table -> rust:memriver-core::models::session::tests::a_move_outcome_changed_truth_table
+packages/memriver-core/tests/unit/models/test_session.py::test_a_prompt_entry_holds_text_or_an_omission -> rust:memriver-core::models::session::tests::a_prompt_entry_holds_text_or_an_omission
+packages/memriver-core/tests/unit/models/test_session.py::test_a_prompt_entry_needs_a_timestamp -> rust:memriver-core::models::session::tests::a_prompt_entry_needs_a_timestamp
+packages/memriver-core/tests/unit/models/test_session.py::test_a_prompt_entry_needs_exactly_one_of_text_and_a_known_omission -> rust:memriver-core::models::session::tests::a_stored_prompt_is_read_only_in_its_written_form
+packages/memriver-core/tests/unit/models/test_session.py::test_a_rejected_prompt_entry_never_echoes_its_text -> rust:memriver-core::models::session::tests::a_rejected_prompt_never_echoes_its_text
+packages/memriver-core/tests/unit/models/test_session.py::test_a_session_key_accepts_printable_ids_up_to_128_characters -> rust:memriver-core::models::session::tests::a_session_key_accepts_printable_ids_up_to_128_characters
+packages/memriver-core/tests/unit/models/test_session.py::test_a_session_key_accepts_the_two_harnesses_that_supply_ids -> rust:memriver-core::models::session::tests::a_session_key_accepts_the_two_harnesses_that_supply_ids
+packages/memriver-core/tests/unit/models/test_session.py::test_a_session_key_rejects_any_other_harness -> rust:memriver-core::models::session::tests::a_session_key_accepts_the_two_harnesses_that_supply_ids
+packages/memriver-core/tests/unit/models/test_session.py::test_a_session_key_rejects_empty_long_whitespace_and_invisible_ids -> rust:memriver-core::models::session::tests::key_refuses_space_zero_width_and_129_chars
+packages/memriver-core/tests/unit/models/test_session.py::test_a_session_move_holds_what_it_was_given -> rust:memriver-core::models::session::tests::a_session_move_holds_what_it_was_given
+packages/memriver-core/tests/unit/models/test_session.py::test_a_session_move_rejects_a_value_it_could_not_hold -> rust:memriver-core::models::session::tests::a_session_move_rejects_a_value_it_could_not_hold
+packages/memriver-core/tests/unit/models/test_store_diagnostics.py::test_diagnostics_report_carries_projects_with_an_empty_default -> n/a: a plain value with no rule of its own
+packages/memriver-core/tests/unit/models/test_store_diagnostics.py::test_store_report_keeps_memories_projects_and_findings -> n/a: a plain value with no rule of its own
 packages/memriver-core/tests/unit/test_architecture.py::test_application_names_the_store_ports_not_the_adapters ->
 packages/memriver-core/tests/unit/test_architecture.py::test_forbidden_import_edge ->
 packages/memriver-core/tests/unit/test_architecture.py::test_identifiers_in_catches_every_new_node_kind ->

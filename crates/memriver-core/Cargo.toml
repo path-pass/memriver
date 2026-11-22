@@ -3,3 +3,12 @@ name = "memriver-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[dependencies]
+# the three crates below carry the Unicode tables; a new version of one is a change of
+# behaviour, to be measured again
+caseless = "=0.2.2"
+getrandom = "0.4"
+serde_json = { version = "1", features = ["preserve_order"] }
+unicode-normalization = "=0.1.26"
+unicode-properties = "=0.1.5"
