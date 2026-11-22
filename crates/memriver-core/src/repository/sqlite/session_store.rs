@@ -10,9 +10,7 @@ use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 
 use super::database::{Database, text, values};
 use crate::models::errors::{CoreError, ValueError, WriteError};
-use crate::models::helpers::{
-    format_micros, is_id, is_timestamp, now_strictly_after, parse_timestamp, py_strip,
-};
+use crate::models::helpers::{format_micros, is_id, is_timestamp, now, parse_timestamp, py_strip};
 use crate::models::search::{Rank, rank_key, search_terms};
 use crate::models::session::{
     CallRecord, Harness, PromptBody, PromptEntry, Session, SessionKey, SessionMove, SessionOrigin,
@@ -228,14 +226,34 @@ fn require_timestamp(at: &str) -> Result<(), ValueError> {
     }
 }
 
-/// A session's activity time after an event at `at`: always later than the stored one.
-/// A clock that stood still or went back must not hide the event from whoever read the
-/// session before it -- a summary made from that reading does not cover it.
-fn later(stored: &str, at: &str) -> String {
+/// Whether a write is the first of its event to move a session's activity time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Activity {
+    /// The event's first write to the row: the time moves strictly forward.
+    First,
+    /// The row was made or moved by this same event: the time is the later of the two,
+    /// which is what that write already left unless the clock has moved on.
+    Following,
+}
+
+/// A session's activity time after an event at `at`. The event's first write moves it
+/// strictly forward: a clock that stood still or went back must not hide the event from
+/// whoever read the session before it -- a summary made from that reading does not
+/// cover it. One event moves it once: a write that follows the row's making or move in
+/// the same event leaves the later of the two times.
+///
+/// A time with no later one is a storage failure, never a step back to the clock.
+fn later(stored: &str, at: &str, activity: Activity) -> Result<String, CoreError> {
     if at > stored {
-        at.to_string()
-    } else {
-        now_strictly_after(stored)
+        return Ok(at.to_string());
+    }
+    match activity {
+        Activity::Following => Ok(stored.to_string()),
+        Activity::First => {
+            let next = parse_timestamp(stored).and_then(|micros| format_micros(micros + 1));
+            next.map(|next| next.max(now()))
+                .ok_or(CoreError::StorageFailure)
+        }
     }
 }
 
@@ -393,14 +411,15 @@ impl SessionStore {
         key: &SessionKey,
         at: &str,
         transcript_path: Option<&str>,
+        activity: Activity,
     ) -> Written<Option<Session>> {
         require_timestamp(at)?;
         self.change(key, |mut session| {
-            session.last_active_at = later(&session.last_active_at, at);
+            session.last_active_at = later(&session.last_active_at, at, activity)?;
             if let Some(path) = transcript_path {
                 session.transcript_path = Some(path.to_string());
             }
-            Some(session)
+            Ok(Some(session))
         })
     }
 
@@ -409,13 +428,13 @@ impl SessionStore {
     fn change(
         &self,
         key: &SessionKey,
-        change: impl FnOnce(Session) -> Option<Session>,
+        change: impl FnOnce(Session) -> Result<Option<Session>, CoreError>,
     ) -> Written<Option<Session>> {
         let changed = self.written(|conn| {
             let Some(session) = stored(conn, key)? else {
                 return Ok(None);
             };
-            match change(session.clone()) {
+            match change(session.clone())? {
                 Some(changed) => save(conn, changed).map(Some),
                 None => Ok(Some(session)),
             }
@@ -431,6 +450,7 @@ impl SessionStore {
         entry: &PromptEntry,
         seed: &Session,
         keep_recent: usize,
+        activity: Activity,
     ) -> Written<Option<(Session, bool)>> {
         if seed.key != *key {
             return Err(ValueError::new("the seed is another session's").into());
@@ -451,7 +471,14 @@ impl SessionStore {
             session.recent_prompts.push(entry.clone());
             let surplus = session.recent_prompts.len().saturating_sub(keep_recent);
             session.recent_prompts.drain(..surplus);
-            session.last_active_at = later(&session.last_active_at, entry.at());
+            // a row this call made has no earlier reading to end: it keeps the time it
+            // was made with unless the prompt's is later
+            let activity = if created {
+                Activity::Following
+            } else {
+                activity
+            };
+            session.last_active_at = later(&session.last_active_at, entry.at(), activity)?;
             Ok((save(conn, session)?, created))
         })
     }
@@ -460,8 +487,8 @@ impl SessionStore {
         require_timestamp(at)?;
         self.change(key, |mut session| {
             session.ended_at = Some(at.to_string());
-            session.last_active_at = later(&session.last_active_at, at);
-            Some(session)
+            session.last_active_at = later(&session.last_active_at, at, Activity::First)?;
+            Ok(Some(session))
         })?;
         Ok(())
     }
@@ -488,7 +515,7 @@ impl SessionStore {
                 && count - session.last_write_prompt_count >= min_prompts
                 && (session.last_nudge_prompt_count == 0
                     || count - session.last_nudge_prompt_count >= interval);
-            session.last_active_at = later(&session.last_active_at, at);
+            session.last_active_at = later(&session.last_active_at, at, Activity::First)?;
             if due {
                 session.last_nudge_prompt_count = count;
             }
@@ -584,11 +611,11 @@ impl SessionStore {
                 || session.entry_cwd != expected_entry_cwd
                 || session.transcript_path.as_deref() != expected_transcript_path
             {
-                return None;
+                return Ok(None);
             }
             session.status = SessionStatus::Registered;
             session.project_id = Some(project_id.to_string());
-            Some(session)
+            Ok(Some(session))
         })
     }
 
@@ -599,10 +626,10 @@ impl SessionStore {
         transcript_path: &str,
     ) -> Written<Option<Session>> {
         self.change(key, |mut session| {
-            session.transcript_path.is_none().then(|| {
+            Ok(session.transcript_path.is_none().then(|| {
                 session.transcript_path = Some(transcript_path.to_string());
                 session
-            })
+            }))
         })
     }
 
@@ -623,7 +650,7 @@ impl SessionStore {
             if session.transcript_path.as_deref() != to.expected_transcript_path {
                 return Ok(Some((session, None)));
             }
-            let active = later(&session.last_active_at, to.at);
+            let active = later(&session.last_active_at, to.at, Activity::First)?;
             let (from_entry_cwd, from_project_id) =
                 (session.entry_cwd.clone(), session.project_id.clone());
             if session.status == SessionStatus::Registered {

@@ -11,7 +11,7 @@ use memriver_core::models::session::{
 };
 use memriver_core::repository::directories::DATABASE_FILENAME;
 use memriver_core::repository::sqlite::database::Database;
-use memriver_core::repository::sqlite::session_store::{MoveTo, SessionStore};
+use memriver_core::repository::sqlite::session_store::{Activity, MoveTo, SessionStore};
 use memriver_test_support::Sandbox;
 use rusqlite::Connection;
 use rusqlite::types::Value;
@@ -166,7 +166,10 @@ impl Fixture {
     }
 
     fn add(&self, key: &SessionKey, entry: &PromptEntry, seed: &Session) -> (Session, bool) {
-        self.store.add_prompt(key, entry, seed, 5).unwrap().unwrap()
+        self.store
+            .add_prompt(key, entry, seed, 5, Activity::First)
+            .unwrap()
+            .unwrap()
     }
 
     fn prompts_until(&self, count: i64) {
@@ -386,7 +389,12 @@ fn registering_watermarks_equal_to_the_prompt_count_is_accepted() {
 fn touch_moves_last_active_at_forward_only() {
     let fixture = initialized();
     fixture.register(session(|session| session.last_active_at = at(10)));
-    let touch = |second| fixture.store.touch(&key(), &at(second), None).unwrap();
+    let touch = |second| {
+        fixture
+            .store
+            .touch(&key(), &at(second), None, Activity::First)
+            .unwrap()
+    };
     assert_eq!(touch(20).unwrap().last_active_at, at(20));
     // a clock that went back: never back with it, and not standing still either
     let touched = touch(5).unwrap().last_active_at;
@@ -400,9 +408,15 @@ fn touch_replaces_the_transcript_path_only_when_one_is_given() {
     fixture.register(session(|session| {
         session.transcript_path = own("/tmp/a.jsonl")
     }));
-    let touched = fixture.store.touch(&key(), &at(1), None).unwrap().unwrap();
+    let touched = fixture
+        .store
+        .touch(&key(), &at(1), None, Activity::First)
+        .unwrap()
+        .unwrap();
     assert_eq!(touched.transcript_path.as_deref(), Some("/tmp/a.jsonl"));
-    let touched = fixture.store.touch(&key(), &at(2), Some("/tmp/b.jsonl"));
+    let touched = fixture
+        .store
+        .touch(&key(), &at(2), Some("/tmp/b.jsonl"), Activity::First);
     assert_eq!(
         touched.unwrap().unwrap().transcript_path.as_deref(),
         Some("/tmp/b.jsonl")
@@ -416,7 +430,13 @@ fn touch_replaces_the_transcript_path_only_when_one_is_given() {
 #[test]
 fn touch_of_an_unknown_key_is_none_and_writes_nothing() {
     let fixture = initialized();
-    assert_eq!(fixture.store.touch(&key(), &at(1), None).unwrap(), None);
+    assert_eq!(
+        fixture
+            .store
+            .touch(&key(), &at(1), None, Activity::First)
+            .unwrap(),
+        None
+    );
     assert_eq!(fixture.count("SELECT count(*) FROM sessions"), 0);
 }
 
@@ -500,7 +520,12 @@ fn activity_while_the_clock_is_behind_still_ends_what_a_summary_was_read_for() {
             drop(fixture.add(&key(), &prompt(10, "x"), &pending()))
         }),
         ("a start", |fixture| {
-            drop(fixture.store.touch(&key(), &at(9), None).unwrap())
+            drop(
+                fixture
+                    .store
+                    .touch(&key(), &at(9), None, Activity::First)
+                    .unwrap(),
+            )
         }),
         ("a stop", |fixture| assert!(!fixture.nudge(9))),
         ("an end", |fixture| {
@@ -535,6 +560,107 @@ fn activity_while_the_clock_is_behind_still_ends_what_a_summary_was_read_for() {
 }
 
 #[test]
+fn the_write_that_follows_a_rows_making_or_move_in_one_event_does_not_move_its_time_again() {
+    // a first prompt: the row is made with a time taken after the prompt's own
+    let fixture = initialized();
+    let seed = pending_of(key(), |session| {
+        (session.started_at, session.last_active_at) = (at(10), at(10));
+    });
+    let (made, created) = fixture.add(&key(), &prompt(9, "x"), &seed);
+    assert!(created);
+    assert_eq!((made.started_at, made.last_active_at), (at(10), at(10)));
+    // on a row that is there the same prompt is an event of its own
+    let (made, created) = fixture.add(&key(), &prompt(9, "x"), &seed);
+    assert!(!created && made.last_active_at > at(10));
+    // after a move of the same event: the time the move left, or the event's when later
+    let fixture = initialized();
+    fixture.register(session(|session| session.last_active_at = at(10)));
+    let store = &fixture.store;
+    let following = |second| {
+        let added = store.add_prompt(
+            &key(),
+            &prompt(second, "x"),
+            &pending(),
+            5,
+            Activity::Following,
+        );
+        added.unwrap().unwrap().0.last_active_at
+    };
+    assert_eq!(following(9), at(10));
+    assert_eq!(following(10), at(10));
+    assert_eq!(following(11), at(11));
+    let touched = |second| {
+        let touched = store.touch(&key(), &at(second), None, Activity::Following);
+        touched.unwrap().unwrap().last_active_at
+    };
+    assert_eq!(touched(5), at(11));
+    assert_eq!(touched(12), at(12));
+    assert_eq!(fixture.get().prompt_count, 3);
+}
+
+#[test]
+fn activity_on_a_session_whose_time_has_no_later_one_is_a_storage_failure_and_writes_nothing() {
+    const LAST: &str = "9999-12-31T23:59:59.999999Z";
+    type Event = fn(&Fixture) -> Result<(), WriteError>;
+    let events: [(&str, Event); 5] = [
+        ("a prompt", |fixture| {
+            let added =
+                fixture
+                    .store
+                    .add_prompt(&key(), &prompt(9, "x"), &pending(), 5, Activity::First);
+            added.map(drop)
+        }),
+        ("a start", |fixture| {
+            fixture
+                .store
+                .touch(&key(), &at(9), None, Activity::First)
+                .map(drop)
+        }),
+        ("a stop", |fixture| {
+            fixture.store.nudge_if_due(&key(), &at(9), 5, 5).map(drop)
+        }),
+        ("an end", |fixture| fixture.store.end(&key(), &at(9))),
+        ("a move", |fixture| {
+            fixture.store.move_(&key(), &to_other()).map(drop)
+        }),
+    ];
+    for (name, event) in events {
+        let fixture = initialized();
+        let before = fixture.register(session(|session| {
+            session.last_active_at = LAST.to_string();
+            session.transcript_path = own("/t/a");
+        }));
+        // an event at that very instant, and one from a clock that is behind it
+        assert_eq!(
+            event(&fixture).unwrap_err(),
+            CoreError::StorageFailure.into(),
+            "{name}"
+        );
+        assert_eq!(fixture.get(), before, "{name}");
+        assert_eq!(fixture.count("SELECT count(*) FROM session_moves"), 0);
+    }
+    // what follows a row's making or move in one event has nothing to move, and is written
+    let fixture = initialized();
+    fixture.register(session(|session| session.last_active_at = LAST.to_string()));
+    let added =
+        fixture
+            .store
+            .add_prompt(&key(), &prompt(9, "x"), &pending(), 5, Activity::Following);
+    assert_eq!(added.unwrap().unwrap().0.last_active_at, LAST);
+    // and the instant before the last still has one after it
+    let fixture = initialized();
+    fixture.register(session(|session| {
+        session.last_active_at = "9999-12-31T23:59:59.999998Z".to_string()
+    }));
+    let touched = fixture
+        .store
+        .touch(&key(), &at(9), None, Activity::First)
+        .unwrap()
+        .unwrap();
+    assert_eq!(touched.last_active_at, LAST);
+}
+
+#[test]
 fn prompt_json_is_stored_compact_and_unescaped() {
     let fixture = initialized();
     fixture.add(
@@ -564,7 +690,13 @@ fn concurrent_first_prompts_create_one_row_and_exactly_one_reports_it() {
         let stores = stores(&fixture, shared);
         let results = run_together(|index| {
             let entry = prompt(index as u32 + 1, "x");
-            let added = stores[index % stores.len()].add_prompt(&key(), &entry, &pending(), 5);
+            let added = stores[index % stores.len()].add_prompt(
+                &key(),
+                &entry,
+                &pending(),
+                5,
+                Activity::First,
+            );
             added.unwrap().unwrap().1
         });
         assert_eq!(results.iter().filter(|created| **created).count(), 1);
@@ -580,7 +712,7 @@ fn a_prompt_count_with_no_next_one_is_a_storage_failure_and_writes_nothing() {
     let before = fixture.get();
     let added = fixture
         .store
-        .add_prompt(&key(), &prompt(1, "x"), &pending(), 5);
+        .add_prompt(&key(), &prompt(1, "x"), &pending(), 5, Activity::First);
     assert_eq!(added.unwrap_err(), CoreError::StorageFailure.into());
     assert_eq!(fixture.get(), before);
 }
@@ -1043,7 +1175,12 @@ fn a_bad_row_fails_a_write_too_and_is_left_as_it_was() {
     fixture.sql("UPDATE sessions SET recent_prompts = 'not json'");
     let failure = WriteError::Core(CoreError::StorageFailure);
     let store = &fixture.store;
-    assert_eq!(store.touch(&key(), &at(50), None).unwrap_err(), failure);
+    assert_eq!(
+        store
+            .touch(&key(), &at(50), None, Activity::First)
+            .unwrap_err(),
+        failure
+    );
     assert_eq!(store.end(&key(), &at(50)).unwrap_err(), failure);
     assert_eq!(
         store.nudge_if_due(&key(), &at(50), 5, 5).unwrap_err(),
@@ -1051,7 +1188,7 @@ fn a_bad_row_fails_a_write_too_and_is_left_as_it_was() {
     );
     assert_eq!(
         store
-            .add_prompt(&key(), &prompt(50, "x"), &pending(), 5)
+            .add_prompt(&key(), &prompt(50, "x"), &pending(), 5, Activity::First)
             .unwrap_err(),
         failure
     );
@@ -1103,7 +1240,10 @@ fn session_row_with_reordered_prompt_keys_is_read_and_rewritten_at_first() {
         ]
     );
     // the next write of that session stores `at` first
-    fixture.store.touch(&key(), &at(2), None).unwrap();
+    fixture
+        .store
+        .touch(&key(), &at(2), None, Activity::First)
+        .unwrap();
     let (first, recent): (String, String) = fixture
         .raw()
         .query_row(
@@ -1159,10 +1299,13 @@ fn session_writes_into_a_missing_store_are_silent() {
     let fixture = absent();
     let store = &fixture.store;
     assert_eq!(store.register(&session(|_| {})).unwrap(), None);
-    assert_eq!(store.touch(&key(), &at(1), None).unwrap(), None);
+    assert_eq!(
+        store.touch(&key(), &at(1), None, Activity::First).unwrap(),
+        None
+    );
     assert_eq!(
         store
-            .add_prompt(&key(), &prompt(1, "x"), &pending(), 5)
+            .add_prompt(&key(), &prompt(1, "x"), &pending(), 5, Activity::First)
             .unwrap(),
         None
     );
@@ -1195,11 +1338,17 @@ fn a_malformed_argument_is_a_value_error_and_writes_nothing() {
         session.transcript_path = own("/t/a");
     }));
     let store = &fixture.store;
-    is_value_error(store.touch(&key(), "yesterday", None));
+    is_value_error(store.touch(&key(), "yesterday", None, Activity::First));
     is_value_error(store.end(&key(), "2026-09-24"));
     is_value_error(store.nudge_if_due(&key(), "", 5, 5));
-    is_value_error(store.add_prompt(&key(), &prompt(1, "x"), &pending_of(codex("x"), |_| {}), 5));
-    is_value_error(store.add_prompt(&key(), &prompt(1, "x"), &pending(), 0));
+    is_value_error(store.add_prompt(
+        &key(),
+        &prompt(1, "x"),
+        &pending_of(codex("x"), |_| {}),
+        5,
+        Activity::First,
+    ));
+    is_value_error(store.add_prompt(&key(), &prompt(1, "x"), &pending(), 0, Activity::First));
     is_value_error(store.move_(
         &key(),
         &MoveTo {
@@ -1433,7 +1582,7 @@ fn a_published_summary_round_trips_and_later_writes_keep_it() {
         ),
         (Some("Fixed the login page."), Some(at(5)), at(0))
     );
-    store.touch(&key(), &at(9), None).unwrap();
+    store.touch(&key(), &at(9), None, Activity::First).unwrap();
     fixture.add(&key(), &prompt(10, "x"), &session(|_| {}));
     let stored = fixture.get();
     assert_eq!(
@@ -1463,7 +1612,10 @@ fn publishing_for_a_moved_unbound_pending_global_or_unknown_session_writes_nothi
     // a project that is gone, as only a raw writer can leave it
     fixture.register(session_of(codex("gone"), |_| {}));
     fixture.sql("UPDATE sessions SET project_id = 'zzzzzzzzzz' WHERE session_id = 'gone'");
-    fixture.store.touch(&key(), &at(3), None).unwrap(); // activity after it was read
+    fixture
+        .store
+        .touch(&key(), &at(3), None, Activity::First)
+        .unwrap(); // activity after it was read
     for key in [
         key(),
         codex("unbound"),

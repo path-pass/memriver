@@ -130,7 +130,10 @@ fn a_store_removed_after_the_existence_check_is_still_a_no_op() {
     world.start("startup", None, None);
     let store = world.store.clone();
     meanwhile(move || fs::remove_dir_all(store).unwrap());
-    let touched = world.session().session_store.touch(&key(), &now(), None);
+    let touched = world
+        .session()
+        .session_store
+        .touch(&key(), &now(), None, Activity::First);
     assert_eq!(touched.unwrap(), None);
     assert!(!world.store.exists());
     // and through the service: the answer of a store that is not there

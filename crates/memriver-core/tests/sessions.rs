@@ -2136,6 +2136,85 @@ fn cd_move_needs_claude_code_a_changed_transcript_directory_and_an_absolute_cwd(
     assert_eq!(world.services.session.moves(&other_key()).unwrap(), []);
 }
 
+fn prompt_at(row: &Session) -> &str {
+    row.recent_prompts.last().unwrap().at()
+}
+
+#[test]
+fn one_event_moves_the_activity_time_once() {
+    // while the clock runs forward the times of one event stand to each other as the
+    // Python implementation leaves them
+    let world = world();
+    // a first prompt: the row keeps the time it was made with
+    world.prompt("first", at(T_A, &world.work));
+    let row = world.row();
+    assert_eq!(row.started_at, row.last_active_at);
+    assert!(prompt_at(&row) <= row.started_at.as_str());
+    // a prompt of its own moves it to the prompt's time
+    world.prompt("second", at(T_A, &world.work));
+    let row = world.row();
+    assert_eq!(row.last_active_at, prompt_at(&row));
+    assert!(row.last_active_at > row.started_at);
+    // a prompt that moves the session: the move's time, once
+    let b = world.init(&world.base.join("b"), "b");
+    let root = Path::new(b.root.as_deref().unwrap());
+    assert!(changed(&world.prompt("third", at(T_B, root)).moved));
+    let (row, moves) = (world.row(), world.services.session.moves(&key()).unwrap());
+    assert_eq!(moves[0].moved_at, row.last_active_at);
+    assert!(prompt_at(&row) <= row.last_active_at.as_str());
+    // a compact that moves it: the start's own time, which is not before the move's
+    let compacted = world.start_as("compact", at(T_A, &world.work));
+    assert!(changed(&compacted.moved));
+    let (row, moves) = (world.row(), world.services.session.moves(&key()).unwrap());
+    assert!(moves[1].moved_at <= row.last_active_at);
+}
+
+#[test]
+fn an_event_while_the_clock_is_behind_moves_the_activity_time_by_one_step() {
+    // the session was last active at a time the clock has not reached
+    let ahead = "2999-01-01T00:00:00.000000Z";
+    let step = |steps: u32| format!("2999-01-01T00:00:00.{steps:06}Z");
+    let world = world();
+    world.start(Call {
+        transcript: Some(T_A),
+        ..call()
+    });
+    world.sql("UPDATE sessions SET last_active_at = ?1", &[ahead]);
+    let session = &world.services.session;
+    // a prompt without a move: a summary made from the old reading is refused
+    world.prompt("hello", at(T_A, &world.work));
+    assert_eq!(world.row().last_active_at, step(1));
+    let published = session.publish_summary(&key(), "made from the old reading", ahead);
+    assert_eq!(published.unwrap_err(), CoreError::SessionMoved.into());
+    assert_eq!(world.row().summary, None);
+    // a prompt that moves the session: one step for the move and the prompt together
+    let b = world.init(&world.base.join("b"), "b");
+    let root = Path::new(b.root.as_deref().unwrap());
+    assert!(changed(&world.prompt("hello", at(T_B, root)).moved));
+    let moves = session.moves(&key()).unwrap();
+    assert_eq!(
+        (world.row().last_active_at, moves[0].moved_at.clone()),
+        (step(2), step(2))
+    );
+    // a compact that moves it back: one step again
+    assert!(changed(
+        &world.start_as("compact", at(T_A, &world.work)).moved
+    ));
+    assert_eq!(world.row().last_active_at, step(3));
+    // every other event is one step each
+    world.start_as("resume", at(T_A, &world.work));
+    assert_eq!(world.row().last_active_at, step(4));
+    session.stop_decision(&key()).unwrap();
+    session.end_session(&key()).unwrap();
+    assert_eq!(world.row().last_active_at, step(6));
+    // a first prompt of a session that is new has no reading to end: its own time
+    let observed = world.prompt("hello", by(claude("new")));
+    assert!(observed.created_pending);
+    let row = world.row_of(&claude("new")).unwrap();
+    assert_eq!(row.started_at, row.last_active_at);
+    assert!(row.last_active_at.as_str() < ahead);
+}
+
 #[test]
 fn only_a_compact_start_applies_a_move() {
     let world = world();

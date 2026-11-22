@@ -28,7 +28,7 @@ use crate::repository::directories::{
     RootState, UNRESOLVABLE_START, canonical, root_state, transcript_moved, usable_directory,
 };
 use crate::repository::sqlite::project_store::ProjectStore;
-use crate::repository::sqlite::session_store::{MoveTo, SessionStore, core};
+use crate::repository::sqlite::session_store::{Activity, MoveTo, SessionStore, core};
 use crate::repository::worktree::git_facts;
 use crate::settings::{
     Env, HEADER_FIELD_CHARS, SESSION_PROMPT_CHARS, SESSION_PROMPT_SCAN_MAX_BYTES,
@@ -80,6 +80,14 @@ pub struct SessionService {
 fn unavailable(reason: &str) -> CoreError {
     CoreError::ProjectUnavailable {
         reason: reason.to_string(),
+    }
+}
+
+/// One event moves a session's activity time once: a move of this event did already.
+fn following(moved: &Option<MoveOutcome>) -> Activity {
+    match moved {
+        Some(_) => Activity::Following,
+        None => Activity::First,
     }
 }
 
@@ -165,7 +173,9 @@ impl SessionService {
         if source == "resume" {
             // a session keeps its row however and wherever it is resumed: the new
             // transcript path is adopted, the session never moves
-            let touched = store.touch(key, &now(), transcript_path).map_err(core)?;
+            let touched = store
+                .touch(key, &now(), transcript_path, Activity::First)
+                .map_err(core)?;
             return Ok(StartOutcome {
                 context: self.context_of(&touched.unwrap_or(stored))?,
                 moved: None,
@@ -185,7 +195,9 @@ impl SessionService {
                 }
             }
         }
-        let mut touched = store.touch(key, &now(), None).map_err(core)?;
+        let mut touched = store
+            .touch(key, &now(), None, following(&moved))
+            .map_err(core)?;
         // a signal needs a stored path, so a NULL one means none was seen
         if touched.is_some()
             && stored.transcript_path.is_none()
@@ -243,7 +255,8 @@ impl SessionService {
                     seed
                 }
             };
-            let added = store.add_prompt(key, &entry, &seed, SESSION_RECENT_PROMPTS);
+            let activity = following(&moved);
+            let added = store.add_prompt(key, &entry, &seed, SESSION_RECENT_PROMPTS, activity);
             match added.map_err(core)? {
                 Some((session, created)) => answer(self.context_of(&session)?, created, moved),
                 None => answer(self.storeless_context(key), false, None),
