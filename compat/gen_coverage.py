@@ -26,6 +26,8 @@ in order. The file is given by its modules from the crate root
 `src/models/helpers/mod.rs`, inside `mod tests`; no module means `src/lib.rs`) or by
 its place in the crate (`tests/cli_version.rs::name`, `src/main.rs::tests::name`).
 The name must be a test function in exactly those inline modules of that file.
+The crate is the name of one directory of `crates/`, and the file one that really
+lies in it (in `compat/` for a compat target): no absolute path, no link out.
 When a phase is finished its number is added to `finished phases:` together with
 a line `phase <n>: <glob>, <glob>, ...` naming the Python test files it covers;
 from then on every function of those files needs a target, and a glob that matches
@@ -71,13 +73,23 @@ def parse(text: str) -> Ledger:
     return ledger
 
 
+def _file_in(path: Path, directory: Path) -> bool:
+    """Whether `path` is a file that really lies in `directory` -- a directory of the
+    repository, written from the repository's real place: an absolute name, a `..` or a
+    link that leads anywhere else makes it another file."""
+    return path.is_file() and path.resolve().is_relative_to(directory)
+
+
 def _exists(target: str, repo: Path) -> bool:
+    repo = repo.resolve()
     kind, _, rest = target.partition(":")
     parts = rest.split("::")
     if kind == "compat" and len(parts) == 2:
         path = repo / "compat" / parts[0]
-        return path.is_file() and re.search(rf"^def {re.escape(parts[1])}\(", path.read_text(), re.MULTILINE) is not None
-    if kind == "rust" and len(parts) >= 2 and ".." not in rest:
+        return _file_in(path, repo / "compat") and re.search(
+            rf"^def {re.escape(parts[1])}\(", path.read_text(), re.MULTILINE) is not None
+    # the crate is one of this repository's, by its name alone
+    if kind == "rust" and len(parts) >= 2 and ".." not in rest and re.fullmatch(r"[\w-]+", parts[0]):
         return _rust_test(repo / "crates" / parts[0], parts[1:-1], parts[-1])
     return False
 
@@ -87,12 +99,13 @@ def _rust_test(crate: Path, path: list[str], name: str) -> bool:
     and then the inline modules, in order, that contain the test: the file either by its
     place in the crate (`src/main.rs`, `tests/x.rs`) or by its modules from the crate
     root (`a::b` is src/a/b.rs or src/a/b/mod.rs, nothing is src/lib.rs), taking as many
-    leading modules as make a file."""
+    leading modules as make a file. The file must really lie in the crate (`crate` is
+    written from the repository's real place)."""
     if path and path[0].endswith(".rs"):
-        if Path(path[0]).is_absolute():
-            return False
         file, inline = crate / path[0], path[1:]
     else:
+        if not all(re.fullmatch(r"\w+", module) for module in path):
+            return False
         for cut in range(len(path), -1, -1):
             inside = crate.joinpath("src", *path[:cut])
             file = next((f for f in ([inside.with_suffix(".rs"), inside / "mod.rs"] if cut
@@ -102,31 +115,58 @@ def _rust_test(crate: Path, path: list[str], name: str) -> bool:
         else:
             return False
         inline = path[cut:]
-    return file.is_file() and inline in _tests_named(file.read_text(encoding="utf-8"), name)
+    return _file_in(file, crate) and (*inline, name) in _rust_tests(file.read_text(encoding="utf-8"))
 
 
-# string and character literals and comments, which may hold braces
-_RUST_QUIET = re.compile(r'''"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])'|//[^\n]*|/\*.*?\*/''', re.DOTALL)
+# What may hold a brace or a quote that is not code: a line comment, the start of a block
+# comment (they nest, so its end is found by counting), a raw string with its own number
+# of `#`, a string, a character. A lifetime (`'a`) has no closing quote and is none of these.
+_RUST_QUIET = re.compile(r"""//[^\n]*|(?P<block>/\*)"""
+                         r"""|(?<!\w)(?:b|c)?r(?P<hashes>\#*)".*?"(?P=hashes)"""
+                         r"""|(?<!\w)(?:b|c)?"(?:\\.|[^"\\])*\""""
+                         r"""|(?<!\w)b?'(?:\\(?:u\{[^}]*\}|.)|[^'\\])'""", re.DOTALL)
+_RUST_BLOCK_EDGE = re.compile(r"/\*|\*/")
 # an inline module opening, a function with a test attribute (whatever other attributes
 # stand between), or a brace
 _RUST_TOKEN = re.compile(
     r"\bmod\s+(?P<module>\w+)\s*\{"
-    r"|#\[(?:\w+::)*test\b[^\]]*\]\s*(?:#\[[^\]]*\]\s*)*(?:pub\s+)?(?:async\s+)?fn\s+(?P<test>\w+)\s*\("
+    r"|#\[(?:\w+::)*test\b[^\]]*\]\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?"
+    r"(?:(?:async|const|unsafe)\s+)*fn\s+(?P<test>\w+)\s*\("
     r"|(?P<open>\{)|(?P<close>\})")
 
 
-def _tests_named(source: str, name: str) -> list[list[str]]:
-    """The inline-module path of every test function called `name` in a Rust source."""
-    # ponytail: braces are counted after literals and comments are blanked; a raw string
-    # holding an unbalanced brace would shift the count and the test would read as
-    # missing (never as present). Upgrade path: a real tokenizer.
+def _rust_code(source: str) -> str:
+    """A Rust source with every comment and every string and character literal replaced
+    by a space, so that what is left of braces and names is code."""
+    kept, at = [], 0
+    while found := _RUST_QUIET.search(source, at):
+        kept.append(source[at:found.start()])
+        at = found.end()
+        depth = 1 if found["block"] else 0
+        while depth:
+            edge = _RUST_BLOCK_EDGE.search(source, at)
+            if edge is None:
+                return "".join(kept)    # a comment that never ends
+            depth += 1 if edge[0] == "/*" else -1
+            at = edge.end()
+        kept.append(" ")
+    return "".join(kept) + source[at:]
+
+
+def _rust_tests(source: str) -> list[tuple[str, ...]]:
+    """Every test function of a Rust source, as `rustc --test` lists it: the inline
+    modules that contain it, then its name. A function inside anything but modules (a
+    function's body, an impl) is not a test."""
+    # ponytail: a scanner, not the compiler -- tests and modules written by a macro or
+    # removed by a `cfg` are not seen as rustc sees them. `cargo test -- --list` would
+    # be, but it gives module paths without files, which is not how a target is written.
     found, open_blocks = [], []         # a module's name, or None for any other block
-    for token in _RUST_TOKEN.finditer(_RUST_QUIET.sub("", source)):
+    for token in _RUST_TOKEN.finditer(_rust_code(source)):
         if token["module"]:
             open_blocks.append(token["module"])
         elif token["test"]:
-            if token["test"] == name:
-                found.append([block for block in open_blocks if block is not None])
+            if None not in open_blocks:
+                found.append((*open_blocks, token["test"]))
         elif token["open"]:
             open_blocks.append(None)
         elif open_blocks:

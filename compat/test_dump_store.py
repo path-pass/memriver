@@ -423,10 +423,10 @@ def test_each_of_two_moves_in_one_step_advances_by_one(tmp_path):
 @pytest.mark.parametrize(("statement", "problem"), [
     # the second move repeats the first one's time
     ("UPDATE session_moves SET moved_at = '2090-01-01T00:00:00.000001Z' WHERE seq = 2",
-     "session_moves.moved_at: 2090-01-01T00:00:00.000001Z is outside the step"),
+     "session_moves.moved_at: 2090-01-01T00:00:00.000001Z is not after .* by its 2 advance"),
     # the session stops one advance short
     ("UPDATE sessions SET last_active_at = '2090-01-01T00:00:00.000001Z'",
-     "sessions.last_active_at: 2090-01-01T00:00:00.000001Z is outside the step"),
+     "sessions.last_active_at: 2090-01-01T00:00:00.000001Z is not after .* by its 2 advance"),
 ])
 def test_two_moves_that_do_not_advance_twice_are_a_difference(tmp_path, statement, problem):
     case = moving(tmp_path)
@@ -472,6 +472,59 @@ def test_a_move_recorded_at_another_time_is_a_difference(tmp_path, moved_at, pro
 
     with pytest.raises(AssertionError, match=f"session_moves.moved_at: .* {problem}"):
         case.step(act)
+
+
+def test_a_forward_only_time_is_never_before_the_step(tmp_path):
+    """A real move on both sides, the stored time long past: the reference side writes the
+    clock, the other side only the stored time plus one."""
+    case = seeded(tmp_path)
+    payload = START.format(cwd=case.work / "proj", home=case.home)
+    case.step(lambda side: side.run(["hook", "session-start", "--harness", "claude-code"],
+                                    cwd=case.work / "proj", stdin=payload))
+    for side in (case.py, case.rs):
+        sql(side, "UPDATE sessions SET last_active_at = '2026-01-01T00:00:00.000000Z'")
+
+    def act(side):
+        side.api(MOVE)
+        if side is case.rs:
+            sql(side, "UPDATE sessions SET last_active_at = '2026-01-01T00:00:00.000001Z'")
+            sql(side, "UPDATE session_moves SET moved_at = '2026-01-01T00:00:00.000001Z'")
+
+    with pytest.raises(AssertionError, match="2026-01-01T00:00:00.000001Z is outside the step"):
+        case.step(act)
+
+
+LONG_AGO = "UPDATE memories SET updated = '2026-01-01T00:00:00.000000Z' WHERE description = 'deploy script location'"
+
+
+@pytest.mark.parametrize("updated", ["2026-01-01T00:00:00.000001Z", "2026-06-01T00:00:00.000000Z"])
+def test_a_new_version_is_never_before_the_step(tmp_path, updated):
+    case = future(tmp_path, LONG_AGO)
+
+    def early(side):
+        side.api(UPDATE.format(body="moved"))
+        if side is case.rs:     # after the stored time, and long before the step
+            sql(side, "UPDATE memories SET updated = ? WHERE body = 'moved'", updated)
+
+    with pytest.raises(AssertionError, match=f"memories.updated: {updated} is outside the step"):
+        case.step(early)
+
+
+@pytest.mark.parametrize(("updated", "problem"), [
+    ("2090-01-01T00:00:00.000001Z", "is not after"),            # short of the two advances
+    ("2090-01-01T00:00:00.000003Z", "is outside the step"),     # past them
+])
+def test_a_time_past_the_clock_is_only_the_stored_time_plus_its_advances(tmp_path, updated, problem):
+    case = future(tmp_path, AHEAD)
+
+    def twice(side):
+        side.api(UPDATE.format(body="moved once"))
+        side.api(UPDATE.format(body="moved twice"))
+        if side is case.rs:
+            sql(side, "UPDATE memories SET updated = ? WHERE body = 'moved twice'", updated)
+
+    with pytest.raises(AssertionError, match=f"memories.updated: {updated} {problem}"):
+        case.step(twice)
 
 
 @pytest.mark.parametrize(("name", "directory"), [
@@ -623,6 +676,66 @@ def test_a_layout_path_through_a_link_out_of_the_case_is_refused(tmp_path, targe
     assert sorted(p.name for p in outside.iterdir()) == ["there"]
     assert list((outside / "there").iterdir()) == []
     assert sorted(p.name for p in case.iterdir()) == ["link"]
+
+
+def outside_repository(tmp_path):
+    """A repository of its own beside the case, with no commit yet."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    done = run(harness.GIT, ["init", "-q", "-b", "elsewhere", str(outside)],
+               home=tmp_path, root=tmp_path, cwd=tmp_path)
+    assert done.code == 0, done
+    return outside
+
+
+def untouched(outside):
+    """Whether nothing was committed to the repository at `outside`."""
+    return (not list((outside / ".git" / "refs" / "heads").iterdir())
+            and not (outside / ".git" / "worktrees").exists()
+            and sorted(p.name for p in outside.iterdir()) == [".git"])
+
+
+def test_a_seed_repository_is_not_built_over_a_binding_to_another_repository(tmp_path):
+    seeds = seeds_with(tmp_path, lambda layout: layout["git"][0].update(path="repo"))
+    outside, case = outside_repository(tmp_path), tmp_path / "case"
+    (case / "repo").mkdir(parents=True)
+    (case / "repo" / ".git").write_text(f"gitdir: {outside / '.git'}\n")
+    with pytest.raises(AssertionError, match="is not empty"):
+        load_seed("small", case, seeds=seeds)
+    assert untouched(outside)
+    assert sorted(p.name for p in case.iterdir()) == ["repo"]
+
+
+@pytest.mark.parametrize("where", ["a link to a bound directory", "a bound worktree", "a home with git settings",
+                                   "an empty directory"])
+def test_a_seed_is_built_only_in_an_empty_place(tmp_path, where):
+    seeds = seeds_with(tmp_path, lambda layout: None)
+    outside, case = outside_repository(tmp_path), tmp_path / "case"
+    case.mkdir()
+    if where == "a link to a bound directory":      # work/repo -> bound, inside the case
+        (case / "bound").mkdir()
+        (case / "bound" / ".git").write_text(f"gitdir: {outside / '.git'}\n")
+        (case / "work").mkdir()
+        (case / "work" / "repo").symlink_to(case / "bound")
+    elif where == "a bound worktree":
+        (case / "work" / "repo-linked").mkdir(parents=True)
+        (case / "work" / "repo-linked" / ".git").write_text(f"gitdir: {outside / '.git'}\n")
+    elif where == "a home with git settings":
+        (case / "home").mkdir()
+        (case / "home" / ".gitconfig").write_text(f"[core]\n\tworktree = {outside}\n")
+    else:
+        (case / "unrelated").mkdir()
+    before = sorted(str(p) for p in case.rglob("*"))
+    with pytest.raises(AssertionError, match="is not empty"):
+        load_seed("small", case, seeds=seeds)
+    assert untouched(outside)
+    assert sorted(str(p) for p in case.rglob("*")) == before
+
+
+def test_a_seed_is_built_in_an_empty_directory_that_exists(tmp_path):
+    (tmp_path / "case").mkdir()
+    root = load_seed("small", tmp_path / "case")
+    assert root == (tmp_path / "case").resolve() / "store" and (tmp_path / "case" / "work" / "repo" / ".git").is_dir()
 
 
 def test_a_seed_is_not_loaded_outside_the_tests_temporary_directory(tmp_path, monkeypatch):

@@ -11,10 +11,11 @@ columns and output fields declared below -- to names that say which object is
 meant (`<memory:2>`, `<t:5>`). Everything else, free text included, is compared
 as it is. A generated value is renamed only when it is what it should be: an id
 in the id form, a timestamp that is a real time in the stored form and was taken
-while its step ran (or, in a column that only moves forward, follows the row's
-previous time). Anything else fails the step, so a renamed value never hides a
-wrong one. A name belongs to a kind of object: the same text as an id of another
-kind, or in free text, is left alone.
+while its step ran (in a column that only moves forward it also follows the row's
+previous time, and passes the clock only when that time is ahead of it). Anything
+else fails the step, so a renamed value never hides a wrong one. A name belongs
+to a kind of object: the same text as an id of another kind, or in free text, is
+left alone.
 """
 
 from __future__ import annotations
@@ -180,8 +181,9 @@ def _new_moves(row: dict, was: dict, then: Snapshot, now: Snapshot) -> int:
 # Cells that only move forward: the two places the Python implementation calls
 # now_strictly_after -- a memory's new version (`updated`, and `deleted_at`, which is
 # set to it) and a session's move (`sessions.last_active_at` and the `moved_at` of the
-# move's own row, both the same value). When the clock has not passed the stored time,
-# the new value is that time plus one microsecond per advance, not the clock.
+# move's own row, both the same value). Each advance is max(the clock, the time before
+# it plus one microsecond): never before the clock, and past it only when the stored
+# time is ahead of the clock -- then by exactly one microsecond per advance.
 # (table, column) -> (the table and column holding the previous time, the columns that
 #                     find that row, how many advances the step made up to this cell)
 MONOTONIC: dict[tuple[str, str], tuple[str, str, tuple[str, ...], Callable[..., int]]] = {
@@ -421,11 +423,13 @@ class Case:
         A cell was written when its row is new or its value differs from the row's value
         before the step; whether the value itself was seen before does not matter. What it
         holds must be a real time in the stored form, and:
+        - never earlier than the first reading of `span`, the clock read before and after
+          this side's action;
         - in a cell that only moves forward (MONOTONIC), with a previous time: later than
-          that time, and either within `span` -- the clock read before and after this
-          side's action -- or exactly that time plus one microsecond for each advance
-          the step made;
-        - anywhere else: within `span`.
+          that time by at least one microsecond for each advance the step made, and
+          later than the second reading only as exactly that -- which is what is written
+          when the previous time is ahead of the clock;
+        - anywhere else: not later than the second reading.
         Without a span (a seed as loaded) only the form is checked."""
         for table, rows in now.tables.items():
             key = ROW_KEYS[table] if TIME_COLUMNS[table] else None
@@ -451,13 +455,16 @@ class Case:
                     base, advances = self._previous(table, name, row, was, then, now)
                     if base is None and was is not None and was[name] == stamp:
                         continue    # not written by this step
-                    inside = span[0] <= instant <= span[1]
+                    latest = span[1]
                     if base is not None:
-                        assert instant > base, f"{table}.{name}: {stamp} is not after {_stamp(base)}"
-                        inside = inside or (advances > 0
-                                            and instant - base == timedelta(microseconds=advances))
-                    assert inside, (f"{table}.{name}: {stamp} is outside the step, which ran from "
-                                    f"{_stamp(span[0])} to {_stamp(span[1])}")
+                        least = base + timedelta(microseconds=max(advances, 1))
+                        assert instant >= least, (f"{table}.{name}: {stamp} is not after {_stamp(base)} "
+                                                  f"by its {advances} advance(s)")
+                        if advances:    # past the clock only as far as the advances carry it
+                            latest = max(latest, least)
+                    assert span[0] <= instant <= latest, (
+                        f"{table}.{name}: {stamp} is outside the step, which ran from "
+                        f"{_stamp(span[0])} to {_stamp(span[1])}")
         seen = {row[name] for table, rows in now.tables.items()
                 for row in rows for name in TIME_COLUMNS[table]}
         for stamp in sorted(seen - {None} - side.times.keys()):
@@ -620,7 +627,10 @@ def seed_store(tmp_path: Path) -> Path:
 
 def load_seed(name: str, tmp_path: Path, *, seeds: Path = SEEDS) -> Path:
     """Builds the committed seed `<seeds>/<name>/` under `tmp_path` (`home`, `work`,
-    `store`) and checks the result before any case may use it. Returns the store."""
+    `store`) and checks the result before any case may use it. Returns the store.
+
+    `tmp_path` must be empty or absent: everything in it is then made by the loader, so
+    git finds no repository, link or setting of someone else's to write through."""
     from memriver_core.repository.sqlite.database import _SCHEMA
 
     # everything is placed from the case's own root, with links followed -- never from
@@ -645,6 +655,8 @@ def load_seed(name: str, tmp_path: Path, *, seeds: Path = SEEDS) -> Path:
     repositories = [(place(repository["path"]), repository["branch"],
                      [{**tree, "path": str(place(tree["path"]))} for tree in repository["worktrees"]])
                     for repository in layout["git"]]
+    assert not base.exists() or (base.is_dir() and not any(base.iterdir())), \
+        f"seed {name}: {tmp_path} is not empty"
     for directory in (home, work):
         directory.mkdir(parents=True)
     for path, branch, worktrees in repositories:
