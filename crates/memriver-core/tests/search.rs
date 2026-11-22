@@ -96,6 +96,9 @@ fn zero_and_negative_limits_become_one() {
     ] {
         assert_eq!(service.normalize_search_limit(limit), clamped, "{limit:?}");
     }
+    // the default is held to the largest as well
+    env.settings.search_limit_default = 9;
+    assert_eq!(env.services().memory.normalize_search_limit(None), 7);
     for body in ["pear a", "pear b"] {
         env.record(body);
     }
@@ -174,7 +177,7 @@ fn no_terms_no_hits() {
     let deleted = env.record("anything deleted");
     let damaged = env.record("anything damaged");
     service
-        .delete(&deleted.id, 1, &env.context(), None)
+        .delete(&deleted.id, 1, &env.context(), "mcp", None)
         .unwrap();
     env.raw()
         .execute_batch(&format!(
@@ -251,4 +254,37 @@ fn limits_at_their_largest_value_mean_no_limit() {
     assert!(!index.contains("omitted"));
     assert!(index.starts_with("- [rule, global] "));
     assert!(index.lines().next().unwrap().ends_with(": long and shared"));
+}
+
+#[test]
+fn a_project_outside_the_set_is_not_searched() {
+    use memriver_core::repository::sqlite::project_store::ProjectStore;
+    let env = setup();
+    env.record("mine to find");
+    let store = ProjectStore::with_busy_timeout(&env.store, &env.home, 2000);
+    let found = |set: Option<&memriver_core::models::context::ReadWriteSet>, query| {
+        store
+            .search(&env.project.id, set, query, None)
+            .unwrap()
+            .len()
+    };
+    // whoever may read the project finds it, listed or searched; no set is the
+    // management view
+    let mine = env.context().read_write_set;
+    for query in [None, Some("find")] {
+        assert_eq!(found(Some(&mine), query), 1);
+        assert_eq!(found(None, query), 1);
+        // another project's session, a session without a project, one with nothing
+        for set in [
+            context_of(Some(&env.other.id), Some(&env.global_id)),
+            context_of(None, Some(&env.global_id)),
+            context_of(None, None),
+        ] {
+            assert_eq!(found(Some(&set.read_write_set), query), 0, "{query:?}");
+        }
+    }
+    // an id that is none, a project that is not there
+    for project_id in ["", "not an id", "yyyyyyyyyy"] {
+        assert_eq!(store.search(project_id, None, None, None).unwrap().len(), 0);
+    }
 }

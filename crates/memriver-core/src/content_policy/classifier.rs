@@ -15,7 +15,8 @@ pub enum Verdict {
     Unavailable { detail: String },
 }
 
-pub trait ContentClassifier {
+/// Asked from whichever thread a write runs on.
+pub trait ContentClassifier: Send + Sync {
     /// `changed_by` names the caller, so an implementation can apply its own switches
     /// per source.
     fn classify(&self, text: &str, changed_by: &str) -> Verdict;

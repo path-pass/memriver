@@ -3,10 +3,9 @@
 
 mod common;
 
-use std::cell::{Cell, RefCell};
 use std::fs;
-use std::rc::Rc;
-use std::sync::{Arc, Barrier};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 
 use common::{CAPS, Env, context_of, core, setup, value};
@@ -51,6 +50,7 @@ fn rows(env: &Env) -> [i64; 5] {
 fn write_records_one_change_one_step_one_version() {
     let env = setup();
     let service = env.services().memory;
+    let started = memriver_core::models::helpers::now();
     let memory = service
         .record(
             "  the body \u{1f}",
@@ -114,7 +114,9 @@ fn write_records_one_change_one_step_one_version() {
             },
         )
         .unwrap();
-    assert!(is_id(&change.0) && is_timestamp(&change.1) && change.1 <= memory.created);
+    // the change is dated when the batch began: after the call, before the memory
+    assert!(is_id(&change.0) && is_timestamp(&change.1));
+    assert!(started <= change.1 && change.1 <= memory.created);
     assert_eq!(
         (change.2.as_str(), change.3.as_deref(), change.4, &change.5),
         ("mcp", Some("claude-code"), 1, &None)
@@ -330,6 +332,23 @@ fn description_budget_is_8000_whatever_the_setting() {
         (
             "content too large (8001 > 8000 chars); store a summary or pointer instead",
             "too-large"
+        )
+    );
+    // an update's new description is refused in the same words, and names no memory
+    let (message, rule_id, memory_id) = rejected(service.update(
+        &memory.id,
+        1,
+        "short",
+        Some(&"d".repeat(8001)),
+        &env.context(),
+        None,
+    ));
+    assert_eq!(
+        (message.as_str(), rule_id.as_str(), memory_id),
+        (
+            "content too large (8001 > 8000 chars); store a summary or pointer instead",
+            "too-large",
+            None
         )
     );
     // counted in characters, not bytes
@@ -638,7 +657,7 @@ fn stale_version_is_a_conflict() {
             conflict
         );
         assert_eq!(
-            core(service.delete(&memory.id, version, &env.context(), None)),
+            core(service.delete(&memory.id, version, &env.context(), "mcp", None)),
             conflict
         );
     }
@@ -692,7 +711,7 @@ fn delete_is_soft_and_bumps_version() {
     let memory = env.record("the body");
     assert_eq!(
         service
-            .delete(&memory.id, 1, &env.context(), Some("codex"))
+            .delete(&memory.id, 1, &env.context(), "mcp", Some("codex"))
             .unwrap(),
         2
     );
@@ -707,7 +726,7 @@ fn delete_is_soft_and_bumps_version() {
         gone
     );
     assert_eq!(
-        core(service.delete(&memory.id, 2, &env.context(), None)),
+        core(service.delete(&memory.id, 2, &env.context(), "mcp", None)),
         gone
     );
     // the row stays, deleted at the time it was last changed
@@ -784,34 +803,22 @@ fn global_is_read_only_on_this_path() {
         CoreError::GlobalReadOnly
     );
     assert_eq!(
-        core(service.delete(&rule, 1, &env.context(), None)),
+        core(service.delete(&rule, 1, &env.context(), "mcp", None)),
         CoreError::GlobalReadOnly
     );
     // a context that names global as its project writes nothing either
+    // -- whether the context knows that it is global, or only the project's row does
     for context in [
         context_of(Some(&env.global_id), Some(&env.global_id)),
         context_of(Some(&env.global_id), None),
     ] {
-        let refused = core(service.record("b", "user", true, "codex", "", &context));
-        assert!(
-            matches!(
-                refused,
-                CoreError::GlobalReadOnly | CoreError::ProjectUnavailable { .. }
-            ),
-            "{refused:?}"
+        assert_eq!(
+            core(service.record("b", "user", true, "codex", "", &context)),
+            CoreError::GlobalReadOnly,
+            "{:?}",
+            context.read_write_set
         );
     }
-    assert_eq!(
-        core(service.record(
-            "b",
-            "user",
-            true,
-            "codex",
-            "",
-            &context_of(Some(&env.global_id), None)
-        )),
-        CoreError::GlobalReadOnly
-    );
     assert_eq!(rows(&env), before);
     // the row decides, not the id the context was built with: a project turned global
     // after the context was made is read-only at once
@@ -832,7 +839,7 @@ fn global_is_read_only_on_this_path() {
         CoreError::GlobalReadOnly
     );
     assert_eq!(
-        core(service.delete(&mine.id, 1, &env.context(), None)),
+        core(service.delete(&mine.id, 1, &env.context(), "mcp", None)),
         CoreError::GlobalReadOnly
     );
 }
@@ -863,7 +870,7 @@ fn other_projects_memory_is_not_found() {
                 gone
             );
             assert_eq!(
-                core(service.delete(id, version, &env.context(), None)),
+                core(service.delete(id, version, &env.context(), "mcp", None)),
                 gone
             );
         }
@@ -884,7 +891,10 @@ fn other_projects_memory_is_not_found() {
             core(service.update(id, 1, "b", None, &env.context(), None)),
             gone
         );
-        assert_eq!(core(service.delete(id, 1, &env.context(), None)), gone);
+        assert_eq!(
+            core(service.delete(id, 1, &env.context(), "mcp", None)),
+            gone
+        );
     }
     // a context without a project reads global only and writes nowhere
     let nowhere = context_of(None, Some(&env.global_id));
@@ -993,7 +1003,9 @@ fn damaged_row_in_another_project_is_not_found_not_failure() {
     );
     // unless it is deleted: then it is gone for everyone, before a column is decoded
     let mine = env.record("mine");
-    service.delete(&mine.id, 1, &env.context(), None).unwrap();
+    service
+        .delete(&mine.id, 1, &env.context(), "mcp", None)
+        .unwrap();
     damage(&env, &mine.id);
     assert_eq!(
         service.read(&mine.id, &env.context(), "codex"),
@@ -1123,7 +1135,7 @@ fn limits(settings: &Settings) -> MemoryLimits {
 }
 
 /// The texts a classifier was asked about, each with who asked.
-type Texts = Rc<RefCell<Vec<(String, String)>>>;
+type Texts = Arc<Mutex<Vec<(String, String)>>>;
 
 struct Asked {
     texts: Texts,
@@ -1135,7 +1147,8 @@ struct Asked {
 impl ContentClassifier for Asked {
     fn classify(&self, text: &str, changed_by: &str) -> Verdict {
         self.texts
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .push((text.to_string(), changed_by.to_string()));
         if let Some(database) = &self.database {
             let conn = rusqlite::Connection::open(database).unwrap();
@@ -1148,9 +1161,9 @@ impl ContentClassifier for Asked {
 }
 
 fn asked(env: &Env, verdict: Verdict) -> (MemoryService, Texts) {
-    let texts = Rc::new(RefCell::new(Vec::new()));
+    let texts = Arc::new(Mutex::new(Vec::new()));
     let classifier = Asked {
-        texts: Rc::clone(&texts),
+        texts: Arc::clone(&texts),
         verdict,
         database: Some(env.store.join(DATABASE_FILENAME)),
     };
@@ -1182,15 +1195,17 @@ fn classifier_runs_before_the_transaction_and_blocks() {
     assert!(matches!(core(refused), CoreError::ContentRejected { .. }));
     // a delete has no new text: nobody is asked, and it goes through
     assert_eq!(
-        *texts.borrow(),
+        *texts.lock().unwrap(),
         [
             (" a cue \n\na body".to_string(), "mcp".to_string()),
             ("new text".to_string(), "mcp".to_string())
         ]
     );
     assert_eq!(rows(&env), before);
-    service.delete(&memory.id, 1, &env.context(), None).unwrap();
-    assert_eq!(texts.borrow().len(), 2);
+    service
+        .delete(&memory.id, 1, &env.context(), "mcp", None)
+        .unwrap();
+    assert_eq!(texts.lock().unwrap().len(), 2);
 }
 
 #[test]
@@ -1207,8 +1222,12 @@ fn the_classifier_is_sent_only_the_new_text_and_never_a_secret() {
     // the policy refuses first: the classifier never sees what it refused
     let refused = service.record(SECRET, "user", true, "codex", "", &env.context());
     assert!(matches!(core(refused), CoreError::ContentRejected { .. }));
+    for (content, description) in [(SECRET, None), ("b3", Some(SECRET))] {
+        let refused = service.update(&memory.id, 2, content, description, &env.context(), None);
+        assert!(matches!(core(refused), CoreError::ContentRejected { .. }));
+    }
     assert_eq!(
-        *texts.borrow(),
+        *texts.lock().unwrap(),
         [
             ("a body".to_string(), "mcp".to_string()),
             ("d2\n\nb2".to_string(), "mcp".to_string())
@@ -1308,7 +1327,7 @@ fn write_into_a_missing_store_is_project_unavailable() {
         gone
     );
     assert_eq!(
-        core(service.delete(&memory.id, 1, &env.context(), None)),
+        core(service.delete(&memory.id, 1, &env.context(), "mcp", None)),
         gone
     );
     assert_eq!(service.read(&memory.id, &env.context(), "codex"), Err(gone));
@@ -1416,9 +1435,9 @@ fn what_only_the_management_path_may_do_is_no_agent_operation() {
 fn a_pending_session_writes_nothing_and_a_save_marks_the_session() {
     let env = setup();
     let memory = env.record("the body");
-    let marked = Rc::new(Cell::new(0));
+    let marked = Arc::new(AtomicUsize::new(0));
     let service = |refuse: bool| {
-        let marked = Rc::clone(&marked);
+        let marked = Arc::clone(&marked);
         MemoryService::new(
             env.memory_store(),
             ProjectStore::with_busy_timeout(&env.store, &env.home, 2000),
@@ -1433,7 +1452,9 @@ fn a_pending_session_writes_nothing_and_a_save_marks_the_session() {
                 }
                 Ok(())
             }),
-            Box::new(move |_| marked.set(marked.get() + 1)),
+            Box::new(move |_| {
+                marked.fetch_add(1, Ordering::SeqCst);
+            }),
         )
     };
     let pending = ProjectContext {
@@ -1453,30 +1474,35 @@ fn a_pending_session_writes_nothing_and_a_save_marks_the_session() {
         core(refusing.update("nope", 1, "b", None, &pending, None)),
         refused
     );
-    assert_eq!(core(refusing.delete("nope", 1, &pending, None)), refused);
-    assert_eq!(marked.get(), 0);
+    assert_eq!(
+        core(refusing.delete("nope", 1, &pending, "mcp", None)),
+        refused
+    );
+    assert_eq!(marked.load(Ordering::SeqCst), 0);
     // a write and an update mark the session, an update that changes nothing too; a
     // delete does not, and neither does anything refused
     let saving = service(false);
     saving
         .record("b", "user", true, "codex", "", &env.context())
         .unwrap();
-    assert_eq!(marked.get(), 1);
+    assert_eq!(marked.load(Ordering::SeqCst), 1);
     saving
         .update(&memory.id, 1, "the body", None, &env.context(), None)
         .unwrap();
-    assert_eq!(marked.get(), 2);
+    assert_eq!(marked.load(Ordering::SeqCst), 2);
     saving
         .update(&memory.id, 1, "another", None, &env.context(), None)
         .unwrap();
-    assert_eq!(marked.get(), 3);
+    assert_eq!(marked.load(Ordering::SeqCst), 3);
     assert!(
         saving
             .update(&memory.id, 1, "stale", None, &env.context(), None)
             .is_err()
     );
-    saving.delete(&memory.id, 2, &env.context(), None).unwrap();
-    assert_eq!(marked.get(), 3);
+    saving
+        .delete(&memory.id, 2, &env.context(), "mcp", None)
+        .unwrap();
+    assert_eq!(marked.load(Ordering::SeqCst), 3);
 }
 
 #[test]
@@ -1516,4 +1542,72 @@ fn records_from_many_writers_at_once_all_land() {
         .query_row("PRAGMA integrity_check", [], |row| row.get(0))
         .unwrap();
     assert_eq!(integrity, "ok");
+}
+
+#[test]
+fn a_delete_is_recorded_as_made_by_whoever_is_named() {
+    let env = setup();
+    let service = env.services().memory;
+    let by = |memory_id: &str| -> (String, Option<String>) {
+        env.raw()
+            .query_row(
+                "SELECT c.changed_by, c.changed_via FROM change_steps s JOIN changes c \
+                 ON c.change_id = s.change_id WHERE s.memory_id = ?1 AND s.op = 'soft_delete'",
+                [memory_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap()
+    };
+    let (mine, theirs) = (env.record("one"), env.record("two"));
+    // the human command deletes through this method too
+    assert_eq!(
+        service
+            .delete(&mine.id, 1, &env.context(), "human", None)
+            .unwrap(),
+        2
+    );
+    assert_eq!(by(&mine.id), ("human".to_string(), None));
+    service
+        .delete(&theirs.id, 1, &env.context(), "mcp", Some("codex"))
+        .unwrap();
+    assert_eq!(
+        by(&theirs.id),
+        ("mcp".to_string(), Some("codex".to_string()))
+    );
+    // who wrote the memory stays who wrote it
+    let source: (String, String) = env
+        .raw()
+        .query_row(
+            "SELECT source_harness, source_method FROM memories WHERE id = ?1",
+            [&mine.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(source, ("claude-code".to_string(), "mcp".to_string()));
+}
+
+#[test]
+fn a_deleted_memory_takes_no_read_mark() {
+    let env = setup();
+    let memory = env.record("the body");
+    env.services()
+        .memory
+        .delete(&memory.id, 1, &env.context(), "mcp", None)
+        .unwrap();
+    env.memory_store()
+        .touch_read(&memory.id, "2031-01-01T00:00:00.000000Z", 1, "codex", None)
+        .unwrap();
+    let last: Option<String> = env
+        .raw()
+        .query_row("SELECT last_read_at FROM memories", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(last, None);
+    assert_eq!(env.count("memory_reads"), 0);
+}
+
+#[test]
+fn the_services_can_be_handed_to_another_thread() {
+    fn handed<T: Send + Sync>() {}
+    handed::<memriver_core::Services>();
+    handed::<MemoryService>();
 }

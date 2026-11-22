@@ -7,9 +7,8 @@
 //! reads the session store. Nothing here touches a file, a table or settings: every
 //! limit is handed in.
 
-use std::cell::LazyCell;
 use std::collections::BTreeMap;
-use std::rc::Rc;
+use std::sync::{Arc, LazyLock};
 
 use crate::content_policy::{ContentClassifier, Policy, Verdict};
 use crate::models::changes::{MetadataCaps, Op};
@@ -27,16 +26,20 @@ pub const EMPTY_INDEX: &str = "(no memories yet)";
 /// The index of a tag no current global memory carries: a line, not an error.
 pub const NO_SUCH_TAG: &str = "(no such tag)";
 
-/// Who an agent's write is recorded as written by.
+/// Who an agent's write is recorded as made by.
 const AGENT: &str = "mcp";
 
 /// The content policy, loaded when a text is first checked and not before: a caller
 /// that only reads (a hook, doctor, the human views) never pays for the rules. One is
-/// shared by every service of a composition.
-pub type PolicySource = Rc<LazyCell<Policy, fn() -> Policy>>;
+/// shared by every service of a composition, and may be shared between threads.
+///
+/// What is loaded once and kept is the rules as read from their files. Whether a
+/// compiled rule is kept after it was used is the policy's own matter
+/// (`POLICY_RULE_CACHE`), and nothing here changes it.
+pub type PolicySource = Arc<LazyLock<Policy>>;
 
 pub fn policy_source() -> PolicySource {
-    Rc::new(LazyCell::new(|| {
+    Arc::new(LazyLock::new(|| {
         Policy::embedded().with_cache(POLICY_RULE_CACHE)
     }))
 }
@@ -76,9 +79,9 @@ impl MemoryLimits {
 }
 
 /// Refuses a write from a session that is still pending.
-pub type RefusePending = Box<dyn Fn(&ProjectContext) -> Result<(), CoreError>>;
+pub type RefusePending = Box<dyn Fn(&ProjectContext) -> Result<(), CoreError> + Send + Sync>;
 /// Moves a session's save watermark; best effort, it never fails the save.
-pub type MarkSaved = Box<dyn Fn(&ProjectContext)>;
+pub type MarkSaved = Box<dyn Fn(&ProjectContext) + Send + Sync>;
 
 pub struct MemoryService {
     memory_store: MemoryStore,
@@ -182,7 +185,7 @@ impl MemoryService {
         if let Op::Create { sync: stored, .. } = &mut create {
             *stored = sync;
         }
-        let memory = self.write(&create, context, Some(harness))?;
+        let memory = self.write(&create, context, AGENT, Some(harness))?;
         (self.mark_saved)(context);
         Ok(memory)
     }
@@ -232,22 +235,27 @@ impl MemoryService {
             *new_description = description.map(str::to_string);
             *body = Some(content.to_string());
         }
-        let memory = self.write(&edit, context, changed_via)?;
+        let memory = self.write(&edit, context, AGENT, changed_via)?;
         (self.mark_saved)(context);
         Ok(memory)
     }
 
-    /// The agent soft delete; the new version. Never marks the session saved.
+    /// The soft delete of one memory the context may write; the new version. Never
+    /// marks the session saved. `changed_by` is who deletes: an agent's tool, or the
+    /// human command, which deletes a project's memory through here too.
     pub fn delete(
         &self,
         memory_id: &str,
         expected_version: i64,
         context: &ProjectContext,
+        changed_by: &str,
         changed_via: Option<&str>,
     ) -> Result<i64, WriteError> {
         (self.refuse_pending)(context)?;
         let delete = Op::soft_delete(memory_id, expected_version);
-        Ok(self.write(&delete, context, changed_via)?.version)
+        Ok(self
+            .write(&delete, context, changed_by, changed_via)?
+            .version)
     }
 
     /// The one call to the store's agent entry point, for every method above.
@@ -255,12 +263,13 @@ impl MemoryService {
         &self,
         op: &Op,
         context: &ProjectContext,
+        changed_by: &str,
         changed_via: Option<&str>,
     ) -> Result<Memory, WriteError> {
         self.memory_store.write(
             op,
             &context.read_write_set,
-            AGENT,
+            changed_by,
             changed_via,
             &|description, body| self.check_state(description, body),
             &self.limits.caps,
@@ -572,12 +581,16 @@ mod tests {
             diagnostic: None,
             session_key: None,
         };
-        let loaded = || LazyCell::get(&service.policy).is_some();
+        let loaded = || LazyLock::get(&service.policy).is_some();
         // what only reads, and what is refused before any text is looked at
         service.index(&context, None).unwrap();
         service.search("anything", None, &context).unwrap();
         assert!(service.read("zzzzzzzzzz", &context, "codex").is_err());
-        assert!(service.delete("zzzzzzzzzz", 1, &context, None).is_err());
+        assert!(
+            service
+                .delete("zzzzzzzzzz", 1, &context, "mcp", None)
+                .is_err()
+        );
         assert!(
             service
                 .record("b", "user", true, "not a label", "", &context)

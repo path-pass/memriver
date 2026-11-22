@@ -235,7 +235,9 @@ fn no_memories_yet() {
     );
     // a deleted entry is no entry
     let memory = env.record("the body");
-    service.delete(&memory.id, 1, &env.context(), None).unwrap();
+    service
+        .delete(&memory.id, 1, &env.context(), "mcp", None)
+        .unwrap();
     assert_eq!(
         service.index(&env.context(), None).unwrap(),
         "(no memories yet)"

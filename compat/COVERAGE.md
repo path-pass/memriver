@@ -100,10 +100,10 @@ packages/memriver-core/tests/contract/test_store_contract.py::test_search_does_n
 packages/memriver-core/tests/contract/test_store_contract.py::test_search_folds_case_beyond_ascii -> rust:memriver-core::tests/search.rs::rank_orders_phrase_then_terms_then_description_then_newest
 packages/memriver-core/tests/contract/test_store_contract.py::test_search_is_one_project_only -> rust:memriver-core::tests/search.rs::limit_is_one_budget_project_first
 packages/memriver-core/tests/contract/test_store_contract.py::test_search_matches_description_and_body_newest_first_with_limit -> rust:memriver-core::tests/search.rs::rank_orders_phrase_then_terms_then_description_then_newest
-packages/memriver-core/tests/contract/test_store_contract.py::test_search_of_an_unauthorized_or_missing_project_is_empty -> rust:memriver-core::tests/search.rs::limit_is_one_budget_project_first
+packages/memriver-core/tests/contract/test_store_contract.py::test_search_of_an_unauthorized_or_missing_project_is_empty -> rust:memriver-core::tests/search.rs::a_project_outside_the_set_is_not_searched
 packages/memriver-core/tests/contract/test_store_contract.py::test_search_query_none_lists_all_and_empty_query_matches_nothing -> rust:memriver-core::tests/search.rs::no_terms_no_hits + rust:memriver-core::tests/index.rs::the_five_line_formats
 packages/memriver-core/tests/contract/test_store_contract.py::test_search_sees_what_the_memory_store_wrote_with_no_second_membership_write -> rust:memriver-core::tests/search.rs::limit_is_one_budget_project_first
-packages/memriver-core/tests/contract/test_store_contract.py::test_the_management_view_searches_any_project ->
+packages/memriver-core/tests/contract/test_store_contract.py::test_the_management_view_searches_any_project -> rust:memriver-core::tests/search.rs::a_project_outside_the_set_is_not_searched
 packages/memriver-core/tests/contract/test_store_contract.py::test_touch_read_sets_last_read_at_and_nothing_else -> rust:memriver-core::tests/agent_path.rs::read_records_a_read_and_survives_a_failing_touch
 packages/memriver-core/tests/contract/test_store_contract.py::test_touch_read_with_a_malformed_at_is_a_no_op -> rust:memriver-core::tests/agent_path.rs::read_records_a_read_and_survives_a_failing_touch
 packages/memriver-core/tests/contract/test_store_contract.py::test_two_writers_with_the_same_version_exactly_one_wins -> rust:memriver-core::tests/agent_path.rs::of_two_writers_with_one_version_exactly_one_wins
@@ -580,7 +580,7 @@ packages/memriver-core/tests/unit/application/test_services.py::test_the_content
 packages/memriver-core/tests/unit/application/test_services.py::test_the_index_re_checks_the_rule_limits_when_it_renders -> rust:memriver-core::tests/index.rs::over_cap_rules_show_as_ordinary_entries
 packages/memriver-core/tests/unit/application/test_services.py::test_there_is_no_dream_and_no_create ->
 packages/memriver-core/tests/unit/application/test_services.py::test_update_and_delete_are_one_restricted_op_each_with_the_expected_version -> rust:memriver-core::tests/agent_path.rs::stale_version_is_a_conflict
-packages/memriver-core/tests/unit/application/test_services.py::test_update_runs_the_content_policy_first -> rust:memriver-core::tests/agent_path.rs::blank_body_refused_blank_description_allowed
+packages/memriver-core/tests/unit/application/test_services.py::test_update_runs_the_content_policy_first -> rust:memriver-core::tests/agent_path.rs::description_budget_is_8000_whatever_the_setting + rust:memriver-core::tests/agent_path.rs::the_classifier_is_sent_only_the_new_text_and_never_a_secret
 packages/memriver-core/tests/unit/application/test_sessions.py::test_a_candidate_whose_root_is_not_intact_is_refused_and_stays_pending ->
 packages/memriver-core/tests/unit/application/test_sessions.py::test_a_candidate_whose_root_went_missing_in_the_main_tree_still_confirms ->
 packages/memriver-core/tests/unit/application/test_sessions.py::test_a_candidate_without_its_root_never_confirms_to_a_rootless_project ->

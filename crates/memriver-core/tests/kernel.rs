@@ -204,6 +204,16 @@ fn a_batch_is_one_change_with_a_step_for_each_operation_or_nothing() {
         (&first, &second)
     );
     assert_eq!(rows(&env), [3, 5, 3, 5, 0]);
+    // written by whoever the change names, through nothing that has a name
+    let source: (String, String) = env
+        .raw()
+        .query_row(
+            "SELECT source_harness, source_method FROM memories WHERE id = ?1",
+            [&change.steps[1].memory_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(source, ("unknown".to_string(), "cli".to_string()));
     // one refused operation refuses them all, and names itself
     let before = rows(&env);
     let refused = env.apply(&[
@@ -364,6 +374,23 @@ fn a_source_is_cited_at_its_current_version_and_lends_its_trust() {
         ),
         ("user", 1)
     );
+    // one source that does not sync is enough, wherever it stands among them: ids are
+    // drawn at random, so a syncing source is made until one sorts after `agent`, and
+    // another until one sorts before it
+    let syncing = |after: bool| loop {
+        let made = env.manage(draft(&env.project.id, "syncs").trusted("user", true).op());
+        if (made > agent) == after {
+            return made;
+        }
+    };
+    for other in [syncing(true), syncing(false)] {
+        let mixed = env.manage(
+            draft(&env.global_id, "mixed")
+                .citing(&[(&other, 1), (&agent, 1)])
+                .op(),
+        );
+        assert_eq!(state(&env, &mixed).3, 0);
+    }
     // stored sorted by the cited id, whatever the order given
     let mut sorted = [user.clone(), agent.clone()];
     sorted.sort();
@@ -530,9 +557,39 @@ fn a_change_never_breaks_a_metadata_limit_nor_grows_a_breach() {
         exceeded(apply(&[global("fifth", None, &["e"])], &tight)).0,
         Cap::TagsMax
     );
-    // deleting a rule makes room under the wide limit again
-    apply(&[Op::soft_delete(&rule, 2)], &tight).unwrap();
-    apply(&[global("rule 3", Some(1), &[])], &wide).unwrap();
+    // a rule deleted and another made in one change: the count does not rise, for a
+    // deleted rule is no rule
+    let swapped = apply(
+        &[Op::soft_delete(&rule, 2), global("rule 3", Some(1), &[])],
+        &wide,
+    )
+    .unwrap();
+    assert_eq!(swapped.step_count, 2);
+    assert_eq!(
+        exceeded(apply(&[global("rule 4", Some(1), &[])], &wide)).0,
+        Cap::StandingMaxCount
+    );
+    // a deleted state is held to no limit of its own: a memory goes back to a deleted
+    // version that carried more names, and a longer rule, than the limits now allow
+    let tags = made(apply(&[global("had two tags", None, &["a", "c"])], &wide).unwrap());
+    apply(&[Op::soft_delete(&tags, 1)], &wide).unwrap();
+    let restore = |memory_id: &str, expected_version, to_version| Op::Restore {
+        memory_id: memory_id.to_string(),
+        expected_version,
+        to_version,
+    };
+    apply(&[restore(&tags, 2, 1)], &wide).unwrap();
+    apply(&[judged(&tags, 3, None, Some(&["a"]))], &wide).unwrap();
+    apply(&[restore(&tags, 4, 2)], &tight).unwrap();
+    assert_eq!(
+        exceeded(apply(&[restore(&tags, 5, 1)], &tight)),
+        (Cap::TagsPerMemoryMax, Some(tags.clone()))
+    );
+    // `rule` is deleted at version 3 with nine characters; alive it is over the limit
+    assert_eq!(
+        exceeded(apply(&[restore(&rule, 3, 2)], &tight)).0,
+        Cap::StandingMaxChars
+    );
 }
 
 #[test]
@@ -718,4 +775,92 @@ fn every_resulting_state_passes_the_policy_of_today() {
             &CAPS,
         )
         .unwrap();
+}
+
+#[test]
+fn an_update_sets_what_it_names_and_a_delete_changes_nothing_else() {
+    let env = setup();
+    let memory = env.manage(
+        draft(&env.global_id, "the body")
+            .judged(Some(2), &["b-tag", "a-tag"])
+            .op(),
+    );
+    let stored = |version: i64| -> (Option<i64>, String, Option<i64>, String, String, i64) {
+        env.raw()
+            .query_row(
+                "SELECT m.level, m.tags, v.level, v.tags, v.body, v.deleted FROM memories m \
+                 JOIN memory_versions v ON v.memory_id = m.id WHERE m.id = ?1 AND v.version = ?2",
+                (&memory, version),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .unwrap()
+    };
+    let both = "[\"a-tag\",\"b-tag\"]".to_string();
+    let body_of = |text: &str| text.to_string();
+    assert_eq!(
+        stored(1),
+        (
+            Some(2),
+            both.clone(),
+            Some(2),
+            both.clone(),
+            body_of("the body"),
+            0
+        )
+    );
+    // a level that is named replaces, the tags that are not named stay
+    env.manage(judged(&memory, 1, Some(1), None));
+    assert_eq!(
+        stored(2),
+        (
+            Some(1),
+            both.clone(),
+            Some(1),
+            both.clone(),
+            body_of("the body"),
+            0
+        )
+    );
+    // the same level again is no change
+    assert_eq!(
+        conflict(env.apply(&[judged(&memory, 2, Some(1), None)])).2,
+        BatchConflictReason::SameState
+    );
+    // no level named keeps the level: a level is never taken back to "not judged";
+    // tags that are named replace the whole set, and an empty set clears it
+    env.manage(judged(&memory, 2, None, Some(&["c-tag"])));
+    assert_eq!(stored(3).0, Some(1));
+    assert_eq!(stored(3).1, "[\"c-tag\"]");
+    env.manage(judged(&memory, 3, None, Some(&[])));
+    assert_eq!((stored(4).0, stored(4).1.as_str()), (Some(1), "[]"));
+    // a change of the text keeps both
+    env.manage(judged(&memory, 4, Some(3), Some(&["d-tag"])));
+    env.manage(body(&memory, 5, "another body"));
+    let d = "[\"d-tag\"]".to_string();
+    assert_eq!(
+        stored(6),
+        (
+            Some(3),
+            d.clone(),
+            Some(3),
+            d.clone(),
+            body_of("another body"),
+            0
+        )
+    );
+    // and so does a delete: the deleted version records the state it deleted
+    env.manage(Op::soft_delete(&memory, 6));
+    assert_eq!(
+        stored(7),
+        (Some(3), d.clone(), Some(3), d, body_of("another body"), 1)
+    );
 }
