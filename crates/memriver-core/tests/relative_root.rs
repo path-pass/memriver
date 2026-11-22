@@ -4,7 +4,8 @@
 
 use std::path::Path;
 
-use memriver_core::repository::sqlite::database::{DATABASE_FILENAME, Database};
+use memriver_core::repository::directories::DATABASE_FILENAME;
+use memriver_core::repository::sqlite::database::Database;
 use memriver_test_support::Sandbox;
 
 #[test]

@@ -21,42 +21,42 @@ no test file is an error.
 
 finished phases:
 
-packages/memriver-core/tests/contract/test_project_directories.py::test_a_case_alias_of_a_bound_directory_is_bound_elsewhere ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_a_confirmed_target_re_pointed_through_a_symlink_is_refused ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_a_directory_bound_elsewhere_is_refused_and_names_the_owner ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_a_project_with_another_directory_must_unbind_first ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_a_refused_plan_leaves_no_project ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_a_store_redirected_to_an_empty_place_during_the_prompt_gets_no_database ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_adopt_binds_an_unbound_project_and_is_idempotent ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_adopt_refuses_global_and_unknown_projects ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_adopting_an_alias_of_the_held_directory_is_a_no_op ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_an_invalid_bound_row_fails_resolution_and_planning_whole ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_an_invalid_project_row_is_storage_failure_not_absence ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_an_unbind_plan_catches_a_store_redirected_during_the_prompt ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_an_uncheckable_comparison_is_unverifiable_never_a_non_match ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_an_undecodable_binding_owner_id_is_damage_not_a_bound_elsewhere_refusal ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_bind_and_unbind_against_a_deleted_store_create_nothing ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_bind_decides_on_the_current_row_not_on_the_plan ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_bind_refuses_a_project_a_peer_bound_elsewhere_after_planning ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_create_never_reuses_an_id ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_create_refuses_a_target_a_peer_bound_after_planning ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_ensure_global_racing_from_nothing_returns_one_id ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_init_creates_the_project_and_its_directory_together ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_list_projects_puts_global_last ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_list_projects_skips_an_invalid_row_that_read_still_fails_on ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_plan_lists_bound_directories_under_the_target_as_nested ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_plan_refuses_a_missing_directory_and_a_file ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_plan_refuses_home_its_ancestors_and_the_filesystem_root ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_plan_refuses_the_store_inside_the_directory_and_the_directory_inside_the_store ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_resolve_degrades_on_a_re_pointed_root ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_resolve_finds_the_nearest_bound_directory_and_reports_its_project ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_resolve_of_a_missing_store_is_none_and_creates_nothing ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_resolve_walks_the_logical_path_when_given ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_the_database_file_is_private ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_unbind_matches_the_stored_root_by_its_realpath_too ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_unbind_needs_the_exact_confirmed_pair ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_unbind_of_a_directory_deleted_from_disk_still_works ->
-packages/memriver-core/tests/contract/test_project_directories.py::test_unbind_plans_refuse_unknown_projects_and_foreign_roots ->
+packages/memriver-core/tests/contract/test_project_directories.py::test_a_case_alias_of_a_bound_directory_is_bound_elsewhere -> rust:memriver-core::tests/projects.rs::a_case_alias_of_a_bound_directory_is_bound_elsewhere
+packages/memriver-core/tests/contract/test_project_directories.py::test_a_confirmed_target_re_pointed_through_a_symlink_is_refused -> rust:memriver-core::tests/projects.rs::plan_out_of_date_is_refused
+packages/memriver-core/tests/contract/test_project_directories.py::test_a_directory_bound_elsewhere_is_refused_and_names_the_owner -> rust:memriver-core::tests/projects.rs::a_directory_bound_elsewhere_is_refused_and_names_the_owner
+packages/memriver-core/tests/contract/test_project_directories.py::test_a_project_with_another_directory_must_unbind_first -> rust:memriver-core::tests/projects.rs::a_project_with_another_directory_must_unbind_first
+packages/memriver-core/tests/contract/test_project_directories.py::test_a_refused_plan_leaves_no_project -> rust:memriver-core::tests/projects.rs::plan_out_of_date_is_refused
+packages/memriver-core/tests/contract/test_project_directories.py::test_a_store_redirected_to_an_empty_place_during_the_prompt_gets_no_database -> rust:memriver-core::tests/projects.rs::a_store_redirected_to_an_empty_place_during_the_prompt_gets_no_database
+packages/memriver-core/tests/contract/test_project_directories.py::test_adopt_binds_an_unbound_project_and_is_idempotent -> rust:memriver-core::tests/projects.rs::adopt_binds_an_unbound_project_and_is_idempotent
+packages/memriver-core/tests/contract/test_project_directories.py::test_adopt_refuses_global_and_unknown_projects -> rust:memriver-core::tests/projects.rs::adopt_refuses_global_and_unknown_projects
+packages/memriver-core/tests/contract/test_project_directories.py::test_adopting_an_alias_of_the_held_directory_is_a_no_op -> rust:memriver-core::tests/projects.rs::a_case_alias_of_a_bound_directory_is_bound_elsewhere
+packages/memriver-core/tests/contract/test_project_directories.py::test_an_invalid_bound_row_fails_resolution_and_planning_whole -> rust:memriver-core::tests/projects.rs::an_invalid_bound_row_fails_resolution_and_planning_whole
+packages/memriver-core/tests/contract/test_project_directories.py::test_an_invalid_project_row_is_storage_failure_not_absence -> rust:memriver-core::tests/projects.rs::an_invalid_project_row_is_storage_failure_not_absence
+packages/memriver-core/tests/contract/test_project_directories.py::test_an_unbind_plan_catches_a_store_redirected_during_the_prompt -> rust:memriver-core::tests/projects.rs::an_unbind_plan_catches_a_store_redirected_during_the_prompt
+packages/memriver-core/tests/contract/test_project_directories.py::test_an_uncheckable_comparison_is_unverifiable_never_a_non_match -> rust:memriver-core::tests/projects.rs::an_uncheckable_comparison_is_unverifiable_never_a_non_match
+packages/memriver-core/tests/contract/test_project_directories.py::test_an_undecodable_binding_owner_id_is_damage_not_a_bound_elsewhere_refusal -> rust:memriver-core::repository::sqlite::project_store::tests::an_undecodable_binding_owner_id_is_damage_not_a_bound_elsewhere_refusal
+packages/memriver-core/tests/contract/test_project_directories.py::test_bind_and_unbind_against_a_deleted_store_create_nothing -> rust:memriver-core::tests/projects.rs::bind_and_unbind_against_a_deleted_store_create_nothing
+packages/memriver-core/tests/contract/test_project_directories.py::test_bind_decides_on_the_current_row_not_on_the_plan -> rust:memriver-core::tests/projects.rs::bind_decides_on_the_current_row_not_on_the_plan
+packages/memriver-core/tests/contract/test_project_directories.py::test_bind_refuses_a_project_a_peer_bound_elsewhere_after_planning -> rust:memriver-core::tests/projects.rs::bind_refuses_a_project_a_peer_bound_elsewhere_after_planning
+packages/memriver-core/tests/contract/test_project_directories.py::test_create_never_reuses_an_id -> rust:memriver-core::tests/projects.rs::create_never_reuses_an_id
+packages/memriver-core/tests/contract/test_project_directories.py::test_create_refuses_a_target_a_peer_bound_after_planning -> rust:memriver-core::tests/projects.rs::create_refuses_a_target_a_peer_bound_after_planning
+packages/memriver-core/tests/contract/test_project_directories.py::test_ensure_global_racing_from_nothing_returns_one_id -> rust:memriver-core::tests/projects.rs::ensure_global_racing_from_nothing_returns_one_id
+packages/memriver-core/tests/contract/test_project_directories.py::test_init_creates_the_project_and_its_directory_together -> rust:memriver-core::tests/projects.rs::init_creates_the_project_and_its_directory_together
+packages/memriver-core/tests/contract/test_project_directories.py::test_list_projects_puts_global_last -> rust:memriver-core::tests/projects.rs::list_projects_puts_global_last
+packages/memriver-core/tests/contract/test_project_directories.py::test_list_projects_skips_an_invalid_row_that_read_still_fails_on -> rust:memriver-core::tests/projects.rs::an_invalid_project_row_is_storage_failure_not_absence
+packages/memriver-core/tests/contract/test_project_directories.py::test_plan_lists_bound_directories_under_the_target_as_nested -> rust:memriver-core::tests/projects.rs::plan_lists_bound_directories_under_the_target_as_nested
+packages/memriver-core/tests/contract/test_project_directories.py::test_plan_refuses_a_missing_directory_and_a_file -> rust:memriver-core::tests/projects.rs::plan_refuses_a_missing_directory_and_a_file
+packages/memriver-core/tests/contract/test_project_directories.py::test_plan_refuses_home_its_ancestors_and_the_filesystem_root -> rust:memriver-core::tests/projects.rs::plan_refuses_home_its_ancestors_and_the_filesystem_root
+packages/memriver-core/tests/contract/test_project_directories.py::test_plan_refuses_the_store_inside_the_directory_and_the_directory_inside_the_store -> rust:memriver-core::tests/projects.rs::plan_refuses_the_store_inside_the_directory_and_the_directory_inside_the_store
+packages/memriver-core/tests/contract/test_project_directories.py::test_resolve_degrades_on_a_re_pointed_root -> rust:memriver-core::tests/projects.rs::resolve_degrades_on_a_re_pointed_root
+packages/memriver-core/tests/contract/test_project_directories.py::test_resolve_finds_the_nearest_bound_directory_and_reports_its_project -> rust:memriver-core::tests/projects.rs::resolve_finds_the_nearest_bound_directory_and_reports_its_project
+packages/memriver-core/tests/contract/test_project_directories.py::test_resolve_of_a_missing_store_is_none_and_creates_nothing -> rust:memriver-core::tests/projects.rs::resolve_of_a_missing_store_is_none_and_creates_nothing
+packages/memriver-core/tests/contract/test_project_directories.py::test_resolve_walks_the_logical_path_when_given -> rust:memriver-core::tests/projects.rs::resolve_walks_the_logical_path_when_given
+packages/memriver-core/tests/contract/test_project_directories.py::test_the_database_file_is_private -> rust:memriver-core::tests/projects.rs::the_database_file_is_private
+packages/memriver-core/tests/contract/test_project_directories.py::test_unbind_matches_the_stored_root_by_its_realpath_too -> rust:memriver-core::tests/projects.rs::unbind_matches_the_stored_root_by_its_realpath_too
+packages/memriver-core/tests/contract/test_project_directories.py::test_unbind_needs_the_exact_confirmed_pair -> rust:memriver-core::tests/projects.rs::unbind_needs_the_exact_confirmed_pair
+packages/memriver-core/tests/contract/test_project_directories.py::test_unbind_of_a_directory_deleted_from_disk_still_works -> rust:memriver-core::tests/projects.rs::unbind_of_a_directory_deleted_from_disk_still_works
+packages/memriver-core/tests/contract/test_project_directories.py::test_unbind_plans_refuse_unknown_projects_and_foreign_roots -> rust:memriver-core::tests/projects.rs::unbind_plans_refuse_unknown_projects_and_foreign_roots
 packages/memriver-core/tests/contract/test_store_contract.py::test_a_comma_in_the_query_is_a_separator_not_part_of_the_phrase ->
 packages/memriver-core/tests/contract/test_store_contract.py::test_a_damaged_deleted_row_answers_exactly_like_an_absent_id ->
 packages/memriver-core/tests/contract/test_store_contract.py::test_a_damaged_row_of_another_project_answers_exactly_like_an_absent_id ->
@@ -457,71 +457,71 @@ packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py
 packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_touch_of_an_unknown_key_is_none_and_writes_nothing ->
 packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_touch_replaces_the_transcript_path_only_when_one_is_given ->
 packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_two_concurrent_checks_at_one_watermark_nudge_at_most_once ->
-packages/memriver-core/tests/integration/repository/test_directories.py::test_ancestor_component_replaced_by_symlink_is_degraded ->
-packages/memriver-core/tests/integration/repository/test_directories.py::test_canonical_directory_is_strict_and_never_raises ->
-packages/memriver-core/tests/integration/repository/test_directories.py::test_case_alias_matches_by_samefile ->
-packages/memriver-core/tests/integration/repository/test_directories.py::test_covers_is_physical_and_ancestor_aware ->
-packages/memriver-core/tests/integration/repository/test_directories.py::test_covers_refuses_a_path_the_os_cannot_address ->
-packages/memriver-core/tests/integration/repository/test_directories.py::test_exact_and_alias_of_different_ids_at_one_level_is_degraded ->
-packages/memriver-core/tests/integration/repository/test_directories.py::test_fully_absent_root_is_offline ->
-packages/memriver-core/tests/integration/repository/test_directories.py::test_logical_walk_degrades_on_an_uncheckable_alias_never_falls_through ->
-packages/memriver-core/tests/integration/repository/test_directories.py::test_logical_walk_matches_an_ancestor_of_a_path_that_does_not_exist ->
-packages/memriver-core/tests/integration/repository/test_directories.py::test_logical_walk_picks_the_nearest_bound_ancestor ->
-packages/memriver-core/tests/integration/repository/test_directories.py::test_logical_walk_still_needs_a_real_start ->
-packages/memriver-core/tests/integration/repository/test_directories.py::test_nearer_alias_beats_farther_exact_match ->
-packages/memriver-core/tests/integration/repository/test_directories.py::test_nearest_registered_ancestor_wins ->
-packages/memriver-core/tests/integration/repository/test_directories.py::test_nul_bearing_root_is_unverifiable_not_raising ->
-packages/memriver-core/tests/integration/repository/test_directories.py::test_offline_root_is_matched_by_string_only ->
-packages/memriver-core/tests/integration/repository/test_directories.py::test_redirected_ancestor_with_missing_leaf_is_a_redirect_not_offline ->
-packages/memriver-core/tests/integration/repository/test_directories.py::test_root_replaced_by_symlink_is_degraded_and_never_authorizes_target ->
-packages/memriver-core/tests/integration/repository/test_directories.py::test_root_state_of_a_healthy_and_of_a_file_root ->
-packages/memriver-core/tests/integration/repository/test_directories.py::test_root_that_cannot_be_lstatted_is_degraded ->
-packages/memriver-core/tests/integration/repository/test_directories.py::test_start_that_is_a_file_missing_or_unaddressable_is_degraded ->
-packages/memriver-core/tests/integration/repository/test_directories.py::test_transcript_moved_compares_real_parent_directories ->
-packages/memriver-core/tests/integration/repository/test_directories.py::test_unregistered_directory_is_none ->
-packages/memriver-core/tests/integration/repository/test_directories.py::test_unverifiable_same_directory_is_degraded_never_a_non_match ->
-packages/memriver-core/tests/integration/repository/test_directories.py::test_usable_directory_is_an_absolute_string_without_nul ->
-packages/memriver-core/tests/integration/repository/test_purge.py::test_a_base_resolved_after_a_one_off_error_is_checked_where_it_really_is ->
-packages/memriver-core/tests/integration/repository/test_purge.py::test_a_confirmed_store_is_removed ->
-packages/memriver-core/tests/integration/repository/test_purge.py::test_a_directory_swapped_after_confirmation_is_left_alone ->
-packages/memriver-core/tests/integration/repository/test_purge.py::test_a_directory_swapped_in_before_the_open_is_refused_not_purged ->
-packages/memriver-core/tests/integration/repository/test_purge.py::test_a_dry_run_plan_opens_nothing ->
-packages/memriver-core/tests/integration/repository/test_purge.py::test_a_failing_walk_reports_partial_removal ->
-packages/memriver-core/tests/integration/repository/test_purge.py::test_a_file_target_is_not_a_directory ->
-packages/memriver-core/tests/integration/repository/test_purge.py::test_a_missing_store_is_a_plan_with_nothing_to_remove ->
-packages/memriver-core/tests/integration/repository/test_purge.py::test_a_nonempty_directory_without_a_store_is_refused ->
-packages/memriver-core/tests/integration/repository/test_purge.py::test_a_protected_base_looping_behind_an_unresolvable_prefix_is_refused ->
-packages/memriver-core/tests/integration/repository/test_purge.py::test_a_protected_base_turned_into_a_loop_after_confirmation_is_refused ->
-packages/memriver-core/tests/integration/repository/test_purge.py::test_a_relative_target_resolves_against_cwd ->
-packages/memriver-core/tests/integration/repository/test_purge.py::test_a_symlinked_target_is_refused_not_followed ->
-packages/memriver-core/tests/integration/repository/test_purge.py::test_a_target_holding_home_or_cwd_is_too_broad ->
-packages/memriver-core/tests/integration/repository/test_purge.py::test_a_target_whose_existence_cannot_be_checked_is_refused ->
-packages/memriver-core/tests/integration/repository/test_purge.py::test_a_target_whose_link_check_fails_after_confirmation_is_left_alone ->
-packages/memriver-core/tests/integration/repository/test_purge.py::test_an_empty_directory_is_still_purged ->
-packages/memriver-core/tests/integration/repository/test_purge.py::test_an_unlistable_target_is_refused_not_purged_on_a_dry_run ->
-packages/memriver-core/tests/integration/repository/test_purge.py::test_an_unlistable_target_is_refused_not_purged_on_a_real_run ->
-packages/memriver-core/tests/integration/repository/test_purge.py::test_purge_of_a_closed_plan_is_a_programming_error ->
-packages/memriver-core/tests/integration/repository/test_purge.py::test_purge_without_an_opened_plan_is_a_programming_error ->
-packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_git_file_pointing_nowhere_is_degraded ->
-packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_linked_worktree_maps_to_the_main_root_keeping_the_sub_directory ->
-packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_main_tree_whose_git_names_another_toplevel_is_degraded ->
-packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_path_that_is_not_an_existing_directory_is_degraded_never_raises ->
-packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_plain_directory_is_unchanged_and_git_is_never_run ->
-packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_separate_git_dir_named_dot_git_maps_into_its_parent_known_limitation ->
-packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_separate_git_dir_repository_is_unchanged ->
-packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_submodule_is_its_own_main_tree ->
-packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_symlinked_alias_outside_git_answers_its_canonical_directory ->
-packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_worktree_of_a_bare_repository_named_dot_git_is_degraded ->
-packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_worktree_of_a_separate_git_dir_repository_is_degraded ->
-packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_worktree_spelled_through_a_case_alias_is_degraded_never_mis_mapped ->
-packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_worktree_whose_admin_commondir_is_gone_is_degraded ->
-packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_worktree_with_relative_paths_maps_too ->
-packages/memriver-core/tests/integration/repository/test_worktree.py::test_an_alias_into_a_linked_worktree_maps_like_the_worktree_itself ->
-packages/memriver-core/tests/integration/repository/test_worktree.py::test_current_branch_of_main_worktree_and_detached_head ->
-packages/memriver-core/tests/integration/repository/test_worktree.py::test_git_not_installed_is_degraded ->
-packages/memriver-core/tests/integration/repository/test_worktree.py::test_git_that_hangs_past_the_timeout_is_degraded ->
-packages/memriver-core/tests/integration/repository/test_worktree.py::test_inherited_git_variables_are_ignored ->
-packages/memriver-core/tests/integration/repository/test_worktree.py::test_the_main_tree_root_and_its_sub_directories_are_unchanged ->
+packages/memriver-core/tests/integration/repository/test_directories.py::test_ancestor_component_replaced_by_symlink_is_degraded -> rust:memriver-core::tests/directories.rs::a_root_below_a_replaced_ancestor_is_repointed_not_offline
+packages/memriver-core/tests/integration/repository/test_directories.py::test_canonical_directory_is_strict_and_never_raises -> rust:memriver-core::tests/directories.rs::canonical_is_strict_and_never_fails
+packages/memriver-core/tests/integration/repository/test_directories.py::test_case_alias_matches_by_samefile -> rust:memriver-core::tests/directories.rs::a_case_alias_of_a_root_is_that_root
+packages/memriver-core/tests/integration/repository/test_directories.py::test_covers_is_physical_and_ancestor_aware -> rust:memriver-core::tests/directories.rs::two_spellings_of_one_directory_are_the_same_root + rust:memriver-core::tests/directories.rs::uncheckable_is_never_different
+packages/memriver-core/tests/integration/repository/test_directories.py::test_covers_refuses_a_path_the_os_cannot_address -> rust:memriver-core::tests/directories.rs::two_spellings_of_one_directory_are_the_same_root
+packages/memriver-core/tests/integration/repository/test_directories.py::test_exact_and_alias_of_different_ids_at_one_level_is_degraded -> rust:memriver-core::tests/directories.rs::a_case_alias_of_a_root_is_that_root
+packages/memriver-core/tests/integration/repository/test_directories.py::test_fully_absent_root_is_offline -> rust:memriver-core::tests/directories.rs::missing_root_does_not_degrade
+packages/memriver-core/tests/integration/repository/test_directories.py::test_logical_walk_degrades_on_an_uncheckable_alias_never_falls_through -> rust:memriver-core::tests/directories.rs::uncheckable_is_never_different
+packages/memriver-core/tests/integration/repository/test_directories.py::test_logical_walk_matches_an_ancestor_of_a_path_that_does_not_exist -> rust:memriver-core::tests/directories.rs::a_logical_path_is_walked_instead_of_the_start
+packages/memriver-core/tests/integration/repository/test_directories.py::test_logical_walk_picks_the_nearest_bound_ancestor -> rust:memriver-core::tests/directories.rs::a_logical_path_is_walked_instead_of_the_start
+packages/memriver-core/tests/integration/repository/test_directories.py::test_logical_walk_still_needs_a_real_start -> rust:memriver-core::tests/directories.rs::a_logical_path_is_walked_instead_of_the_start
+packages/memriver-core/tests/integration/repository/test_directories.py::test_nearer_alias_beats_farther_exact_match -> rust:memriver-core::tests/directories.rs::a_case_alias_of_a_root_is_that_root
+packages/memriver-core/tests/integration/repository/test_directories.py::test_nearest_registered_ancestor_wins -> rust:memriver-core::tests/directories.rs::nearest_bound_prefers_the_deepest_root
+packages/memriver-core/tests/integration/repository/test_directories.py::test_nul_bearing_root_is_unverifiable_not_raising -> rust:memriver-core::tests/directories.rs::a_root_the_system_cannot_address_is_unverifiable
+packages/memriver-core/tests/integration/repository/test_directories.py::test_offline_root_is_matched_by_string_only -> rust:memriver-core::tests/directories.rs::missing_root_does_not_degrade
+packages/memriver-core/tests/integration/repository/test_directories.py::test_redirected_ancestor_with_missing_leaf_is_a_redirect_not_offline -> rust:memriver-core::tests/directories.rs::a_root_below_a_replaced_ancestor_is_repointed_not_offline
+packages/memriver-core/tests/integration/repository/test_directories.py::test_root_replaced_by_symlink_is_degraded_and_never_authorizes_target -> rust:memriver-core::tests/directories.rs::one_repointed_root_degrades_every_directory
+packages/memriver-core/tests/integration/repository/test_directories.py::test_root_state_of_a_healthy_and_of_a_file_root -> rust:memriver-core::tests/directories.rs::root_state_of_a_healthy_and_of_a_file_root
+packages/memriver-core/tests/integration/repository/test_directories.py::test_root_that_cannot_be_lstatted_is_degraded -> rust:memriver-core::tests/directories.rs::uncheckable_is_never_different + rust:memriver-core::repository::directories::tests::a_look_that_fails_once_is_taken_as_written_only_where_nothing_must_be_proved
+packages/memriver-core/tests/integration/repository/test_directories.py::test_start_that_is_a_file_missing_or_unaddressable_is_degraded -> rust:memriver-core::tests/directories.rs::a_start_that_is_a_file_missing_or_unaddressable_is_degraded
+packages/memriver-core/tests/integration/repository/test_directories.py::test_transcript_moved_compares_real_parent_directories -> rust:memriver-core::tests/directories.rs::transcript_moved_compares_real_parent_directories
+packages/memriver-core/tests/integration/repository/test_directories.py::test_unregistered_directory_is_none -> rust:memriver-core::tests/directories.rs::an_unregistered_directory_is_none
+packages/memriver-core/tests/integration/repository/test_directories.py::test_unverifiable_same_directory_is_degraded_never_a_non_match -> rust:memriver-core::tests/directories.rs::uncheckable_is_never_different
+packages/memriver-core/tests/integration/repository/test_directories.py::test_usable_directory_is_an_absolute_string_without_nul -> rust:memriver-core::tests/directories.rs::usable_directory_is_an_absolute_path_without_nul
+packages/memriver-core/tests/integration/repository/test_purge.py::test_a_base_resolved_after_a_one_off_error_is_checked_where_it_really_is -> rust:memriver-core::repository::directories::tests::a_base_resolved_after_a_one_off_error_is_checked_where_it_really_is
+packages/memriver-core/tests/integration/repository/test_purge.py::test_a_confirmed_store_is_removed -> rust:memriver-core::tests/purge.rs::a_confirmed_store_is_removed
+packages/memriver-core/tests/integration/repository/test_purge.py::test_a_directory_swapped_after_confirmation_is_left_alone -> rust:memriver-core::tests/purge.rs::a_directory_swapped_after_confirmation_is_left_alone
+packages/memriver-core/tests/integration/repository/test_purge.py::test_a_directory_swapped_in_before_the_open_is_refused_not_purged -> rust:memriver-core::repository::directories::tests::a_directory_swapped_in_before_the_open_is_refused_not_purged
+packages/memriver-core/tests/integration/repository/test_purge.py::test_a_dry_run_plan_opens_nothing -> rust:memriver-core::tests/purge.rs::a_dry_run_plan_opens_nothing
+packages/memriver-core/tests/integration/repository/test_purge.py::test_a_failing_walk_reports_partial_removal -> rust:memriver-core::tests/purge.rs::a_failing_walk_reports_partial_removal
+packages/memriver-core/tests/integration/repository/test_purge.py::test_a_file_target_is_not_a_directory -> rust:memriver-core::tests/purge.rs::a_file_target_is_not_a_directory
+packages/memriver-core/tests/integration/repository/test_purge.py::test_a_missing_store_is_a_plan_with_nothing_to_remove -> rust:memriver-core::tests/purge.rs::a_missing_store_is_a_plan_with_nothing_to_remove
+packages/memriver-core/tests/integration/repository/test_purge.py::test_a_nonempty_directory_without_a_store_is_refused -> rust:memriver-core::tests/purge.rs::a_nonempty_directory_without_a_store_is_refused
+packages/memriver-core/tests/integration/repository/test_purge.py::test_a_protected_base_looping_behind_an_unresolvable_prefix_is_refused -> rust:memriver-core::tests/purge.rs::a_protected_base_looping_behind_an_unresolvable_prefix_is_refused
+packages/memriver-core/tests/integration/repository/test_purge.py::test_a_protected_base_turned_into_a_loop_after_confirmation_is_refused -> rust:memriver-core::tests/purge.rs::a_protected_base_changed_after_confirmation_is_looked_at_again
+packages/memriver-core/tests/integration/repository/test_purge.py::test_a_relative_target_resolves_against_cwd -> rust:memriver-core::tests/purge.rs::a_relative_target_resolves_against_cwd
+packages/memriver-core/tests/integration/repository/test_purge.py::test_a_symlinked_target_is_refused_not_followed -> rust:memriver-core::tests/purge.rs::a_symlinked_target_is_refused_not_followed
+packages/memriver-core/tests/integration/repository/test_purge.py::test_a_target_holding_home_or_cwd_is_too_broad -> rust:memriver-core::tests/purge.rs::a_target_holding_home_or_cwd_is_too_broad
+packages/memriver-core/tests/integration/repository/test_purge.py::test_a_target_whose_existence_cannot_be_checked_is_refused -> rust:memriver-core::repository::directories::tests::a_target_whose_existence_cannot_be_checked_is_refused
+packages/memriver-core/tests/integration/repository/test_purge.py::test_a_target_whose_link_check_fails_after_confirmation_is_left_alone -> rust:memriver-core::repository::directories::tests::a_target_whose_link_check_fails_after_confirmation_is_left_alone
+packages/memriver-core/tests/integration/repository/test_purge.py::test_an_empty_directory_is_still_purged -> rust:memriver-core::tests/purge.rs::an_empty_directory_is_still_purged
+packages/memriver-core/tests/integration/repository/test_purge.py::test_an_unlistable_target_is_refused_not_purged_on_a_dry_run -> rust:memriver-core::tests/purge.rs::an_unlistable_target_is_refused_not_purged
+packages/memriver-core/tests/integration/repository/test_purge.py::test_an_unlistable_target_is_refused_not_purged_on_a_real_run -> rust:memriver-core::tests/purge.rs::an_unlistable_target_is_refused_not_purged
+packages/memriver-core/tests/integration/repository/test_purge.py::test_purge_of_a_closed_plan_is_a_programming_error -> n/a: purge takes the plan over and a plan is closed when it is dropped, so a closed plan cannot be handed in
+packages/memriver-core/tests/integration/repository/test_purge.py::test_purge_without_an_opened_plan_is_a_programming_error -> rust:memriver-core::tests/purge.rs::purge_without_an_opened_plan_is_a_programming_error
+packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_git_file_pointing_nowhere_is_degraded -> rust:memriver-core::tests/worktree.rs::a_git_file_pointing_nowhere_is_unknown
+packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_linked_worktree_maps_to_the_main_root_keeping_the_sub_directory -> rust:memriver-core::tests/worktree.rs::a_linked_worktree_maps_to_the_main_root_keeping_the_sub_directory
+packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_main_tree_whose_git_names_another_toplevel_is_degraded -> rust:memriver-core::tests/worktree.rs::a_main_tree_whose_git_names_another_toplevel_is_unknown
+packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_path_that_is_not_an_existing_directory_is_degraded_never_raises -> rust:memriver-core::tests/worktree.rs::a_path_that_is_not_an_existing_directory_is_unknown_never_fails
+packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_plain_directory_is_unchanged_and_git_is_never_run -> rust:memriver-core::tests/worktree.rs::a_plain_directory_is_unchanged_and_git_is_never_run
+packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_separate_git_dir_named_dot_git_maps_into_its_parent_known_limitation -> rust:memriver-core::tests/worktree.rs::a_separate_git_dir_named_dot_git_maps_into_its_parent_known_limitation
+packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_separate_git_dir_repository_is_unchanged -> rust:memriver-core::tests/worktree.rs::a_separate_git_dir_repository_is_unchanged
+packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_submodule_is_its_own_main_tree -> rust:memriver-core::tests/worktree.rs::a_submodule_is_its_own_main_tree
+packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_symlinked_alias_outside_git_answers_its_canonical_directory -> rust:memriver-core::tests/worktree.rs::a_symlinked_alias_outside_git_answers_its_canonical_directory
+packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_worktree_of_a_bare_repository_named_dot_git_is_degraded -> rust:memriver-core::tests/worktree.rs::a_worktree_of_a_bare_repository_named_dot_git_is_unknown
+packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_worktree_of_a_separate_git_dir_repository_is_degraded -> rust:memriver-core::tests/worktree.rs::a_worktree_of_a_separate_git_dir_repository_is_unknown
+packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_worktree_spelled_through_a_case_alias_is_degraded_never_mis_mapped -> rust:memriver-core::tests/worktree.rs::a_worktree_spelled_through_a_case_alias_is_unknown_never_mis_mapped
+packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_worktree_whose_admin_commondir_is_gone_is_degraded -> rust:memriver-core::tests/worktree.rs::a_worktree_whose_admin_commondir_is_gone_is_unknown
+packages/memriver-core/tests/integration/repository/test_worktree.py::test_a_worktree_with_relative_paths_maps_too -> rust:memriver-core::tests/worktree.rs::a_worktree_with_relative_paths_maps_too
+packages/memriver-core/tests/integration/repository/test_worktree.py::test_an_alias_into_a_linked_worktree_maps_like_the_worktree_itself -> rust:memriver-core::tests/worktree.rs::an_alias_into_a_linked_worktree_maps_like_the_worktree_itself
+packages/memriver-core/tests/integration/repository/test_worktree.py::test_current_branch_of_main_worktree_and_detached_head -> rust:memriver-core::tests/worktree.rs::current_branch_of_main_worktree_and_detached_head
+packages/memriver-core/tests/integration/repository/test_worktree.py::test_git_not_installed_is_degraded -> rust:memriver-core::tests/worktree.rs::git_not_installed_is_unknown
+packages/memriver-core/tests/integration/repository/test_worktree.py::test_git_that_hangs_past_the_timeout_is_degraded -> rust:memriver-core::tests/worktree.rs::git_that_hangs_past_the_timeout_is_unknown
+packages/memriver-core/tests/integration/repository/test_worktree.py::test_inherited_git_variables_are_ignored -> rust:memriver-core::tests/worktree.rs::inherited_git_variables_are_ignored
+packages/memriver-core/tests/integration/repository/test_worktree.py::test_the_main_tree_root_and_its_sub_directories_are_unchanged -> rust:memriver-core::tests/worktree.rs::the_main_tree_root_and_its_sub_directories_are_unchanged
 packages/memriver-core/tests/test_smoke.py::test_every_layer_imports ->
 packages/memriver-core/tests/test_smoke.py::test_version ->
 packages/memriver-core/tests/unit/application/test_maintenance.py::test_a_legacy_store_is_degraded_and_still_says_it_is_not_initialized ->
@@ -549,25 +549,25 @@ packages/memriver-core/tests/unit/application/test_services.py::test_a_non_colli
 packages/memriver-core/tests/unit/application/test_services.py::test_a_spent_budget_skips_global ->
 packages/memriver-core/tests/unit/application/test_services.py::test_a_tag_expands_to_its_entries_with_rules_marked ->
 packages/memriver-core/tests/unit/application/test_services.py::test_a_tag_expansion_keeps_the_line_budget ->
-packages/memriver-core/tests/unit/application/test_services.py::test_binding_calls_delegate_to_the_project_store ->
+packages/memriver-core/tests/unit/application/test_services.py::test_binding_calls_delegate_to_the_project_store -> rust:memriver-core::tests/projects.rs::binding_calls_reach_the_store_through_the_service
 packages/memriver-core/tests/unit/application/test_services.py::test_empty_index_is_the_sentinel ->
-packages/memriver-core/tests/unit/application/test_services.py::test_ensure_global_delegates ->
-packages/memriver-core/tests/unit/application/test_services.py::test_ensure_global_surfaces_a_collision_the_same_way ->
-packages/memriver-core/tests/unit/application/test_services.py::test_header_fields_are_single_line_and_capped ->
+packages/memriver-core/tests/unit/application/test_services.py::test_ensure_global_delegates -> rust:memriver-core::tests/projects.rs::init_creates_the_store_and_global
+packages/memriver-core/tests/unit/application/test_services.py::test_ensure_global_surfaces_a_collision_the_same_way -> n/a: the store answers a taken id with the storage failure itself, so the service has no second error to translate; a taken id on create is rust:memriver-core::tests/projects.rs::create_never_reuses_an_id
+packages/memriver-core/tests/unit/application/test_services.py::test_header_fields_are_single_line_and_capped -> rust:memriver-core::application::contexts::tests::header_fields_are_single_line_and_capped
 packages/memriver-core/tests/unit/application/test_services.py::test_index_composes_rules_tags_unjudged_global_then_the_project ->
 packages/memriver-core/tests/unit/application/test_services.py::test_index_fills_one_budget_global_first_and_counts_what_it_dropped ->
 packages/memriver-core/tests/unit/application/test_services.py::test_index_lines_are_single_line_and_capped ->
 packages/memriver-core/tests/unit/application/test_services.py::test_index_lists_unjudged_global_then_the_project_with_a_global_tag ->
 packages/memriver-core/tests/unit/application/test_services.py::test_index_uses_two_single_project_searches ->
 packages/memriver-core/tests/unit/application/test_services.py::test_index_without_a_project_lists_global_only ->
-packages/memriver-core/tests/unit/application/test_services.py::test_init_project_reports_a_collision_as_storage_failure ->
-packages/memriver-core/tests/unit/application/test_services.py::test_init_project_validates_the_name_with_the_injected_cap ->
+packages/memriver-core/tests/unit/application/test_services.py::test_init_project_reports_a_collision_as_storage_failure -> rust:memriver-core::tests/projects.rs::create_never_reuses_an_id
+packages/memriver-core/tests/unit/application/test_services.py::test_init_project_validates_the_name_with_the_injected_cap -> rust:memriver-core::tests/projects.rs::a_name_that_is_not_one_creates_nothing
 packages/memriver-core/tests/unit/application/test_services.py::test_management_reads_use_the_unrestricted_views ->
 packages/memriver-core/tests/unit/application/test_services.py::test_one_clamp_normalizes_every_limit ->
-packages/memriver-core/tests/unit/application/test_services.py::test_open_project_context_none_and_degraded_keep_global_readable_and_write_nothing ->
-packages/memriver-core/tests/unit/application/test_services.py::test_open_project_context_registered_names_the_project_and_its_root ->
-packages/memriver-core/tests/unit/application/test_services.py::test_open_project_context_turns_a_storage_failure_into_an_unavailable_project_context ->
-packages/memriver-core/tests/unit/application/test_services.py::test_open_project_context_turns_an_unreadable_global_into_an_unavailable_project_context ->
+packages/memriver-core/tests/unit/application/test_services.py::test_open_project_context_none_and_degraded_keep_global_readable_and_write_nothing -> rust:memriver-core::tests/projects.rs::open_project_context_none_and_degraded_keep_global_readable_and_write_nothing + rust:memriver-core::application::contexts::tests::a_degraded_context_says_why_and_grants_global_only
+packages/memriver-core/tests/unit/application/test_services.py::test_open_project_context_registered_names_the_project_and_its_root -> rust:memriver-core::tests/projects.rs::open_project_context_registered_names_the_project_and_its_root + rust:memriver-core::application::contexts::tests::a_registered_context_names_the_project_and_its_root
+packages/memriver-core/tests/unit/application/test_services.py::test_open_project_context_turns_a_storage_failure_into_an_unavailable_project_context -> rust:memriver-core::tests/projects.rs::open_project_context_turns_a_storage_failure_into_an_unavailable_project_context
+packages/memriver-core/tests/unit/application/test_services.py::test_open_project_context_turns_an_unreadable_global_into_an_unavailable_project_context -> rust:memriver-core::tests/projects.rs::open_project_context_turns_a_storage_failure_into_an_unavailable_project_context
 packages/memriver-core/tests/unit/application/test_services.py::test_read_delegates_with_the_read_write_set ->
 packages/memriver-core/tests/unit/application/test_services.py::test_record_builds_one_create_restricted_to_the_read_write_set ->
 packages/memriver-core/tests/unit/application/test_services.py::test_record_refuses_a_malformed_harness ->

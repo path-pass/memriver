@@ -31,9 +31,8 @@ use crate::models::memory::{
     Memory, MemoryType, Trust, checked_level, tags_from_json, tags_to_json,
 };
 use crate::models::project::Project;
+use crate::repository::directories::DATABASE_FILENAME;
 use crate::settings::{BUSY_TIMEOUT_MS, lexical_absolute};
-
-pub const DATABASE_FILENAME: &str = "memriver.db";
 
 /// The column order of every memory SELECT and INSERT, which the row codec follows.
 pub const MEMORY_COLUMNS: &str = "id, project_id, type, source_harness, source_method, trust, \

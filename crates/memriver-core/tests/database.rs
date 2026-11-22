@@ -12,9 +12,10 @@ use std::time::{Duration, Instant};
 use memriver_core::models::errors::CoreError;
 use memriver_core::models::helpers::{new_id, now};
 use memriver_core::models::memory::{Memory, MemoryType, Trust};
+use memriver_core::repository::directories::DATABASE_FILENAME;
 use memriver_core::repository::sqlite::database::{
-    DATABASE_FILENAME, Database, MEMORY_COLUMNS, PROJECT_COLUMNS, memory_from_row, memory_to_row,
-    project_from_row, text, values,
+    Database, MEMORY_COLUMNS, PROJECT_COLUMNS, memory_from_row, memory_to_row, project_from_row,
+    text, values,
 };
 use memriver_core::repository::sqlite::schema::{SCHEMA, SCHEMA_VERSION};
 use memriver_core::settings::{Env, load_settings, located_root, settings_file, storage_root};

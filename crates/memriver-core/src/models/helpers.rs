@@ -97,6 +97,38 @@ pub fn py_normpath(path: &[u8]) -> Vec<u8> {
     }
 }
 
+/// Python's `repr()` of a string: quoted, with the quote that needs no escape, and
+/// everything that is not printable written as an escape.
+pub fn py_repr(value: &str) -> String {
+    let quote = if value.contains('\'') && !value.contains('"') {
+        '"'
+    } else {
+        '\''
+    };
+    let mut repr = String::from(quote);
+    for c in value.chars() {
+        match c {
+            '\\' => repr.push_str("\\\\"),
+            '\t' => repr.push_str("\\t"),
+            '\n' => repr.push_str("\\n"),
+            '\r' => repr.push_str("\\r"),
+            c if c == quote => {
+                repr.push('\\');
+                repr.push(c);
+            }
+            ' '..='~' => repr.push(c),
+            c if c.is_ascii() || !py_isprintable(c) => match c as u32 {
+                code @ ..0x100 => repr.push_str(&format!("\\x{code:02x}")),
+                code @ ..0x10000 => repr.push_str(&format!("\\u{code:04x}")),
+                code => repr.push_str(&format!("\\U{code:08x}")),
+            },
+            c => repr.push(c),
+        }
+    }
+    repr.push(quote);
+    repr
+}
+
 /// `value` on one line: control characters and the Unicode line separators become
 /// spaces, runs of whitespace collapse to one space and the ends are dropped. Stored
 /// fields are injected into agent context line by line, so no field may carry a line
@@ -216,6 +248,28 @@ fn strictly_after(stamp: String, previous: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repr_is_pythons() {
+        // expectations taken from Python's repr()
+        for (value, repr) in [
+            ("/a/b", "'/a/b'"),
+            ("/it's", "\"/it's\""),
+            ("/q\"x'", "'/q\"x\\''"),
+            ("/tab\there", "'/tab\\there'"),
+            ("/\u{e9}/\u{9805}", "'/\u{e9}/\u{9805}'"),
+            ("/x\u{7f}\u{1}", "'/x\\x7f\\x01'"),
+            ("/nl\n", "'/nl\\n'"),
+            ("/\u{2028}z", "'/\\u2028z'"),
+            ("/b\\s", "'/b\\\\s'"),
+            ("/\u{1f600}", "'/\u{1f600}'"),
+            ("/\u{a0}", "'/\\xa0'"),
+            ("/\u{ad}", "'/\\xad'"),
+            ("/\u{e0001}", "'/\\U000e0001'"),
+        ] {
+            assert_eq!(py_repr(value), repr, "{value:?}");
+        }
+    }
 
     #[test]
     fn normpath_is_pythons() {
