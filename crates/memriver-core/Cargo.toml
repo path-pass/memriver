@@ -20,6 +20,7 @@ regex = "=1.13.2"
 regex-automata = "=0.4.19"
 regex-syntax = "=0.8.12"
 rusqlite = { version = "=0.43.0", default-features = false, features = ["bundled"] }
+sha2 = "0.11"
 serde_json = { version = "1", features = ["preserve_order"] }
 # exact, all three: which settings files are read is decided by the parser (toml_parser) and
 # by what it takes for a date (toml_datetime), which toml itself would let move

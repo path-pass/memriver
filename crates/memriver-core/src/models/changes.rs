@@ -229,6 +229,15 @@ impl HardDeletePlan {
     }
 }
 
+/// How a hard delete was confirmed: exactly one of the set that was shown and its code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Confirmation<'a> {
+    /// `HardDeletePlan::expected` of the plan that was shown.
+    Expected(&'a BTreeSet<(&'a str, i64)>),
+    /// `HardDeletePlan::code` of the plan that was shown.
+    Code(&'a str),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

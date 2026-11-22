@@ -1,4 +1,5 @@
-//! The memory service: single memories on the agent path, search and the index.
+//! The memory service: single memories on the agent path, search and the index, and
+//! the management path of the human commands and dream.
 //!
 //! The memory store owns single-memory actions and the project store owns
 //! collections; this service sequences the policy checks and renders the index. The
@@ -7,15 +8,17 @@
 //! reads the session store. Nothing here touches a file, a table or settings: every
 //! limit is handed in.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, LazyLock};
 
 use crate::content_policy::{ContentClassifier, Policy, Verdict};
-use crate::models::changes::{MetadataCaps, Op};
+use crate::models::changes::{Change, Citation, MemoryVersion, MetadataCaps, Op, Usage};
 use crate::models::context::ProjectContext;
-use crate::models::errors::{CoreError, WriteError};
+use crate::models::errors::{CoreError, ValueError, WriteError};
 use crate::models::helpers::{LINE_BREAKS, cut, now, py_strip, single_line};
-use crate::models::memory::Memory;
+use crate::models::memory::{Memory, is_tag_name};
+use crate::models::project::Project;
+use crate::models::search::{rank_memories, search_terms};
 use crate::repository::sqlite::memory_store::MemoryStore;
 use crate::repository::sqlite::project_store::ProjectStore;
 use crate::settings::{DEFAULT_MAX_BODY_CHARS, INDEX_CUE_CHARS, POLICY_RULE_CACHE, Settings};
@@ -57,6 +60,8 @@ pub struct MemoryLimits {
     pub index_budget_lines: usize,
     pub index_cue_chars: usize,
     pub caps: MetadataCaps,
+    /// None keeps every read fact.
+    pub memory_reads_retention_days: Option<u32>,
 }
 
 impl MemoryLimits {
@@ -74,6 +79,7 @@ impl MemoryLimits {
                 tags_max: settings.tags_max,
                 tags_per_memory_max: settings.tags_per_memory_max,
             },
+            memory_reads_retention_days: settings.memory_reads_retention_days,
         }
     }
 }
@@ -180,7 +186,7 @@ impl MemoryService {
         // checked here first so an agent reads the policy's own words; the store
         // checks the resulting state again inside its transaction
         self.check_text(Some(description), Some(content))?;
-        self.classify(Some(description), Some(content))?;
+        self.classify(Some(description), Some(content), &[], AGENT)?;
         let mut create = Op::create(project_id, type_, description, content);
         if let Op::Create { sync: stored, .. } = &mut create {
             *stored = sync;
@@ -224,7 +230,7 @@ impl MemoryService {
     ) -> Result<Memory, WriteError> {
         (self.refuse_pending)(context)?;
         self.check_text(description, Some(content))?;
-        self.classify(description, Some(content))?;
+        self.classify(description, Some(content), &[], AGENT)?;
         let mut edit = Op::update(memory_id, expected_version);
         if let Op::Update {
             description: new_description,
@@ -312,13 +318,21 @@ impl MemoryService {
 
     /// The content classifier on a write's new text, outside any transaction: a call
     /// can take seconds, and the store's write lock must never wait on it. Only the
-    /// candidate text is sent -- its description, when not blank, and its body, joined
-    /// by a blank line -- never another memory, a project or an id.
-    fn classify(&self, description: Option<&str>, body: Option<&str>) -> Result<(), CoreError> {
+    /// candidate text is sent -- its description, its body and its tag names on one
+    /// line, each when not blank, joined by a blank line -- never another memory, a
+    /// project or an id.
+    fn classify(
+        &self,
+        description: Option<&str>,
+        body: Option<&str>,
+        tags: &[String],
+        changed_by: &str,
+    ) -> Result<(), CoreError> {
         let Some(classifier) = &self.classifier else {
             return Ok(());
         };
-        let text = [description, body]
+        let names = tags.join(" ");
+        let text = [description, body, Some(names.as_str())]
             .into_iter()
             .flatten()
             .filter(|part| !py_strip(part).is_empty())
@@ -339,7 +353,7 @@ impl MemoryService {
                 detail,
             )
         };
-        match classifier.classify(&text, AGENT) {
+        match classifier.classify(&text, changed_by) {
             Verdict::Allowed => Ok(()),
             Verdict::Unavailable { detail } => Err(unavailable(&detail)),
             // the category that says "could not decide" is that answer, with no reason
@@ -360,6 +374,223 @@ impl MemoryService {
                 ))
             }
         }
+    }
+
+    // --- the management path (the human commands and dream; never an agent's tool) ---
+
+    /// Every operation, or none, as one change. Marks no session saved and asks about
+    /// none. `changed_by` and `changed_via` are the calling entry point's, never taken
+    /// from a model's answer.
+    pub fn apply(
+        &self,
+        ops: &[Op],
+        changed_by: &str,
+        changed_via: Option<&str>,
+    ) -> Result<Change, WriteError> {
+        if self.classifier.is_some() {
+            // every operation that carries new text or tag names, in their order,
+            // before the transaction; the policy first, so a secret is refused here and
+            // never reaches the classifier
+            for op in ops {
+                let (description, body, tags, memory_id) = match op {
+                    Op::Create {
+                        description,
+                        body,
+                        tags,
+                        ..
+                    } => (
+                        Some(description.as_str()),
+                        Some(body.as_str()),
+                        &tags[..],
+                        None,
+                    ),
+                    Op::Update {
+                        memory_id,
+                        description,
+                        body,
+                        tags,
+                        ..
+                    } => (
+                        description.as_deref(),
+                        body.as_deref(),
+                        tags.as_deref().unwrap_or_default(),
+                        Some(memory_id),
+                    ),
+                    Op::SoftDelete { .. } | Op::Restore { .. } => continue,
+                };
+                if description.is_none() && body.is_none() && tags.is_empty() {
+                    continue;
+                }
+                // refused as the store itself would refuse it: the rule, and the
+                // memory an update names
+                if let Err(CoreError::ContentRejected { rule_id, .. }) =
+                    self.check_text(description, body)
+                {
+                    return Err(CoreError::ContentRejected {
+                        message: String::new(),
+                        rule_id,
+                        memory_id: memory_id.cloned(),
+                        detail: String::new(),
+                    }
+                    .into());
+                }
+                self.classify(description, body, tags, changed_by)?;
+            }
+        }
+        self.memory_store.apply(
+            ops,
+            changed_by,
+            changed_via,
+            &|description, body| self.check_state(description, body),
+            &self.limits.caps,
+        )
+    }
+
+    /// Makes the state `to_version` recorded the new current version.
+    pub fn restore(
+        &self,
+        memory_id: &str,
+        expected_version: i64,
+        to_version: i64,
+        changed_by: &str,
+        changed_via: Option<&str>,
+    ) -> Result<Change, WriteError> {
+        let restore = Op::Restore {
+            memory_id: memory_id.to_string(),
+            expected_version,
+            to_version,
+        };
+        self.apply(&[restore], changed_by, changed_via)
+    }
+
+    /// A change with the steps still stored; None for an id no change has.
+    pub fn change(&self, change_id: &str) -> Result<Option<Change>, CoreError> {
+        self.memory_store.change(change_id)
+    }
+
+    /// Undoes a change while none of its memories changed since; no time limit. An
+    /// undo is an ordinary change, so it can be undone by the same rule.
+    pub fn undo(
+        &self,
+        change_id: &str,
+        changed_by: &str,
+        changed_via: Option<&str>,
+    ) -> Result<Change, WriteError> {
+        self.memory_store.undo(
+            change_id,
+            changed_by,
+            changed_via,
+            &|description, body| self.check_state(description, body),
+            &self.limits.caps,
+        )
+    }
+
+    /// The limits this service's writes keep.
+    pub fn metadata_caps(&self) -> MetadataCaps {
+        self.limits.caps
+    }
+
+    /// Every described tag name of a project with its description.
+    pub fn tag_descriptions(&self, project_id: &str) -> Result<HashMap<String, String>, CoreError> {
+        self.memory_store.tag_descriptions(project_id)
+    }
+
+    /// Sets a tag name's description in a project, on one line: the content policy,
+    /// then the classifier, as for any text the index hands to an agent. Not a change
+    /// of a memory, so it has no version and no undo.
+    pub fn describe_tag(
+        &self,
+        project_id: &str,
+        name: &str,
+        description: &str,
+        changed_by: &str,
+    ) -> Result<(), WriteError> {
+        if !is_tag_name(name) {
+            return Err(ValueError::new("not a tag name").into());
+        }
+        let description = single_line(description);
+        self.check(&description, self.limits.metadata_max_chars)?;
+        self.classify(Some(name), Some(&description), &[], changed_by)?;
+        self.memory_store
+            .describe_tag(project_id, name, &description)
+    }
+
+    /// Any memory by its id; a deleted one only when asked for.
+    pub fn show(&self, memory_id: &str, include_deleted: bool) -> Result<Memory, CoreError> {
+        self.memory_store.read_any(memory_id, include_deleted)
+    }
+
+    /// The current states of one project, or of every project and global (None).
+    pub fn memories(
+        &self,
+        project_id: Option<&str>,
+        include_deleted: bool,
+    ) -> Result<Vec<Memory>, CoreError> {
+        self.memory_store.memories(project_id, include_deleted)
+    }
+
+    pub fn versions(&self, memory_id: &str) -> Result<Vec<MemoryVersion>, CoreError> {
+        self.memory_store.versions(memory_id)
+    }
+
+    pub fn citing(&self, memory_id: &str) -> Result<Vec<Citation>, CoreError> {
+        self.memory_store.citing(memory_id)
+    }
+
+    pub fn usage(&self, memory_ids: &[&str]) -> Result<BTreeMap<String, Usage>, CoreError> {
+        self.memory_store.usage(memory_ids)
+    }
+
+    /// Drops the read facts older than the retention that is set; none without one.
+    pub fn prune_reads(&self) -> Result<u64, CoreError> {
+        match self.limits.memory_reads_retention_days {
+            Some(days) => self.memory_store.prune_reads(days),
+            None => Ok(0),
+        }
+    }
+
+    /// Every project, or the one named.
+    fn projects(&self, project_id: Option<&str>) -> Result<Vec<Project>, CoreError> {
+        match project_id {
+            Some(project_id) => Ok(vec![self.project_store.read(project_id)?]),
+            None => self.project_store.list(),
+        }
+    }
+
+    /// Every project (or one) with its current memories, for the human views. Each
+    /// project is read in a transaction of its own: several are no single snapshot.
+    pub fn list_memories(
+        &self,
+        project_id: Option<&str>,
+    ) -> Result<Vec<(Project, Vec<Memory>)>, CoreError> {
+        let mut listed = Vec::new();
+        for project in self.projects(project_id)? {
+            let memories = self.project_store.search(&project.id, None, None, None)?;
+            listed.push((project, memories));
+        }
+        Ok(listed)
+    }
+
+    /// What `query` matches in every project (or one), ranked as one list, newest
+    /// first within a rank; at most `limit`. Each project is read in a transaction of
+    /// its own.
+    pub fn search_all(
+        &self,
+        query: &str,
+        project_id: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<Memory>, CoreError> {
+        let mut hits = Vec::new();
+        for project in self.projects(project_id)? {
+            hits.extend(
+                self.project_store
+                    .search(&project.id, None, Some(query), None)?,
+            );
+        }
+        hits.sort_by(|a, b| (&b.updated, &b.id).cmp(&(&a.updated, &a.id)));
+        let mut hits = rank_memories(&search_terms(query), hits);
+        hits.truncate(limit.unwrap_or(usize::MAX));
+        Ok(hits)
     }
 
     // --- collections ---

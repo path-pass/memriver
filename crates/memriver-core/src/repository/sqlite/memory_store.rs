@@ -6,21 +6,29 @@
 //! written by `apply_ops`, inside one write transaction, so a refused change leaves
 //! nothing behind.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use rusqlite::types::Value;
 use rusqlite::{Connection, ErrorCode, OptionalExtension, params, params_from_iter};
+use sha2::{Digest, Sha256};
 
 use super::database::{Database, MEMORY_COLUMNS, memory_from_row, memory_to_row, values};
-use crate::models::changes::{Change, MetadataCaps, Op, OpName, SourceRef, Step};
+use crate::models::changes::{
+    Change, Citation, Confirmation, HardDeleteItem, HardDeletePlan, MemoryVersion, MetadataCaps,
+    Op, OpName, PlanCitation, SourceRef, Step, Usage,
+};
 use crate::models::context::ReadWriteSet;
-use crate::models::errors::{BatchConflictReason, Cap, CoreError, ValueError, WriteError};
+use crate::models::errors::{
+    BatchConflictReason, Cap, CoreError, UndoRefusedReason, ValueError, WriteError,
+};
 use crate::models::helpers::{
-    is_id, is_timestamp, new_id, now, now_strictly_after, py_repr, py_strip,
+    format_micros, is_id, is_timestamp, new_id, now, now_strictly_after, parse_timestamp, py_repr,
+    py_strip,
 };
 use crate::models::memory::{
-    Memory, MemoryType, Trust, checked_level, checked_tags, tags_from_json, tags_to_json,
+    Memory, MemoryType, Trust, checked_level, checked_tags, is_tag_name, tags_from_json,
+    tags_to_json,
 };
 use crate::settings::BUSY_TIMEOUT_MS;
 
@@ -1000,6 +1008,195 @@ fn insert_version(
     Ok(())
 }
 
+/// The rows of a query, each as raw values.
+fn rows(
+    conn: &Connection,
+    sql: &str,
+    bound: impl rusqlite::Params,
+) -> Result<Vec<Vec<Value>>, CoreError> {
+    let mut statement = conn.prepare(sql)?;
+    let rows = statement.query_map(bound, values)?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// A text column that may be NULL; anything else is a row memriver could not have written.
+fn optional(value: &Value) -> Result<Option<String>, CoreError> {
+    match value {
+        Value::Null => Ok(None),
+        Value::Text(text) => Ok(Some(text.clone())),
+        _ => Err(CoreError::StorageFailure),
+    }
+}
+
+/// A change row (change_id, at, changed_by, changed_via, step_count, undoes) with `steps`.
+fn change_of(row: &[Value], steps: Vec<Step>) -> Result<Change, CoreError> {
+    match row {
+        [
+            Value::Text(change_id),
+            Value::Text(at),
+            Value::Text(changed_by),
+            changed_via,
+            Value::Integer(step_count),
+            undoes,
+        ] => Ok(Change {
+            change_id: change_id.clone(),
+            at: at.clone(),
+            changed_by: changed_by.clone(),
+            changed_via: optional(changed_via)?,
+            step_count: *step_count,
+            undoes: optional(undoes)?,
+            steps,
+        }),
+        _ => Err(CoreError::StorageFailure),
+    }
+}
+
+/// A change with the steps still stored (a hard delete removes its members' steps).
+fn change(conn: &Connection, change_id: &str) -> Result<Option<Change>, CoreError> {
+    let row = conn
+        .query_row(
+            "SELECT change_id, at, changed_by, changed_via, step_count, undoes \
+             FROM changes WHERE change_id = ?1",
+            [change_id],
+            values,
+        )
+        .optional()?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let steps = rows(
+        conn,
+        "SELECT step, memory_id, op, before_version, after_version FROM change_steps \
+         WHERE change_id = ?1 ORDER BY step",
+        [change_id],
+    )?
+    .iter()
+    .map(|step| match &step[..] {
+        [
+            Value::Integer(step),
+            Value::Text(memory_id),
+            Value::Text(op),
+            before @ (Value::Null | Value::Integer(_)),
+            Value::Integer(after),
+        ] => Some(Step {
+            step: *step,
+            memory_id: memory_id.clone(),
+            op: OpName::parse(op)?,
+            before_version: match before {
+                Value::Integer(before) => Some(*before),
+                _ => None,
+            },
+            after_version: *after,
+        }),
+        _ => None,
+    })
+    .collect::<Option<Vec<Step>>>()
+    .ok_or(CoreError::StorageFailure)?;
+    change_of(&row, steps).map(Some)
+}
+
+/// The target and every memory with a stored version citing a member, to a fixed point.
+///
+/// Referrers only: a member's own sources are never followed.
+fn plan(conn: &Connection, memory_id: &str) -> Result<HardDeletePlan, CoreError> {
+    let known = |memory_id: &str| {
+        conn.query_row("SELECT 1 FROM memories WHERE id = ?1", [memory_id], |_| {
+            Ok(())
+        })
+        .optional()
+    };
+    if !is_id(memory_id) || known(memory_id)?.is_none() {
+        return Err(CoreError::MemoryNotFound(memory_id.to_string()));
+    }
+    let mut referrers: BTreeSet<String> = BTreeSet::new();
+    let mut frontier = vec![memory_id.to_string()];
+    let mut citations: HashMap<String, Vec<PlanCitation>> = HashMap::new();
+    while let Some(cited_id) = frontier.pop() {
+        let citing = rows(
+            conn,
+            "SELECT s.memory_id, s.version, s.source_version, s.version = m.version \
+             FROM memory_sources s JOIN memories m ON m.id = s.memory_id \
+             WHERE s.source_id = ?1",
+            [&cited_id],
+        )?;
+        for row in citing {
+            let [
+                Value::Text(citing_id),
+                Value::Integer(citing_version),
+                Value::Integer(cited_version),
+                Value::Integer(citing_current),
+            ] = &row[..]
+            else {
+                return Err(CoreError::StorageFailure);
+            };
+            // a referrer id memriver could not have written: damage is reported as
+            // damage, by the dry run and by the delete alike
+            if !is_id(citing_id) {
+                return Err(CoreError::StorageFailure);
+            }
+            citations
+                .entry(citing_id.clone())
+                .or_default()
+                .push(PlanCitation {
+                    citing_id: citing_id.clone(),
+                    citing_version: *citing_version,
+                    cited_id: cited_id.clone(),
+                    cited_version: *cited_version,
+                    citing_current: *citing_current != 0,
+                });
+            if citing_id != memory_id && referrers.insert(citing_id.clone()) {
+                frontier.push(citing_id.clone());
+            }
+        }
+    }
+    let mut items = Vec::with_capacity(referrers.len() + 1);
+    // the target first, then the others by id
+    for member in std::iter::once(memory_id).chain(referrers.iter().map(String::as_str)) {
+        let row = conn.query_row(
+            "SELECT project_id, version, deleted_at IS NOT NULL FROM memories WHERE id = ?1",
+            [member],
+            values,
+        )?;
+        let [
+            Value::Text(project_id),
+            Value::Integer(version),
+            Value::Integer(deleted),
+        ] = &row[..]
+        else {
+            return Err(CoreError::StorageFailure);
+        };
+        let mut citations = citations.remove(member).unwrap_or_default();
+        citations.sort_by(|a, b| {
+            (a.citing_version, &a.cited_id, a.cited_version).cmp(&(
+                b.citing_version,
+                &b.cited_id,
+                b.cited_version,
+            ))
+        });
+        items.push(HardDeleteItem {
+            memory_id: member.to_string(),
+            project_id: project_id.clone(),
+            version: *version,
+            deleted: *deleted != 0,
+            citations,
+        });
+    }
+    let mut pairs: Vec<String> = items
+        .iter()
+        .map(|item| format!("{}:{}", item.memory_id, item.version))
+        .collect();
+    pairs.sort();
+    let digest = Sha256::digest(pairs.join("\n").as_bytes());
+    Ok(HardDeletePlan {
+        target: memory_id.to_string(),
+        items,
+        code: digest[..8]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+    })
+}
+
 pub struct MemoryStore {
     root: PathBuf,
     busy_timeout_ms: u64,
@@ -1052,6 +1249,119 @@ impl MemoryStore {
         caps: &MetadataCaps,
     ) -> Written<Change> {
         self.written(|conn| apply_ops(conn, ops, None, changed_by, changed_via, check, caps, None))
+    }
+
+    /// A change with the steps still stored; None for an id no change has.
+    pub fn change(&self, change_id: &str) -> Result<Option<Change>, CoreError> {
+        self.database().read(|conn| match conn {
+            Some(conn) => change(conn, change_id),
+            None => Ok(None),
+        })
+    }
+
+    /// The inverse of a change as one new change, in one transaction: refused when a
+    /// memory of it changed since, or was removed with its history.
+    pub fn undo(
+        &self,
+        change_id: &str,
+        changed_by: &str,
+        changed_via: Option<&str>,
+        check: Check<'_>,
+        caps: &MetadataCaps,
+    ) -> Written<Change> {
+        let refused = |reason, memory_ids| CoreError::UndoRefused { reason, memory_ids };
+        self.written(|conn| {
+            let Some(undone) = change(conn, change_id)? else {
+                return Err(refused(UndoRefusedReason::NotFound, Vec::new()).into());
+            };
+            if i64::try_from(undone.steps.len()).is_ok_and(|stored| stored < undone.step_count) {
+                return Err(refused(UndoRefusedReason::HardDeleted, Vec::new()).into());
+            }
+            // versions only: text changed back is still a change, a read is not
+            let mut moved = Vec::new();
+            for step in &undone.steps {
+                let current: Option<i64> = conn
+                    .query_row(
+                        "SELECT version FROM memories WHERE id = ?1",
+                        [&step.memory_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if current != Some(step.after_version) {
+                    moved.push(step.memory_id.clone());
+                }
+            }
+            if !moved.is_empty() {
+                moved.sort();
+                return Err(refused(UndoRefusedReason::Changed, moved).into());
+            }
+            let inverse: Vec<Op> = undone
+                .steps
+                .iter()
+                .map(|step| match step.op {
+                    OpName::Create => Op::soft_delete(&step.memory_id, step.after_version),
+                    _ => Op::Restore {
+                        memory_id: step.memory_id.clone(),
+                        expected_version: step.after_version,
+                        // a step without the version before it is no step memriver
+                        // wrote: no version is numbered 0, so the restore finds none
+                        to_version: step.before_version.unwrap_or(0),
+                    },
+                })
+                .collect();
+            apply_ops(
+                conn,
+                &inverse,
+                None,
+                changed_by,
+                changed_via,
+                check,
+                caps,
+                Some(change_id),
+            )
+        })
+    }
+
+    /// What a hard delete of `memory_id` would remove: the memory and every memory a
+    /// version of which cites one that goes.
+    pub fn plan_hard_delete(&self, memory_id: &str) -> Result<HardDeletePlan, CoreError> {
+        self.database().read(|conn| match conn {
+            Some(conn) => plan(conn, memory_id),
+            None => Err(CoreError::MemoryNotFound(memory_id.to_string())),
+        })
+    }
+
+    /// Removes every member of the plan, with all its versions, sources, reads and
+    /// steps, in one transaction -- only when the plan, made again inside it, is the
+    /// one that was confirmed. The ids removed, the target first.
+    pub fn hard_delete(
+        &self,
+        memory_id: &str,
+        confirmation: Confirmation<'_>,
+    ) -> Result<Vec<String>, CoreError> {
+        if !self.database().exists()? {
+            return Err(CoreError::MemoryNotFound(memory_id.to_string()));
+        }
+        self.database().write(false, |conn| {
+            let plan = plan(conn, memory_id)?;
+            let confirmed = match confirmation {
+                Confirmation::Expected(expected) => plan.expected() == *expected,
+                Confirmation::Code(code) => plan.code == code,
+            };
+            if !confirmed {
+                return Err(CoreError::PlanChanged(plan));
+            }
+            let members: Vec<String> = plan.items.into_iter().map(|item| item.memory_id).collect();
+            // the cascade takes versions, source rows, reads and steps; change rows stay
+            conn.execute(
+                &format!(
+                    "DELETE FROM memories WHERE id IN ({})",
+                    placeholders(members.len())
+                ),
+                params_from_iter(&members),
+            )?;
+            Ok(members)
+        })
     }
 
     /// One agent operation; the resulting memory, read inside the write transaction.
@@ -1209,6 +1519,208 @@ impl MemoryStore {
             Err(CoreError::StorageFailure) => Ok(()),
             other => other,
         }
+    }
+
+    /// Any memory by its id, whatever its project; a deleted one only when asked for.
+    pub fn read_any(&self, memory_id: &str, include_deleted: bool) -> Result<Memory, CoreError> {
+        let not_found = || CoreError::MemoryNotFound(memory_id.to_string());
+        if !is_id(memory_id) {
+            return Err(not_found());
+        }
+        self.database()
+            .read(|conn| match conn {
+                Some(conn) => joined(conn, memory_id, include_deleted, None),
+                None => Ok(None),
+            })?
+            .ok_or_else(not_found)
+    }
+
+    /// Deletes the read facts older than `retention_days`; how many went.
+    pub fn prune_reads(&self, retention_days: u32) -> Result<u64, CoreError> {
+        // read_at is compared as text of one width. A day further back than that form
+        // can name, or than the count of microseconds can hold: nothing is older
+        let cutoff = i64::from(retention_days)
+            .checked_mul(86_400_000_000)
+            .and_then(|span| parse_timestamp(&now())?.checked_sub(span))
+            .and_then(format_micros);
+        let Some(cutoff) = cutoff else {
+            return Ok(0);
+        };
+        if !self.database().exists()? {
+            return Ok(0);
+        }
+        let pruned = self.database().write(false, |conn| {
+            Ok(conn.execute("DELETE FROM memory_reads WHERE read_at < ?1", [&cutoff])?)
+        })?;
+        Ok(u64::try_from(pruned).unwrap_or(u64::MAX))
+    }
+
+    /// How often each of `memory_ids` was read and when last; an id that is no
+    /// memory's is left out.
+    pub fn usage(&self, memory_ids: &[&str]) -> Result<BTreeMap<String, Usage>, CoreError> {
+        let ids: BTreeSet<&str> = memory_ids.iter().copied().collect();
+        if ids.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let sql = format!(
+            "SELECT m.id, m.last_read_at, \
+             (SELECT count(*) FROM memory_reads r WHERE r.memory_id = m.id) \
+             FROM memories m WHERE m.id IN ({})",
+            placeholders(ids.len())
+        );
+        let found = self.database().read(|conn| match conn {
+            Some(conn) => rows(conn, &sql, params_from_iter(&ids)),
+            None => Ok(Vec::new()),
+        })?;
+        found
+            .iter()
+            .map(|row| match &row[..] {
+                [Value::Text(memory_id), last_read_at, Value::Integer(reads)] => Ok((
+                    memory_id.clone(),
+                    Usage {
+                        reads: *reads,
+                        last_read_at: optional(last_read_at)?,
+                    },
+                )),
+                _ => Err(CoreError::StorageFailure),
+            })
+            .collect()
+    }
+
+    /// The current states of one project, or of every project and global (None),
+    /// newest first; deleted ones only when asked for. A row memriver could not have
+    /// written is passed over (doctor reports it).
+    pub fn memories(
+        &self,
+        project_id: Option<&str>,
+        include_deleted: bool,
+    ) -> Result<Vec<Memory>, CoreError> {
+        let mut sql = format!(
+            "SELECT {} FROM memories m JOIN projects p ON p.id = m.project_id WHERE 1 = 1",
+            joined_columns()
+        );
+        if project_id.is_some() {
+            sql.push_str(" AND m.project_id = ?1");
+        }
+        if !include_deleted {
+            sql.push_str(" AND m.deleted_at IS NULL");
+        }
+        sql.push_str(" ORDER BY m.updated DESC, m.id DESC");
+        let found = self.database().read(|conn| match conn {
+            Some(conn) => rows(conn, &sql, params_from_iter(project_id)),
+            None => Ok(Vec::new()),
+        })?;
+        Ok(found
+            .iter()
+            .filter_map(|row| memory_from_row(row).ok())
+            .collect())
+    }
+
+    /// Every version a memory ever had, oldest first, each with its sources and the
+    /// change that made it (without that change's steps).
+    pub fn versions(&self, memory_id: &str) -> Result<Vec<MemoryVersion>, CoreError> {
+        let not_found = || CoreError::MemoryNotFound(memory_id.to_string());
+        if !is_id(memory_id) {
+            return Err(not_found());
+        }
+        self.database().read(|conn| {
+            let Some(conn) = conn else {
+                return Err(not_found());
+            };
+            conn.query_row("SELECT 1 FROM memories WHERE id = ?1", [memory_id], |_| {
+                Ok(())
+            })
+            .optional()?
+            .ok_or_else(not_found)?;
+            let found = rows(
+                conn,
+                "SELECT v.version, v.type, v.trust, v.sync, v.description, v.body, v.deleted, \
+                 v.level, v.tags, \
+                 c.change_id, c.at, c.changed_by, c.changed_via, c.step_count, c.undoes \
+                 FROM memory_versions v LEFT JOIN changes c ON c.change_id = v.change_id \
+                 WHERE v.memory_id = ?1 ORDER BY v.version",
+                [memory_id],
+            )?;
+            found
+                .iter()
+                .map(|row| {
+                    let Value::Integer(version) = row[0] else {
+                        return Err(CoreError::StorageFailure);
+                    };
+                    let state = history_state(&row[1..9])?;
+                    Ok(MemoryVersion {
+                        memory_id: memory_id.to_string(),
+                        version,
+                        type_: state.type_,
+                        trust: state.trust,
+                        sync: state.sync,
+                        description: state.description,
+                        body: state.body,
+                        deleted: state.deleted,
+                        sources: sources_of(conn, memory_id, version)?,
+                        // None: an imported version
+                        change: match row[9] {
+                            Value::Null => None,
+                            _ => Some(change_of(&row[9..], Vec::new())?),
+                        },
+                        level: state.level,
+                        tags: state.tags,
+                    })
+                })
+                .collect()
+        })
+    }
+
+    /// The versions of other memories that cite any version of `memory_id`.
+    pub fn citing(&self, memory_id: &str) -> Result<Vec<Citation>, CoreError> {
+        let found = self.database().read(|conn| match conn {
+            Some(conn) => rows(
+                conn,
+                "SELECT s.memory_id, s.version, s.source_version, s.version = m.version \
+                 FROM memory_sources s JOIN memories m ON m.id = s.memory_id \
+                 WHERE s.source_id = ?1 ORDER BY s.memory_id, s.version",
+                [memory_id],
+            ),
+            None => Ok(Vec::new()),
+        })?;
+        found
+            .iter()
+            .map(|row| match &row[..] {
+                [
+                    Value::Text(citing_id),
+                    Value::Integer(version),
+                    Value::Integer(source_version),
+                    Value::Integer(current),
+                ] => Ok(Citation {
+                    memory_id: citing_id.clone(),
+                    version: *version,
+                    source_version: *source_version,
+                    current: *current != 0,
+                }),
+                _ => Err(CoreError::StorageFailure),
+            })
+            .collect()
+    }
+
+    /// Sets the description of `name` in `project_id`, replacing any. Not a change of
+    /// a memory: no version, no step, no undo.
+    pub fn describe_tag(&self, project_id: &str, name: &str, description: &str) -> Written<()> {
+        if !is_tag_name(name) {
+            return value_error("not a tag name");
+        }
+        let not_found = || CoreError::ProjectNotFound(project_id.to_string());
+        if !is_id(project_id) || !self.database().exists()? {
+            return Err(not_found().into());
+        }
+        Ok(self.database().write(false, |conn| {
+            is_global(conn, project_id)?.ok_or_else(not_found)?;
+            conn.execute(
+                "INSERT OR REPLACE INTO tags (project_id, name, description, updated) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![project_id, name, description, now()],
+            )?;
+            Ok(())
+        })?)
     }
 
     /// Every described tag name of `project_id` with its description; a row memriver

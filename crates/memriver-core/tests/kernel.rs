@@ -4,8 +4,8 @@
 
 mod common;
 
-use common::{CAPS, Env, core, setup, value};
-use memriver_core::models::changes::{MetadataCaps, Op, OpName, SourceRef};
+use common::{CAPS, Env, body, citing, conflict, core, draft, judged, setup, update, value};
+use memriver_core::models::changes::{MetadataCaps, Op, OpName};
 use memriver_core::models::errors::{BatchConflictReason, Cap, CoreError, WriteError};
 
 fn rows(env: &Env) -> [i64; 5] {
@@ -17,135 +17,6 @@ fn rows(env: &Env) -> [i64; 5] {
         "memory_sources",
     ]
     .map(|table| env.count(table))
-}
-
-struct Draft {
-    project_id: String,
-    body: String,
-    sources: Vec<SourceRef>,
-    trust: String,
-    sync: bool,
-    level: Option<i64>,
-    tags: Vec<String>,
-}
-
-fn draft(project_id: &str, body: &str) -> Draft {
-    Draft {
-        project_id: project_id.to_string(),
-        body: body.to_string(),
-        sources: Vec::new(),
-        trust: "agent".to_string(),
-        sync: true,
-        level: None,
-        tags: Vec::new(),
-    }
-}
-
-impl Draft {
-    fn citing(mut self, sources: &[(&str, i64)]) -> Draft {
-        self.sources = refs(sources);
-        self
-    }
-
-    fn trusted(mut self, trust: &str, sync: bool) -> Draft {
-        (self.trust, self.sync) = (trust.to_string(), sync);
-        self
-    }
-
-    fn judged(mut self, level: Option<i64>, tags: &[&str]) -> Draft {
-        self.level = level;
-        self.tags = tags.iter().map(|tag| tag.to_string()).collect();
-        self
-    }
-
-    fn op(self) -> Op {
-        Op::Create {
-            project_id: self.project_id,
-            type_: "project".to_string(),
-            description: String::new(),
-            body: self.body,
-            sources: self.sources,
-            trust: self.trust,
-            sync: self.sync,
-            level: self.level,
-            tags: self.tags,
-        }
-    }
-}
-
-fn refs(sources: &[(&str, i64)]) -> Vec<SourceRef> {
-    sources
-        .iter()
-        .map(|(memory_id, version)| SourceRef {
-            memory_id: memory_id.to_string(),
-            version: *version,
-        })
-        .collect()
-}
-
-fn update(memory_id: &str, expected_version: i64) -> Op {
-    Op::update(memory_id, expected_version)
-}
-
-fn body(memory_id: &str, expected_version: i64, text: &str) -> Op {
-    let Op::Update {
-        memory_id,
-        expected_version,
-        description,
-        sources,
-        level,
-        tags,
-        ..
-    } = update(memory_id, expected_version)
-    else {
-        unreachable!()
-    };
-    Op::Update {
-        memory_id,
-        expected_version,
-        description,
-        body: Some(text.to_string()),
-        sources,
-        level,
-        tags,
-    }
-}
-
-fn citing(memory_id: &str, expected_version: i64, sources: &[(&str, i64)]) -> Op {
-    Op::Update {
-        memory_id: memory_id.to_string(),
-        expected_version,
-        description: None,
-        body: None,
-        sources: Some(refs(sources)),
-        level: None,
-        tags: None,
-    }
-}
-
-fn judged(memory_id: &str, expected_version: i64, level: Option<i64>, tags: Option<&[&str]>) -> Op {
-    Op::Update {
-        memory_id: memory_id.to_string(),
-        expected_version,
-        description: None,
-        body: None,
-        sources: None,
-        level,
-        tags: tags.map(|tags| tags.iter().map(|tag| tag.to_string()).collect()),
-    }
-}
-
-fn conflict<T: std::fmt::Debug>(
-    result: Result<T, WriteError>,
-) -> (usize, Option<String>, BatchConflictReason) {
-    match core(result) {
-        CoreError::BatchConflict {
-            index,
-            memory_id,
-            reason,
-        } => (index, memory_id, reason),
-        other => panic!("not a conflict: {other:?}"),
-    }
 }
 
 fn state(env: &Env, memory_id: &str) -> (i64, String, String, i64, Option<String>) {

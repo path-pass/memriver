@@ -27,7 +27,7 @@ named! {
 // words joined by single hyphens, at most 32 characters
 pub const TAG_NAME_MAX_CHARS: usize = 32;
 
-fn is_tag_name(name: &str) -> bool {
+pub fn is_tag_name(name: &str) -> bool {
     let word = |word: &str| {
         !word.is_empty()
             && word
