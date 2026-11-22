@@ -469,19 +469,24 @@ impl SessionStore {
         Ok(registered.flatten())
     }
 
-    /// Moves `last_active_at` forward, always; a transcript path replaces the stored
-    /// one only when one is given.
+    /// Moves `last_active_at` forward. `transcript_path` replaces the stored path;
+    /// `adopt` is stored only where none is -- decided here, under the write lock, and
+    /// committed with the time, so no reader is given the new time without the path
+    /// that came with it.
     pub fn touch(
         &self,
         key: &SessionKey,
         at: &str,
         transcript_path: Option<&str>,
+        adopt: Option<&str>,
         activity: Activity,
     ) -> Written<Option<Session>> {
         require_timestamp(at)?;
         self.change(key, |mut session| {
             session.last_active_at = later(&session.last_active_at, at, activity)?;
-            if let Some(path) = transcript_path {
+            if let Some(path) =
+                transcript_path.or(adopt.filter(|_| session.transcript_path.is_none()))
+            {
                 session.transcript_path = Some(path.to_string());
             }
             Ok(Some(session))
@@ -704,20 +709,6 @@ impl SessionStore {
             session.status = SessionStatus::Registered;
             session.project_id = Some(project_id.to_string());
             Ok(Some(session))
-        })
-    }
-
-    /// Stores a transcript path where none is stored.
-    pub fn adopt_transcript(
-        &self,
-        key: &SessionKey,
-        transcript_path: &str,
-    ) -> Written<Option<Session>> {
-        self.change(key, |mut session| {
-            Ok(session.transcript_path.is_none().then(|| {
-                session.transcript_path = Some(transcript_path.to_string());
-                session
-            }))
         })
     }
 

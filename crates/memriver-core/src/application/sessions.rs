@@ -212,7 +212,7 @@ impl SessionService {
             // a session keeps its row however and wherever it is resumed: the new
             // transcript path is adopted, the session never moves
             let touched = store
-                .touch(key, &now(), transcript_path, Activity::First)
+                .touch(key, &now(), transcript_path, None, Activity::First)
                 .map_err(core)?;
             return Ok(StartOutcome {
                 context: self.context_of(&touched.unwrap_or(stored))?,
@@ -233,16 +233,17 @@ impl SessionService {
                 }
             }
         }
-        let mut touched = store
-            .touch(key, &now(), None, following(&moved))
+        // a first transcript path comes with the touch, in one write: a signal needs a
+        // stored path, so a NULL one means none was seen
+        let touched = store
+            .touch(
+                key,
+                &now(),
+                None,
+                usable(transcript_path),
+                following(&moved),
+            )
             .map_err(core)?;
-        // a signal needs a stored path, so a NULL one means none was seen
-        if touched.is_some()
-            && stored.transcript_path.is_none()
-            && let Some(path) = usable(transcript_path)
-        {
-            touched = store.adopt_transcript(key, path).map_err(core)?.or(touched);
-        }
         Ok(StartOutcome {
             context: self.context_of(&touched.unwrap_or(stored))?,
             moved,

@@ -392,7 +392,7 @@ fn touch_moves_last_active_at_forward_only() {
     let touch = |second| {
         fixture
             .store
-            .touch(&key(), &at(second), None, Activity::First)
+            .touch(&key(), &at(second), None, None, Activity::First)
             .unwrap()
     };
     assert_eq!(touch(20).unwrap().last_active_at, at(20));
@@ -410,13 +410,13 @@ fn touch_replaces_the_transcript_path_only_when_one_is_given() {
     }));
     let touched = fixture
         .store
-        .touch(&key(), &at(1), None, Activity::First)
+        .touch(&key(), &at(1), None, None, Activity::First)
         .unwrap()
         .unwrap();
     assert_eq!(touched.transcript_path.as_deref(), Some("/tmp/a.jsonl"));
     let touched = fixture
         .store
-        .touch(&key(), &at(2), Some("/tmp/b.jsonl"), Activity::First);
+        .touch(&key(), &at(2), Some("/tmp/b.jsonl"), None, Activity::First);
     assert_eq!(
         touched.unwrap().unwrap().transcript_path.as_deref(),
         Some("/tmp/b.jsonl")
@@ -433,7 +433,7 @@ fn touch_of_an_unknown_key_is_none_and_writes_nothing() {
     assert_eq!(
         fixture
             .store
-            .touch(&key(), &at(1), None, Activity::First)
+            .touch(&key(), &at(1), None, None, Activity::First)
             .unwrap(),
         None
     );
@@ -523,7 +523,7 @@ fn activity_while_the_clock_is_behind_still_ends_what_a_summary_was_read_for() {
             drop(
                 fixture
                     .store
-                    .touch(&key(), &at(9), None, Activity::First)
+                    .touch(&key(), &at(9), None, None, Activity::First)
                     .unwrap(),
             )
         }),
@@ -638,7 +638,9 @@ fn the_write_that_follows_a_rows_making_or_move_in_one_event_does_not_move_its_t
     // the touch that follows a move in another write of the same event: the time that
     // write left, or the touch's own when that is later
     let touched = |at: &str| {
-        let touched = fixture.store.touch(&key(), at, None, Activity::Following);
+        let touched = fixture
+            .store
+            .touch(&key(), at, None, None, Activity::Following);
         touched.unwrap().unwrap().last_active_at
     };
     let stands = fixture.get().last_active_at;
@@ -665,7 +667,7 @@ fn activity_on_a_session_whose_time_has_no_later_one_is_a_storage_failure_and_wr
         ("a start", |fixture| {
             fixture
                 .store
-                .touch(&key(), &at(9), None, Activity::First)
+                .touch(&key(), &at(9), None, None, Activity::First)
                 .map(drop)
         }),
         ("a stop", |fixture| {
@@ -712,7 +714,7 @@ fn activity_on_a_session_whose_time_has_no_later_one_is_a_storage_failure_and_wr
     // what follows a move in another write of the same event has nothing to move
     let touched = fixture
         .store
-        .touch(&key(), &at(9), None, Activity::Following);
+        .touch(&key(), &at(9), None, None, Activity::Following);
     assert_eq!(touched.unwrap().unwrap().last_active_at, LAST);
     // and the instant before the last still has one after it
     let fixture = initialized();
@@ -721,7 +723,7 @@ fn activity_on_a_session_whose_time_has_no_later_one_is_a_storage_failure_and_wr
     }));
     let touched = fixture
         .store
-        .touch(&key(), &at(9), None, Activity::First)
+        .touch(&key(), &at(9), None, None, Activity::First)
         .unwrap()
         .unwrap();
     assert_eq!(touched.last_active_at, LAST);
@@ -1239,7 +1241,7 @@ fn a_bad_row_fails_a_write_too_and_is_left_as_it_was() {
     let store = &fixture.store;
     assert_eq!(
         store
-            .touch(&key(), &at(50), None, Activity::First)
+            .touch(&key(), &at(50), None, None, Activity::First)
             .unwrap_err(),
         failure
     );
@@ -1254,7 +1256,6 @@ fn a_bad_row_fails_a_write_too_and_is_left_as_it_was() {
             .unwrap_err(),
         failure
     );
-    assert_eq!(store.adopt_transcript(&key(), "/t/a").unwrap_err(), failure);
     assert_eq!(store.move_(&key(), &to_other()).unwrap_err(), failure);
     assert_eq!(
         store
@@ -1304,7 +1305,7 @@ fn session_row_with_reordered_prompt_keys_is_read_and_rewritten_at_first() {
     // the next write of that session stores `at` first
     fixture
         .store
-        .touch(&key(), &at(2), None, Activity::First)
+        .touch(&key(), &at(2), None, None, Activity::First)
         .unwrap();
     let (first, recent): (String, String) = fixture
         .raw()
@@ -1362,7 +1363,9 @@ fn session_writes_into_a_missing_store_are_silent() {
     let store = &fixture.store;
     assert_eq!(store.register(&session(|_| {})).unwrap(), None);
     assert_eq!(
-        store.touch(&key(), &at(1), None, Activity::First).unwrap(),
+        store
+            .touch(&key(), &at(1), None, None, Activity::First)
+            .unwrap(),
         None
     );
     assert_eq!(
@@ -1376,7 +1379,6 @@ fn session_writes_into_a_missing_store_are_silent() {
     store.mark_saved(&key()).unwrap();
     assert_eq!(fixture.confirm(&key()).unwrap(), None);
     assert_eq!(fixture.assign(PROJECT), None);
-    assert_eq!(store.adopt_transcript(&key(), "/t/a").unwrap(), None);
     assert_eq!(store.move_(&key(), &to_other()).unwrap(), None);
     store
         .record_call(&key(), "call-1", &hour(10, 0), HOUR, None)
@@ -1400,7 +1402,7 @@ fn a_malformed_argument_is_a_value_error_and_writes_nothing() {
         session.transcript_path = own("/t/a");
     }));
     let store = &fixture.store;
-    is_value_error(store.touch(&key(), "yesterday", None, Activity::First));
+    is_value_error(store.touch(&key(), "yesterday", None, None, Activity::First));
     is_value_error(store.end(&key(), "2026-09-24"));
     is_value_error(store.nudge_if_due(&key(), "", 5, 5));
     is_value_error(store.add_prompt(
@@ -1645,7 +1647,9 @@ fn a_published_summary_round_trips_and_later_writes_keep_it() {
         ),
         (Some("Fixed the login page."), Some(at(5)), at(0))
     );
-    store.touch(&key(), &at(9), None, Activity::First).unwrap();
+    store
+        .touch(&key(), &at(9), None, None, Activity::First)
+        .unwrap();
     fixture.add(&key(), &prompt(10, "x"), &session(|_| {}));
     let stored = fixture.get();
     assert_eq!(
@@ -1677,7 +1681,7 @@ fn publishing_for_a_moved_unbound_pending_global_or_unknown_session_writes_nothi
     fixture.sql("UPDATE sessions SET project_id = 'zzzzzzzzzz' WHERE session_id = 'gone'");
     fixture
         .store
-        .touch(&key(), &at(3), None, Activity::First)
+        .touch(&key(), &at(3), None, None, Activity::First)
         .unwrap(); // activity after it was read
     for key in [
         key(),
@@ -1747,35 +1751,38 @@ fn a_summary_memriver_could_not_have_written_is_damage() {
     }
 }
 
-// --- adopt_transcript ---
+// --- a first transcript path ---
 
 #[test]
-fn adopt_transcript_only_when_null() {
+fn a_touch_adopts_a_transcript_path_only_where_none_is_stored() {
     let fixture = initialized();
     fixture.register(session(|_| {}));
-    let adopt = |path| {
-        fixture
+    let touch = |second, replace, adopt| {
+        let touched = fixture
             .store
-            .adopt_transcript(&key(), path)
-            .unwrap()
-            .unwrap()
+            .touch(&key(), &at(second), replace, adopt, Activity::First);
+        touched.unwrap().unwrap()
     };
+    let touched = touch(1, None, Some("/t/a.jsonl"));
     assert_eq!(
-        adopt("/t/a.jsonl").transcript_path.as_deref(),
-        Some("/t/a.jsonl")
+        (touched.transcript_path.as_deref(), touched.last_active_at),
+        (Some("/t/a.jsonl"), at(1))
     );
     assert_eq!(
-        adopt("/t/b.jsonl").transcript_path.as_deref(),
+        touch(2, None, Some("/t/b.jsonl"))
+            .transcript_path
+            .as_deref(),
         Some("/t/a.jsonl")
     );
     assert_eq!(fixture.get().transcript_path.as_deref(), Some("/t/a.jsonl"));
-    assert_eq!(
-        fixture
-            .store
-            .adopt_transcript(&other_key(), "/t/c")
-            .unwrap(),
-        None
-    );
+    // a path given to replace the stored one does, whatever else is offered
+    let replaced = touch(3, Some("/t/c.jsonl"), Some("/t/d.jsonl"));
+    assert_eq!(replaced.transcript_path.as_deref(), Some("/t/c.jsonl"));
+    // an unknown key
+    let unknown = fixture
+        .store
+        .touch(&other_key(), &at(1), None, Some("/t/c"), Activity::First);
+    assert_eq!(unknown.unwrap(), None);
 }
 
 // --- move ---

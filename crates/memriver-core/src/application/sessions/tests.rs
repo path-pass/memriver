@@ -133,7 +133,7 @@ fn a_store_removed_after_the_existence_check_is_still_a_no_op() {
     let touched = world
         .session()
         .session_store
-        .touch(&key(), &now(), None, Activity::First);
+        .touch(&key(), &now(), None, None, Activity::First);
     assert_eq!(touched.unwrap(), None);
     assert!(!world.store.exists());
     // and through the service: the answer of a store that is not there
@@ -554,5 +554,25 @@ fn a_prompt_and_what_it_brings_are_one_write_to_whoever_reads_the_session() {
             assert_eq!(moves[0].moved_at, after.last_active_at);
             assert_eq!(after.project_id, Some(b.id));
         }
+    }
+}
+
+#[test]
+fn a_start_and_the_first_transcript_path_it_brings_are_one_write() {
+    for source in ["compact", "startup", "clear"] {
+        let world = world();
+        world.start("startup", None, None);
+        let before = world.row();
+        assert_eq!(before.transcript_path, None);
+        let seen = Rc::new(std::cell::RefCell::new(Vec::new()));
+        watch(&world, &seen);
+        world.start(source, Some(T_A), Some(&world.work));
+        meanwhile(|| {});
+        let after = world.row();
+        assert_eq!(after.transcript_path.as_deref(), Some(T_A), "{source}");
+        assert!(after.last_active_at > before.last_active_at);
+        // no reading has the new time without the path that came with it
+        let seen = seen.take();
+        assert_eq!(seen, [before], "{source}");
     }
 }
