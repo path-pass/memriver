@@ -241,62 +241,62 @@ packages/memriver-core/tests/integration/application/test_undo.py::test_one_chan
 packages/memriver-core/tests/integration/application/test_undo.py::test_one_or_all_members_hard_deleted_refuses_while_an_unrelated_change_is_undone ->
 packages/memriver-core/tests/integration/application/test_undo.py::test_undoing_a_create_soft_deletes_the_memory ->
 packages/memriver-core/tests/integration/application/test_undo.py::test_undoing_an_update_a_soft_delete_and_a_restore_restores_the_version_before ->
-packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_airtable_pattern_verbatim_translates_and_matches ->
-packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_escaped_backslash_followed_by_z_is_not_mistaken_for_the_anchor ->
-packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_every_regex_bearing_rule_loads_on_this_interpreter ->
-packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_flag_inside_one_alternative_does_not_leak_past_the_pipe_boundary ->
-packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_leading_flag_group_at_position_zero_is_left_alone ->
-packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_load_rules_still_returns_a_large_ruleset ->
-packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_mapped_posix_class_translates_even_when_not_first_in_the_bracket ->
-packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_mid_pattern_flag_inside_a_group_scopes_to_that_groups_close ->
-packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_negative_only_flag_group_after_a_mid_pattern_positive_one ->
-packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_negative_only_mid_pattern_flag_group_is_translated ->
-packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_pattern_with_none_of_the_constructs_is_returned_unchanged ->
-packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_posix_alnum_class_inside_brackets_expands_to_ascii_ranges ->
-packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_redundant_inner_flag_group_becomes_a_scoped_group ->
-packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_top_level_mid_pattern_flag_scopes_to_end_of_pattern ->
-packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_two_alternatives_each_with_their_own_flag_group_matches_both ->
-packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_unmapped_posix_class_at_bracket_start_raises ->
-packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_unmapped_posix_class_not_at_bracket_start_raises ->
-packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_z_outside_bracket_becomes_capital_z ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_control_character_only_content_blocked ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_control_character_prefixed_content_passes ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_credential_prose_without_assignment_passes ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_declared_secret_group_still_rejects_a_real_secret ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_duplicate_ids_across_files_keep_the_first ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_empty_content_blocked ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_entropy_above_threshold_rejects ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_entropy_all_low_candidates_still_pass ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_entropy_below_threshold_passes ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_entropy_checks_every_candidate_not_just_the_first ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_entropy_dropped_for_unlisted_rule ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_entropy_falls_back_to_whole_match_without_groups ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_entropy_honored_for_listed_rule ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_entropy_prefers_group_one_when_no_secret_group ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_entropy_uses_declared_secret_group ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_every_rejection_names_its_rule_in_a_field ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_floor_rules_cover_what_vendored_rules_miss ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_low_entropy_provider_shapes_blocked ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_max_chars_exact_limit_passes ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_max_chars_is_tunable ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_max_chars_one_over_limit_rejects ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_memriver_floor_rules_all_load ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_missing_policy_table_honors_every_entropy ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_natural_language_separator_blocked ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_normal_content_passes ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_ordinary_memory_content_passes ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_oversize_blocked ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_pointer_prose_still_passes ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_re2_translated_rules_are_now_enforced ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_rejection_message_carries_rule_id_and_pointer_guidance ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_rule_ids_are_unique ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_secrets_blocked ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_shannon_entropy ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_shipped_policy_honours_entropy_only_for_generic_api_key ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_short_value_negative_controls_pass ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_uncompilable_rule_is_skipped_not_fatal ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_vendored_rules_are_usable ->
-packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_vendored_secrets_blocked ->
+packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_airtable_pattern_verbatim_translates_and_matches -> rust:memriver-core::content_policy::rules_loader::tests::all_226_rewrite_and_compile + rust:memriver-core::tests/policy_ascii_matrix.rs::every_ascii_matrix_verdict_equals_python
+packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_escaped_backslash_followed_by_z_is_not_mistaken_for_the_anchor -> n/a: the translation of RE2 syntax for Python's re is not ported; the regex crate reads the rules as written
+packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_every_regex_bearing_rule_loads_on_this_interpreter -> rust:memriver-core::content_policy::rules_loader::tests::loads_226_rules_memriver_first + rust:memriver-core::content_policy::rules_loader::tests::all_226_rewrite_and_compile
+packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_flag_inside_one_alternative_does_not_leak_past_the_pipe_boundary -> rust:memriver-core::tests/policy_dialect.rs::every_row_gives_its_expected_rust_verdict
+packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_leading_flag_group_at_position_zero_is_left_alone -> n/a: the translation of RE2 syntax for Python's re is not ported; the regex crate reads the rules as written
+packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_load_rules_still_returns_a_large_ruleset -> rust:memriver-core::content_policy::rules_loader::tests::loads_226_rules_memriver_first
+packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_mapped_posix_class_translates_even_when_not_first_in_the_bracket -> rust:memriver-core::content_policy::rules_loader::tests::a_class_the_engines_read_differently_is_a_loader_error
+packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_mid_pattern_flag_inside_a_group_scopes_to_that_groups_close -> rust:memriver-core::tests/policy_dialect.rs::every_row_gives_its_expected_rust_verdict
+packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_negative_only_flag_group_after_a_mid_pattern_positive_one -> rust:memriver-core::tests/policy_dialect.rs::every_row_gives_its_expected_rust_verdict
+packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_negative_only_mid_pattern_flag_group_is_translated -> rust:memriver-core::tests/policy_dialect.rs::every_row_gives_its_expected_rust_verdict
+packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_pattern_with_none_of_the_constructs_is_returned_unchanged -> n/a: the translation of RE2 syntax for Python's re is not ported; the regex crate reads the rules as written
+packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_posix_alnum_class_inside_brackets_expands_to_ascii_ranges -> rust:memriver-core::tests/policy_dialect.rs::every_row_gives_its_expected_rust_verdict
+packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_redundant_inner_flag_group_becomes_a_scoped_group -> n/a: the translation of RE2 syntax for Python's re is not ported; the regex crate reads the rules as written
+packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_top_level_mid_pattern_flag_scopes_to_end_of_pattern -> rust:memriver-core::tests/policy_dialect.rs::every_row_gives_its_expected_rust_verdict
+packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_two_alternatives_each_with_their_own_flag_group_matches_both -> rust:memriver-core::tests/policy_dialect.rs::every_row_gives_its_expected_rust_verdict
+packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_unmapped_posix_class_at_bracket_start_raises -> rust:memriver-core::content_policy::rules_loader::tests::a_class_the_engines_read_differently_is_a_loader_error
+packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_unmapped_posix_class_not_at_bracket_start_raises -> rust:memriver-core::content_policy::rules_loader::tests::a_class_the_engines_read_differently_is_a_loader_error
+packages/memriver-core/tests/integration/content_policy/test_rules_loader.py::test_z_outside_bracket_becomes_capital_z -> rust:memriver-core::tests/policy_dialect.rs::every_row_gives_its_expected_rust_verdict
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_control_character_only_content_blocked -> rust:memriver-core::content_policy::secret_scanner::tests::empty_after_controls_and_strip + rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_control_character_prefixed_content_passes -> rust:memriver-core::content_policy::secret_scanner::tests::empty_after_controls_and_strip + rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_credential_prose_without_assignment_passes -> rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_declared_secret_group_still_rejects_a_real_secret -> rust:memriver-core::content_policy::secret_scanner::tests::entropy_is_measured_on_the_declared_group_then_the_first_then_the_whole_match + rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_duplicate_ids_across_files_keep_the_first -> rust:memriver-core::content_policy::rules_loader::tests::of_two_rules_with_one_id_the_first_counts_and_a_rule_without_a_pattern_is_left_out
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_empty_content_blocked -> rust:memriver-core::content_policy::secret_scanner::tests::empty_after_controls_and_strip + rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_entropy_above_threshold_rejects -> rust:memriver-core::content_policy::secret_scanner::tests::entropy_is_measured_on_the_declared_group_then_the_first_then_the_whole_match + rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_entropy_all_low_candidates_still_pass -> rust:memriver-core::content_policy::secret_scanner::tests::entropy_is_measured_on_the_declared_group_then_the_first_then_the_whole_match + rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_entropy_below_threshold_passes -> rust:memriver-core::content_policy::secret_scanner::tests::entropy_is_measured_on_the_declared_group_then_the_first_then_the_whole_match + rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_entropy_checks_every_candidate_not_just_the_first -> rust:memriver-core::content_policy::secret_scanner::tests::entropy_is_measured_on_the_declared_group_then_the_first_then_the_whole_match + rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_entropy_dropped_for_unlisted_rule -> rust:memriver-core::content_policy::rules_loader::tests::entropy_is_honoured_only_for_listed_rules + rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_entropy_falls_back_to_whole_match_without_groups -> rust:memriver-core::content_policy::secret_scanner::tests::entropy_is_measured_on_the_declared_group_then_the_first_then_the_whole_match + rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_entropy_honored_for_listed_rule -> rust:memriver-core::content_policy::rules_loader::tests::entropy_is_honoured_only_for_listed_rules + rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_entropy_prefers_group_one_when_no_secret_group -> rust:memriver-core::content_policy::secret_scanner::tests::entropy_is_measured_on_the_declared_group_then_the_first_then_the_whole_match + rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_entropy_uses_declared_secret_group -> rust:memriver-core::content_policy::secret_scanner::tests::entropy_is_measured_on_the_declared_group_then_the_first_then_the_whole_match + rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_every_rejection_names_its_rule_in_a_field -> rust:memriver-core::content_policy::secret_scanner::tests::a_secret_is_refused_by_the_first_rule_in_order_without_its_text + rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_floor_rules_cover_what_vendored_rules_miss -> rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_low_entropy_provider_shapes_blocked -> rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_max_chars_exact_limit_passes -> rust:memriver-core::content_policy::secret_scanner::tests::too_large_counts_scalars + rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_max_chars_is_tunable -> rust:memriver-core::content_policy::secret_scanner::tests::too_large_counts_scalars + rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_max_chars_one_over_limit_rejects -> rust:memriver-core::content_policy::secret_scanner::tests::too_large_counts_scalars + rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_memriver_floor_rules_all_load -> rust:memriver-core::content_policy::rules_loader::tests::loads_226_rules_memriver_first
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_missing_policy_table_honors_every_entropy -> rust:memriver-core::content_policy::rules_loader::tests::entropy_is_honoured_only_for_listed_rules + rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_natural_language_separator_blocked -> rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python + rust:memriver-core::content_policy::rules_loader::tests::credential_pattern_is_derived_and_fails_loudly_when_the_toml_shape_changes
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_normal_content_passes -> rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_ordinary_memory_content_passes -> rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_oversize_blocked -> rust:memriver-core::content_policy::secret_scanner::tests::too_large_counts_scalars + rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_pointer_prose_still_passes -> rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python + rust:memriver-core::content_policy::rules_loader::tests::credential_pattern_is_derived_and_fails_loudly_when_the_toml_shape_changes
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_re2_translated_rules_are_now_enforced -> rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_rejection_message_carries_rule_id_and_pointer_guidance -> rust:memriver-core::content_policy::secret_scanner::tests::a_secret_is_refused_by_the_first_rule_in_order_without_its_text + rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_rule_ids_are_unique -> rust:memriver-core::content_policy::rules_loader::tests::loads_226_rules_memriver_first
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_secrets_blocked -> rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_shannon_entropy -> rust:memriver-core::content_policy::secret_scanner::tests::entropy_sum_order_matches_python + rust:memriver-core::tests/policy_ascii_matrix.rs::every_entropy_is_the_float_python_computes
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_shipped_policy_honours_entropy_only_for_generic_api_key -> rust:memriver-core::content_policy::rules_loader::tests::entropy_is_honoured_only_for_listed_rules
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_short_value_negative_controls_pass -> rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_uncompilable_rule_is_skipped_not_fatal -> rust:memriver-core::content_policy::rules_loader::tests::a_class_the_engines_read_differently_is_a_loader_error + rust:memriver-core::content_policy::rules_loader::tests::all_226_rewrite_and_compile + rust:memriver-core::content_policy::rules_loader::tests::of_two_rules_with_one_id_the_first_counts_and_a_rule_without_a_pattern_is_left_out
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_vendored_rules_are_usable -> rust:memriver-core::content_policy::rules_loader::tests::loads_226_rules_memriver_first
+packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_vendored_secrets_blocked -> rust:memriver-core::tests/policy_fixture.rs::all_785_recorded_verdicts_equal_python
 packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_a_database_name_that_is_not_a_regular_file_is_refused -> rust:memriver-core::tests/database.rs::symlinked_database_is_refused
 packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_a_failed_first_write_leaves_no_schema -> rust:memriver-core::tests/database.rs::a_failed_first_write_leaves_no_schema
 packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_a_memory_round_trips_through_its_row -> rust:memriver-core::tests/database.rs::a_memory_round_trips_through_its_row

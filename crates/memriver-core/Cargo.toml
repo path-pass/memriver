@@ -13,6 +13,12 @@ libc = "0.2"
 # exact, both: libsqlite3-sys carries the SQLite that is built in (3.54.1), and a new
 # version of either can bring another
 libsqlite3-sys = "=0.40.0"
+# exact, all three: regex-syntax carries the Unicode tables the content policy matches by
+# (case folding, word boundaries, white space), and regex-automata is the engine whose
+# memory the rule cache was measured with
+regex = "=1.13.2"
+regex-automata = "=0.4.19"
+regex-syntax = "=0.8.12"
 rusqlite = { version = "=0.43.0", default-features = false, features = ["bundled"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 # exact, all three: which settings files are read is decided by the parser (toml_parser) and

@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 
 use toml::de::{DeTable, DeValue};
 
+use crate::content_policy::rule_cache::CachePolicy;
+
 /// A process environment, handed down from the binary's entry point.
 pub type Env = HashMap<String, String>;
 
@@ -45,6 +47,8 @@ pub const SESSION_SEARCH_LIMIT_DEFAULT: usize = 10;
 pub const SESSION_SEARCH_LIMIT_MAX: usize = 50;
 pub const TOOL_CALL_RETENTION_S: i64 = 3600; // how long a call -> session mapping is kept
 pub const SESSION_SUMMARY_MAX_CHARS: usize = 1200; // one published session summary
+// compiled content-policy rules kept between checks; chosen by measurement
+pub const POLICY_RULE_CACHE: CachePolicy = CachePolicy::None;
 
 /// The settings file or a `MEMRIVER_*` variable cannot be used; nothing was loaded.
 ///
