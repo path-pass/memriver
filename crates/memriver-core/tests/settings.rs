@@ -540,27 +540,65 @@ fn light_settings_read_nothing() {
     );
 }
 
-/// The four spellings of TOML 1.1 that this implementation reads and the Python one, whose
-/// parser is TOML 1.0, answers with "could not be read".
-const READ_HERE_ONLY: [&str; 4] = [
-    "file with a newline in an inline table",
-    "file with a trailing comma in an inline table",
-    "file with an escape of TOML 1.1",
-    "file with a time without seconds",
-];
-
 /// What a recorded value becomes in a field whose largest value is `max`: itself, or `max`.
+/// A value the recording could only write in hexadecimal is larger than any field.
 fn held(recorded: &str, max: u128) -> u128 {
     recorded.parse::<u128>().map_or(max, |value| value.min(max))
 }
 
+type Answer = Result<[Option<u128>; 9], String>;
+
+const FIELDS: [&str; 9] = [
+    "max_body_chars",
+    "search_limit_max",
+    "search_limit_default",
+    "index_budget_lines",
+    "memory_reads_retention_days",
+    "standing_max_count",
+    "standing_max_chars",
+    "tags_max",
+    "tags_per_memory_max",
+];
+const DEFAULTS: [Option<u128>; 9] = [
+    Some(8000),
+    Some(50),
+    Some(5),
+    Some(100),
+    None,
+    Some(10),
+    Some(200),
+    Some(12),
+    Some(3),
+];
+
+/// The nine values of `named`, each as its field holds it; a field that is not named has
+/// its default.
+fn values(named: &serde_json::Value) -> [Option<u128>; 9] {
+    std::array::from_fn(|at| {
+        let max = if FIELDS[at] == "memory_reads_retention_days" {
+            u32::MAX as u128
+        } else {
+            usize::MAX as u128
+        };
+        match named.get(FIELDS[at]) {
+            None => DEFAULTS[at],
+            Some(recorded) => recorded.as_str().map(|recorded| held(recorded, max)),
+        }
+    })
+}
+
+/// Every case of the matrix recorded from the Python implementation by
+/// `compat/record_settings_matrix.py`. A case answers as Python did, a value too large for
+/// its field becoming the field's largest; where this implementation is meant to answer
+/// differently the case says what and why, and that is what is expected — and Python's
+/// answer must then really be another.
 #[test]
 fn settings_matrix_equals_python() {
     let cases: serde_json::Value =
         serde_json::from_str(include_str!("fixtures/settings_matrix.json")).unwrap();
     let cases = cases.as_array().unwrap();
-    assert_eq!(cases.len(), 557);
-    let mut read_here_only = 0;
+    assert_eq!(cases.len(), 599);
+    let mut different = 0;
     for case in cases {
         let name = case["name"].as_str().unwrap();
         let sandbox = store(None);
@@ -578,14 +616,7 @@ fn settings_matrix_equals_python() {
             .iter()
             .map(|(name, value)| (name.clone(), value.as_str().unwrap().to_string()))
             .collect();
-        let loaded = load_settings(Some(&sandbox.root), &env, &sandbox.home);
-        if READ_HERE_ONLY.contains(&name) {
-            assert_eq!(case["error"], "settings.toml could not be read", "{name}");
-            assert_eq!(loaded.unwrap().max_body_chars, 42, "{name}");
-            read_here_only += 1;
-            continue;
-        }
-        let got = match &loaded {
+        let got: Answer = match load_settings(Some(&sandbox.root), &env, &sandbox.home) {
             Err(refused) => Err(refused.to_string()),
             Ok(settings) => Ok([
                 Some(settings.max_body_chars as u128),
@@ -599,29 +630,26 @@ fn settings_matrix_equals_python() {
                 Some(settings.tags_per_memory_max as u128),
             ]),
         };
-        let expected = match case["error"].as_str() {
+        let python: Answer = match case["error"].as_str() {
             Some(sentence) => Err(sentence.to_string()),
-            None => {
-                let value = |field: &str, max: u128| {
-                    case["values"][field]
-                        .as_str()
-                        .map(|recorded| held(recorded, max))
-                };
-                let wide = usize::MAX as u128;
-                Ok([
-                    value("max_body_chars", wide),
-                    value("search_limit_max", wide),
-                    value("search_limit_default", wide),
-                    value("index_budget_lines", wide),
-                    value("memory_reads_retention_days", u128::from(u32::MAX)),
-                    value("standing_max_count", wide),
-                    value("standing_max_chars", wide),
-                    value("tags_max", wide),
-                    value("tags_per_memory_max", wide),
-                ])
-            }
+            None => Ok(values(&case["values"])),
         };
+        let Some(here) = case.get("rust") else {
+            assert_eq!(got, python, "{name}");
+            continue;
+        };
+        let expected: Answer = match here["error"].as_str() {
+            Some(sentence) => Err(sentence.to_string()),
+            None => Ok(values(&here["reads"])),
+        };
+        assert!(
+            case["why"].as_str().is_some_and(|why| !why.is_empty()),
+            "{name}"
+        );
         assert_eq!(got, expected, "{name}");
+        // a case is marked only where the two really differ in refusing or in the sentence
+        assert_ne!(python.as_ref().err(), expected.as_ref().err(), "{name}");
+        different += 1;
     }
-    assert_eq!(read_here_only, 4);
+    assert_eq!(different, 39);
 }

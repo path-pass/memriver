@@ -119,6 +119,8 @@ dependencies = [
  "memriver-test-support",
  "serde_json",
  "toml",
+ "toml_datetime",
+ "toml_parser",
  "unicode-normalization",
  "unicode-properties",
 ]
