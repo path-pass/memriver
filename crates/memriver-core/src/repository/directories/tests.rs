@@ -334,7 +334,7 @@ fn a_root_that_changes_hands_while_it_is_emptied_is_left_standing() {
     let (home, cwd, store) = places(&base);
     let moved = base.join("moved-away");
     let plan = plan_purge(&store, &home, &cwd, false).unwrap();
-    let result = purge_with(plan, &mut |emptied| {
+    let result = purge_with(plan, &mut || {}, &mut |emptied| {
         if emptied == store {
             fs::rename(&store, &moved).unwrap();
             fs::create_dir(&store).unwrap();
@@ -356,7 +356,7 @@ fn a_child_that_changes_hands_while_it_is_emptied_is_named_and_left() {
     let (home, cwd, store) = places(&base);
     let (child, moved) = (store.join("sub"), base.join("moved-away"));
     let plan = plan_purge(&store, &home, &cwd, false).unwrap();
-    let result = purge_with(plan, &mut |emptied| {
+    let result = purge_with(plan, &mut || {}, &mut |emptied| {
         if emptied == child {
             fs::rename(&child, &moved).unwrap();
             fs::create_dir(&child).unwrap();
@@ -464,26 +464,125 @@ fn a_target_that_is_home_or_the_working_directory_under_another_spelling_is_too_
     }
 }
 
+// --- the directory held open and its name part ways before the last check ---
+
+/// A plan for the store with `protected` (home or the working directory) behind a link
+/// that leads outside for now: where the link leads can be changed later.
+fn plan_with_a_movable_base(base: &Path, protected: &str) -> (PurgePlan, PathBuf, PathBuf) {
+    let (home, cwd, store) = places(base);
+    fs::create_dir(base.join("outside")).unwrap();
+    let link = base.join("link");
+    symlink(base.join("outside"), &link).unwrap();
+    let (home, cwd) = match protected {
+        "home" => (link.clone(), cwd),
+        _ => (home, link.clone()),
+    };
+    let plan = plan_purge(&store, &home, &cwd, false).unwrap();
+    (plan, store, link)
+}
+
 #[test]
-fn a_protected_base_moved_into_the_target_under_another_spelling_is_seen_before_deleting() {
-    for moved in ["home", "cwd"] {
+fn a_protected_base_inside_the_held_directory_is_seen_wherever_its_name_went() {
+    // the directory about to be emptied is the one held open, not what its old name leads
+    // to now: renamed away with home below it, it still holds home
+    for protected in ["home", "cwd"] {
+        for left_behind in ["nothing", "a stranger"] {
+            let (_sandbox, base) = base();
+            let (plan, store, link) = plan_with_a_movable_base(&base, protected);
+            let moved = base.join("moved-away");
+            let result = purge_with(
+                plan,
+                &mut || {
+                    fs::rename(&store, &moved).unwrap();
+                    if left_behind == "a stranger" {
+                        fs::create_dir(&store).unwrap();
+                    }
+                    fs::remove_file(&link).unwrap();
+                    symlink(moved.join("sub"), &link).unwrap();
+                },
+                &mut |_| {},
+            );
+            assert_eq!(
+                result.outcome,
+                PurgeOutcome::Refused,
+                "{protected} {left_behind}"
+            );
+            let refusal = result.refusal.unwrap();
+            assert_eq!(
+                (refusal.kind, &refusal.path),
+                (PurgeRefusalKind::TooBroad, &store)
+            );
+            assert!(moved.join("sub/f").exists() && moved.join(DATABASE_FILENAME).exists());
+        }
+    }
+}
+
+#[test]
+fn a_protected_directory_swapped_in_at_the_target_is_not_what_gets_deleted() {
+    for protected in ["home", "cwd"] {
+        let (_sandbox, base) = base();
+        let (plan, store, link) = plan_with_a_movable_base(&base, protected);
+        let (moved, outside) = (base.join("moved-away"), base.join("outside"));
+        fs::write(outside.join("precious"), "p").unwrap();
+        let result = purge_with(
+            plan,
+            &mut || {
+                // the protected directory itself now stands where the target was
+                fs::rename(&store, &moved).unwrap();
+                fs::rename(&outside, &store).unwrap();
+                fs::remove_file(&link).unwrap();
+                symlink(&store, &link).unwrap();
+            },
+            &mut |_| {},
+        );
+        assert_eq!(result.outcome, PurgeOutcome::Refused, "{protected}");
+        assert_eq!(result.refusal.unwrap().kind, PurgeRefusalKind::TooBroad);
+        assert_eq!(fs::read_to_string(store.join("precious")).unwrap(), "p");
+        assert!(moved.join("sub/f").exists());
+    }
+}
+
+#[test]
+fn a_directory_renamed_away_after_it_was_confirmed_is_the_one_that_is_emptied() {
+    // nothing protected is involved: what the user confirmed is deleted, wherever its
+    // name went, and what took the name is left alone
+    let (_sandbox, base) = base();
+    let (plan, store, _) = plan_with_a_movable_base(&base, "home");
+    let moved = base.join("moved-away");
+    let result = purge_with(
+        plan,
+        &mut || {
+            fs::rename(&store, &moved).unwrap();
+            fs::create_dir(&store).unwrap();
+            fs::write(store.join("stranger"), "s").unwrap();
+        },
+        &mut |_| {},
+    );
+    assert_eq!(result.outcome, PurgeOutcome::ReplacedRoot);
+    assert_eq!(fs::read_dir(&moved).unwrap().count(), 0);
+    assert_eq!(fs::read_to_string(store.join("stranger")).unwrap(), "s");
+}
+
+#[test]
+fn a_protected_directory_that_cannot_be_looked_at_before_deleting_stops_the_purge() {
+    for protected in ["home", "cwd"] {
         let (_sandbox, base) = base();
         let (home, cwd, store) = places(&base);
-        fs::create_dir(base.join("outside")).unwrap();
-        let (_, inside) = alias(&base, "store/sub", "STORE/sub");
-        let link = base.join("link");
-        symlink(base.join("outside"), &link).unwrap();
-        let (home, cwd) = match moved {
-            "home" => (link.clone(), cwd),
-            _ => (home, link.clone()),
+        let unseen = match protected {
+            "home" => home.clone(),
+            _ => cwd.clone(),
         };
         let plan = plan_purge(&store, &home, &cwd, false).unwrap();
-        fs::remove_file(&link).unwrap();
-        symlink(&inside, &link).unwrap();
+        plant(true, &unseen, libc::EACCES, false);
         let result = purge(plan);
-        assert_eq!(result.outcome, PurgeOutcome::Refused, "{moved}");
-        assert_eq!(result.refusal.unwrap().kind, PurgeRefusalKind::TooBroad);
+        assert_eq!(result.outcome, PurgeOutcome::Refused, "{protected}");
+        let refusal = result.refusal.unwrap();
+        assert_eq!(
+            (refusal.kind, &refusal.path),
+            (PurgeRefusalKind::Unresolvable, &unseen)
+        );
         assert!(store.join("sub/f").exists() && store.join(DATABASE_FILENAME).exists());
+        FAULTS.with_borrow_mut(Vec::clear);
     }
 }
 
@@ -548,5 +647,97 @@ fn a_directory_on_another_mount_below_the_target_is_not_entered() {
             "t"
         );
         MOUNTS.with_borrow_mut(Vec::clear);
+    }
+}
+
+/// `sudo -n <args> <at>`, started as every process of a test is.
+#[cfg(target_os = "linux")]
+fn as_root(sandbox: &Sandbox, args: &[&str], at: &Path) -> std::process::Command {
+    let mut command = memriver_test_support::isolated_command(sandbox, Path::new("/usr/bin/sudo"));
+    command.arg("-n").args(args).arg(at);
+    command
+}
+
+/// A real mount, taken away again when the test ends, however it ends.
+#[cfg(target_os = "linux")]
+struct Mounted(std::process::Command);
+
+#[cfg(target_os = "linux")]
+impl Drop for Mounted {
+    fn drop(&mut self) {
+        let _ = self.0.status();
+    }
+}
+
+/// `mount <args> <at>` as root. Where that cannot be had the caller has nothing to test
+/// with -- except in a build made in CI, where it can be had and a mount that fails is a
+/// failure.
+#[cfg(target_os = "linux")]
+fn mounted(sandbox: &Sandbox, args: &[&str], at: &Path) -> Option<Mounted> {
+    let done = as_root(sandbox, &[&["mount"], args].concat(), at)
+        .status()
+        .is_ok_and(|status| status.success());
+    if !done {
+        if option_env!("CI").is_some() {
+            panic!("mount {args:?} failed in CI");
+        }
+        eprintln!("not run: mount {args:?} needs sudo without a password");
+        return None;
+    }
+    Some(Mounted(as_root(sandbox, &["umount"], at)))
+}
+
+/// With real mounts, each of the two guards on its own: the system refusing a mount as it
+/// opens the child (`openat2`), and -- the child opened as on a system without that call
+/// -- the mount id the system really gives. A second mount of the same device is told
+/// apart by nothing else; were no mount id read, the walk would go in and the file behind
+/// the mount would be gone.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_real_mount_below_the_store_is_not_entered_by_either_guard() {
+    for plain_open in [false, true] {
+        // the same device mounted a second time, then another file system
+        for kind in ["bind", "tmpfs"] {
+            let (sandbox, base) = base();
+            let (home, cwd, store) = places(&base);
+            let (outside, held) = (base.join("outside"), store.join("sub/held"));
+            fs::create_dir(&outside).unwrap();
+            fs::create_dir(&held).unwrap();
+            let source = outside.to_str().unwrap();
+            let args = match kind {
+                "bind" => vec!["--bind", source],
+                _ => vec!["-t", "tmpfs", "tmpfs"],
+            };
+            let Some(_mounted) = mounted(&sandbox, &args, &held) else {
+                return;
+            };
+            // written through the mount: it is what lies behind it
+            fs::write(held.join("theirs"), "t").unwrap();
+            if kind == "bind" {
+                // one device, and only the mount differs
+                assert_eq!(
+                    fs::metadata(&held).unwrap().dev(),
+                    fs::metadata(&store).unwrap().dev()
+                );
+            }
+            let plan = plan_purge(&store, &home, &cwd, false).unwrap();
+            PLAIN_OPEN.set(plain_open);
+            let result = purge(plan);
+            PLAIN_OPEN.set(false);
+            assert_eq!(
+                (result.outcome, &result.path),
+                (PurgeOutcome::PartlyRemoved, &store),
+                "{kind} {plain_open}"
+            );
+            assert_eq!(result.detail, strerror(libc::EXDEV), "{kind} {plain_open}");
+            assert_eq!(
+                fs::read_to_string(held.join("theirs")).unwrap(),
+                "t",
+                "{kind} {plain_open}"
+            );
+            if kind == "bind" {
+                assert_eq!(fs::read_to_string(outside.join("theirs")).unwrap(), "t");
+            }
+        }
     }
 }

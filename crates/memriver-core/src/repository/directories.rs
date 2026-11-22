@@ -102,6 +102,13 @@ fn planted(follow: bool, path: &Path) -> Option<i32> {
     })
 }
 
+#[cfg(test)]
+thread_local! {
+    /// For a test, on its thread: a child is opened as on a system without `openat2`, so
+    /// that only the comparison of grounds stands between the walk and a mount.
+    static PLAIN_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// How a test has a directory lie somewhere else than the directory above it.
 #[cfg(test)]
 #[derive(Debug, Clone, Copy)]
@@ -374,6 +381,20 @@ pub fn covers(outer: &Path, inner: &Path) -> Option<bool> {
     covering(outer, inner).ok()
 }
 
+/// Whether the directory with the identity `outer` is `inner` or one of its ancestors.
+/// An ancestor that is not there is not it; one that cannot be looked at is the failure.
+fn holding(outer: Identity, inner: &Path) -> Result<bool, OsFailure> {
+    for candidate in inner.ancestors() {
+        match stat(candidate) {
+            Ok(found) if (found.dev(), found.ino()) == outer => return Ok(true),
+            Ok(_) => {}
+            Err(failure) if failure.is_absent() || failure.errno.is_none() => {}
+            Err(failure) => return Err(failure),
+        }
+    }
+    Ok(false)
+}
+
 /// `covers`, with the look that failed in place of "could not check".
 fn covering(outer: &Path, inner: &Path) -> Result<bool, OsFailure> {
     for candidate in inner.ancestors() {
@@ -641,11 +662,19 @@ fn resolve(path: &Path) -> Result<PathBuf, OsFailure> {
 /// A leaf that is itself a symlink is still refused outright rather than followed: the
 /// root names the store, and a link standing in for it is an arrangement memriver will
 /// not delete through.
+///
+/// `held` is the identity of the directory already opened for deletion, read from its
+/// descriptor; None while the purge is only planned. Once a directory is held, it is the
+/// thing that will be emptied, whatever its old name leads to by now -- renamed away, the
+/// name is gone or names another directory, and looking the name up again would compare
+/// the wrong object. So with `held` the protected directories are compared with that
+/// identity, and the target's name is not looked at again.
 fn refuse_purge_target(
     given: &Path,
     canonical: &Path,
     home: &Path,
     cwd: &Path,
+    held: Option<Identity>,
 ) -> Option<PurgeRefusal> {
     let refusal = |kind, path: &Path, detail: String| PurgeRefusal {
         kind,
@@ -679,7 +708,10 @@ fn refuse_purge_target(
                     String::new(),
                 ));
             }
-            Ok(resolved) => match covering(canonical, &resolved) {
+            Ok(resolved) => match match held {
+                Some(held) => holding(held, &resolved),
+                None => covering(canonical, &resolved),
+            } {
                 Ok(true) => {
                     return Some(refusal(
                         PurgeRefusalKind::TooBroad,
@@ -766,6 +798,10 @@ fn open_without_following(path: &Path) -> Result<OwnedFd, i32> {
 /// Elsewhere, and where that call is not to be had, the directory is opened as any other
 /// and `ground` is what tells.
 fn open_below(parent: &OwnedFd, name: &OsStr) -> Result<OwnedFd, i32> {
+    #[cfg(test)]
+    if PLAIN_OPEN.get() {
+        return open_directory(Some(parent), name);
+    }
     #[cfg(all(target_os = "linux", any(target_env = "gnu", target_env = "musl")))]
     {
         let name = c_name(name)?;
@@ -974,7 +1010,7 @@ fn plan_purge_with(
         canonical: None,
         detail: failure.to_string(),
     })?;
-    if let Some(refusal) = refuse_purge_target(&given, &canonical, home, cwd) {
+    if let Some(refusal) = refuse_purge_target(&given, &canonical, home, cwd, None) {
         return Err(refusal);
     }
     let plan = |exists, opened| PurgePlan {
@@ -1055,12 +1091,17 @@ fn plan_purge_with(
 /// Panics for a plan that holds nothing open (a dry run, a target that does not exist):
 /// calling it then is a mistake in the caller.
 pub fn purge(plan: PurgePlan) -> PurgeResult {
-    purge_with(plan, &mut |_| {})
+    purge_with(plan, &mut || {}, &mut |_| {})
 }
 
-/// `purge`, telling `emptied` about every directory once it is empty and before its name
-/// is checked again and removed.
-fn purge_with(plan: PurgePlan, emptied: &mut dyn FnMut(&Path)) -> PurgeResult {
+/// `purge`, telling `confirmed` when the directory opened for deletion has proved to be
+/// the one the user was shown, and `emptied` about every directory once it is empty and
+/// before its name is checked again and removed.
+fn purge_with(
+    plan: PurgePlan,
+    confirmed_now: &mut dyn FnMut(),
+    emptied: &mut dyn FnMut(&Path),
+) -> PurgeResult {
     let Some((_held, confirmed)) = &plan.opened else {
         panic!("purge needs an open plan made for deletion (not a dry run, not closed)");
     };
@@ -1080,9 +1121,13 @@ fn purge_with(plan: PurgePlan, emptied: &mut dyn FnMut(&Path)) -> PurgeResult {
     if identity(&leaf_fd) != Ok(*confirmed) {
         return PurgeResult::new(PurgeOutcome::NotConfirmed, canonical);
     }
+    confirmed_now();
     // the object is the confirmed one; the last question is whether the protected bases
     // moved into it while the prompt was open
-    if let Some(refusal) = refuse_purge_target(&plan.given, canonical, &plan.home, &plan.cwd) {
+    // by the identity of what is held open, not by another look at its name
+    let held = Some(*confirmed);
+    if let Some(refusal) = refuse_purge_target(&plan.given, canonical, &plan.home, &plan.cwd, held)
+    {
         return PurgeResult {
             refusal: Some(refusal),
             ..PurgeResult::new(PurgeOutcome::Refused, canonical)
