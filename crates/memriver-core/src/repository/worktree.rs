@@ -23,7 +23,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use super::directories::{canonical, same_directory};
-use crate::models::helpers::py_normpath;
+use crate::models::helpers::{LINE_BREAKS, py_normpath};
 use crate::settings::{Env, GIT_FILE_MAX_BYTES, GIT_QUERY_TIMEOUT_S};
 
 /// What git knows about a directory.
@@ -95,12 +95,8 @@ pub(crate) fn from_files(dir: &Path, env: &Env) -> Confirmed<GitFacts> {
     }
 }
 
-/// The characters Python's `str.splitlines` breaks a line at. git's answers are read
-/// line by line, so a path holding one of them is not an answer git can give.
-const LINE_BREAKS: [char; 10] = [
-    '\n', '\r', '\u{b}', '\u{c}', '\u{1c}', '\u{1d}', '\u{1e}', '\u{85}', '\u{2028}', '\u{2029}',
-];
-
+/// git's answers are read line by line, so a path holding a line break is not an
+/// answer git can give.
 fn one_line(path: &Path) -> bool {
     path.to_str()
         .is_some_and(|text| !text.contains(LINE_BREAKS))

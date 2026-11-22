@@ -11,7 +11,18 @@ use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
 pub const ID_ALPHABET: &str = "0123456789abcdefghjkmnpqrstvwxyz";
 pub const ID_LENGTH: usize = 10;
 
+#[cfg(test)]
+thread_local! {
+    /// Ids a test has the next calls of `new_id` on its thread hand out, first first.
+    pub(crate) static NEXT_IDS: std::cell::RefCell<std::collections::VecDeque<String>> =
+        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+}
+
 pub fn new_id() -> String {
+    #[cfg(test)]
+    if let Some(planted) = NEXT_IDS.with_borrow_mut(|ids| ids.pop_front()) {
+        return planted;
+    }
     let mut raw = [0u8; ID_LENGTH];
     getrandom::fill(&mut raw).expect("the system's random source");
     // 256 is a multiple of 32, so the low five bits of a byte are uniform
@@ -49,6 +60,11 @@ pub fn py_isprintable(c: char) -> bool {
                 | GeneralCategory::SpaceSeparator
         )
 }
+
+/// The characters Python's `str.splitlines` breaks a line at.
+pub const LINE_BREAKS: [char; 10] = [
+    '\n', '\r', '\u{b}', '\u{c}', '\u{1c}', '\u{1d}', '\u{1e}', '\u{85}', '\u{2028}', '\u{2029}',
+];
 
 /// Python's `str.strip()`.
 pub fn py_strip(value: &str) -> &str {

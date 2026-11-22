@@ -11,11 +11,15 @@ use std::path::{Path, PathBuf};
 use rusqlite::types::Value;
 use rusqlite::{Connection, ErrorCode, OptionalExtension};
 
-use super::database::{Database, PROJECT_COLUMNS, project_from_row, values};
-use crate::models::context::{Resolution, ResolutionState};
+use super::database::{
+    Database, MEMORY_COLUMNS, PROJECT_COLUMNS, memory_from_row, project_from_row, values,
+};
+use crate::models::context::{ReadWriteSet, Resolution, ResolutionState};
 use crate::models::errors::{BindingReason, CoreError};
 use crate::models::helpers::{is_id, new_id};
+use crate::models::memory::Memory;
 use crate::models::project::{Project, RootPlan, UnbindPlan};
+use crate::models::search::{rank_memories, search_terms};
 use crate::repository::directories::{self, Match};
 use crate::settings::{BUSY_TIMEOUT_MS, located_root};
 
@@ -227,6 +231,57 @@ impl ProjectStore {
             )?;
             Ok(project_id)
         })
+    }
+
+    /// The current memories of one project, newest first: those `query` matches, best
+    /// first, or all of them without one; at most `limit`. Nothing for a project the
+    /// set may not read, or one that is not there; a row memriver could not have
+    /// written is passed over (doctor reports it).
+    pub fn search(
+        &self,
+        project_id: &str,
+        read_write_set: Option<&ReadWriteSet>,
+        query: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<Memory>, CoreError> {
+        if read_write_set.is_some_and(|set| !set.readable().contains(project_id))
+            || !is_id(project_id)
+        {
+            return Ok(Vec::new());
+        }
+        let terms = query.map(search_terms);
+        if terms.as_ref().is_some_and(Vec::is_empty) {
+            return Ok(Vec::new());
+        }
+        let rows = self.database(&self.root).read(|conn| {
+            let Some(conn) = conn else {
+                return Ok(Vec::new());
+            };
+            let Some(found) = row(conn, "id = ?1", project_id)? else {
+                return Ok(Vec::new());
+            };
+            // an invalid project row is a storage failure
+            project(&found)?;
+            let sql = format!(
+                "SELECT {MEMORY_COLUMNS} FROM memories WHERE project_id = ?1 AND deleted_at IS NULL"
+            );
+            let mut statement = conn.prepare(&sql)?;
+            let rows = statement.query_map([project_id], values)?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })?;
+        let mut matches: Vec<Memory> = rows
+            .iter()
+            .filter_map(|row| memory_from_row(row).ok())
+            .collect();
+        matches.sort_by(|a, b| (&b.updated, &b.id).cmp(&(&a.updated, &a.id)));
+        if let Some(terms) = terms {
+            // ponytail: the keyword match runs here over one project's rows (NFKC and
+            // case folding, which SQLite's LIKE cannot do); FTS5 with CJK bigrams when a
+            // project outgrows it
+            matches = rank_memories(&terms, matches);
+        }
+        matches.truncate(limit.unwrap_or(usize::MAX));
+        Ok(matches)
     }
 
     // --- directories ---

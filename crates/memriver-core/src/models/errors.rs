@@ -200,6 +200,37 @@ impl fmt::Display for CoreError {
 
 impl std::error::Error for CoreError {}
 
+/// Why a write was not made: what it was handed is no write at all (an error of the
+/// caller, in Python a `ValueError`), or the store refused it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriteError {
+    Value(ValueError),
+    Core(CoreError),
+}
+
+impl fmt::Display for WriteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            WriteError::Value(err) => err.fmt(f),
+            WriteError::Core(err) => err.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for WriteError {}
+
+impl From<ValueError> for WriteError {
+    fn from(err: ValueError) -> WriteError {
+        WriteError::Value(err)
+    }
+}
+
+impl From<CoreError> for WriteError {
+    fn from(err: CoreError) -> WriteError {
+        WriteError::Core(err)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
