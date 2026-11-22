@@ -297,34 +297,34 @@ packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::
 packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_uncompilable_rule_is_skipped_not_fatal ->
 packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_vendored_rules_are_usable ->
 packages/memriver-core/tests/integration/content_policy/test_secret_scanner.py::test_vendored_secrets_blocked ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_a_database_name_that_is_not_a_regular_file_is_refused ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_a_failed_first_write_leaves_no_schema ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_a_memory_round_trips_through_its_row ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_a_memory_row_memriver_could_not_have_written_is_invalid ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_a_project_row_memriver_could_not_have_written_is_invalid ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_a_read_of_a_missing_store_creates_nothing ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_a_read_rolls_back_the_hot_journal_of_a_crashed_writer ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_a_session_summary_needs_its_time_and_the_reverse ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_a_store_below_v5_is_refused_and_left_untouched ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_a_valid_last_read_at_round_trips ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_a_valid_project_row_reads_back ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_an_unknown_schema_version_is_refused_for_reads_and_writes ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_create_schema_is_the_whole_v6_definition_and_leaves_the_version_alone ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_foreign_keys_are_enforced_and_a_driver_error_never_crosses_the_boundary ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_foreign_tables_at_version_zero_are_refused ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_fresh_store_is_v6 ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_newer_version_unavailable ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_read_and_write_connections_tolerate_invalid_utf8_instead_of_crashing ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_the_first_write_creates_a_private_directory_file_and_schema ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_the_read_connection_enforces_foreign_keys_and_refuses_writes ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_two_first_writers_racing_from_nothing_both_succeed ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_two_upgraders_upgrade_once ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_v4_store_refused ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_v5_upgrade_rolls_back_on_failure ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_v5_upgraded_on_read_equals_fresh_v6 ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_v5_upgraded_on_write ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_write_without_create_does_not_create_a_missing_store ->
-packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_write_without_create_does_not_recreate_a_store_removed_after_the_check ->
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_a_database_name_that_is_not_a_regular_file_is_refused -> rust:memriver-core::tests/database.rs::symlinked_database_is_refused
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_a_failed_first_write_leaves_no_schema -> rust:memriver-core::tests/database.rs::a_failed_first_write_leaves_no_schema
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_a_memory_round_trips_through_its_row -> rust:memriver-core::tests/database.rs::a_memory_round_trips_through_its_row
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_a_memory_row_memriver_could_not_have_written_is_invalid -> rust:memriver-core::tests/database.rs::row_with_a_malformed_id_or_root_is_refused
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_a_project_row_memriver_could_not_have_written_is_invalid -> rust:memriver-core::tests/database.rs::row_with_a_malformed_id_or_root_is_refused
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_a_read_of_a_missing_store_creates_nothing -> rust:memriver-core::tests/database.rs::a_read_never_creates_a_file
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_a_read_rolls_back_the_hot_journal_of_a_crashed_writer -> rust:memriver-core::tests/database.rs::a_read_rolls_back_the_hot_journal_of_a_crashed_writer
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_a_session_summary_needs_its_time_and_the_reverse -> rust:memriver-core::tests/database.rs::a_session_summary_needs_its_time_and_the_reverse
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_a_store_below_v5_is_refused_and_left_untouched -> rust:memriver-core::tests/database.rs::versions_1_to_5_need_upgrade_on_read_and_on_write_and_are_left_byte_identical + compat:test_store_lifecycle.py::test_a_store_below_5_is_refused_by_both_and_left_byte_identical
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_a_valid_last_read_at_round_trips -> rust:memriver-core::tests/database.rs::a_memory_round_trips_through_its_row
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_a_valid_project_row_reads_back -> rust:memriver-core::tests/database.rs::row_with_a_malformed_id_or_root_is_refused
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_an_unknown_schema_version_is_refused_for_reads_and_writes -> rust:memriver-core::tests/database.rs::version_7_and_nonempty_version_0_are_unknown
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_create_schema_is_the_whole_v6_definition_and_leaves_the_version_alone -> rust:memriver-core::tests/database.rs::fresh_store_gets_the_exact_schema + rust:memriver-core::tests/database.rs::a_failed_first_write_leaves_no_schema
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_foreign_keys_are_enforced_and_a_driver_error_never_crosses_the_boundary -> rust:memriver-core::tests/database.rs::write_connection_enforces_foreign_keys_and_a_driver_error_is_storage_failure
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_foreign_tables_at_version_zero_are_refused -> rust:memriver-core::tests/database.rs::version_7_and_nonempty_version_0_are_unknown
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_fresh_store_is_v6 -> rust:memriver-core::tests/database.rs::fresh_store_gets_the_exact_schema + compat:test_store_lifecycle.py::test_schema_text_is_identical
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_newer_version_unavailable -> rust:memriver-core::tests/database.rs::version_7_and_nonempty_version_0_are_unknown
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_read_and_write_connections_tolerate_invalid_utf8_instead_of_crashing -> rust:memriver-core::tests/database.rs::invalid_utf8_text_fails_one_row_not_the_query
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_the_first_write_creates_a_private_directory_file_and_schema -> rust:memriver-core::tests/database.rs::first_creating_write_makes_root_0700_and_db_0600 + rust:memriver-core::tests/database.rs::fresh_store_gets_the_exact_schema
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_the_read_connection_enforces_foreign_keys_and_refuses_writes -> rust:memriver-core::tests/database.rs::read_connection_is_query_only_and_rw
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_two_first_writers_racing_from_nothing_both_succeed -> rust:memriver-core::tests/database.rs::two_first_writers_racing_from_nothing_both_succeed
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_two_upgraders_upgrade_once -> n/a: the upgrade from schema 5 is not ported; version 5 is refused like 1 to 4
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_v4_store_refused -> rust:memriver-core::tests/database.rs::versions_1_to_5_need_upgrade_on_read_and_on_write_and_are_left_byte_identical
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_v5_upgrade_rolls_back_on_failure -> n/a: the upgrade from schema 5 is not ported; version 5 is refused like 1 to 4
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_v5_upgraded_on_read_equals_fresh_v6 -> n/a: the upgrade from schema 5 is not ported; version 5 is refused like 1 to 4
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_v5_upgraded_on_write -> n/a: the upgrade from schema 5 is not ported; version 5 is refused like 1 to 4
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_write_without_create_does_not_create_a_missing_store -> rust:memriver-core::tests/database.rs::write_without_create_on_a_missing_store_is_storage_failure
+packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_write_without_create_does_not_recreate_a_store_removed_after_the_check -> rust:memriver-core::repository::sqlite::database::tests::a_connection_never_creates_the_file
 packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_bad_older_version_under_a_healthy_current_one_is_invalid_row ->
 packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_change_with_an_undecodable_id_is_invalid_row_not_incomplete ->
 packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_change_with_fewer_steps_than_recorded_is_listed_not_a_finding ->

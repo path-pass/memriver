@@ -9,6 +9,8 @@ license.workspace = true
 # behaviour, to be measured again
 caseless = "=0.2.2"
 getrandom = "0.4"
+libc = "0.2"
+rusqlite = { version = "0.43", default-features = false, features = ["bundled"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 # exact, all three: which settings files are read is decided by the parser (toml_parser) and
 # by what it takes for a date (toml_datetime), which toml itself would let move

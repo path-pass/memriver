@@ -68,6 +68,35 @@ pub fn cut(value: &str, scalars: usize) -> &str {
     }
 }
 
+/// Python's `os.path.normpath` for a POSIX path: empty parts and `.` dropped, `..`
+/// resolved by the text alone, exactly two leading slashes kept.
+pub fn py_normpath(path: &[u8]) -> Vec<u8> {
+    let slashes = match path {
+        [b'/', b'/', b'/', ..] => 1,
+        [b'/', b'/', ..] => 2,
+        [b'/', ..] => 1,
+        _ => 0,
+    };
+    let mut kept: Vec<&[u8]> = Vec::new();
+    for part in path.split(|byte| *byte == b'/') {
+        match part {
+            b"" | b"." => {}
+            b".." if kept.last().is_some_and(|last| *last != b"..") => {
+                kept.pop();
+            }
+            // above the root there is only the root
+            b".." if slashes > 0 && kept.is_empty() => {}
+            _ => kept.push(part),
+        }
+    }
+    let normal = [vec![b'/'; slashes], kept.join(&b'/')].concat();
+    if normal.is_empty() {
+        b".".to_vec()
+    } else {
+        normal
+    }
+}
+
 /// `value` on one line: control characters and the Unicode line separators become
 /// spaces, runs of whitespace collapse to one space and the ends are dropped. Stored
 /// fields are injected into agent context line by line, so no field may carry a line
@@ -187,6 +216,37 @@ fn strictly_after(stamp: String, previous: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normpath_is_pythons() {
+        // expectations taken from Python's os.path.normpath
+        for (path, normal) in [
+            ("", "."),
+            ("/", "/"),
+            ("//", "//"),
+            ("///", "/"),
+            ("/a/b/../c/", "/a/c"),
+            ("a/./b", "a/b"),
+            ("..", ".."),
+            ("../..", "../.."),
+            ("/..", "/"),
+            ("//..", "//"),
+            ("a/..", "."),
+            ("a/../..", ".."),
+            ("/a//b", "/a/b"),
+            ("//a//b/", "//a/b"),
+            ("///a", "/a"),
+            ("./a", "a"),
+            ("/work/x/../a", "/work/a"),
+            ("/.../a", "/.../a"),
+            ("/a/..b", "/a/..b"),
+            ("a/b/../../../c", "../c"),
+        ] {
+            assert_eq!(py_normpath(path.as_bytes()), normal.as_bytes(), "{path:?}");
+        }
+        // bytes, not text: a name that is not UTF-8 passes through
+        assert_eq!(py_normpath(b"/a/\xff/./b"), b"/a/\xff/b");
+    }
 
     #[test]
     fn new_id_uses_the_alphabet() {
