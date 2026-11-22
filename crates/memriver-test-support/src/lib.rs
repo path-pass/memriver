@@ -41,14 +41,30 @@ impl Default for Sandbox {
     }
 }
 
+/// Whether `path`, with every link followed, lies under `dir`. `path` need not exist (a
+/// store is created by its first write): its nearest existing ancestor is resolved and
+/// the rest, which may not climb with `..`, is appended.
+fn is_inside(path: &Path, dir: &Path) -> bool {
+    if path.components().any(|part| part == Component::ParentDir) {
+        return false;
+    }
+    let Some(existing) = path.ancestors().find(|ancestor| ancestor.exists()) else {
+        return false;
+    };
+    let (Ok(resolved), Ok(dir)) = (existing.canonicalize(), dir.canonicalize()) else {
+        return false;
+    };
+    resolved
+        .join(path.strip_prefix(existing).unwrap_or(Path::new("")))
+        .starts_with(dir)
+}
+
 /// `program` with exactly `Sandbox::env` as its environment and the sandbox as its
 /// working directory. The only way a test starts a process.
 pub fn isolated_command(sandbox: &Sandbox, program: &Path) -> Command {
     for path in [&sandbox.home, &sandbox.root] {
-        // `root` need not exist, so the path is judged as written: under the sandbox, no `..`
-        let climbs = path.components().any(|part| part == Component::ParentDir);
         assert!(
-            path.starts_with(sandbox.dir.path()) && !climbs,
+            is_inside(path, sandbox.dir.path()),
             "{} is outside the sandbox",
             path.display()
         );
@@ -107,6 +123,37 @@ mod tests {
     fn isolated_command_refuses_a_home_outside_the_sandbox() {
         let mut sandbox = Sandbox::new();
         sandbox.home = PathBuf::from("/");
+        isolated_command(&sandbox, Path::new("/usr/bin/env"));
+    }
+
+    #[test]
+    #[should_panic(expected = "outside the sandbox")]
+    fn isolated_command_refuses_a_home_that_is_a_link_out_of_the_sandbox() {
+        let other = Sandbox::new();
+        let mut sandbox = Sandbox::new();
+        let link = sandbox.dir.path().join("link");
+        std::os::unix::fs::symlink(&other.home, &link).unwrap();
+        sandbox.home = link;
+        isolated_command(&sandbox, Path::new("/usr/bin/env"));
+    }
+
+    #[test]
+    #[should_panic(expected = "outside the sandbox")]
+    fn isolated_command_refuses_a_root_that_would_be_created_through_a_link_out() {
+        let other = Sandbox::new();
+        let mut sandbox = Sandbox::new();
+        let link = sandbox.dir.path().join("link");
+        std::os::unix::fs::symlink(other.dir.path(), &link).unwrap();
+        sandbox.root = link.join("not-there-yet").join("store");
+        isolated_command(&sandbox, Path::new("/usr/bin/env"));
+    }
+
+    #[test]
+    fn isolated_command_accepts_a_link_that_stays_inside_the_sandbox() {
+        let mut sandbox = Sandbox::new();
+        let link = sandbox.dir.path().join("link");
+        std::os::unix::fs::symlink(&sandbox.home, &link).unwrap();
+        sandbox.home = link;
         isolated_command(&sandbox, Path::new("/usr/bin/env"));
     }
 

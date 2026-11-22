@@ -5,16 +5,20 @@ Both sides are the Python implementation here; the comparison is what is tested.
 
 from __future__ import annotations
 
+import itertools
 import json
 import shutil
 import sqlite3
+from datetime import UTC, datetime
 
 import pytest
 
+from . import harness
 from .harness import (
     PY,
     SEEDS,
     Case,
+    Completed,
     NotComparable,
     load_seed,
     run,
@@ -89,15 +93,15 @@ def test_global_and_a_project_created_by_project_init_are_paired_without_a_chang
     py, rs = case.step(lambda side: side.run(["project", "init", str(directory), "--yes"]))
     assert py.code == 0, py.stderr
     assert py.stdout != rs.stdout
-    case.assert_same_output(py, rs)
-    assert "created project a [<project:1>] and bound" in case.rendered(case.py, py)[0]
+    case.assert_same_output(py, rs, "project-init")
+    assert "created project a [<project:1>] and bound" in case.rendered(case.py, py, "project-init")[0]
     case.step(lambda side: side.api("services.project.ensure_global()"))
     payload = json.dumps({"session_id": "s-1", "source": "startup", "cwd": str(directory)})
     case.step(lambda side: side.run(["hook", "session-start", "--harness", "claude-code"],
                                     cwd=directory, stdin=payload))
     py, rs = case.step(lambda side: side.run(["project", "explain"], cwd=directory))
-    case.assert_same_output(py, rs)
-    assert "project: <project:1>\n" in case.rendered(case.rs, rs)[0]
+    case.assert_same_output(py, rs, "project-explain")
+    assert "project: <project:1>\n" in case.rendered(case.rs, rs, "project-explain")[0]
     case.assert_same_store()
     assert sorted(case.py.names.values()) == ["<project:1>", "<project:2>"]
     assert column(case, case.py, "projects", "id") == ["<project:1>", "<project:2>"]
@@ -145,8 +149,8 @@ def test_a_project_name_equal_to_an_id_is_left_alone(tmp_path):
     assert py.code == 0, py.stderr
     case.assert_same_store()
     assert column(case, case.py, "projects", "name") == sorted(["a", literal])
-    case.assert_same_output(py, rs)
-    assert f"created project {literal} [<project:2>]" in case.rendered(case.py, py)[0]
+    case.assert_same_output(py, rs, "project-init")
+    assert f"created project {literal} [<project:2>]" in case.rendered(case.py, py, "project-init")[0]
 
 
 def test_ambiguous_step_is_not_comparable(tmp_path):
@@ -171,8 +175,11 @@ def test_new_ids_are_renamed_consistently_across_tables_and_declared_output_fiel
     case = seeded(tmp_path)
     py, rs = case.step(lambda side: create(side, "demo proj", "cue", "body"))
     assert py.stdout != rs.stdout
-    case.assert_same_output(py, rs)
-    assert json.loads(case.rendered(case.py, py)[0])["id"] == "<memory:1>"
+    case.assert_same_output(py, rs, "change-json")
+    assert json.loads(case.rendered(case.py, py, "change-json")[0]) == {
+        "change_id": "<change:1>", "id": "<memory:1>", "project_id": json.loads(py.stdout)["project_id"]}
+    with pytest.raises(AssertionError):     # nothing is renamed unless the kind says where
+        case.assert_same_output(py, rs)
     case.assert_same_store()
     for side in (case.py, case.rs):
         for table, name in [("memories", "id"), ("memory_versions", "memory_id"),
@@ -181,13 +188,13 @@ def test_new_ids_are_renamed_consistently_across_tables_and_declared_output_fiel
         for table in ("changes", "change_steps", "memory_versions"):
             assert "<change:1>" in column(case, side, table, "change_id"), table
     py, rs = case.step(lambda side: side.run(["list"]))
-    assert "\n  <memory:1>  [project]" in case.rendered(case.py, py)[0]
-    case.assert_same_output(py, rs)
+    assert "\n  <memory:1>  [project]" in case.rendered(case.py, py, "list")[0]
+    case.assert_same_output(py, rs, "list")
     # the same id in a field that is not declared stays as it is, and differs
     py, rs = case.step(lambda side: side.api(
         f'print(json.dumps({{"note": {side.raw("<memory:1>")!r}}}))'))
     with pytest.raises(AssertionError):
-        case.assert_same_output(py, rs)
+        case.assert_same_output(py, rs, "change-json")
 
 
 def test_time_order_survives_renaming(tmp_path):
@@ -242,13 +249,13 @@ def test_a_new_timestamp_that_is_not_the_time_of_the_step_is_a_difference(tmp_pa
         sql(side, "UPDATE changes SET at = '1999-01-01T00:00:00.000001Z' WHERE changed_by = 'compat'")
 
     case, act = tampered(tmp_path, long_ago)
-    with pytest.raises(AssertionError, match="1999-01-01T00:00:00.000001Z is outside the step"):
+    with pytest.raises(AssertionError, match="1999-01-01T00:00:00.00000[12]Z is outside the step"):
         case.step(act)
 
 
 def test_a_new_timestamp_that_is_any_other_text_is_a_difference(tmp_path):
     def junk(side):
-        sql(side, "UPDATE memories SET created = 'b', updated = 'b' WHERE description = 'cue'")
+        sql(side, "UPDATE memories SET created = 'a', updated = 'a' WHERE description = 'cue'")
         sql(side, "UPDATE changes SET at = 'a' WHERE changed_by = 'compat'")
 
     case, act = tampered(tmp_path, junk)
@@ -266,7 +273,113 @@ def test_a_new_id_outside_the_id_alphabet_is_a_difference(tmp_path):
     case, act = tampered(tmp_path, odd_id)
     with pytest.raises(AssertionError, match="memories: not an id: 'UUUU-IL!O_'"):
         case.step(act)
-    assert "UUUU-IL!O_" not in case.rs.names
+    assert ("memory", "UUUU-IL!O_") not in case.rs.names
+
+
+def test_a_timestamp_that_is_no_calendar_time_is_a_difference(tmp_path, monkeypatch):
+    case = seeded(tmp_path)
+    # a step that crosses a minute: as text, second 99 of 19:59 sorts inside it
+    ticks = itertools.cycle([datetime(2026, 11, 22, 19, 59, 59, tzinfo=UTC),
+                             datetime(2026, 11, 22, 20, 0, 0, tzinfo=UTC)])
+    monkeypatch.setattr(harness, "_now", lambda: next(ticks))
+
+    def act(side):
+        create(side, "demo proj", "cue", "body")
+        stamp = "2026-11-22T19:59:59.900000Z" if side is case.py else "2026-11-22T19:59:99.900000Z"
+        sql(side, "UPDATE memories SET created = ?, updated = ? WHERE description = 'cue'", stamp, stamp)
+        sql(side, "UPDATE changes SET at = ? WHERE changed_by = 'compat'", stamp)
+
+    with pytest.raises(AssertionError, match="not a timestamp: '2026-11-22T19:59:99.900000Z'"):
+        case.step(act)
+    assert "2026-11-22T19:59:59.900000Z" in case.py.times
+
+
+UPDATE = """(found,) = [m for m in services.memory.memories(project_id("demo proj"))
+            if m.description == "deploy script location"]
+services.memory.apply([Update(found.id, found.version, body={body!r})], changed_by="compat")"""
+
+
+def test_a_field_that_only_moves_forward_may_pass_the_clock(tmp_path):
+    seed = seed_store(tmp_path)
+    conn = sqlite3.connect(seed / "memriver.db")
+    with conn:     # the clock went back: the stored time is ahead of it
+        conn.execute("UPDATE memories SET updated = '2090-01-01T00:00:00.000000Z' "
+                     "WHERE description = 'deploy script location'")
+    conn.close()
+    case = Case(tmp_path, seed=seed, rs=PY)
+    case.step(lambda side: side.api(UPDATE.format(body="moved once")))
+    case.assert_same_store()
+    for side in (case.py, case.rs):
+        assert sql(side, "SELECT updated, version FROM memories WHERE body = 'moved once'") == [
+            ("2090-01-01T00:00:00.000001Z", 2)]
+
+    # one step past the stored time is all the rule allows
+    def too_far(side):
+        side.api(UPDATE.format(body="moved twice"))
+        if side is case.rs:
+            sql(side, "UPDATE memories SET updated = '2090-01-01T00:00:00.000007Z' "
+                      "WHERE body = 'moved twice'")
+
+    with pytest.raises(AssertionError, match="2090-01-01T00:00:00.000007Z is outside the step"):
+        case.step(too_far)
+
+
+def test_the_same_text_as_an_id_of_another_type_is_not_renamed(tmp_path):
+    case = seeded(tmp_path)
+    (case.work / "c").mkdir()
+    (seed_memory,) = sql(case.rs, "SELECT id FROM memories ORDER BY id LIMIT 1")[0]
+
+    def act(side):
+        side.run(["project", "init", str(case.work / "c"), "--yes"])
+        if side is case.rs:     # this side's new project happens to get a seed memory's id
+            sql(side, "UPDATE projects SET id = ? WHERE name = 'c'", seed_memory)
+
+    case.step(act)
+    assert case.rs.raw("<project:1>") == seed_memory
+    case.assert_same_store()
+    assert seed_memory in column(case, case.rs, "memories", "id")
+    assert seed_memory not in column(case, case.rs, "projects", "id")
+
+
+def test_free_text_after_the_separator_is_compared_as_it_is(tmp_path):
+    case = seeded(tmp_path)
+    (case.work / "c").mkdir()
+    case.step(lambda side: side.run(["project", "init", str(case.work / "c"), "--yes"]))
+    case.step(lambda side: create(side, "demo proj", "cue", "first line"))
+    py, rs = case.step(lambda side: side.run(["show", side.raw("<memory:1>")]))
+    assert py.code == 0 and b"\n---\nfirst line\n" in py.stdout, py
+    assert py.stdout != rs.stdout
+    case.assert_same_output(py, rs, "show")
+    shown = case.rendered(case.py, py, "show")[0]
+    assert "id: <memory:1>\nproject: " in shown and "\ncreated: <t:" in shown
+
+    # only the body differs: a line there that looks like a field of the header
+    def with_body_line(side, done):
+        return Completed(done.stdout + f"project: {side.raw('<project:1>')}\n".encode(), b"", 0)
+
+    py, rs = with_body_line(case.py, py), with_body_line(case.rs, rs)
+    case.assert_same_store()
+    with pytest.raises(AssertionError, match="the outputs differ"):
+        case.assert_same_output(py, rs, "show")
+    assert case.rendered(case.py, py, "show")[0].endswith(f"first line\nproject: {case.py.raw('<project:1>')}\n")
+
+
+@pytest.mark.parametrize("where", ["directory", "repository", "worktree"])
+def test_a_seed_layout_that_leaves_the_temporary_directory_is_refused(tmp_path, where):
+    seeds, outside = tmp_path / "seeds", tmp_path / "outside"
+    shutil.copytree(SEEDS / "small", seeds / "small")
+    layout = json.loads((seeds / "small" / "layout.json").read_text())
+    if where == "directory":
+        layout["directories"].append(str(outside / "d"))
+    elif where == "repository":
+        layout["git"][0]["path"] = "{{WORK}}/../../outside/repo"
+    else:
+        layout["git"][0]["worktrees"][0]["path"] = str(outside / "linked")
+    (seeds / "small" / "layout.json").write_text(json.dumps(layout))
+    with pytest.raises(AssertionError, match="outside"):
+        load_seed("small", tmp_path / "loaded", seeds=seeds)
+    assert not outside.exists()
+    assert not (tmp_path / "loaded").exists()
 
 
 def test_load_seed_sets_user_version_and_binds_placeholders(tmp_path):

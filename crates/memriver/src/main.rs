@@ -34,7 +34,11 @@ fn gather(
         match value.into_string() {
             Ok(value) => drop(env.insert(name, value)),
             Err(_) if name.starts_with("MEMRIVER_") => {
-                return Err(format!("environment variable {name} is not valid UTF-8"));
+                // the name is the caller's text: escaped, so the message stays one line
+                return Err(format!(
+                    "environment variable {} is not valid UTF-8",
+                    name.escape_debug()
+                ));
             }
             Err(_) => {}
         }
@@ -147,6 +151,16 @@ mod tests {
         assert_eq!(
             error.unwrap_err(),
             "environment variable MEMRIVER_SEARCH_LIMIT_MAX is not valid UTF-8"
+        );
+    }
+
+    #[test]
+    fn a_variable_name_with_control_characters_is_escaped() {
+        let vars = vec![(os("MEMRIVER_BAD\nKEY\u{1b}[2J"), not_utf8())];
+        let error = gathered(vec![], vars, Some("/h"), Ok(PathBuf::new()));
+        assert_eq!(
+            error.unwrap_err(),
+            "environment variable MEMRIVER_BAD\\nKEY\\u{1b}[2J is not valid UTF-8"
         );
     }
 

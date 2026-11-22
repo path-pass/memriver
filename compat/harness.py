@@ -10,8 +10,11 @@ generated, so they differ between the sides; they are renamed -- only in the
 columns and output fields declared below -- to names that say which object is
 meant (`<memory:2>`, `<t:5>`). Everything else, free text included, is compared
 as it is. A generated value is renamed only when it is what it should be: an id
-in the id form, a timestamp in the timestamp form and taken while its step ran.
-Anything else fails the step, so a renamed value never hides a wrong one.
+in the id form, a timestamp that is a real time in the stored form and was taken
+while its step ran (or, in a column that only moves forward, follows the row's
+previous time). Anything else fails the step, so a renamed value never hides a
+wrong one. A name belongs to a kind of object: the same text as an id of another
+kind, or in free text, is left alone.
 """
 
 from __future__ import annotations
@@ -25,7 +28,7 @@ import sys
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .differences import DIFFERENCES, MASKS
@@ -117,19 +120,21 @@ def snapshot(root: Path) -> Snapshot:
 ID = "[0-9a-hjkmnp-tv-z]{10}"
 TIMESTAMP = r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z"
 
-# every table of the store is listed in both; a new table fails until it is declared
-ID_COLUMNS: dict[str, tuple[str, ...]] = {
-    "projects": ("id",),
-    "memories": ("id", "project_id"),
-    "changes": ("change_id", "undoes"),
-    "memory_versions": ("memory_id", "change_id"),
-    "memory_sources": ("memory_id", "source_id"),
-    "change_steps": ("change_id", "memory_id"),
-    "memory_reads": ("memory_id",),
-    "sessions": ("project_id", "candidate_id"),
-    "tool_calls": (),
-    "tags": ("project_id",),
-    "session_moves": ("from_project_id", "to_project_id"),
+# every table of the store is listed in both; a new table fails until it is declared.
+# An id column says which kind of object it refers to: projects and memories have
+# separate id spaces, so the same text may stand for one of each.
+ID_COLUMNS: dict[str, dict[str, str]] = {
+    "projects": {"id": "project"},
+    "memories": {"id": "memory", "project_id": "project"},
+    "changes": {"change_id": "change", "undoes": "change"},
+    "memory_versions": {"memory_id": "memory", "change_id": "change"},
+    "memory_sources": {"memory_id": "memory", "source_id": "memory"},
+    "change_steps": {"change_id": "change", "memory_id": "memory"},
+    "memory_reads": {"memory_id": "memory"},
+    "sessions": {"project_id": "project", "candidate_id": "project"},
+    "tool_calls": {},
+    "tags": {"project_id": "project"},
+    "session_moves": {"from_project_id": "project", "to_project_id": "project"},
 }
 TIME_COLUMNS: dict[str, tuple[str, ...]] = {
     "projects": (),
@@ -144,58 +149,90 @@ TIME_COLUMNS: dict[str, tuple[str, ...]] = {
     "tags": ("updated",),
     "session_moves": ("moved_at",),
 }
-# in output: the JSON keys whose string value is an id (a timestamp), and the fixed
-# lines with an id in them, one group around the id
-OUTPUT_ID_FIELDS = {
-    "json_keys": ("id", "project_id", "change_id", "candidate_id"),
-    "line_patterns": (
-        rf"^created project .* \[({ID})\] and bound ",
-        rf"^(?:project|reads|writes): ({ID})(?=,|$)",   # project explain
-        rf"^({ID})  ",                      # list: a project line
-        rf"^  ({ID})  \[",                  # list: a memory line
-    ),
-}
-OUTPUT_TIME_FIELDS = {
-    "json_keys": ("at", "created", "updated", "deleted_at", "last_read_at"),
-    "line_patterns": (),
+# Columns that only move forward: when the clock has not passed the row's stored time,
+# the new value is that time plus one microsecond per advance, not the clock.
+# table -> (the row's key, {column: the column whose previous value it advances from},
+#           the column counting the advances, or None for one per step)
+MONOTONIC: dict[str, tuple[tuple[str, ...], dict[str, str], str | None]] = {
+    "memories": (("id",), {"updated": "updated", "deleted_at": "updated"}, "version"),
+    "sessions": (("harness", "session_id"), {"last_active_at": "last_active_at"}, None),
 }
 
 
-def _patterns(fields: dict, value: str) -> list[re.Pattern[str]]:
-    keys = "|".join(map(re.escape, fields["json_keys"]))
-    return [re.compile(rf'"(?:{keys})":\s*"({value})"'),
-            *(re.compile(pattern, re.MULTILINE) for pattern in fields["line_patterns"])]
+def _instant(stamp: object) -> datetime | None:
+    """The UTC time a stored timestamp names; None unless it has exactly the stored
+    form and is a real calendar time."""
+    if not (isinstance(stamp, str) and re.fullmatch(TIMESTAMP, stamp)):
+        return None
+    try:
+        return datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=UTC)
+    except ValueError:
+        return None
 
 
-_ID_PATTERNS = _patterns(OUTPUT_ID_FIELDS, ID)
-_TIME_PATTERNS = _patterns(OUTPUT_TIME_FIELDS, TIMESTAMP)
+def _stamp(instant: datetime) -> str:
+    return instant.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
-def _declared(patterns: list[re.Pattern[str]], text: str) -> list[str]:
-    return [match[1] for pattern in patterns for match in pattern.finditer(text)]
+@dataclass(frozen=True)
+class Output:
+    """Where generated values stand in one kind of output. Each pattern has one group,
+    around the value, and is applied per line; an id pattern names the kind of object.
+    Everything after the first `body_after` is free text and is left as it is."""
+
+    ids: tuple[tuple[str, str], ...] = ()
+    times: tuple[str, ...] = ()
+    body_after: str | None = None
 
 
-def _rename(patterns: list[re.Pattern[str]], text: str, names: dict[str, str]) -> str:
+def _json(key: str, value: str) -> str:
+    return rf'"{key}":\s*"({value})"'
+
+
+# The caller says which kind of output it compares; nothing is renamed in "plain".
+OUTPUTS: dict[str, Output] = {
+    "plain": Output(),
+    # the project's name stands before the id and is free text on the same line
+    "project-init": Output(ids=((rf"^created project .* \[({ID})\] and bound ", "project"),)),
+    "project-explain": Output(ids=((rf"^(?:project|reads|writes): ({ID})(?=,|$)", "project"),)),
+    "list": Output(ids=((rf"^({ID})  ", "project"), (rf"^  ({ID})  \[", "memory"))),
+    "show": Output(
+        ids=((rf"^id: ({ID})$", "memory"), (rf"^project: ({ID})$", "project")),
+        times=tuple(rf"^{name}: ({TIMESTAMP})$"
+                    for name in ("created", "updated", "last_read_at", "deleted")),
+        body_after="\n---\n"),
+    "history-version": Output(
+        ids=((rf"^id: ({ID})$", "memory"), (rf"^change: .*  change ({ID})$", "change")),
+        times=(rf"^change: ({TIMESTAMP})  ",),
+        body_after="\n---\n"),
+    # what the cases of test_dump_store.py print for a change they applied
+    "change-json": Output(ids=((_json("id", ID), "memory"), (_json("project_id", ID), "project"),
+                               (_json("change_id", ID), "change"))),
+}
+
+
+def _rename(pattern: str, text: str, name: Callable[[str], str]) -> str:
     def one(match: re.Match[str]) -> str:
         start, end = match.start(1) - match.start(), match.end(1) - match.start()
-        return match[0][:start] + names.get(match[1], match[1]) + match[0][end:]
-    for pattern in patterns:
-        text = pattern.sub(one, text)
-    return text
+        return match[0][:start] + name(match[1]) + match[0][end:]
+    return re.sub(pattern, one, text, flags=re.MULTILINE)
 
 
 # ------------------------------------------------------- pairing new objects
+
+Names = dict[tuple[str, str], str]     # (kind of object, the id as generated) -> <kind:n>
+
 
 class NotComparable(AssertionError):
     """A step's new rows cannot be paired between the two sides."""
 
 
-def _project_key(row: dict, names: dict[str, str], after: Snapshot) -> tuple:
+def _project_key(row: dict, names: Names, after: Snapshot) -> tuple:
     return (row["is_global"], row["name"], row["root"])
 
 
-def _memory_key(row: dict, names: dict[str, str], after: Snapshot) -> tuple:
-    key = (names.get(row["project_id"], row["project_id"]), row["type"], row["description"],
+def _memory_key(row: dict, names: Names, after: Snapshot) -> tuple:
+    key = (names.get(("project", row["project_id"]), row["project_id"]), row["type"], row["description"],
            row["body"])
     batch = {change["change_id"] for change in after.tables["changes"] if change["step_count"] > 1}
     for step in after.tables["change_steps"]:
@@ -204,17 +241,18 @@ def _memory_key(row: dict, names: dict[str, str], after: Snapshot) -> tuple:
     return key
 
 
-def _change_key(row: dict, names: dict[str, str], after: Snapshot) -> tuple:
-    steps = sorted((step["step"], step["op"], names.get(step["memory_id"], step["memory_id"]),
+def _change_key(row: dict, names: Names, after: Snapshot) -> tuple:
+    steps = sorted((step["step"], step["op"],
+                    names.get(("memory", step["memory_id"]), step["memory_id"]),
                     step["before_version"], step["after_version"])
                    for step in after.tables["change_steps"] if step["change_id"] == row["change_id"])
     return (*steps, row["changed_by"], row["changed_via"], row["step_count"],
-            names.get(row["undoes"], row["undoes"]))
+            names.get(("change", row["undoes"]), row["undoes"]))
 
 
 # a table that mints ids -> the key of one of its new rows, free of generated values.
 # In dependency order: a memory's key names its project, a change's key its memories.
-LOGICAL_KEYS: dict[str, Callable[[dict, dict[str, str], Snapshot], tuple]] = {
+LOGICAL_KEYS: dict[str, Callable[[dict, Names, Snapshot], tuple]] = {
     "projects": _project_key,
     "memories": _memory_key,
     "changes": _change_key,
@@ -223,8 +261,8 @@ _MINTED = {"projects": ("id", "project"), "memories": ("id", "memory"),
            "changes": ("change_id", "change")}
 
 
-def pair_step(table: str, py_new: list[dict], rs_new: list[dict], py_names: dict[str, str],
-              rs_names: dict[str, str], py_after: Snapshot, rs_after: Snapshot) -> list[tuple[str, str]]:
+def pair_step(table: str, py_new: list[dict], rs_new: list[dict], py_names: Names,
+              rs_names: Names, py_after: Snapshot, rs_after: Snapshot) -> list[tuple[str, str]]:
     """(Python id, Rust id) for the new rows of `table` with equal logical keys, in key
     order. Rows whose key the other side lacks stay unpaired, and so different.
     NotComparable when the counts differ or one side has a key twice: never an order."""
@@ -243,9 +281,8 @@ def pair_step(table: str, py_new: list[dict], rs_new: list[dict], py_names: dict
 
 # ------------------------------------------------------------------ a case
 
-def _now() -> str:
-    """The clock in the stored form, which sorts as text."""
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+def _now() -> datetime:
+    return datetime.now(UTC)
 
 
 @dataclass(eq=False)
@@ -253,7 +290,7 @@ class Side:
     case: Case
     impl: list[str]
     root: Path
-    names: dict[str, str] = field(default_factory=dict)    # a new id -> <kind:n>
+    names: Names = field(default_factory=dict)             # (kind, a new id) -> <kind:n>
     times: dict[str, str] = field(default_factory=dict)    # a timestamp -> <t:n>
 
     def run(self, args: list[str], *, cwd: Path | None = None, stdin: str = "") -> Completed:
@@ -266,7 +303,7 @@ class Side:
 
     def raw(self, name: str) -> str:
         """The id this side generated for `<kind:n>`."""
-        return next(raw for raw, given in self.names.items() if given == name)
+        return next(raw for (_, raw), given in self.names.items() if given == name)
 
 
 class Case:
@@ -286,7 +323,7 @@ class Case:
         for side in self._sides:
             if seed is not None:
                 shutil.copytree(seed, side.root)
-            self._see_times(side, snapshot(side.root), None)
+            self._see_times(side, Snapshot(), snapshot(side.root), None)
 
     @property
     def _sides(self) -> tuple[Side, Side]:
@@ -310,26 +347,40 @@ class Case:
                     f"{table}: not an id: {row[column]!r}"
             for py_id, rs_id in pair_step(table, *new, self.py.names, self.rs.names, *after):
                 self._count[kind] += 1
-                self.py.names[py_id] = self.rs.names[rs_id] = f"<{kind}:{self._count[kind]}>"
-        for side, now, result, span in zip(self._sides, after, results, spans):
-            self._see_times(side, now, result, span)
+                name = f"<{kind}:{self._count[kind]}>"
+                self.py.names[kind, py_id] = self.rs.names[kind, rs_id] = name
+        for side, then, now, span in zip(self._sides, before, after, spans):
+            self._see_times(side, then, now, span)
         return tuple(results)
 
-    def _see_times(self, side: Side, now: Snapshot, result: object,
-                   span: tuple[str, str] | None = None) -> None:
-        """Names the timestamps not seen before, ascending, so their order is compared.
-        Each must have the timestamp form and, in a step, lie within `span`: the clock
-        read before and after that side's action."""
-        seen = {row[name] for table, rows in now.tables.items()
-                for row in rows for name in TIME_COLUMNS[table]}
-        if isinstance(result, Completed):
-            seen.update(_declared(_TIME_PATTERNS, result.stdout.decode(errors="replace")))
-        new = [stamp for stamp in seen if stamp is not None and stamp not in side.times]
-        for stamp in new:
-            assert isinstance(stamp, str) and re.fullmatch(TIMESTAMP, stamp), f"not a timestamp: {stamp!r}"
+    def _see_times(self, side: Side, then: Snapshot, now: Snapshot,
+                   span: tuple[datetime, datetime] | None) -> None:
+        """Names the stored timestamps not seen before, ascending, so their order is
+        compared. Each must be a real time in the stored form. In a step it must also lie
+        within `span`, the clock read before and after that side's action -- or, in a
+        column that only moves forward, be the row's previous time plus one microsecond
+        per advance (what an implementation writes when the clock is behind that time)."""
+        new = set()
+        for table, rows in now.tables.items():
+            key, advancing, counter = MONOTONIC.get(table, ((), {}, None))
+            earlier = {tuple(row[k] for k in key): row for row in then.tables.get(table, [])}
+            for row in rows:
+                for name in TIME_COLUMNS[table]:
+                    stamp = row[name]
+                    if stamp is None or stamp in side.times:
+                        continue
+                    instant = _instant(stamp)
+                    assert instant is not None, f"not a timestamp: {stamp!r}"
+                    new.add(stamp)
+                    if span is None or span[0] <= instant <= span[1]:
+                        continue
+                    was = earlier.get(tuple(row[k] for k in key)) if name in advancing else None
+                    base = _instant(was[advancing[name]]) if was else None
+                    advances = (row[counter] - was[counter]) if was and counter else 1
+                    assert base is not None and stamp == _stamp(base + timedelta(microseconds=advances)), \
+                        (f"{table}.{name}: {stamp} is outside the step, which ran from "
+                         f"{_stamp(span[0])} to {_stamp(span[1])}")
         for stamp in sorted(new):
-            assert span is None or span[0] <= stamp <= span[1], \
-                f"{stamp} is outside the step, which ran from {span[0]} to {span[1]}"
             side.times[stamp] = f"<t:{len(side.times) + 1}>"
 
     def renamed(self, side: Side) -> dict:
@@ -338,7 +389,7 @@ class Case:
 
         def cell(table: str, name: str, value: object) -> object:
             if name in ID_COLUMNS[table]:
-                return side.names.get(value, value)
+                return side.names.get((ID_COLUMNS[table][name], value), value)
             if name in TIME_COLUMNS[table]:
                 return side.times.get(value, value)
             return value
@@ -361,22 +412,39 @@ class Case:
                           *(f"  only rust:   {row!r}" for row in right if row not in left)]
         raise AssertionError("the stores differ\n" + "\n".join(lines))
 
-    def rendered(self, side: Side, done: Completed, allow: tuple[str, ...] = ()) -> tuple[str, str, int]:
-        """(stdout, stderr, code) as compared: the store path, declared ids and declared
-        timestamps renamed; the parts covered by an allowed difference masked."""
-        def text(data: bytes) -> str:
-            shown = data.decode("utf-8", "surrogateescape").replace(str(side.root), "<store>")
-            shown = _rename(_TIME_PATTERNS, _rename(_ID_PATTERNS, shown, side.names), side.times)
+    def rendered(self, side: Side, done: Completed, kind: str = "plain",
+                 allow: tuple[str, ...] = ()) -> tuple[str, str, int]:
+        """(stdout, stderr, code) as compared. In stdout, up to the free text of an
+        output of this `kind`: the side's store path as `<store>`, and the ids and
+        timestamps in the fields the kind declares by their names. In stderr only the
+        store path. Then the parts covered by an allowed difference are masked."""
+        output = OUTPUTS[kind]
+
+        def masked(shown: str) -> str:
             for name in allow:
                 assert name in DIFFERENCES
                 shown = MASKS[name].sub(f"<{name}>", shown)
             return shown
-        return text(done.stdout), text(done.stderr), done.code
 
-    def assert_same_output(self, py: Completed, rs: Completed, allow: tuple[str, ...] = ()) -> None:
+        def text(data: bytes) -> str:
+            return data.decode("utf-8", "surrogateescape")
+
+        head, separator, body = text(done.stdout), "", ""
+        if output.body_after is not None:
+            head, separator, body = head.partition(output.body_after)
+        head = head.replace(str(side.root), "<store>")
+        for pattern, of in output.ids:
+            head = _rename(pattern, head, lambda raw, of=of: side.names.get((of, raw), raw))
+        for pattern in output.times:
+            head = _rename(pattern, head, lambda raw: side.times.get(raw, raw))
+        return (masked(head + separator + body),
+                masked(text(done.stderr).replace(str(side.root), "<store>")), done.code)
+
+    def assert_same_output(self, py: Completed, rs: Completed, kind: str = "plain",
+                           allow: tuple[str, ...] = ()) -> None:
         for name in allow:
             DIFFERENCES[name]    # KeyError: not a listed difference
-        left, right = self.rendered(self.py, py, allow), self.rendered(self.rs, rs, allow)
+        left, right = self.rendered(self.py, py, kind, allow), self.rendered(self.rs, rs, kind, allow)
         assert left == right, f"the outputs differ\npython: {left!r}\nrust:   {right!r}"
 
 
@@ -460,6 +528,13 @@ def load_seed(name: str, tmp_path: Path, *, seeds: Path = SEEDS) -> Path:
         return ((seeds / name / file).read_text(encoding="utf-8")
                 .replace("{{WORK}}", str(work)).replace("{{HOME}}", str(home)))
     layout = json.loads(text("layout.json"))
+    # before anything is created: every place the layout names is under tmp_path
+    places = [*layout["directories"],
+              *(place["path"] for repository in layout["git"]
+                for place in (repository, *repository["worktrees"]))]
+    for place in places:
+        assert Path(place).resolve().is_relative_to(tmp_path.resolve()), \
+            f"seed {name}: {place} is outside {tmp_path}"
     for directory in (home, work):
         directory.mkdir(parents=True)
     for repository in layout["git"]:

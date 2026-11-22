@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from .harness import REPO, run
+from .harness import GIT, REPO, run
 
 SCRIPT = ["bash", str(REPO / "scripts" / "rust-paths-changed.sh"), "-"]
 RULES = "packages/memriver-core/src/memriver_core/content_policy/rules/"
@@ -42,3 +42,49 @@ def test_without_a_usable_base_both_run(tmp_path):
     where = {"home": tmp_path / "home", "root": tmp_path / "store", "cwd": tmp_path}
     done = run(SCRIPT[:2], ["0000000000000000000000000000000000000000"], **where)
     assert done.stdout == b"rust=true\ncompat=true\n"
+
+
+def changed(tmp_path, change):
+    """What the script says for one commit made by `change(repository)` in a new repository."""
+    repository = tmp_path / "repository"
+    where = {"home": tmp_path / "home", "root": tmp_path / "store", "cwd": tmp_path}
+
+    def git(*args):
+        done = run(GIT, ["-C", str(repository), *args], **where)
+        assert done.code == 0, done.stderr
+        return done.stdout.decode().strip()
+
+    for directory in (repository / "compat" / "seeds", repository / "docs", tmp_path / "home"):
+        directory.mkdir(parents=True)
+    (repository / "compat" / "base.json").write_text("{}\n")
+    (repository / "README.md").write_text("read me\n")
+    run(GIT, ["init", "-q", "-b", "main", str(repository)], **where)
+    git("add", "-A")
+    git("commit", "-q", "-m", "base")
+    base = git("rev-parse", "HEAD")
+    change(repository, git)
+    git("add", "-A")
+    git("commit", "-q", "-m", "change")
+    done = run(SCRIPT[:2], [base], home=where["home"], root=where["root"], cwd=repository)
+    assert (done.stderr, done.code) == (b"", 0)
+    return done.stdout.decode()
+
+
+def test_a_file_moved_out_of_a_watched_directory_counts(tmp_path):
+    out = changed(tmp_path, lambda repository, git: git("mv", "compat/base.json", "docs/base.json"))
+    assert out == "rust=true\ncompat=true\n"
+
+
+def test_a_path_git_would_quote_counts(tmp_path):
+    def add(repository, git):
+        (repository / "compat" / "seeds" / "中文.json").write_text("{}\n")
+
+    assert changed(tmp_path, add) == "rust=true\ncompat=true\n"
+
+
+def test_a_real_commit_outside_the_watched_paths_starts_nothing(tmp_path):
+    def edit(repository, git):
+        (repository / "README.md").write_text("read me again\n")
+        (repository / "docs" / "中文.md").write_text("notes\n")
+
+    assert changed(tmp_path, edit) == "rust=false\ncompat=false\n"

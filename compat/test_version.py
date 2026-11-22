@@ -11,6 +11,7 @@ def test_both_print_a_version(tmp_path):
     assert (py.stdout, py.code) == (b"0.1.0\n", 0)
     assert (rs.stdout, rs.code) == (b"0.2.0\n", 0)
     case.assert_same_output(py, rs, allow=("version-string",))
+    assert case.rendered(case.rs, rs, allow=("version-string",)) == ("<version-string>", "", 0)
     with pytest.raises(AssertionError):
         case.assert_same_output(py, rs)
 

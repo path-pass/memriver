@@ -108,3 +108,18 @@ fn another_variable_that_is_not_utf8_is_skipped() {
         (Some(0), &b"0.2.0\n"[..])
     );
 }
+
+#[test]
+fn a_variable_name_with_a_line_break_still_gives_one_line() {
+    let sandbox = Sandbox::new();
+    let output = isolated_command(&sandbox, Path::new(env!("CARGO_BIN_EXE_memriver")))
+        .env("MEMRIVER_BAD\nKEY", OsStr::from_bytes(b"\xff"))
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "memriver: environment variable MEMRIVER_BAD\\nKEY is not valid UTF-8\n"
+    );
+}
