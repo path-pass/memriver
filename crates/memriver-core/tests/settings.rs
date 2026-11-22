@@ -597,7 +597,7 @@ fn settings_matrix_equals_python() {
     let cases: serde_json::Value =
         serde_json::from_str(include_str!("fixtures/settings_matrix.json")).unwrap();
     let cases = cases.as_array().unwrap();
-    assert_eq!(cases.len(), 599);
+    assert_eq!(cases.len(), 701);
     let mut different = 0;
     for case in cases {
         let name = case["name"].as_str().unwrap();
@@ -651,5 +651,5 @@ fn settings_matrix_equals_python() {
         assert_ne!(python.as_ref().err(), expected.as_ref().err(), "{name}");
         different += 1;
     }
-    assert_eq!(different, 39);
+    assert_eq!(different, 45);
 }

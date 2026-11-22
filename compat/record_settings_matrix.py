@@ -33,6 +33,7 @@ TOML_1_1 = "TOML 1.1 syntax, which the Python parser (TOML 1.0) refuses"
 DIGITS = "an integer of more than 4,300 decimal digits, which the Python parser cannot convert"
 NO_DIGITS = "a prefix without digits, which only the Python parser refuses as TOML"
 DATES = "a second of 60 or a year of 0000, which only the Python parser refuses as TOML"
+SIGNS = "a sign inside a number, which only the Python parser refuses as TOML"
 DEPTH = "nesting deeper than 80, which only the Rust parser refuses"
 SATURATED = "both values are the largest a field holds, so the default is not above the max"
 KEYS = ["max_body_chars", "memory_reads_retention_days"]
@@ -83,8 +84,17 @@ FILE_DIFFERS = {
     "0x": ("invalid", NO_DIGITS), "0o": ("invalid", NO_DIGITS), "0b": ("invalid", NO_DIGITS),
     "23:59:60": ("invalid", DATES), "1979-05-27T07:32:60Z": ("invalid", DATES),
     "0000-01-01": ("invalid", DATES),
+    "1_0+1": ("invalid", SIGNS), "1_0-1": ("invalid", SIGNS),
 }
 FILE += ["9" * 4300, "0x", "0o", "0b", "23:59:60", "1979-05-27T07:32:60Z", "0000-01-01"]
+FILE += ["1_0+1", "1_0-1"]
+# text that starts with a zero: the zeros and underscores at its head are dropped, any number
+# of them, and only what follows must be digits with single underscores between them
+ZEROS = ["0__1", "0__1.0", "0___1", "00__1", "0_0__1", "0__0_1", "0__1_0", "0__1_2_3", "+0__1",
+         " 0__1 ", "0__1.00", "0__1__0", "0_1__2", "0__1_", "0__", "0__0", "0__0.0", "__1",
+         "-0__1", "01__0", "0__1.", "0__.0", "0__1.0_0", "0__+1"]
+FILE += [json.dumps(text) for text in ZEROS]
+ENV += ZEROS
 assert set(FILE_DIFFERS) <= set(FILE)
 
 cases = []
@@ -196,6 +206,10 @@ case("file with a foreign integer of 4301 digits", f"other = {'9' * 4301}\nmax_b
 case("file with a foreign integer of 4301 digits in a table",
      f"max_body_chars = 42\n[other]\nx = {'9' * 4301}\n", reads={"max_body_chars": "42"}, why=DIGITS)
 # what only one of the two parsers takes for TOML, on a key that is not a setting
+case("file with a foreign number with a sign inside", "other = 1_0-1\nmax_body_chars = 42\n",
+     reads={"max_body_chars": "42"}, why=SIGNS)
+case("file with a sign inside a setting that a variable sets", "max_body_chars = 1_0+1\n",
+     {"MEMRIVER_MAX_BODY_CHARS": "42"}, reads={"max_body_chars": "42"}, why=SIGNS)
 for spelling in ("0x", "0o", "0b"):
     case(f"file with a foreign {spelling} without digits", f"other = {spelling}\nmax_body_chars = 42\n",
          reads={"max_body_chars": "42"}, why=NO_DIGITS)

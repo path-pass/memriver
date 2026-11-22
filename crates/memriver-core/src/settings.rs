@@ -189,7 +189,9 @@ const TEXT_DIGITS_MAX: usize = 4300;
 // is an upper bound, so that is the same as "no bound".
 
 /// A number written as text, in the file or in a variable: white space around it, a sign,
-/// digits with single underscores between them, and at most a fraction of zeros.
+/// digits with single underscores between them, and at most a fraction of zeros. Text that
+/// starts with a zero is read after the zeros and underscores at its head, any number of
+/// them: `0__1` is 1, though `1__0` is nothing.
 fn from_text(text: &str) -> Option<u64> {
     let text = text.trim();
     let (negative, unsigned) = match text.strip_prefix('-') {
@@ -200,15 +202,20 @@ fn from_text(text: &str) -> Option<u64> {
         Some((whole, fraction)) => (whole, Some(fraction)),
         None => (unsigned, None),
     };
-    let digits = |group: &str| !group.is_empty() && group.bytes().all(|b| b.is_ascii_digit());
-    if !whole.split('_').all(digits)
-        || fraction.is_some_and(|zeros| zeros.is_empty() || zeros.bytes().any(|b| b != b'0'))
-    {
+    if fraction.is_some_and(|zeros| zeros.is_empty() || zeros.bytes().any(|b| b != b'0')) {
         return None;
     }
-    let significant = whole.replace('_', "");
-    let significant = significant.trim_start_matches('0');
-    if negative || significant.is_empty() || significant.len() > TEXT_DIGITS_MAX {
+    let digits = |group: &str| !group.is_empty() && group.bytes().all(|b| b.is_ascii_digit());
+    let significant = match whole.strip_prefix('0') {
+        // nothing is left of a zero, and zero is no setting
+        Some(rest) => rest.trim_start_matches(['0', '_']),
+        None => whole,
+    };
+    if negative || !significant.split('_').all(digits) {
+        return None;
+    }
+    let significant = significant.replace('_', "");
+    if significant.len() > TEXT_DIGITS_MAX {
         return None;
     }
     Some(significant.parse().unwrap_or(u64::MAX))
