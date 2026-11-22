@@ -5,6 +5,7 @@
 //! texts, and matches sort by rank (larger first), recency within equal ranks.
 //! Folded text is never stored.
 
+use caseless::Caseless;
 use unicode_normalization::UnicodeNormalization;
 
 use super::helpers::py_isspace;
@@ -26,17 +27,33 @@ pub fn fold(text: &str) -> String {
 /// Split on whitespace and on the comma, the semicolon and the ideographic comma (the
 /// full-width comma and semicolon are listed although NFKC already turns them into
 /// the ASCII ones). NUL is dropped first, so a NUL-only query has no terms.
+///
+/// The query is folded as it is read, and reading stops at the last term that counts:
+/// what follows it cannot change the answer, however long it is.
 pub fn search_terms(query: &str) -> Vec<String> {
-    let folded = fold(&query.replace('\0', ""));
     let separator =
         |c| py_isspace(c) || matches!(c, ',' | ';' | '\u{3001}' | '\u{ff0c}' | '\u{ff1b}');
+    // the same characters as `fold` gives for the query without its NULs
+    let folded = query
+        .chars()
+        .filter(|c| *c != '\0')
+        .nfkc()
+        .default_case_fold();
     let mut terms: Vec<String> = Vec::new();
-    for piece in folded.split(separator).filter(|piece| !piece.is_empty()) {
-        if !terms.iter().any(|term| term == piece) {
-            terms.push(piece.to_string());
+    let mut piece = String::new();
+    // the end of the query ends a term as a separator does
+    for c in folded.map(Some).chain([None]) {
+        match c {
+            Some(c) if !separator(c) => piece.push(c),
+            _ if piece.is_empty() || terms.contains(&piece) => piece.clear(),
+            _ => {
+                terms.push(std::mem::take(&mut piece));
+                if terms.len() == MAX_TERMS {
+                    break;
+                }
+            }
         }
     }
-    terms.truncate(MAX_TERMS);
     terms
 }
 
@@ -142,6 +159,36 @@ mod tests {
         // the cap counts distinct terms: repeats do not use it up
         let repeated = format!("{} {}", ["w0"; 20].join(" "), words.join(" "));
         assert_eq!(search_terms(&repeated), words[..16]);
+    }
+
+    #[test]
+    fn a_long_tail_of_terms_is_not_read_past_the_sixteenth() {
+        let words: Vec<String> = (0..50_000).map(|n| format!("w{n}")).collect();
+        let query = words.join(" ");
+        let started = std::time::Instant::now();
+        let found = search_terms(&query);
+        let took = started.elapsed();
+        assert_eq!(found, words[..16]);
+        // a generous bound: the work must not grow with the terms that are never used
+        assert!(took < std::time::Duration::from_millis(50), "{took:?}");
+        // a term that ends the query, and one cut off by nothing, are still whole
+        assert_eq!(search_terms(&words[..16].join(",")), words[..16]);
+        assert_eq!(
+            search_terms(&format!("{}x", words[..16].join(";")))
+                .last()
+                .unwrap(),
+            "w15x"
+        );
+        // folding still comes first: the sixteenth term is found in its folded form, and a
+        // repeat that only folding reveals does not count
+        let folded = format!(
+            "W0 \u{ff37}0 {} \u{ff37}16 w17",
+            words[1..15].join("\u{3000}")
+        );
+        assert_eq!(
+            search_terms(&folded),
+            [&words[..15], &["w16".to_string()]].concat()
+        );
     }
 
     #[test]
@@ -300,6 +347,26 @@ mod tests {
                 newest_one_term
             ]
         );
+    }
+
+    #[test]
+    fn more_terms_found_beats_more_terms_in_the_description() {
+        let found = search_terms("uv pip");
+        // neither holds the whole query; one has both terms and none in its description,
+        // the other has one term, in its description
+        let both_in_body = memory("uv, pip", "");
+        let one_in_cue = memory("x", "uv");
+        assert_eq!(rank(&found, "uv pip", "", "uv, pip"), Some((false, 2, 0)));
+        assert_eq!(rank(&found, "uv pip", "uv", "x"), Some((false, 1, 1)));
+        for given in [
+            vec![one_in_cue.clone(), both_in_body.clone()],
+            vec![both_in_body.clone(), one_in_cue.clone()],
+        ] {
+            assert_eq!(
+                rank_memories(&found, given),
+                [both_in_body.clone(), one_in_cue.clone()]
+            );
+        }
     }
 
     #[test]
