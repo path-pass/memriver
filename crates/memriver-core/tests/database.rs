@@ -17,6 +17,7 @@ use memriver_core::repository::sqlite::database::{
     project_from_row, text, values,
 };
 use memriver_core::repository::sqlite::schema::{SCHEMA, SCHEMA_VERSION};
+use memriver_core::settings::{Env, load_settings, located_root, settings_file, storage_root};
 use memriver_test_support::Sandbox;
 use rusqlite::Connection;
 use rusqlite::types::Value;
@@ -747,6 +748,66 @@ fn a_store_is_looked_for_and_created_where_it_will_be_opened() {
         Ok(Some(vec!["by-text".to_string()]))
     );
     assert!(!by_links.exists());
+}
+
+#[test]
+fn the_settings_and_the_database_are_found_from_one_root() {
+    // no link anywhere: a root written through a directory that does not exist. The
+    // file system finds nothing there; by its text it is the store. Both the settings
+    // and the database must take the same side
+    let sandbox = Sandbox::new();
+    let store = sandbox.dir.path().join("store");
+    marked(&store, "kept");
+    let before = fs::read(file(&store)).unwrap();
+    let written = sandbox.dir.path().join("missing-directory/../store");
+    assert!(!sandbox.dir.path().join("missing-directory").exists());
+    let from_env = |root: &Path| {
+        Env::from([(
+            "MEMRIVER_ROOT".to_string(),
+            root.to_str().unwrap().to_string(),
+        )])
+    };
+    for (text, limit) in [
+        ("max_body_chars = 0\n", None),
+        ("max_body_chars = 42\n", Some(42)),
+    ] {
+        fs::write(store.join("settings.toml"), text).unwrap();
+        let direct = load_settings(Some(&store), &Env::new(), &sandbox.home);
+        if limit.is_none() {
+            let refusal = direct.as_ref().unwrap_err().to_string();
+            assert_eq!(refusal, "settings.toml is invalid: field max_body_chars");
+        }
+        assert_eq!(
+            direct.as_ref().ok().map(|settings| settings.max_body_chars),
+            limit
+        );
+        // the same answer however the root is handed in: never the defaults of no file
+        let answers = [
+            load_settings(Some(&written), &Env::new(), &sandbox.home),
+            load_settings(None, &from_env(&written), &sandbox.home),
+            load_settings(
+                Some(&storage_root(&from_env(&written), &sandbox.home)),
+                &Env::new(),
+                &sandbox.home,
+            ),
+        ];
+        for answer in answers {
+            assert_eq!(answer, direct, "{text:?}");
+        }
+        assert_eq!(settings_file(&written), Ok(Some(text.to_string())));
+    }
+    // one root: what the settings name is where the database is
+    assert_eq!(storage_root(&from_env(&written), &sandbox.home), store);
+    assert_eq!(located_root(&written), store);
+    let settings = load_settings(Some(&written), &Env::new(), &sandbox.home).unwrap();
+    assert_eq!(settings.root, store);
+    for root in [&written, &settings.root] {
+        let database = Database::new(root);
+        assert_eq!(database.exists(), Ok(true));
+        assert_eq!(marks(&database), Ok(Some(vec!["kept".to_string()])));
+    }
+    assert_eq!(fs::read(file(&store)).unwrap(), before);
+    assert_eq!(names_beside(sandbox.dir.path()), ["home", "store"]);
 }
 
 #[test]

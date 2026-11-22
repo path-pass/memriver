@@ -515,14 +515,24 @@ fn empty_memriver_root_means_default() {
         storage_root(&env(&[("MEMRIVER_ROOT", "")]), home),
         PathBuf::from("/h/agent-memory")
     );
-    // used as given: not made absolute, no `~` expanded, and only under this exact name
+    // made absolute and normalized by its text, from the working directory; no `~`
+    // expanded, and only under this exact name
+    let here = std::env::current_dir().unwrap();
     assert_eq!(
         storage_root(&env(&[("MEMRIVER_ROOT", "~/mem")]), home),
-        PathBuf::from("~/mem")
+        here.join("~/mem")
     );
     assert_eq!(
-        storage_root(&env(&[("MEMRIVER_ROOT", "rel/mem")]), home),
-        PathBuf::from("rel/mem")
+        storage_root(&env(&[("MEMRIVER_ROOT", "rel/./mem/")]), home),
+        here.join("rel/mem")
+    );
+    assert_eq!(
+        storage_root(&env(&[("MEMRIVER_ROOT", "/a//b/../c/")]), home),
+        PathBuf::from("/a/c")
+    );
+    assert_eq!(
+        storage_root(&Env::new(), Path::new("/h/x/..")),
+        PathBuf::from("/h/agent-memory")
     );
     assert_eq!(
         storage_root(&env(&[("memriver_root", "/other")]), home),

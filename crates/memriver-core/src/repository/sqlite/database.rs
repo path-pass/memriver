@@ -15,10 +15,8 @@
 //! Only schema version 6 is used. An older store is refused with its version and is
 //! never read, written or brought forward here.
 
-use std::ffi::OsString;
 use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::ErrorKind;
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -33,7 +31,7 @@ use crate::models::memory::{
     Memory, MemoryType, Trust, checked_level, tags_from_json, tags_to_json,
 };
 use crate::models::project::Project;
-use crate::settings::BUSY_TIMEOUT_MS;
+use crate::settings::{BUSY_TIMEOUT_MS, lexical_absolute};
 
 pub const DATABASE_FILENAME: &str = "memriver.db";
 
@@ -230,18 +228,6 @@ pub fn project_from_row(row: &[Value]) -> Result<(Project, bool), ValueError> {
 
 // --- the file and its connections ---
 
-/// `path` made absolute and normalized by its text alone: no link is read, `..` drops
-/// the name before it.
-fn absolute(path: &Path) -> std::io::Result<PathBuf> {
-    let joined = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()?.join(path)
-    };
-    let normal = py_normpath(joined.as_os_str().as_bytes());
-    Ok(PathBuf::from(OsString::from_vec(normal)))
-}
-
 /// Whether the database is a file without a schema. Anything that is neither that nor a
 /// version 6 store is an error: an older store with its version, the rest as unknown.
 fn is_fresh(conn: &Connection) -> Result<bool, CoreError> {
@@ -328,11 +314,11 @@ impl Database {
     }
 
     /// The one place of the database file for a whole operation: absolute and
-    /// normalized by its text. The check, the creation and the connection all name
+    /// normalized by its text, by the rule the settings file is found by. The check, the creation and the connection all name
     /// this path, so the file that was checked is the file that is opened -- a root
     /// written through a link and `..` cannot have one file examined and another used.
     fn located(&self) -> Result<PathBuf, CoreError> {
-        absolute(&self.path).map_err(|_| CoreError::StorageFailure)
+        lexical_absolute(&self.path).map_err(|_| CoreError::StorageFailure)
     }
 
     /// Whether the database file is there; a storage failure for anything but a regular
@@ -464,9 +450,12 @@ mod tests {
     #[test]
     fn a_relative_store_is_opened_from_the_working_directory() {
         let here = std::env::current_dir().unwrap();
-        assert_eq!(absolute(Path::new("a/./b/../c")).unwrap(), here.join("a/c"));
         assert_eq!(
-            absolute(Path::new("/a//b/../c/")).unwrap(),
+            lexical_absolute(Path::new("a/./b/../c")).unwrap(),
+            here.join("a/c")
+        );
+        assert_eq!(
+            lexical_absolute(Path::new("/a//b/../c/")).unwrap(),
             Path::new("/a/c")
         );
     }

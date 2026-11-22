@@ -96,23 +96,45 @@ impl fmt::Display for SettingsError {
 
 impl std::error::Error for SettingsError {}
 
-/// The store's root: `MEMRIVER_ROOT` when it is set and not empty, used as given, or
-/// `<home>/agent-memory`.
+/// `path` made absolute from the working directory and normalized by its text alone, as
+/// Python's `os.path.abspath` does: no link is read, `..` drops the name before it.
+pub fn lexical_absolute(path: &Path) -> std::io::Result<PathBuf> {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let normal = crate::models::helpers::py_normpath(joined.as_os_str().as_bytes());
+    Ok(PathBuf::from(std::ffi::OsString::from_vec(normal)))
+}
+
+/// The one place a root names, however it is written. The settings file and the
+/// database are both found from it, so a root that reaches a directory by its text only
+/// (`missing/../store`) cannot have its database used and its settings passed by. Without
+/// a working directory a relative root stays as written; nothing is found there.
+pub fn located_root(root: &Path) -> PathBuf {
+    lexical_absolute(root).unwrap_or_else(|_| root.to_path_buf())
+}
+
+/// The store's root: `MEMRIVER_ROOT` when it is set and not empty, or
+/// `<home>/agent-memory`; made absolute and normalized by its text (`located_root`).
 pub fn storage_root(env: &Env, home: &Path) -> PathBuf {
     match env.get("MEMRIVER_ROOT") {
-        Some(root) if !root.is_empty() => PathBuf::from(root),
-        _ => home.join("agent-memory"),
+        Some(root) if !root.is_empty() => located_root(Path::new(root)),
+        _ => located_root(&home.join("agent-memory")),
     }
 }
 
-/// The text of `<root>/settings.toml`, or None only when the path is really absent.
+/// The text of `<root>/settings.toml`, the root taken as `located_root` gives it, or None
+/// only when the path is really absent.
 /// Anything else that is not a readable regular file of UTF-8 text — a directory, a FIFO,
 /// a link that dangles or loops, a root that cannot be searched — is an error: an
 /// unreadable file never means "no settings". The type is checked before the file is
 /// opened, so a FIFO never blocks.
 pub fn settings_file(root: &Path) -> Result<Option<String>, SettingsError> {
     use std::io::ErrorKind::NotFound;
-    let path = root.join(SETTINGS_FILENAME);
+    let path = located_root(root).join(SETTINGS_FILENAME);
     match std::fs::metadata(&path) {
         Ok(found) if found.is_file() => {}
         // a link whose target is missing is broken, not absent
@@ -284,7 +306,7 @@ pub fn load_settings(
     env: &Env,
     home: &Path,
 ) -> Result<Settings, SettingsError> {
-    let root = root_override.map_or_else(|| storage_root(env, home), Path::to_path_buf);
+    let root = root_override.map_or_else(|| storage_root(env, home), located_root);
     let text = settings_file(&root)?.unwrap_or_default();
     // a byte order mark is not TOML to the Python implementation's parser
     if text.starts_with('\u{feff}') {
