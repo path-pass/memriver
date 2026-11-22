@@ -490,15 +490,19 @@ fn a_session_summary_needs_its_time_and_the_reverse() {
     assert_eq!(conn.execute(insert, (Some("s"), Some(at))), Ok(1));
 }
 
-#[test]
-fn a_read_rolls_back_the_hot_journal_of_a_crashed_writer() {
-    let (sandbox, database) = store();
+/// A store at schema `version` as a writer that crashed in the middle of a transaction
+/// leaves it: uncommitted pages in the database file and the journal that undoes them,
+/// with nobody's lock. Its directory, the file as it was before that writer began, and
+/// the id of the one project that was committed.
+fn crashed(sandbox: &Sandbox, version: i64) -> (PathBuf, Vec<u8>, String) {
+    let database = Database::new(&sandbox.root);
     let kept = new_id();
     database
-        .write(false, |conn| insert_project(conn, &kept, "kept"))
+        .write(true, |conn| insert_project(conn, &kept, "kept"))
         .unwrap();
-    // a writer in the middle of its transaction; a tiny page cache forces the
-    // uncommitted pages into the database file, with the journal that undoes them
+    set_version(&sandbox.root, version);
+    let committed = fs::read(file(&sandbox.root)).unwrap();
+    // a tiny page cache forces the uncommitted pages into the database file
     let writer = raw(&sandbox.root);
     writer
         .execute_batch("PRAGMA cache_size = 1; BEGIN IMMEDIATE; UPDATE projects SET name = 'lost'")
@@ -506,7 +510,7 @@ fn a_read_rolls_back_the_hot_journal_of_a_crashed_writer() {
     for i in 0..8 {
         insert_project(&writer, &format!("{i:010}"), &"x".repeat(100_000)).unwrap();
     }
-    // the two files as a crash at this moment would leave them, with nobody's lock
+    // the two files as a crash at this moment would leave them
     let crashed = sandbox.dir.path().join("crashed");
     fs::create_dir(&crashed).unwrap();
     let journal = format!("{DATABASE_FILENAME}-journal");
@@ -514,7 +518,14 @@ fn a_read_rolls_back_the_hot_journal_of_a_crashed_writer() {
     fs::copy(sandbox.root.join(&journal), crashed.join(&journal)).unwrap();
     // the uncommitted change really is in the copied file
     let dirty = fs::read(file(&crashed)).unwrap();
-    assert!(dirty.len() > 400_000);
+    assert!(dirty.len() > 400_000 && dirty != committed);
+    (crashed, committed, kept)
+}
+
+#[test]
+fn a_read_rolls_back_the_hot_journal_of_a_crashed_writer() {
+    let sandbox = Sandbox::new();
+    let (crashed, committed, kept) = crashed(&sandbox, 6);
     let rows = Database::new(&crashed).read(|conn| {
         let conn = conn.expect("a store");
         let mut statement = conn.prepare("SELECT id, name FROM projects")?;
@@ -527,6 +538,236 @@ fn a_read_rolls_back_the_hot_journal_of_a_crashed_writer() {
     });
     assert_eq!(rows, Ok(vec![(kept, "kept".to_string())]));
     assert_eq!(names_beside(&crashed), [DATABASE_FILENAME]);
+    assert_eq!(fs::read(file(&crashed)).unwrap(), committed);
+}
+
+#[test]
+fn an_older_store_with_a_hot_journal_is_refused_with_what_was_committed_intact() {
+    // the journal is played back when the file is opened, before its version can be
+    // read: the refusal comes after, and leaves the store as its last commit left it
+    type Attempt = fn(&Database) -> Result<(), CoreError>;
+    let attempts: [Attempt; 4] = [
+        |database| database.read(|_| Ok(())),
+        |database| database.write(false, |_| Ok(())),
+        |database| database.write(true, |_| Ok(())),
+        |database| {
+            database
+                .schema_version()
+                .map(|version| assert_eq!(version, Some(5)))
+        },
+    ];
+    for (nth, attempt) in attempts.into_iter().enumerate() {
+        let sandbox = Sandbox::new();
+        let (crashed, committed, kept) = crashed(&sandbox, 5);
+        let database = Database::new(&crashed);
+        let expected = if nth == 3 {
+            Ok(())
+        } else {
+            Err(CoreError::StoreNeedsUpgrade(5))
+        };
+        assert_eq!(attempt(&database), expected, "attempt {nth}");
+        assert_eq!(
+            fs::read(file(&crashed)).unwrap(),
+            committed,
+            "attempt {nth}"
+        );
+        assert_eq!(names_beside(&crashed), [DATABASE_FILENAME]);
+        let conn = raw(&crashed);
+        let rows: (String, String, i64) = conn
+            .query_row("SELECT id, name, count(*) FROM projects", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .unwrap();
+        assert_eq!(rows, (kept, "kept".to_string(), 1));
+        assert_eq!(pragma(&conn, "user_version"), 5);
+    }
+}
+
+#[test]
+fn a_store_in_another_journal_mode_keeps_it() {
+    let (sandbox, database) = store();
+    let set: String = raw(&sandbox.root)
+        .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(set, "wal");
+    database
+        .write(false, |conn| insert_project(conn, &new_id(), "n"))
+        .unwrap();
+    let count = database.read(|conn| {
+        Ok(conn
+            .unwrap()
+            .query_row("SELECT count(*) FROM projects", [], |row| {
+                row.get::<_, i64>(0)
+            })?)
+    });
+    assert_eq!(count, Ok(1));
+    assert_eq!(database.schema_version(), Ok(Some(6)));
+    let mode: String = raw(&sandbox.root)
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(mode, "wal");
+}
+
+#[test]
+fn a_wait_longer_than_the_driver_counts_is_its_longest() {
+    let (sandbox, _) = store();
+    for (asked, held) in [
+        (2_147_483_648, 2_147_483_647),
+        (u64::MAX, 2_147_483_647),
+        (2_147_483_647, 2_147_483_647),
+        (200, 200),
+    ] {
+        let database = Database::with_busy_timeout(&sandbox.root, asked);
+        let read = database.read(|conn| Ok(pragma(conn.expect("a store"), "busy_timeout")));
+        assert_eq!(read, Ok(held));
+        assert_eq!(
+            database.write(false, |conn| Ok(pragma(conn, "busy_timeout"))),
+            Ok(held)
+        );
+        assert_eq!(database.schema_version(), Ok(Some(6)));
+    }
+}
+
+// --- one path for the check, the creation and the connection ---
+
+/// `<dir>/lex/link` leads to `<dir>/real/child`, so the root `<dir>/lex/link/../store`
+/// is `<dir>/real/store` to the file system and `<dir>/lex/store` by its text.
+fn two_places(sandbox: &Sandbox) -> (PathBuf, PathBuf, PathBuf) {
+    let dir = sandbox.dir.path();
+    fs::create_dir_all(dir.join("real/child")).unwrap();
+    fs::create_dir(dir.join("lex")).unwrap();
+    symlink(dir.join("real/child"), dir.join("lex/link")).unwrap();
+    (
+        dir.join("lex/link/../store"),
+        dir.join("lex/store"),
+        dir.join("real/store"),
+    )
+}
+
+fn marked(root: &Path, mark: &str) {
+    Database::new(root)
+        .write(true, |conn| insert_project(conn, &new_id(), mark))
+        .unwrap();
+}
+
+fn marks(database: &Database) -> Result<Option<Vec<String>>, CoreError> {
+    database.read(|conn| {
+        let Some(conn) = conn else { return Ok(None) };
+        let mut statement = conn.prepare("SELECT name FROM projects ORDER BY name")?;
+        let names = statement
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+        Ok(Some(names))
+    })
+}
+
+#[test]
+fn the_store_that_is_checked_is_the_store_that_is_opened() {
+    // two stores: every operation reads and writes the one the path names by its text
+    let sandbox = Sandbox::new();
+    let (root, by_text, by_links) = two_places(&sandbox);
+    marked(&by_text, "by-text");
+    marked(&by_links, "by-links");
+    assert_eq!(
+        fs::canonicalize(&root).unwrap(),
+        fs::canonicalize(&by_links).unwrap()
+    );
+    let untouched = fs::read(file(&by_links)).unwrap();
+    let database = Database::new(&root);
+    assert_eq!(database.exists(), Ok(true));
+    assert_eq!(marks(&database), Ok(Some(vec!["by-text".to_string()])));
+    assert_eq!(
+        database.write(false, |conn| insert_project(conn, &new_id(), "written")),
+        Ok(())
+    );
+    assert_eq!(
+        marks(&Database::new(&by_text)),
+        Ok(Some(vec!["by-text".to_string(), "written".to_string()]))
+    );
+    assert_eq!(fs::read(file(&by_links)).unwrap(), untouched);
+}
+
+#[test]
+fn a_link_where_the_database_is_opened_is_refused_whatever_stands_elsewhere() {
+    // the file the path names by its text is a link to a third store; a regular
+    // database stands where the file system would go. What is opened is what is checked
+    let sandbox = Sandbox::new();
+    let (root, by_text, by_links) = two_places(&sandbox);
+    let third = sandbox.dir.path().join("third");
+    marked(&third, "third");
+    marked(&by_links, "by-links");
+    fs::create_dir(&by_text).unwrap();
+    symlink(file(&third), file(&by_text)).unwrap();
+    let before = (
+        fs::read(file(&third)).unwrap(),
+        fs::read(file(&by_links)).unwrap(),
+    );
+    let database = Database::new(&root);
+    assert_eq!(database.exists(), failure());
+    assert_eq!(marks(&database), failure());
+    assert_eq!(database.write(false, |_| Ok(())), failure());
+    assert_eq!(database.write(true, |_| Ok(())), failure());
+    assert_eq!(database.schema_version(), failure());
+    let after = (
+        fs::read(file(&third)).unwrap(),
+        fs::read(file(&by_links)).unwrap(),
+    );
+    assert_eq!(after, before);
+}
+
+#[test]
+fn a_store_is_looked_for_and_created_where_it_will_be_opened() {
+    // only the other place has a store: by its text the path names none
+    let sandbox = Sandbox::new();
+    let (root, by_text, by_links) = two_places(&sandbox);
+    marked(&by_links, "by-links");
+    let untouched = fs::read(file(&by_links)).unwrap();
+    let database = Database::new(&root);
+    assert_eq!(database.exists(), Ok(false));
+    assert_eq!(marks(&database), Ok(None));
+    assert_eq!(database.schema_version(), Ok(None));
+    assert_eq!(database.write(false, |_| Ok(())), failure());
+    assert!(!by_text.exists());
+    // a creating write makes it there, private, and uses it
+    assert_eq!(
+        database.write(true, |conn| insert_project(conn, &new_id(), "made")),
+        Ok(())
+    );
+    assert_eq!((mode(&by_text), mode(&file(&by_text))), (0o700, 0o600));
+    assert_eq!(marks(&database), Ok(Some(vec!["made".to_string()])));
+    assert_eq!(fs::read(file(&by_links)).unwrap(), untouched);
+    assert_eq!(names_beside(&by_links), [DATABASE_FILENAME]);
+
+    // and the other way round: a store only where the text leads is found
+    let sandbox = Sandbox::new();
+    let (root, by_text, by_links) = two_places(&sandbox);
+    marked(&by_text, "by-text");
+    assert_eq!(
+        marks(&Database::new(&root)),
+        Ok(Some(vec!["by-text".to_string()]))
+    );
+    assert!(!by_links.exists());
+}
+
+#[test]
+fn a_store_below_a_linked_directory_is_used_as_before() {
+    // a link above the store, or the store's own directory as a link, is followed
+    let sandbox = Sandbox::new();
+    let dir = sandbox.dir.path();
+    fs::create_dir_all(dir.join("real/deep")).unwrap();
+    symlink(dir.join("real"), dir.join("above")).unwrap();
+    symlink(dir.join("real/deep"), dir.join("store-link")).unwrap();
+    marked(&dir.join("above/new"), "through-a-parent");
+    assert_eq!(
+        marks(&Database::new(&dir.join("real/new"))),
+        Ok(Some(vec!["through-a-parent".to_string()]))
+    );
+    marked(&dir.join("store-link"), "through-the-root");
+    assert_eq!(
+        marks(&Database::new(&dir.join("real/deep"))),
+        Ok(Some(vec!["through-the-root".to_string()]))
+    );
+    assert_eq!(names_beside(&dir.join("real/deep")), [DATABASE_FILENAME]);
 }
 
 #[test]

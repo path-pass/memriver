@@ -230,7 +230,8 @@ pub fn project_from_row(row: &[Value]) -> Result<(Project, bool), ValueError> {
 
 // --- the file and its connections ---
 
-/// `path` made absolute and normalized by its text alone, as the connection names it.
+/// `path` made absolute and normalized by its text alone: no link is read, `..` drops
+/// the name before it.
 fn absolute(path: &Path) -> std::io::Result<PathBuf> {
     let joined = if path.is_absolute() {
         path.to_path_buf()
@@ -266,8 +267,48 @@ fn rollback(conn: &Connection) -> Result<(), CoreError> {
     Ok(())
 }
 
+/// Whether a database file stands at `path`; a storage failure for anything but a
+/// regular file. A symlink is never followed: its target is chosen outside the store,
+/// and SQLite would open whatever it points at.
+fn is_file(path: &Path) -> Result<bool, CoreError> {
+    match fs::symlink_metadata(path) {
+        Ok(found) if found.is_file() => Ok(true),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(false),
+        _ => Err(CoreError::StorageFailure),
+    }
+}
+
+/// The store's directory and an empty database file at `path`, unless they are there.
+fn create_file(path: &Path) -> Result<(), CoreError> {
+    let made = || -> std::io::Result<()> {
+        let root = path.parent().unwrap_or(Path::new("/"));
+        // the mode is the leaf's alone; a directory that is there keeps its own
+        if let Some(above) = root.parent() {
+            fs::create_dir_all(above)?;
+        }
+        match DirBuilder::new().mode(0o700).create(root) {
+            Err(err) if err.kind() == ErrorKind::AlreadyExists && root.is_dir() => {}
+            made => made?,
+        }
+        let created = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .mode(0o600)
+            .open(path);
+        match created {
+            // a peer, or an earlier run, created it: use that file
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => Ok(()),
+            created => created.map(drop),
+        }
+    };
+    made().map_err(|_| CoreError::StorageFailure)?;
+    // whatever stands there now must be a regular file
+    is_file(path).map(drop)
+}
+
 pub struct Database {
-    root: PathBuf,
+    /// As given: where it lies is decided anew by every operation.
     path: PathBuf,
     busy_timeout: Duration,
 }
@@ -277,33 +318,38 @@ impl Database {
         Database::with_busy_timeout(root, BUSY_TIMEOUT_MS)
     }
 
-    /// For a test that must not wait the whole `BUSY_TIMEOUT_MS` for a lock.
+    /// For a test that must not wait the whole `BUSY_TIMEOUT_MS` for a lock. The driver
+    /// counts milliseconds in 32 bits: a longer wait is the longest it can hold.
     pub fn with_busy_timeout(root: &Path, busy_timeout_ms: u64) -> Database {
         Database {
-            root: root.to_path_buf(),
             path: root.join(DATABASE_FILENAME),
-            busy_timeout: Duration::from_millis(busy_timeout_ms),
+            busy_timeout: Duration::from_millis(busy_timeout_ms.min(i32::MAX as u64)),
         }
+    }
+
+    /// The one place of the database file for a whole operation: absolute and
+    /// normalized by its text. The check, the creation and the connection all name
+    /// this path, so the file that was checked is the file that is opened -- a root
+    /// written through a link and `..` cannot have one file examined and another used.
+    fn located(&self) -> Result<PathBuf, CoreError> {
+        absolute(&self.path).map_err(|_| CoreError::StorageFailure)
     }
 
     /// Whether the database file is there; a storage failure for anything but a regular
-    /// file. A symlink is never followed: its target is chosen outside the store, and
-    /// SQLite would open whatever it points at.
+    /// file, a symlink included.
     pub fn exists(&self) -> Result<bool, CoreError> {
-        match fs::symlink_metadata(&self.path) {
-            Ok(found) if found.is_file() => Ok(true),
-            Err(err) if err.kind() == ErrorKind::NotFound => Ok(false),
-            _ => Err(CoreError::StorageFailure),
-        }
+        is_file(&self.located()?)
     }
 
-    /// The store's schema version as stored, None without a database file. Changes
-    /// nothing and refuses no version: the caller decides what the number means.
+    /// The store's schema version as stored, None without a database file. Refuses no
+    /// version: the caller decides what the number means. Writes nothing of its own;
+    /// what a crashed writer left unfinished is rolled back first, as on every open.
     pub fn schema_version(&self) -> Result<Option<i64>, CoreError> {
-        if !self.exists()? {
+        let path = self.located()?;
+        if !is_file(&path)? {
             return Ok(None);
         }
-        let conn = self.connect(true)?;
+        let conn = self.connect(&path, true)?;
         Ok(Some(
             conn.query_row("PRAGMA user_version", [], |row| row.get(0))?,
         ))
@@ -318,10 +364,11 @@ impl Database {
         &self,
         body: impl FnOnce(Option<&Connection>) -> Result<T, CoreError>,
     ) -> Result<T, CoreError> {
-        if !self.exists()? {
+        let path = self.located()?;
+        if !is_file(&path)? {
             return body(None);
         }
-        let conn = self.connect(true)?;
+        let conn = self.connect(&path, true)?;
         let result = conn
             .execute_batch("BEGIN")
             .map_err(CoreError::from)
@@ -346,13 +393,14 @@ impl Database {
         create: bool,
         body: impl FnOnce(&Connection) -> Result<T, CoreError>,
     ) -> Result<T, CoreError> {
-        if !self.exists()? {
+        let path = self.located()?;
+        if !is_file(&path)? {
             if !create {
                 return Err(CoreError::StorageFailure);
             }
-            self.create_file()?;
+            create_file(&path)?;
         }
-        let conn = self.connect(false)?;
+        let conn = self.connect(&path, false)?;
         let run = || {
             conn.execute_batch("BEGIN IMMEDIATE")?;
             // decided under the write lock: a peer that made the schema since we
@@ -374,36 +422,9 @@ impl Database {
         result
     }
 
-    fn create_file(&self) -> Result<(), CoreError> {
-        let made = || -> std::io::Result<()> {
-            // the mode is the leaf's alone; a directory that is there keeps its own
-            if let Some(parent) = self.root.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            match DirBuilder::new().mode(0o700).create(&self.root) {
-                Err(err) if err.kind() == ErrorKind::AlreadyExists && self.root.is_dir() => {}
-                made => made?,
-            }
-            let created = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .custom_flags(libc::O_NOFOLLOW)
-                .mode(0o600)
-                .open(&self.path);
-            match created {
-                // a peer, or an earlier run, created it: use that file
-                Err(err) if err.kind() == ErrorKind::AlreadyExists => Ok(()),
-                created => created.map(drop),
-            }
-        };
-        made().map_err(|_| CoreError::StorageFailure)?;
-        // whatever stands there now must be a regular file
-        self.exists().map(drop)
-    }
-
-    /// A connection to the existing file: never creates it, never read-only.
-    fn connect(&self, read_only: bool) -> Result<Connection, CoreError> {
-        let path = absolute(&self.path).map_err(|_| CoreError::StorageFailure)?;
+    /// A connection to the existing file at `path`, which is absolute: never creates
+    /// it, never read-only.
+    fn connect(&self, path: &Path, read_only: bool) -> Result<Connection, CoreError> {
         let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
         let conn = Connection::open_with_flags(path, flags)?;
         conn.busy_timeout(self.busy_timeout)?;
@@ -427,15 +448,16 @@ mod tests {
         // what a write without `create` meets when the store went away after its check
         let sandbox = Sandbox::new();
         let database = Database::new(&sandbox.root);
+        let path = database.located().unwrap();
         for read_only in [true, false] {
             assert!(matches!(
-                database.connect(read_only),
+                database.connect(&path, read_only),
                 Err(CoreError::StorageFailure)
             ));
         }
         assert!(!sandbox.root.exists());
         fs::create_dir(&sandbox.root).unwrap();
-        assert!(database.connect(false).is_err());
+        assert!(database.connect(&path, false).is_err());
         assert_eq!(fs::read_dir(&sandbox.root).unwrap().count(), 0);
     }
 
