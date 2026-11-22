@@ -271,17 +271,34 @@ const CORE_BOOLEANS: [&str; 5] = [
 /// stands under a named remote, branch or submodule (git does not weigh those when it
 /// looks for the working tree).
 ///
+/// And three settings a user commonly keeps in a repository, each only with a value:
+/// `user.name`, `user.email` and any alias. Checked in git 2.49.0's source and by running
+/// it: `rev-parse` reads the configuration through `git_default_config`, which hands
+/// `user.*` to `git_ident_config`; for the name and the address that only stores the text
+/// -- a missing value is the one thing it refuses, and what the text holds is looked at
+/// when a commit is written, not here. No `alias.*` is read at all: an alias is looked up
+/// only for a command git does not have built in, which `rev-parse` and `worktree` are.
+/// Nothing else of `user` is let through: `user.useconfigonly` is a boolean git refuses a
+/// bad value of.
+///
 /// Everything else -- `core.worktree`, an include, an extension, and any variable that is
 /// simply not on this list -- is git's to weigh: it checks many values when it starts, and
 /// refuses the repository for one it cannot read.
 fn plain_configuration(common: &Path) -> Option<bool> {
     let text = String::from_utf8(fs::read(common.join("config")).ok()?).ok()?;
     let config = config::parse(&text)?;
-    let known = |section: &str| matches!(section, "core" | "remote" | "branch" | "submodule");
+    let known = |section: &str| {
+        matches!(
+            section,
+            "core" | "remote" | "branch" | "submodule" | "user" | "alias"
+        )
+    };
     let plain = |variable: &config::Variable| {
         let value = variable.value.as_deref();
         match (variable.section.as_str(), &variable.subsection) {
             ("remote" | "branch" | "submodule", Some(_)) => true,
+            ("user", None) => matches!(variable.name.as_str(), "name" | "email") && value.is_some(),
+            ("alias", None) => value.is_some(),
             ("core", None) => match variable.name.as_str() {
                 "repositoryformatversion" => value == Some("0"),
                 "bare" => config::boolean(value) == Some(false),

@@ -1259,14 +1259,17 @@ fn a_variable_git_checks_when_it_starts_goes_to_git() {
 fn a_variable_git_does_not_write_itself_goes_to_git() {
     // nothing wrong with any of these: they are simply not on the short list
     for text in [
-        "[user]\n\tname = someone\n\temail = someone@example.com\n",
-        "[alias]\n\tco = checkout\n",
         "[core]\n\tautocrlf = input\n",
         "[core]\n\twarnambiguousrefs = false\n",
         "[core]\n\tsharedrepository = group\n",
         "[core]\n\tlogallrefupdates = always\n",
         "[core \"x\"]\n\tfilemode = true\n",
         "[pull]\n\trebase = true\n",
+        "[user]\n\tsigningkey = ABCD\n",
+        "[user]\n\tuseconfigonly = true\n",
+        "[user \"x\"]\n\tname = someone\n",
+        "[author]\n\tname = someone\n",
+        "[alias \"co\"]\n\tcommand = checkout\n",
         "[remote]\n\tpushdefault = origin\n",
         "[branch]\n\tautosetupmerge = always\n",
         "[submodule]\n\tactive = .\n",
@@ -1393,4 +1396,96 @@ fn a_git_directory_whose_objects_cannot_be_searched_goes_to_git() {
             assert_eq!(answers, (true, None, None), "{directory} {mode:o}");
         }
     }
+}
+
+// --- the settings a user commonly keeps in a repository ---
+
+#[test]
+fn a_user_name_with_a_value_stays_with_the_files() {
+    // git reads the value and does not look at what it holds
+    for value in ["someone", "", "\"<> ,;\"", "S\u{f8}ren \u{9879}"] {
+        let it = fixture();
+        let main = it.repository("main");
+        let worktree = it.worktree(&main, "wt", "feature");
+        append(
+            &main.join(".git/config"),
+            &format!("[User]\n\tName = {value}\n"),
+        );
+        assert_eq!(it.agreed(&main), at(&main, Some("main")), "{value:?}");
+        assert_eq!(
+            it.agreed(&worktree),
+            at(&main, Some("feature")),
+            "{value:?}"
+        );
+    }
+}
+
+#[test]
+fn a_user_name_without_a_value_goes_to_git_and_git_refuses() {
+    let it = fixture();
+    let main = it.repository("main");
+    let worktree = it.worktree(&main, "wt", "feature");
+    append(&main.join(".git/config"), "[user]\n\tname\n");
+    assert_eq!(it.left_to_git(&main), None);
+    assert_eq!(it.left_to_git(&worktree), None);
+}
+
+#[test]
+fn a_user_email_with_a_value_stays_with_the_files() {
+    for value in ["someone@example.com", "", "<<not an address>>"] {
+        let it = fixture();
+        let main = it.repository("main");
+        let worktree = it.worktree(&main, "wt", "feature");
+        append(
+            &main.join(".git/config"),
+            &format!("[user]\n\temail = {value}\n"),
+        );
+        assert_eq!(it.agreed(&main), at(&main, Some("main")), "{value:?}");
+        assert_eq!(
+            it.agreed(&worktree),
+            at(&main, Some("feature")),
+            "{value:?}"
+        );
+    }
+}
+
+#[test]
+fn a_user_email_without_a_value_goes_to_git_and_git_refuses() {
+    let it = fixture();
+    let main = it.repository("main");
+    let worktree = it.worktree(&main, "wt", "feature");
+    append(
+        &main.join(".git/config"),
+        "[user]\n\tname = someone\n\temail\n",
+    );
+    assert_eq!(it.left_to_git(&main), None);
+    assert_eq!(it.left_to_git(&worktree), None);
+}
+
+#[test]
+fn an_alias_with_a_value_stays_with_the_files() {
+    // an alias is looked up only for a command git does not know itself: not even one
+    // named like the commands asked here is read
+    let it = fixture();
+    let main = it.repository("main");
+    let worktree = it.worktree(&main, "wt", "feature");
+    append(
+        &main.join(".git/config"),
+        "[alias]\n\tco = checkout\n\tlg = log --oneline\n\tempty =\n\
+         \tx = \"!f() { echo hi; }; f\"\n\trev-parse = !false\n\tworktree = !false\n\
+         \ta = b\n\tb = a\n",
+    );
+    assert_eq!(it.agreed(&main), at(&main, Some("main")));
+    assert_eq!(it.agreed(&worktree), at(&main, Some("feature")));
+}
+
+#[test]
+fn an_alias_without_a_value_goes_to_git() {
+    // git does not refuse it here; it is simply not weighed by the files
+    let it = fixture();
+    let main = it.repository("main");
+    let worktree = it.worktree(&main, "wt", "feature");
+    append(&main.join(".git/config"), "[alias]\n\tco\n");
+    assert_eq!(it.left_to_git(&main), Some(at(&main, Some("main"))));
+    assert_eq!(it.left_to_git(&worktree), Some(at(&main, Some("feature"))));
 }
