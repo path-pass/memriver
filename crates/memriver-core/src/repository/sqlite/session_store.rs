@@ -534,10 +534,14 @@ impl SessionStore {
                         values,
                     )
                     .optional()?;
-                let stands = project.is_some_and(|project| {
-                    text(&project, 0).ok().flatten() == session.candidate_root.as_deref()
-                        && project[1] == Value::Integer(0)
-                });
+                // the values as they are stored: a root that is not text is no root the
+                // candidate was seen with, and it is not "no root" either
+                let root = session
+                    .candidate_root
+                    .clone()
+                    .map_or(Value::Null, Value::Text);
+                let stands = project
+                    .is_some_and(|project| project[0] == root && project[1] == Value::Integer(0));
                 if !stands {
                     return Err(refused("candidate-changed"));
                 }

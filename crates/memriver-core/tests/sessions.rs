@@ -2039,6 +2039,59 @@ fn cd_move_needs_claude_code_a_changed_transcript_directory_and_an_absolute_cwd(
 }
 
 #[test]
+fn only_a_compact_start_applies_a_move() {
+    let world = world();
+    world.start(Call {
+        transcript: Some(T_A),
+        ..call()
+    });
+    let b = world.init(&world.base.join("b"), "b");
+    let root = Path::new(b.root.as_deref().unwrap());
+    let before = world.whereabouts(&key());
+    // the transcript's directory changed and the working directory can be used: any
+    // other start on the row leaves the session where it is
+    for source in ["startup", "clear", "fork", "", "Compact", "something new"] {
+        let started = world.start_as(source, at(T_B, root));
+        assert_eq!(
+            (started.context, started.moved),
+            (world.registered(), None),
+            "{source}"
+        );
+        assert_eq!(world.whereabouts(&key()), before, "{source}");
+        assert_eq!(world.services.session.moves(&key()).unwrap(), []);
+    }
+    let count = |table: &str| -> i64 {
+        let sql = format!("SELECT count(*) FROM {table}");
+        world.raw().query_row(&sql, [], |row| row.get(0)).unwrap()
+    };
+    assert_eq!(count("session_moves"), 0);
+    // and the signal is still there for the compact that follows
+    assert!(changed(&world.start_as("compact", at(T_B, root)).moved));
+    assert_eq!(count("session_moves"), 1);
+}
+
+#[test]
+fn a_session_search_never_gives_more_than_fifty() {
+    let world = world();
+    for number in 0..51 {
+        world.start(by(codex(&format!("s{number}"))));
+    }
+    let (session, registered) = (&world.services.session, world.registered());
+    assert_eq!(session.list_sessions(None, "", None).unwrap().len(), 51);
+    for limit in [50, 51, i64::MAX] {
+        let found = session.search_sessions("", &registered, Some(limit));
+        assert_eq!(found.unwrap().len(), 50, "{limit}");
+    }
+    assert_eq!(
+        session
+            .search_sessions("", &registered, Some(49))
+            .unwrap()
+            .len(),
+        49
+    );
+}
+
+#[test]
 fn transcript_same_dir_other_spelling_is_not_a_move() {
     let world = world();
     let real = world.dir("projects/x");

@@ -707,6 +707,24 @@ fn confirm_refuses_candidate_moved() {
 }
 
 #[test]
+fn a_candidate_without_a_root_is_not_confirmed_to_a_project_whose_root_is_not_text() {
+    let fixture = initialized();
+    let before = fixture.register(pending_of(key(), |session| session.candidate_root = None));
+    // a root only a raw writer can leave: it is not "no root"
+    fixture.sql("UPDATE projects SET root = CAST(X'2FFF' AS TEXT) WHERE id = 'pppppppppp'");
+    refused(
+        fixture.store.confirm(&key(), Some(PROJECT), None),
+        "candidate-changed",
+    );
+    assert_eq!(fixture.get(), before);
+    assert_eq!(fixture.store.bound().unwrap(), []);
+    // a project that really has none is the candidate still
+    fixture.sql("UPDATE projects SET root = NULL WHERE id = 'pppppppppp'");
+    let confirmed = fixture.store.confirm(&key(), Some(PROJECT), None).unwrap();
+    assert_eq!(confirmed.unwrap().project_id.as_deref(), Some(PROJECT));
+}
+
+#[test]
 fn confirming_a_registered_row_returns_it_unchanged() {
     let fixture = initialized();
     fixture.register(pending());
