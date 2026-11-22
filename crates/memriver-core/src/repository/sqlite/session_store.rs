@@ -228,8 +228,22 @@ fn require_timestamp(at: &str) -> Result<(), ValueError> {
     }
 }
 
+/// A session's activity time after an event at `at`: always later than the stored one.
+/// A clock that stood still or went back must not hide the event from whoever read the
+/// session before it -- a summary made from that reading does not cover it.
 fn later(stored: &str, at: &str) -> String {
-    stored.max(at).to_string()
+    if at > stored {
+        at.to_string()
+    } else {
+        now_strictly_after(stored)
+    }
+}
+
+/// The time before which a tool call is too old at `at`, in the same fixed-width form:
+/// the comparison of the texts is chronological.
+fn expired(at: &str, retention_s: i64) -> Option<String> {
+    let kept = retention_s.checked_mul(1_000_000)?;
+    format_micros(parse_timestamp(at)?.checked_sub(kept)?)
 }
 
 /// What a session search reads: saved prompt texts, entry cwd, branch, summary.
@@ -372,8 +386,8 @@ impl SessionStore {
         Ok(registered.flatten())
     }
 
-    /// Moves `last_active_at` forward, never back; a transcript path replaces the
-    /// stored one only when one is given.
+    /// Moves `last_active_at` forward, always; a transcript path replaces the stored
+    /// one only when one is given.
     pub fn touch(
         &self,
         key: &SessionKey,
@@ -609,11 +623,7 @@ impl SessionStore {
             if session.transcript_path.as_deref() != to.expected_transcript_path {
                 return Ok(Some((session, None)));
             }
-            let active = if to.at > session.last_active_at.as_str() {
-                to.at.to_string()
-            } else {
-                now_strictly_after(&session.last_active_at)
-            };
+            let active = later(&session.last_active_at, to.at);
             let (from_entry_cwd, from_project_id) =
                 (session.entry_cwd.clone(), session.project_id.clone());
             if session.status == SessionStatus::Registered {
@@ -698,11 +708,8 @@ impl SessionStore {
             return Err(ValueError::new("retention_s is not a positive integer").into());
         }
         let cwd = cwd.filter(|cwd| usable_directory(cwd));
-        // the same fixed-width form, so the prune compares text chronologically
-        let expired = parse_timestamp(at)
-            .and_then(|at| at.checked_sub(retention_s.checked_mul(1_000_000)?))
-            .and_then(format_micros)
-            .ok_or_else(|| ValueError::new("date value out of range"))?;
+        let expired =
+            expired(at, retention_s).ok_or_else(|| ValueError::new("date value out of range"))?;
         self.written(|conn| {
             conn.execute(
                 "INSERT INTO tool_calls (harness, call_id, session_id, recorded_at, cwd) \
@@ -717,21 +724,29 @@ impl SessionStore {
         Ok(())
     }
 
-    /// The recorded tool call; None when none is known. An id no call can have names
-    /// no session, and a bad row routes nothing.
+    /// The tool call recorded within `retention_s` before `at`; None when none is known.
+    /// An id no call can have names no session, and a bad row routes nothing.
     pub fn call_record(
         &self,
         harness: &str,
         call_id: &str,
+        at: &str,
+        retention_s: i64,
     ) -> Result<Option<CallRecord>, CoreError> {
-        if !is_call_id(call_id) {
+        // a call recorded longer ago than the retention names no session, whether or
+        // not a later record has dropped its row yet
+        let (true, Some(expired)) = (
+            is_call_id(call_id) && retention_s >= 1,
+            expired(at, retention_s),
+        ) else {
             return Ok(None);
-        }
+        };
         let row = self.database().read(|conn| match conn {
             Some(conn) => Ok(conn
                 .query_row(
-                    "SELECT session_id, cwd FROM tool_calls WHERE harness = ?1 AND call_id = ?2",
-                    [harness, call_id],
+                    "SELECT session_id, cwd FROM tool_calls \
+                     WHERE harness = ?1 AND call_id = ?2 AND recorded_at >= ?3",
+                    [harness, call_id, &expired],
                     values,
                 )
                 .optional()?),

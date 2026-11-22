@@ -210,7 +210,10 @@ impl Fixture {
     }
 
     fn call_key(&self, harness: &str, call_id: &str) -> Option<SessionKey> {
-        let record = self.store.call_record(harness, call_id).unwrap();
+        let record = self
+            .store
+            .call_record(harness, call_id, &hour(11, 0), HOUR)
+            .unwrap();
         record.map(|record| record.key)
     }
 
@@ -385,7 +388,10 @@ fn touch_moves_last_active_at_forward_only() {
     fixture.register(session(|session| session.last_active_at = at(10)));
     let touch = |second| fixture.store.touch(&key(), &at(second), None).unwrap();
     assert_eq!(touch(20).unwrap().last_active_at, at(20));
-    assert_eq!(touch(5).unwrap().last_active_at, at(20));
+    // a clock that went back: never back with it, and not standing still either
+    let touched = touch(5).unwrap().last_active_at;
+    assert!(touched > at(20), "{touched}");
+    assert!(touch(5).unwrap().last_active_at > touched);
 }
 
 #[test]
@@ -476,7 +482,56 @@ fn an_earlier_prompt_never_moves_last_active_at_back() {
     let fixture = initialized();
     fixture.register(session(|session| session.last_active_at = at(30)));
     let (session, _) = fixture.add(&key(), &prompt(10, "x"), &pending());
-    assert_eq!(session.last_active_at, at(30));
+    assert!(session.last_active_at > at(30));
+    // the prompt keeps the time it was given
+    assert_eq!(session.first_prompt, Some(prompt(10, "x")));
+}
+
+#[test]
+fn activity_while_the_clock_is_behind_still_ends_what_a_summary_was_read_for() {
+    // each event that counts as activity, arriving with a time a second before the one
+    // the session was read at
+    type Event = fn(&Fixture);
+    let events: [(&str, Event); 5] = [
+        ("a prompt", |fixture| {
+            drop(fixture.add(&key(), &prompt(9, "x"), &pending()))
+        }),
+        ("a prompt at the same instant", |fixture| {
+            drop(fixture.add(&key(), &prompt(10, "x"), &pending()))
+        }),
+        ("a start", |fixture| {
+            drop(fixture.store.touch(&key(), &at(9), None).unwrap())
+        }),
+        ("a stop", |fixture| assert!(!fixture.nudge(9))),
+        ("an end", |fixture| {
+            fixture.store.end(&key(), &at(9)).unwrap()
+        }),
+    ];
+    for (name, event) in events {
+        let fixture = initialized();
+        fixture.register(session(|session| session.last_active_at = at(10)));
+        let store = &fixture.store;
+        store
+            .publish_summary(&key(), "what was done so far", &at(10), &at(10))
+            .unwrap();
+        event(&fixture);
+        let after = fixture.get();
+        assert!(after.last_active_at > at(10), "{name}");
+        // a summary made from what was read before it is refused, the old one stays
+        let published =
+            store.publish_summary(&key(), "made from the old reading", &at(10), &at(11));
+        assert_eq!(
+            published.unwrap_err(),
+            CoreError::SessionMoved.into(),
+            "{name}"
+        );
+        assert_eq!(
+            fixture.get().summary.as_deref(),
+            Some("what was done so far"),
+            "{name}"
+        );
+        assert_eq!(fixture.get(), after);
+    }
 }
 
 #[test]
@@ -1199,7 +1254,7 @@ fn recording_a_call_again_moves_it_to_the_latest_session() {
     fixture.record(&other_key(), "call-1", &hour(10, 5), None);
     let record = fixture
         .store
-        .call_record("claude-code", "call-1")
+        .call_record("claude-code", "call-1", &hour(11, 0), HOUR)
         .unwrap()
         .unwrap();
     assert_eq!((record.key, record.cwd), (other_key(), None));
@@ -1226,18 +1281,54 @@ fn tool_call_older_than_3600s_is_not_returned() {
 }
 
 #[test]
+fn a_tool_call_past_its_retention_is_not_found_although_nothing_was_recorded_since() {
+    let fixture = initialized();
+    fixture.record(&key(), "call-1", &hour(9, 0), Some("/w"));
+    let found = |at: &str| {
+        let record = fixture.store.call_record("claude-code", "call-1", at, HOUR);
+        record.unwrap().map(|record| (record.key, record.cwd))
+    };
+    let known = Some((key(), Some("/w".to_string())));
+    assert_eq!(found(&hour(9, 0)), known);
+    assert_eq!(found("2026-09-24T09:59:59.999999Z"), known);
+    // exactly as old as the retention is still known, a microsecond more is not
+    assert_eq!(found(&hour(10, 0)), known);
+    assert_eq!(found("2026-09-24T10:00:00.000001Z"), None);
+    assert_eq!(found(&hour(23, 0)), None);
+    // a look-up removes nothing: the row is there for the next record to drop
+    assert_eq!(fixture.count("SELECT count(*) FROM tool_calls"), 1);
+    assert_eq!(found(&hour(9, 30)), known);
+    // a time that is none, or no retention, finds nothing
+    assert_eq!(found("yesterday"), None);
+    let record = fixture
+        .store
+        .call_record("claude-code", "call-1", &hour(9, 0), 0);
+    assert_eq!(record.unwrap(), None);
+}
+
+#[test]
 fn a_malformed_call_is_a_value_error_and_records_nothing() {
     let fixture = initialized();
     let store = &fixture.store;
     for call_id in ["a b", "", &"x".repeat(257)] {
         is_value_error(store.record_call(&key(), call_id, &hour(10, 0), HOUR, None));
         // looking such an id up finds nothing
-        assert_eq!(store.call_record("claude-code", call_id).unwrap(), None);
+        assert_eq!(
+            store
+                .call_record("claude-code", call_id, &hour(11, 0), HOUR)
+                .unwrap(),
+            None
+        );
     }
     is_value_error(store.record_call(&key(), "call-1", "yesterday", HOUR, None));
     is_value_error(store.record_call(&key(), "call-1", &hour(10, 0), 0, None));
     assert_eq!(fixture.count("SELECT count(*) FROM tool_calls"), 0);
-    assert_eq!(store.call_record("claude-code", "missing").unwrap(), None);
+    assert_eq!(
+        store
+            .call_record("claude-code", "missing", &hour(11, 0), HOUR)
+            .unwrap(),
+        None
+    );
 }
 
 #[test]
@@ -1246,7 +1337,10 @@ fn a_call_row_naming_an_invalid_session_is_ignored() {
     fixture.record(&key(), "call-1", &hour(10, 0), None);
     // a working directory that is not text names none; the session is still known
     fixture.sql("UPDATE tool_calls SET cwd = CAST(X'2FFF' AS TEXT)");
-    let record = fixture.store.call_record("claude-code", "call-1").unwrap();
+    let record = fixture
+        .store
+        .call_record("claude-code", "call-1", &hour(11, 0), HOUR)
+        .unwrap();
     assert_eq!(
         record.map(|record| (record.key, record.cwd)),
         Some((key(), None))
@@ -1263,7 +1357,7 @@ fn record_call_keeps_an_absolute_cwd_and_drops_any_other() {
     fixture.record(&key(), "call-1", &hour(10, 0), Some("/work/other"));
     let record = fixture
         .store
-        .call_record("claude-code", "call-1")
+        .call_record("claude-code", "call-1", &hour(11, 0), HOUR)
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -1272,7 +1366,10 @@ fn record_call_keeps_an_absolute_cwd_and_drops_any_other() {
     );
     for cwd in [Some("rel/dir"), Some("/a\0b"), Some(""), None] {
         fixture.record(&key(), "call-1", &hour(10, 0), cwd);
-        let record = fixture.store.call_record("claude-code", "call-1").unwrap();
+        let record = fixture
+            .store
+            .call_record("claude-code", "call-1", &hour(11, 0), HOUR)
+            .unwrap();
         assert_eq!(record.unwrap().cwd, None, "{cwd:?}");
     }
 }

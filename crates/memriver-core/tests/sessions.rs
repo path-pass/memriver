@@ -991,6 +991,104 @@ fn prompt_recording() {
     assert!(!dump.contains("ghp_"));
 }
 
+/// Text from the hex digits of its bytes, so that no sample here has the shape of a
+/// credential where it is written down.
+fn unhex(hex: &str) -> String {
+    let bytes = (0..hex.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).unwrap())
+        .collect();
+    String::from_utf8(bytes).unwrap()
+}
+
+#[test]
+fn a_preview_the_policy_refuses_is_never_stored() {
+    let world = world();
+    // the name of a credential, "=" and a made-up value of fourteen letters and
+    // digits, with something between them that is no white space until the prompt is
+    // folded onto one line
+    let (name, value) = (
+        unhex("70617373776f7264"),
+        unhex("5a7137784b326d5076394c745234"),
+    );
+    let policy = memriver_core::content_policy::Policy::embedded();
+    let mut checked = 0;
+    for between in ["\u{1}", "\u{0}\u{8}", "\u{2}\u{3}", "\u{7f}"] {
+        for (number, prompt) in [
+            format!("{name}{between}={between}{value}"),
+            format!("please keep this:\n{name}{between}={between}{value}\nthanks"),
+            // the folded line is cut inside the value, and what is left is still one
+            format!(
+                "{}{name}{between}={between}{value}",
+                "x".repeat(495 - between.chars().count())
+            ),
+        ]
+        .iter()
+        .enumerate()
+        {
+            // the policy lets the prompt itself through, and refuses its one line
+            assert!(
+                policy.check(prompt, prompt.chars().count()).is_none(),
+                "{between:?}"
+            );
+            let line = single_line(prompt);
+            assert!(
+                policy.check(cut(&line, 512), 512).is_some(),
+                "{between:?} {number}"
+            );
+            let key = claude(&format!("folded-{checked}"));
+            world.prompt(prompt, by(key.clone()));
+            world.prompt(prompt, by(key.clone()));
+            let row = world.row_of(&key).unwrap();
+            let secret = PromptBody::Omitted(PromptOmission::Secret);
+            assert_eq!(
+                row.first_prompt.unwrap().body(),
+                &secret,
+                "{between:?} {number}"
+            );
+            assert_eq!(row.recent_prompts.len(), 2);
+            assert!(
+                row.recent_prompts
+                    .iter()
+                    .all(|entry| entry.body() == &secret)
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 12);
+    // neither column of any row holds the value, whole or cut
+    let stored: String = world
+        .raw()
+        .query_row(
+            "SELECT group_concat(coalesce(first_prompt, '') || recent_prompts) FROM sessions",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!stored.contains(&value[..6]) && !stored.contains(&name));
+    // and a search for it finds no session
+    let found = world
+        .services
+        .session
+        .list_sessions(None, &value, None)
+        .unwrap();
+    assert_eq!(found, []);
+    // a credential beyond what would be kept still leaves nothing of the prompt
+    let beyond = format!("{} {}", "x".repeat(600), secret_prompt());
+    world.prompt(&beyond, by(claude("beyond")));
+    let row = world.row_of(&claude("beyond")).unwrap();
+    let secret = PromptBody::Omitted(PromptOmission::Secret);
+    assert_eq!(row.first_prompt.unwrap().body(), &secret);
+    // a prompt that only names the word is kept as before
+    let harmless = format!("how do I reset my {name}?");
+    world.prompt(&harmless, by(claude("harmless")));
+    let row = world.row_of(&claude("harmless")).unwrap();
+    assert_eq!(
+        row.first_prompt.unwrap().body(),
+        &PromptBody::Text(harmless)
+    );
+}
+
 #[test]
 fn only_the_recent_prompts_are_kept() {
     let world = world();

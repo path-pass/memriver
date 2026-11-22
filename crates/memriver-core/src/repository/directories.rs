@@ -318,13 +318,35 @@ fn dirname(path: &str) -> &str {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static TRANSCRIPT_LOOKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// For a test: how often this thread has asked `transcript_moved` so far.
+#[cfg(test)]
+pub(crate) fn transcript_looks() -> usize {
+    TRANSCRIPT_LOOKS.get()
+}
+
 /// A Claude Code /cd: the transcript now lives under another projects directory.
 ///
 /// The only signal that tells /cd from a shell cd, which keeps the transcript where it
-/// is. Spellings of one directory (a symlink, `/./`) compare equal.
+/// is. Spellings of one directory compare equal: by their text once links are read (a
+/// symlink, `/./`), and by what stands there when both exist (a name in another case on
+/// a file system that ignores case) -- one directory under two names is never a /cd.
 pub fn transcript_moved(stored: &str, current: &str) -> bool {
+    #[cfg(test)]
+    TRANSCRIPT_LOOKS.set(TRANSCRIPT_LOOKS.get() + 1);
+    if !(usable_directory(stored) && usable_directory(current)) {
+        return false;
+    }
     let real = |path: &str| realpath(Path::new(dirname(path)), false);
-    usable_directory(stored) && usable_directory(current) && real(stored) != real(current)
+    match (real(stored), real(current)) {
+        (stored, current) if stored == current => false,
+        (Ok(stored), Ok(current)) => same_directory(&stored, &current) != Some(true),
+        _ => true,
+    }
 }
 
 // --- one directory under two names ---

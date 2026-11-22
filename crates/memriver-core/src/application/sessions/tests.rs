@@ -12,7 +12,7 @@ use serde_json::json;
 
 use super::*;
 use crate::models::session::PromptBody;
-use crate::repository::directories::DATABASE_FILENAME;
+use crate::repository::directories::{DATABASE_FILENAME, ignore_case, transcript_looks};
 use crate::repository::sqlite::session_store::meanwhile;
 use crate::settings::Settings;
 use crate::{Services, build_services};
@@ -372,4 +372,130 @@ fn building_the_services_and_the_calls_that_check_no_text_never_load_the_policy(
     assert!(LazyLock::get(&session.policy).is_none());
     world.prompt(None, None);
     assert!(LazyLock::get(&session.policy).is_some());
+}
+
+/// The transcript of one session under two spellings of one directory, and a project
+/// `b` the session's working directory has gone to meanwhile.
+fn aliased(world: &World) -> (String, String, Project) {
+    let transcript = |name: &str| {
+        let directory = world.base.join(name);
+        fs::create_dir_all(&directory).unwrap();
+        format!("{}/s.jsonl", directory.to_str().unwrap())
+    };
+    let spellings = (transcript("Transcripts/x"), transcript("transcripts/x"));
+    ignore_case();
+    (spellings.0, spellings.1, world.init("b"))
+}
+
+#[test]
+fn a_transcript_directory_spelled_another_way_does_not_move_a_registered_session() {
+    let world = world();
+    let (stored, spelled, b) = aliased(&world);
+    world.start("startup", Some(&stored), None);
+    world.prompt(Some(&stored), Some(&world.work));
+    let before = world.row();
+    // the working directory is in another project; only the spelling changed
+    let observed = world.prompt(Some(&spelled), b.root.as_deref());
+    let registered = world.registered_to(&world.project);
+    assert_eq!(
+        (observed.context, observed.moved),
+        (registered.clone(), None)
+    );
+    let compacted = world.start("compact", Some(&spelled), b.root.as_deref());
+    assert_eq!((compacted.context, compacted.moved), (registered, None));
+    let after = world.row();
+    assert_eq!(
+        (after.project_id, after.entry_cwd, after.transcript_path),
+        (before.project_id, before.entry_cwd, before.transcript_path)
+    );
+    assert_eq!(world.session().moves(&key()).unwrap(), []);
+    // what the session said stays out of the other project's reach
+    let reach = world.registered_to(&b);
+    assert_eq!(
+        world
+            .session()
+            .search_sessions("first", &reach, None)
+            .unwrap(),
+        []
+    );
+    // a directory that really is another one still moves it
+    let elsewhere = world.base.join("Transcripts/y");
+    fs::create_dir(&elsewhere).unwrap();
+    let moved = format!("{}/s.jsonl", elsewhere.to_str().unwrap());
+    let observed = world.prompt(Some(&moved), b.root.as_deref());
+    assert!(observed.moved.is_some_and(|moved| moved.changed()));
+    assert_eq!(world.row().project_id, Some(b.id));
+}
+
+#[test]
+fn a_transcript_directory_spelled_another_way_does_not_change_a_pending_candidate() {
+    let world = world();
+    let (stored, spelled, b) = aliased(&world);
+    world.prompt(Some(&stored), Some(&world.work));
+    let before = world.row();
+    assert_eq!(before.candidate_id, Some(world.project.id.clone()));
+    let observed = world.prompt(Some(&spelled), b.root.as_deref());
+    assert_eq!(observed.moved, None);
+    world.start("compact", Some(&spelled), b.root.as_deref());
+    let after = world.row();
+    assert_eq!(
+        (after.candidate_id, after.candidate_root, after.entry_cwd),
+        (before.candidate_id, before.candidate_root, before.entry_cwd)
+    );
+    assert_eq!(world.session().moves(&key()).unwrap(), []);
+    // and it is confirmed to the project it was seen in
+    let confirmed = world.session().confirm_session(&key()).unwrap();
+    assert_eq!(confirmed, world.registered_to(&world.project));
+}
+
+#[test]
+fn the_transcript_directory_is_looked_at_only_for_a_claude_code_session_with_a_usable_directory() {
+    let world = world();
+    let b = world.init("b");
+    let session = world.session();
+    let looks = |work: &dyn Fn()| {
+        let before = transcript_looks();
+        work();
+        transcript_looks() - before
+    };
+    // a Codex row is never checked
+    let codex = SessionKey::new(Harness::Codex, "session-2").unwrap();
+    session
+        .start_session(&codex, "startup", &world.work, Some(T_A), None)
+        .unwrap();
+    let prompt = json!("hello");
+    assert_eq!(
+        looks(&|| {
+            let observed = session.observe_prompt(
+                &codex,
+                Some(&prompt),
+                &world.work,
+                Some(T_B),
+                b.root.as_deref(),
+            );
+            assert_eq!(observed.unwrap().moved, None);
+            let compacted =
+                session.start_session(&codex, "compact", &world.work, Some(T_B), b.root.as_deref());
+            assert_eq!(compacted.unwrap().moved, None);
+        }),
+        0
+    );
+    // nor is a Claude Code row whose working directory cannot be used, or any other start
+    world.start("startup", Some(T_A), None);
+    assert_eq!(
+        looks(&|| {
+            for cwd in [None, Some("rel"), Some("/a\0")] {
+                assert_eq!(world.prompt(Some(T_B), cwd).moved, None);
+                assert_eq!(world.start("compact", Some(T_B), cwd).moved, None);
+            }
+            world.start("startup", Some(T_B), b.root.as_deref());
+            world.start("resume", Some(T_A), b.root.as_deref());
+        }),
+        0
+    );
+    // with one it is, and the move is applied
+    assert_eq!(
+        looks(&|| assert!(world.prompt(Some(T_B), b.root.as_deref()).moved.is_some())),
+        1
+    );
 }

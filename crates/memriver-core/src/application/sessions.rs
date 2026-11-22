@@ -299,7 +299,10 @@ impl SessionService {
         harness: &str,
         call_id: &str,
     ) -> Result<Option<CallRecord>, CoreError> {
-        match self.session_store.call_record(harness, call_id) {
+        let record =
+            self.session_store
+                .call_record(harness, call_id, &now(), TOOL_CALL_RETENTION_S);
+        match record {
             Err(CoreError::StorageFailure) => Ok(None),
             record => record,
         }
@@ -600,12 +603,14 @@ impl SessionService {
         current_dir: Option<&str>,
         transcript_path: Option<&str>,
     ) -> Result<Result<Option<MoveOutcome>, ProjectContext>, CoreError> {
+        // a Codex row is never checked, and without a directory to go to there is no
+        // move to apply: the transcript's directory is not looked at for either
+        let (Harness::ClaudeCode, Some(current_dir)) = (key.harness(), usable(current_dir)) else {
+            return Ok(Ok(None));
+        };
         let signal = match (&stored.transcript_path, transcript_path) {
             (Some(stored), Some(current)) if transcript_moved(stored, current) => current,
             _ => return Ok(Ok(None)),
-        };
-        let (Harness::ClaudeCode, Some(current_dir)) = (key.harness(), usable(current_dir)) else {
-            return Ok(Ok(None));
         };
         // outside any transaction: git may run here
         let (entry, degraded) = match self.resolve_entry(key, current_dir)? {
@@ -752,15 +757,19 @@ impl SessionService {
         if prompt.len() > SESSION_PROMPT_SCAN_MAX_BYTES {
             return omitted(PromptOmission::TooLarge);
         }
+        // what is stored is the line, cut: a credential the policy sees only there (a
+        // control character where the line has a blank) must not be kept either, so
+        // both the prompt and what would be written are checked
+        let preview = cut(&line, SESSION_PROMPT_CHARS);
         // any fault of the policy omits the text, never fails the hook
         let checked = catch_unwind(AssertUnwindSafe(|| {
-            self.policy.check(prompt, prompt.chars().count())
+            let refused = |text: &str| self.policy.check(text, text.chars().count()).is_some();
+            refused(prompt) || refused(preview)
         }));
         match checked {
             Err(_) => omitted(PromptOmission::ScanError),
-            Ok(Some(_)) => omitted(PromptOmission::Secret),
-            Ok(None) => PromptEntry::text(at, cut(&line, SESSION_PROMPT_CHARS))
-                .expect("the time is the clock's"),
+            Ok(true) => omitted(PromptOmission::Secret),
+            Ok(false) => PromptEntry::text(at, preview).expect("the time is the clock's"),
         }
     }
 }

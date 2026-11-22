@@ -741,3 +741,30 @@ fn a_real_mount_below_the_store_is_not_entered_by_either_guard() {
         }
     }
 }
+
+#[test]
+fn a_transcript_directory_under_another_spelling_of_one_directory_has_not_moved() {
+    let (_sandbox, base) = base();
+    let (real, other) = alias(&base, "Projects/x", "projects/x");
+    let transcript = |directory: &Path| format!("{}/s.jsonl", directory.to_str().unwrap());
+    // one directory under two names that no link explains: not a /cd
+    assert!(!transcript_moved(&transcript(&real), &transcript(&other)));
+    assert!(!transcript_moved(&transcript(&other), &transcript(&real)));
+    // another directory is one, whether it is there or not
+    let elsewhere = base.join("Projects/y");
+    assert!(transcript_moved(
+        &transcript(&real),
+        &transcript(&elsewhere)
+    ));
+    fs::create_dir(&elsewhere).unwrap();
+    assert!(transcript_moved(
+        &transcript(&real),
+        &transcript(&elsewhere)
+    ));
+    assert!(transcript_moved(
+        &transcript(&elsewhere),
+        &transcript(&other)
+    ));
+    // two names that differ only in case and are not there are two names
+    assert!(transcript_moved("/t/Gone/s.jsonl", "/t/gone/s.jsonl"));
+}
