@@ -111,8 +111,14 @@ pub fn lexical_absolute(path: &Path) -> std::io::Result<PathBuf> {
 
 /// The one place a root names, however it is written. The settings file and the
 /// database are both found from it, so a root that reaches a directory by its text only
-/// (`missing/../store`) cannot have its database used and its settings passed by. Without
-/// a working directory a relative root stays as written; nothing is found there.
+/// (`missing/../store`) cannot have its database used and its settings passed by.
+///
+/// When the working directory cannot be determined (it was removed), a relative root
+/// cannot be made absolute and stays as written. The two then part: the settings file is
+/// still looked for at that relative path, and the file system may find it (`../store`
+/// does); every database operation on the same root is a storage failure. No store is
+/// read or written under settings that are not its own, and the binary refuses to start
+/// without a working directory before either is reached.
 pub fn located_root(root: &Path) -> PathBuf {
     lexical_absolute(root).unwrap_or_else(|_| root.to_path_buf())
 }
