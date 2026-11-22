@@ -1,7 +1,7 @@
 //! Test isolation: a temporary home and store, and the one way tests start a process.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use tempfile::TempDir;
@@ -45,8 +45,10 @@ impl Default for Sandbox {
 /// working directory. The only way a test starts a process.
 pub fn isolated_command(sandbox: &Sandbox, program: &Path) -> Command {
     for path in [&sandbox.home, &sandbox.root] {
+        // `root` need not exist, so the path is judged as written: under the sandbox, no `..`
+        let climbs = path.components().any(|part| part == Component::ParentDir);
         assert!(
-            path.starts_with(sandbox.dir.path()),
+            path.starts_with(sandbox.dir.path()) && !climbs,
             "{} is outside the sandbox",
             path.display()
         );
@@ -105,6 +107,14 @@ mod tests {
     fn isolated_command_refuses_a_home_outside_the_sandbox() {
         let mut sandbox = Sandbox::new();
         sandbox.home = PathBuf::from("/");
+        isolated_command(&sandbox, Path::new("/usr/bin/env"));
+    }
+
+    #[test]
+    #[should_panic(expected = "outside the sandbox")]
+    fn isolated_command_refuses_a_path_that_climbs_out_of_the_sandbox() {
+        let mut sandbox = Sandbox::new();
+        sandbox.root = sandbox.dir.path().join("..").join("..");
         isolated_command(&sandbox, Path::new("/usr/bin/env"));
     }
 }

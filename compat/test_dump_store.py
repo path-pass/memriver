@@ -210,6 +210,65 @@ def test_time_order_survives_renaming(tmp_path):
         case.assert_same_store()
 
 
+def tampered(tmp_path, tamper):
+    """One step that creates a memory on both sides; `tamper` then rewrites what the
+    second side stored, as an implementation writing other values would have."""
+    case = seeded(tmp_path)
+
+    def act(side):
+        create(side, "demo proj", "cue", "body")
+        if side is case.rs:
+            tamper(side)
+
+    return case, act
+
+
+def test_a_new_timestamp_in_another_format_is_a_difference(tmp_path):
+    def offset_form(side):
+        sql(side, "UPDATE memories SET created = replace(created, 'Z', '+00:00'), "
+                  "updated = replace(updated, 'Z', '+00:00') WHERE description = 'cue'")
+        sql(side, "UPDATE changes SET at = replace(at, 'Z', '+00:00') WHERE changed_by = 'compat'")
+
+    case, act = tampered(tmp_path, offset_form)
+    with pytest.raises(AssertionError, match=r"not a timestamp: '.*\+00:00'"):
+        case.step(act)
+    assert not any(stamp.endswith("+00:00") for stamp in case.rs.times)
+
+
+def test_a_new_timestamp_that_is_not_the_time_of_the_step_is_a_difference(tmp_path):
+    def long_ago(side):
+        sql(side, "UPDATE memories SET created = '1999-01-01T00:00:00.000002Z', "
+                  "updated = '1999-01-01T00:00:00.000002Z' WHERE description = 'cue'")
+        sql(side, "UPDATE changes SET at = '1999-01-01T00:00:00.000001Z' WHERE changed_by = 'compat'")
+
+    case, act = tampered(tmp_path, long_ago)
+    with pytest.raises(AssertionError, match="1999-01-01T00:00:00.000001Z is outside the step"):
+        case.step(act)
+
+
+def test_a_new_timestamp_that_is_any_other_text_is_a_difference(tmp_path):
+    def junk(side):
+        sql(side, "UPDATE memories SET created = 'b', updated = 'b' WHERE description = 'cue'")
+        sql(side, "UPDATE changes SET at = 'a' WHERE changed_by = 'compat'")
+
+    case, act = tampered(tmp_path, junk)
+    with pytest.raises(AssertionError, match="not a timestamp: 'a'"):
+        case.step(act)
+
+
+def test_a_new_id_outside_the_id_alphabet_is_a_difference(tmp_path):
+    def odd_id(side):
+        (old,) = sql(side, "SELECT id FROM memories WHERE description = 'cue'")[0]
+        for table, name in [("memories", "id"), ("memory_versions", "memory_id"),
+                            ("change_steps", "memory_id")]:
+            sql(side, f"UPDATE {table} SET {name} = 'UUUU-IL!O_' WHERE {name} = ?", old)
+
+    case, act = tampered(tmp_path, odd_id)
+    with pytest.raises(AssertionError, match="memories: not an id: 'UUUU-IL!O_'"):
+        case.step(act)
+    assert "UUUU-IL!O_" not in case.rs.names
+
+
 def test_load_seed_sets_user_version_and_binds_placeholders(tmp_path):
     root = load_seed("small", tmp_path)
     assert snapshot(root).user_version == 6

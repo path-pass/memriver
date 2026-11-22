@@ -1,12 +1,26 @@
 #!/usr/bin/env bash
-# Prints changed=true when a commit after BASE touches what the Rust CI jobs cover,
-# changed=false otherwise. Without a usable BASE it says true: run rather than skip.
-#   rust-paths-changed.sh BASE
-paths='^(crates/|compat/|Cargo\.|rust-toolchain\.toml$|scripts/|\.github/workflows/pr-checks\.yml$|packages/memriver-core/src/memriver_core/content_policy/rules/(memriver|gitleaks)\.toml$)'
-if ! files="$(git diff --name-only "$1" HEAD 2>/dev/null)"; then
-  echo "changed=true"
-elif grep -qE "$paths" <<<"$files"; then
-  echo "changed=true"
+# Says which CI jobs the changed files call for, as two lines: rust=true|false and
+# compat=true|false.
+#   rust-paths-changed.sh BASE    the files changed between BASE and HEAD
+#   rust-paths-changed.sh -       file names on standard input, one per line
+# Without a usable BASE both are true: run rather than skip.
+#
+# rust: the workspace, the cross-implementation suite, CI itself, and the rule files
+# both implementations embed. compat: those, and the Python side -- the suite compares
+# against it and its ledger lists every Python test function.
+rust='^(crates/|compat/|Cargo\.|rust-toolchain\.toml$|scripts/|\.github/workflows/pr-checks\.yml$|packages/memriver-core/src/memriver_core/content_policy/rules/(memriver|gitleaks)\.toml$)'
+python='^(packages/|tools/|pyproject\.toml$|uv\.lock$)'
+
+if [ "$1" = "-" ]; then
+  files="$(cat)"
+elif ! files="$(git diff --name-only "$1" HEAD 2>/dev/null)"; then
+  printf 'rust=true\ncompat=true\n'
+  exit 0
+fi
+if grep -qE "$rust" <<<"$files"; then
+  printf 'rust=true\ncompat=true\n'
+elif grep -qE "$python" <<<"$files"; then
+  printf 'rust=false\ncompat=true\n'
 else
-  echo "changed=false"
+  printf 'rust=false\ncompat=false\n'
 fi

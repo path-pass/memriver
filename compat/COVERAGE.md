@@ -8,7 +8,8 @@ A target is `compat:<file>::<case>`, `rust:<crate>::<module path>::<test>`, seve
 of those joined by ` + `, or `n/a: <reason>`. A target that is named must exist.
 When a phase is finished its number is added to `finished phases:` together with
 a line `phase <n>: <glob>, <glob>, ...` naming the Python test files it covers;
-from then on every function of those files needs a target.
+from then on every function of those files needs a target, and a glob that matches
+no test file is an error.
 
 finished phases:
 

@@ -45,12 +45,14 @@ jobs:
       - uses: astral-sh/setup-uv@v10.2.0
       - run: bash e2e/run-stage1.sh
 
-  # The Rust jobs below run only for a change to the Rust workspace, the
-  # cross-implementation suite, or the rule files both implementations embed.
+  # The two jobs below run only for a change they depend on: rust for the Rust
+  # workspace, the cross-implementation suite or the rule files both
+  # implementations embed; compat for those and for the Python side as well.
   rust-changes:
     runs-on: ubuntu-latest
     outputs:
-      changed: ${{ steps.filter.outputs.changed }}
+      rust: ${{ steps.filter.outputs.rust }}
+      compat: ${{ steps.filter.outputs.compat }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -63,7 +65,7 @@ jobs:
   rust:
     name: rust (${{ matrix.os }})
     needs: rust-changes
-    if: needs.rust-changes.outputs.changed == 'true'
+    if: needs.rust-changes.outputs.rust == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -89,7 +91,7 @@ jobs:
   compat:
     name: compat (${{ matrix.os }})
     needs: rust-changes
-    if: needs.rust-changes.outputs.changed == 'true'
+    if: needs.rust-changes.outputs.compat == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

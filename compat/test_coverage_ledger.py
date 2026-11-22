@@ -41,5 +41,9 @@ packages/cli/tests/test_later.py::test_unfinished_dangling -> compat:test_x.py::
         "packages/cli/tests/test_a.py::test_odd: not a target: somewhere",
         "packages/cli/tests/test_later.py::test_unfinished_dangling: compat:test_x.py::test_gone does not exist",
     ]
+    # a glob of a finished phase that matches no test file would demand nothing
+    typo = ledger.replace("packages/cli/tests/test_a.py\n", "packages/cli/tests/test_a.py, packages/cil/**\n")
+    assert problems(typo, tmp_path)[0] == "phase 1: packages/cil/** matches no test file"
+    assert len(problems(typo, tmp_path)) == 8
     # a finished phase must say which files it covers
     assert problems("finished phases: 2\n", tmp_path) == ["phase 2 is finished but has no 'phase 2:' line"]

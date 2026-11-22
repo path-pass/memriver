@@ -9,7 +9,9 @@ implementation, and snapshots both before and after. Ids and timestamps are
 generated, so they differ between the sides; they are renamed -- only in the
 columns and output fields declared below -- to names that say which object is
 meant (`<memory:2>`, `<t:5>`). Everything else, free text included, is compared
-as it is.
+as it is. A generated value is renamed only when it is what it should be: an id
+in the id form, a timestamp in the timestamp form and taken while its step ran.
+Anything else fails the step, so a renamed value never hides a wrong one.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ import sys
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .differences import DIFFERENCES, MASKS
@@ -240,6 +243,11 @@ def pair_step(table: str, py_new: list[dict], rs_new: list[dict], py_names: dict
 
 # ------------------------------------------------------------------ a case
 
+def _now() -> str:
+    """The clock in the stored form, which sorts as text."""
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
 @dataclass(eq=False)
 class Side:
     case: Case
@@ -287,26 +295,41 @@ class Case:
     def step(self, action: Callable[[Side], Completed | None]) -> tuple:
         """Runs `action` on each side, pairs the objects it created and names them."""
         before = [snapshot(side.root) for side in self._sides]
-        results = tuple(action(side) for side in self._sides)
+        results, spans = [], []
+        for side in self._sides:
+            start = _now()
+            results.append(action(side))
+            spans.append((start, _now()))
         after = [snapshot(side.root) for side in self._sides]
         for table, (column, kind) in _MINTED.items():
             new = [[row for row in now.tables.get(table, [])
                     if row[column] not in {old[column] for old in then.tables.get(table, [])}]
                    for then, now in zip(before, after)]
+            for row in (*new[0], *new[1]):
+                assert isinstance(row[column], str) and re.fullmatch(ID, row[column]), \
+                    f"{table}: not an id: {row[column]!r}"
             for py_id, rs_id in pair_step(table, *new, self.py.names, self.rs.names, *after):
                 self._count[kind] += 1
                 self.py.names[py_id] = self.rs.names[rs_id] = f"<{kind}:{self._count[kind]}>"
-        for side, now, result in zip(self._sides, after, results):
-            self._see_times(side, now, result)
-        return results
+        for side, now, result, span in zip(self._sides, after, results, spans):
+            self._see_times(side, now, result, span)
+        return tuple(results)
 
-    def _see_times(self, side: Side, now: Snapshot, result: object) -> None:
-        """Names the timestamps not seen before, ascending, so their order is compared."""
+    def _see_times(self, side: Side, now: Snapshot, result: object,
+                   span: tuple[str, str] | None = None) -> None:
+        """Names the timestamps not seen before, ascending, so their order is compared.
+        Each must have the timestamp form and, in a step, lie within `span`: the clock
+        read before and after that side's action."""
         seen = {row[name] for table, rows in now.tables.items()
                 for row in rows for name in TIME_COLUMNS[table]}
         if isinstance(result, Completed):
             seen.update(_declared(_TIME_PATTERNS, result.stdout.decode(errors="replace")))
-        for stamp in sorted(s for s in seen if isinstance(s, str) and s not in side.times):
+        new = [stamp for stamp in seen if stamp is not None and stamp not in side.times]
+        for stamp in new:
+            assert isinstance(stamp, str) and re.fullmatch(TIMESTAMP, stamp), f"not a timestamp: {stamp!r}"
+        for stamp in sorted(new):
+            assert span is None or span[0] <= stamp <= span[1], \
+                f"{stamp} is outside the step, which ran from {span[0]} to {span[1]}"
             side.times[stamp] = f"<t:{len(side.times) + 1}>"
 
     def renamed(self, side: Side) -> dict:
