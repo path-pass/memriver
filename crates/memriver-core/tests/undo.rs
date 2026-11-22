@@ -5,7 +5,9 @@ mod common;
 
 use common::{Env, SECRET, SECRET_RULE, body, core, draft, rejected, restore, setup};
 use memriver_core::models::changes::{Change, Confirmation, Op, OpName};
-use memriver_core::models::errors::{CoreError, UndoRefusedReason, WriteError};
+use memriver_core::models::errors::{
+    BatchConflictReason, CoreError, UndoRefusedReason, WriteError,
+};
 use rusqlite::Connection;
 
 fn human(env: &Env, ops: &[Op]) -> Change {
@@ -419,4 +421,50 @@ fn change_returns_the_change_with_its_stored_steps() {
         .map(|step| step.memory_id.as_str())
         .collect();
     assert_eq!((partial.step_count, left), (3, vec![&*alpha, &*beta]));
+}
+
+#[test]
+fn a_step_without_the_version_before_it_is_refused_and_nothing_is_written() {
+    let env = setup();
+    let memory_id = fact(&env, "v1");
+    let edit = human(&env, &[body(&memory_id, 1, "v2")]);
+    // a step that lost the version it came from, and a version numbered 0 that no
+    // write of memriver makes: neither is taken for the other
+    let conn = env.unkeyed();
+    conn.execute(
+        "UPDATE change_steps SET before_version = NULL WHERE change_id = ?1",
+        [&edit.change_id],
+    )
+    .unwrap();
+    conn.execute_batch("PRAGMA ignore_check_constraints = ON")
+        .unwrap();
+    conn.execute(
+        "INSERT INTO memory_versions (memory_id, version, type, trust, sync, description, \
+         body, deleted, change_id) VALUES (?1, 0, 'project', 'agent', 1, '', 'planted', 0, NULL)",
+        [&memory_id],
+    )
+    .unwrap();
+    let before = counts(&env);
+    assert_eq!(
+        core(undo(&env, &edit.change_id)),
+        CoreError::BatchConflict {
+            index: 0,
+            memory_id: Some(memory_id.clone()),
+            reason: BatchConflictReason::Missing,
+        }
+    );
+    assert_eq!(counts(&env), before);
+    assert_eq!(state(&env, &memory_id), is(2, "v2", false));
+    let step: (Option<i64>, i64) = env
+        .raw()
+        .query_row(
+            "SELECT before_version, after_version FROM change_steps WHERE change_id = ?1",
+            [&edit.change_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(step, (None, 2));
+    // a restore that names version 0 itself is another matter: it is what was asked
+    human(&env, &[restore(&memory_id, 2, 0)]);
+    assert_eq!(state(&env, &memory_id), is(3, "planted", false));
 }

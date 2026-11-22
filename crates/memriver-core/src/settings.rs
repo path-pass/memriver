@@ -36,6 +36,8 @@ pub const SEARCH_SNIPPET_CHARS: usize = 60; // one search hit's body snippet
 pub const HEADER_FIELD_CHARS: usize = 120; // one field of the project header
 pub const PROJECT_NAME_MAX_CHARS: usize = 120; // a project name
 pub const BUSY_TIMEOUT_MS: u64 = 5000; // SQLite's bounded wait for the write lock
+// memories one DELETE of a hard delete names: far below the 32,766 values a statement takes
+pub const HARD_DELETE_CHUNK: usize = 500;
 // harness sessions
 pub const SESSION_PROMPT_CHARS: usize = 512; // one recorded prompt's text
 pub const SESSION_RECENT_PROMPTS: usize = 5; // prompts kept per session, newest last

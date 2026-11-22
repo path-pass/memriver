@@ -30,7 +30,7 @@ use crate::models::memory::{
     Memory, MemoryType, Trust, checked_level, checked_tags, is_tag_name, tags_from_json,
     tags_to_json,
 };
-use crate::settings::BUSY_TIMEOUT_MS;
+use crate::settings::{BUSY_TIMEOUT_MS, HARD_DELETE_CHUNK};
 
 /// The content policy on one resulting state: `check(description, body)` is the id of
 /// the rule that refuses it, or None.
@@ -203,6 +203,8 @@ struct Batch<'a> {
     cited: Vec<(usize, String, i64)>,
     /// In the order of the operations: the limits.
     written: Vec<Wrote>,
+    /// The operations of an undo whose step records no version to go back to.
+    unrecorded: &'a [usize],
 }
 
 fn chars_between(text: &str, least: usize, most: usize) -> bool {
@@ -223,6 +225,34 @@ pub(crate) fn apply_ops(
     check: Check<'_>,
     caps: &MetadataCaps,
     undoes: Option<&str>,
+) -> Written<Change> {
+    apply_batch(
+        conn,
+        ops,
+        restriction,
+        changed_by,
+        changed_via,
+        check,
+        caps,
+        undoes,
+        &[],
+    )
+}
+
+/// `apply_ops`, for an undo too: `unrecorded` are the positions of the restores whose
+/// step records no version before it. Such a restore is refused where it stands in
+/// the batch, as one that names a version the memory never had.
+#[allow(clippy::too_many_arguments)]
+fn apply_batch(
+    conn: &Connection,
+    ops: &[Op],
+    restriction: Option<&ReadWriteSet>,
+    changed_by: &str,
+    changed_via: Option<&str>,
+    check: Check<'_>,
+    caps: &MetadataCaps,
+    undoes: Option<&str>,
+    unrecorded: &[usize],
 ) -> Written<Change> {
     if ops.is_empty() {
         return value_error("a change needs at least one operation");
@@ -265,6 +295,7 @@ pub(crate) fn apply_ops(
         before: HashMap::new(),
         cited: Vec::new(),
         written: Vec::new(),
+        unrecorded,
     };
     let mut steps = Vec::with_capacity(ops.len());
     for (index, op) in ops.iter().enumerate() {
@@ -414,6 +445,9 @@ fn apply_one(
             // `to_version`'s recorded state -- its own trust and sync included -- as
             // the next version
             let current = target(batch, index, memory_id, *expected_version, true)?;
+            if batch.unrecorded.contains(&index) {
+                return conflict(index, Some(&current.id), BatchConflictReason::Missing);
+            }
             let row = batch
                 .conn
                 .query_row(
@@ -1303,13 +1337,21 @@ impl MemoryStore {
                     _ => Op::Restore {
                         memory_id: step.memory_id.clone(),
                         expected_version: step.after_version,
-                        // a step without the version before it is no step memriver
-                        // wrote: no version is numbered 0, so the restore finds none
-                        to_version: step.before_version.unwrap_or(0),
+                        // without one the restore is refused, whatever this says
+                        to_version: step.before_version.unwrap_or_default(),
                     },
                 })
                 .collect();
-            apply_ops(
+            // a step without the version before it is no step memriver wrote: there
+            // is no version to go back to, whatever versions the memory has
+            let unrecorded: Vec<usize> = undone
+                .steps
+                .iter()
+                .enumerate()
+                .filter(|(_, step)| step.op != OpName::Create && step.before_version.is_none())
+                .map(|(index, _)| index)
+                .collect();
+            apply_batch(
                 conn,
                 &inverse,
                 None,
@@ -1318,6 +1360,7 @@ impl MemoryStore {
                 check,
                 caps,
                 Some(change_id),
+                &unrecorded,
             )
         })
     }
@@ -1352,14 +1395,18 @@ impl MemoryStore {
                 return Err(CoreError::PlanChanged(plan));
             }
             let members: Vec<String> = plan.items.into_iter().map(|item| item.memory_id).collect();
-            // the cascade takes versions, source rows, reads and steps; change rows stay
-            conn.execute(
-                &format!(
-                    "DELETE FROM memories WHERE id IN ({})",
-                    placeholders(members.len())
-                ),
-                params_from_iter(&members),
-            )?;
+            // the cascade takes versions, source rows, reads and steps; change rows stay.
+            // A statement takes only so many values, so a large plan goes in parts --
+            // inside this one transaction: all of it, or none
+            for part in members.chunks(HARD_DELETE_CHUNK) {
+                conn.execute(
+                    &format!(
+                        "DELETE FROM memories WHERE id IN ({})",
+                        placeholders(part.len())
+                    ),
+                    params_from_iter(part),
+                )?;
+            }
             Ok(members)
         })
     }

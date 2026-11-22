@@ -451,3 +451,72 @@ fn a_cited_memory_does_not_go_without_the_memories_citing_it() {
     assert_eq!(env.count("memory_sources"), 0);
     assert_eq!(env.count("memory_versions"), 0);
 }
+
+/// A store whose first memory is cited by `referrers` others, written row by row
+/// behind the store's back, keys kept: the id of the first.
+fn cited_by(env: &Env, referrers: usize) -> String {
+    let id = |number: usize| format!("{number:010}");
+    let mut conn = env.raw();
+    let rows = conn.transaction().unwrap();
+    {
+        let mut memory = rows
+            .prepare(
+                "INSERT INTO memories (id, project_id, source_harness, source_method, created, \
+                 version, type, trust, sync, description, body, updated) VALUES (?1, ?2, 'human', \
+                 'cli', ?3, 1, 'user', 'user', 1, '', 'a body', ?3)",
+            )
+            .unwrap();
+        let mut version = rows
+            .prepare(
+                "INSERT INTO memory_versions (memory_id, version, type, trust, sync, \
+                 description, body, deleted, change_id) \
+                 VALUES (?1, 1, 'user', 'user', 1, '', 'a body', 0, NULL)",
+            )
+            .unwrap();
+        let mut source = rows
+            .prepare("INSERT INTO memory_sources VALUES (?1, 1, ?2, 1)")
+            .unwrap();
+        for number in 0..=referrers {
+            memory
+                .execute([&id(number), &env.project.id, "2026-11-22T00:00:00.000001Z"])
+                .unwrap();
+            version.execute([&id(number)]).unwrap();
+            if number > 0 {
+                source.execute([&id(number), &id(0)]).unwrap();
+            }
+        }
+    }
+    rows.commit().unwrap();
+    id(0)
+}
+
+#[test]
+fn a_plan_of_any_size_that_was_confirmed_is_carried_out() {
+    // one more member than a statement of SQLite takes values, and one fewer
+    for referrers in [32_766, 32_765] {
+        let env = setup();
+        let survivor = fact(&env, "nothing to do with it", &[]);
+        let target = cited_by(&env, referrers);
+        assert_eq!(env.count("memory_sources"), referrers as i64);
+        let store = env.memory_store();
+        let plan = store.plan_hard_delete(&target).unwrap();
+        assert_eq!(plan.items.len(), referrers + 1);
+        // a code that is not the plan's removes nothing
+        assert!(matches!(
+            store.hard_delete(&target, Confirmation::Code("0123456789abcdef")),
+            Err(CoreError::PlanChanged(_))
+        ));
+        assert_eq!(env.count("memories"), referrers as i64 + 2);
+        let deleted = store
+            .hard_delete(&target, Confirmation::Code(&plan.code))
+            .unwrap();
+        assert_eq!(deleted.len(), referrers + 1, "{referrers}");
+        assert_eq!(deleted[0], target);
+        // every member is gone with its history, and nothing else
+        assert_eq!(rows(&env), [1, 1, 0, 0, 1, 1], "{referrers}: {TABLES:?}");
+        assert_eq!(
+            env.services().memory.show(&survivor, false).unwrap().id,
+            survivor
+        );
+    }
+}
