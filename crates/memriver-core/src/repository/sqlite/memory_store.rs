@@ -904,6 +904,11 @@ fn write_version(
     if let Some(rule) = (batch.check)(&after.description, &after.body) {
         return Err(rejected(rule, Some(&current.id)));
     }
+    // a version with no next one is no row memriver wrote: nothing is written over it
+    let version = current
+        .version
+        .checked_add(1)
+        .ok_or(CoreError::StorageFailure)?;
     let updated = now_strictly_after(&current.updated);
     let memory = Memory {
         type_: after.type_,
@@ -912,7 +917,7 @@ fn write_version(
         description: after.description.clone(),
         body: after.body.clone(),
         updated: updated.clone(),
-        version: current.version + 1,
+        version,
         deleted_at: after.deleted.then_some(updated),
         level: after.level,
         tags: after.tags.clone(),
@@ -1282,6 +1287,58 @@ mod tests {
                 )?)
             })
             .unwrap()
+    }
+
+    #[test]
+    fn a_version_with_no_next_one_is_a_storage_failure_and_writes_nothing() {
+        let (_sandbox, store, project_id) = store();
+        let apply = |ops: &[Op]| store.apply(ops, "cli", None, &|_, _| None, &CAPS);
+        let memory_id = apply(&[Op::create(&project_id, "user", "", "the first")])
+            .unwrap()
+            .steps[0]
+            .memory_id
+            .clone();
+        // no write of memriver gets a version this far: someone else's hand
+        let raw = Connection::open(store.root.join("memriver.db")).unwrap();
+        raw.execute("UPDATE memories SET version = ?1", [i64::MAX])
+            .unwrap();
+        let rows = || {
+            [
+                "changes",
+                "change_steps",
+                "memory_versions",
+                "memory_sources",
+            ]
+            .map(|table| count(&store, table))
+        };
+        let before = rows();
+        let mut update = Op::update(&memory_id, i64::MAX);
+        if let Op::Update { body, .. } = &mut update {
+            *body = Some("the second".to_string());
+        }
+        let agent = ReadWriteSet {
+            project_id: Some(project_id.clone()),
+            global_project_id: None,
+        };
+        let delete = Op::soft_delete(&memory_id, i64::MAX);
+        let failure = Err(WriteError::Core(CoreError::StorageFailure));
+        assert_eq!(apply(std::slice::from_ref(&update)), failure);
+        assert_eq!(apply(std::slice::from_ref(&delete)), failure);
+        assert_eq!(
+            store
+                .write(&update, &agent, "mcp", None, &|_, _| None, &CAPS)
+                .map(|memory| memory.version),
+            Err(WriteError::Core(CoreError::StorageFailure))
+        );
+        assert_eq!(rows(), before);
+        let kept: (i64, String, Option<String>) = raw
+            .query_row(
+                "SELECT version, body, deleted_at FROM memories",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(kept, (i64::MAX, "the first".to_string(), None));
     }
 
     #[test]
