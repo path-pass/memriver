@@ -776,56 +776,56 @@ packages/memriver-core/tests/unit/test_bootstrap.py::test_maintenance_shares_the
 packages/memriver-core/tests/unit/test_bootstrap.py::test_memory_writes_ask_the_session_service_through_its_callbacks ->
 packages/memriver-core/tests/unit/test_bootstrap.py::test_the_two_text_checking_services_share_one_content_policy ->
 packages/memriver-core/tests/unit/test_bootstrap.py::test_uses_the_settings_root_by_default ->
-packages/memriver-core/tests/unit/test_settings.py::test_a_cross_field_failure_from_the_environment_alone_blames_the_environment ->
-packages/memriver-core/tests/unit/test_settings.py::test_a_cross_field_failure_from_the_file_names_the_files_max ->
-packages/memriver-core/tests/unit/test_settings.py::test_a_direct_construction_reads_no_settings_file ->
-packages/memriver-core/tests/unit/test_settings.py::test_a_file_key_spelled_like_a_constructor_option_is_just_unknown ->
-packages/memriver-core/tests/unit/test_settings.py::test_a_path_that_becomes_a_directory_after_the_precheck_is_an_error ->
-packages/memriver-core/tests/unit/test_settings.py::test_a_path_that_disappears_after_the_precheck_is_an_error ->
-packages/memriver-core/tests/unit/test_settings.py::test_a_permission_denied_settings_file_is_an_error_that_never_names_the_path ->
-packages/memriver-core/tests/unit/test_settings.py::test_a_preexisting_shell_env_var_does_not_leak_into_defaults ->
-packages/memriver-core/tests/unit/test_settings.py::test_a_root_key_never_beats_the_env_root ->
-packages/memriver-core/tests/unit/test_settings.py::test_a_root_that_cannot_be_searched_is_an_error_not_a_missing_file ->
-packages/memriver-core/tests/unit/test_settings.py::test_a_settings_path_that_is_not_a_readable_file_is_an_error ->
-packages/memriver-core/tests/unit/test_settings.py::test_a_source_whose_is_file_check_returns_false_is_an_error ->
-packages/memriver-core/tests/unit/test_settings.py::test_a_symlink_to_a_settings_file_is_read ->
-packages/memriver-core/tests/unit/test_settings.py::test_an_empty_settings_file_is_fine ->
-packages/memriver-core/tests/unit/test_settings.py::test_an_env_failure_is_never_blamed_on_a_file_without_the_field ->
-packages/memriver-core/tests/unit/test_settings.py::test_an_error_naming_no_field_is_invalid_not_unreadable ->
-packages/memriver-core/tests/unit/test_settings.py::test_an_invalid_environment_value_is_an_error_naming_the_variable ->
-packages/memriver-core/tests/unit/test_settings.py::test_an_invalid_value_in_the_settings_file_is_an_error_naming_the_field ->
-packages/memriver-core/tests/unit/test_settings.py::test_an_unknown_key_and_a_foreign_table_are_ignored_silently ->
-packages/memriver-core/tests/unit/test_settings.py::test_an_unknown_memriver_variable_is_not_a_config_entry ->
-packages/memriver-core/tests/unit/test_settings.py::test_an_unreadable_settings_file_is_an_error ->
-packages/memriver-core/tests/unit/test_settings.py::test_defaults_match_current_behaviour ->
-packages/memriver-core/tests/unit/test_settings.py::test_defaults_wired_to_single_source ->
-packages/memriver-core/tests/unit/test_settings.py::test_env_and_file_failures_are_both_reported_env_first ->
-packages/memriver-core/tests/unit/test_settings.py::test_env_and_file_fields_combine_before_cross_field_validation ->
-packages/memriver-core/tests/unit/test_settings.py::test_env_beats_settings_file ->
-packages/memriver-core/tests/unit/test_settings.py::test_env_overrides_default ->
-packages/memriver-core/tests/unit/test_settings.py::test_every_invalid_field_is_named_once ->
-packages/memriver-core/tests/unit/test_settings.py::test_file_keys_match_fields_in_any_case ->
-packages/memriver-core/tests/unit/test_settings.py::test_loading_one_root_leaves_no_file_behind_for_the_next_construction ->
-packages/memriver-core/tests/unit/test_settings.py::test_memory_reads_retention_is_read_from_the_settings_file ->
-packages/memriver-core/tests/unit/test_settings.py::test_memory_reads_retention_is_unset_by_default_and_positive_when_set ->
-packages/memriver-core/tests/unit/test_settings.py::test_missing_settings_file_is_fine ->
-packages/memriver-core/tests/unit/test_settings.py::test_non_positive_values_are_rejected ->
-packages/memriver-core/tests/unit/test_settings.py::test_precedence_is_init_then_env_then_file_then_defaults ->
-packages/memriver-core/tests/unit/test_settings.py::test_root_key_in_settings_file_is_ignored ->
-packages/memriver-core/tests/unit/test_settings.py::test_root_override_beats_env ->
-packages/memriver-core/tests/unit/test_settings.py::test_search_limit_default_equal_to_the_max_is_allowed ->
-packages/memriver-core/tests/unit/test_settings.py::test_search_limit_default_may_not_exceed_search_limit_max ->
-packages/memriver-core/tests/unit/test_settings.py::test_settings_are_constructible_directly ->
-packages/memriver-core/tests/unit/test_settings.py::test_settings_file_in_root_is_read ->
-packages/memriver-core/tests/unit/test_settings.py::test_settings_file_is_found_under_the_env_root ->
-packages/memriver-core/tests/unit/test_settings.py::test_settings_root_defaults_to_storage_root ->
-packages/memriver-core/tests/unit/test_settings.py::test_storage_root_defaults_under_home ->
-packages/memriver-core/tests/unit/test_settings.py::test_storage_root_env_override ->
-packages/memriver-core/tests/unit/test_settings.py::test_storage_root_falls_back_to_an_injected_home_without_an_env_override ->
-packages/memriver-core/tests/unit/test_settings.py::test_storage_root_prefers_an_injected_env_over_the_process_environment ->
-packages/memriver-core/tests/unit/test_settings.py::test_the_fixed_length_and_timeout_constants_live_in_settings ->
-packages/memriver-core/tests/unit/test_settings.py::test_the_session_constants_live_in_settings ->
-packages/memriver-core/tests/unit/test_settings.py::test_valid_settings_file_still_wins_after_the_guard ->
+packages/memriver-core/tests/unit/test_settings.py::test_a_cross_field_failure_from_the_environment_alone_blames_the_environment -> rust:memriver-core::tests/settings.rs::default_above_max_blames_max_when_neither_set_the_default
+packages/memriver-core/tests/unit/test_settings.py::test_a_cross_field_failure_from_the_file_names_the_files_max -> rust:memriver-core::tests/settings.rs::default_above_max_blames_max_when_neither_set_the_default
+packages/memriver-core/tests/unit/test_settings.py::test_a_direct_construction_reads_no_settings_file -> rust:memriver-core::tests/settings.rs::light_settings_read_nothing
+packages/memriver-core/tests/unit/test_settings.py::test_a_file_key_spelled_like_a_constructor_option_is_just_unknown -> rust:memriver-core::tests/settings.rs::unknown_keys_and_tables_are_ignored
+packages/memriver-core/tests/unit/test_settings.py::test_a_path_that_becomes_a_directory_after_the_precheck_is_an_error -> n/a: the file is checked and read by one function; a file that changes between the two fails the read, which is the same error
+packages/memriver-core/tests/unit/test_settings.py::test_a_path_that_disappears_after_the_precheck_is_an_error -> n/a: the file is checked and read by one function; a file that changes between the two fails the read, which is the same error
+packages/memriver-core/tests/unit/test_settings.py::test_a_permission_denied_settings_file_is_an_error_that_never_names_the_path -> rust:memriver-core::tests/settings.rs::a_file_or_a_root_without_permission_is_unreadable
+packages/memriver-core/tests/unit/test_settings.py::test_a_preexisting_shell_env_var_does_not_leak_into_defaults -> n/a: the environment is always handed in; a test gives its own
+packages/memriver-core/tests/unit/test_settings.py::test_a_root_key_never_beats_the_env_root -> rust:memriver-core::tests/settings.rs::root_key_in_file_does_not_move_the_root
+packages/memriver-core/tests/unit/test_settings.py::test_a_root_that_cannot_be_searched_is_an_error_not_a_missing_file -> rust:memriver-core::tests/settings.rs::a_file_or_a_root_without_permission_is_unreadable
+packages/memriver-core/tests/unit/test_settings.py::test_a_settings_path_that_is_not_a_readable_file_is_an_error -> rust:memriver-core::tests/settings.rs::file_that_is_a_directory_fifo_or_dangling_symlink_is_unreadable
+packages/memriver-core/tests/unit/test_settings.py::test_a_source_whose_is_file_check_returns_false_is_an_error -> n/a: a second check inside the Python settings library; there is no second reader here
+packages/memriver-core/tests/unit/test_settings.py::test_a_symlink_to_a_settings_file_is_read -> rust:memriver-core::tests/settings.rs::the_file_is_read_and_found_under_the_environment_root
+packages/memriver-core/tests/unit/test_settings.py::test_an_empty_settings_file_is_fine -> rust:memriver-core::tests/settings.rs::defaults_when_no_file
+packages/memriver-core/tests/unit/test_settings.py::test_an_env_failure_is_never_blamed_on_a_file_without_the_field -> rust:memriver-core::tests/settings.rs::default_above_max_blames_max_when_neither_set_the_default
+packages/memriver-core/tests/unit/test_settings.py::test_an_error_naming_no_field_is_invalid_not_unreadable -> rust:memriver-core::tests/settings.rs::error_names_fields_never_values_or_paths
+packages/memriver-core/tests/unit/test_settings.py::test_an_invalid_environment_value_is_an_error_naming_the_variable -> rust:memriver-core::tests/settings.rs::error_names_fields_never_values_or_paths
+packages/memriver-core/tests/unit/test_settings.py::test_an_invalid_value_in_the_settings_file_is_an_error_naming_the_field -> rust:memriver-core::tests/settings.rs::error_names_fields_never_values_or_paths + rust:memriver-core::tests/settings.rs::settings_matrix_equals_python
+packages/memriver-core/tests/unit/test_settings.py::test_an_unknown_key_and_a_foreign_table_are_ignored_silently -> rust:memriver-core::tests/settings.rs::unknown_keys_and_tables_are_ignored
+packages/memriver-core/tests/unit/test_settings.py::test_an_unknown_memriver_variable_is_not_a_config_entry -> rust:memriver-core::tests/settings.rs::unknown_keys_and_tables_are_ignored
+packages/memriver-core/tests/unit/test_settings.py::test_an_unreadable_settings_file_is_an_error -> rust:memriver-core::tests/settings.rs::a_file_that_is_not_toml_is_unreadable
+packages/memriver-core/tests/unit/test_settings.py::test_defaults_match_current_behaviour -> rust:memriver-core::tests/settings.rs::defaults_when_no_file
+packages/memriver-core/tests/unit/test_settings.py::test_defaults_wired_to_single_source -> rust:memriver-core::settings::tests::the_catalogue_has_the_values_of_the_python_one
+packages/memriver-core/tests/unit/test_settings.py::test_env_and_file_failures_are_both_reported_env_first -> rust:memriver-core::tests/settings.rs::error_names_fields_never_values_or_paths
+packages/memriver-core/tests/unit/test_settings.py::test_env_and_file_fields_combine_before_cross_field_validation -> rust:memriver-core::tests/settings.rs::the_environment_and_the_file_are_judged_together
+packages/memriver-core/tests/unit/test_settings.py::test_env_beats_settings_file -> rust:memriver-core::tests/settings.rs::env_beats_file
+packages/memriver-core/tests/unit/test_settings.py::test_env_overrides_default -> rust:memriver-core::tests/settings.rs::numeric_string_from_env_is_accepted
+packages/memriver-core/tests/unit/test_settings.py::test_every_invalid_field_is_named_once -> rust:memriver-core::tests/settings.rs::error_names_fields_never_values_or_paths
+packages/memriver-core/tests/unit/test_settings.py::test_file_keys_match_fields_in_any_case -> rust:memriver-core::tests/settings.rs::names_are_matched_in_any_case
+packages/memriver-core/tests/unit/test_settings.py::test_loading_one_root_leaves_no_file_behind_for_the_next_construction -> n/a: loading keeps no state between calls; there is nothing to leave behind
+packages/memriver-core/tests/unit/test_settings.py::test_memory_reads_retention_is_read_from_the_settings_file -> rust:memriver-core::tests/settings.rs::the_file_is_read_and_found_under_the_environment_root
+packages/memriver-core/tests/unit/test_settings.py::test_memory_reads_retention_is_unset_by_default_and_positive_when_set -> rust:memriver-core::tests/settings.rs::defaults_when_no_file + rust:memriver-core::tests/settings.rs::settings_matrix_equals_python
+packages/memriver-core/tests/unit/test_settings.py::test_missing_settings_file_is_fine -> rust:memriver-core::tests/settings.rs::defaults_when_no_file
+packages/memriver-core/tests/unit/test_settings.py::test_non_positive_values_are_rejected -> rust:memriver-core::tests/settings.rs::settings_matrix_equals_python + rust:memriver-core::tests/settings.rs::boolean_is_refused_in_file_and_env
+packages/memriver-core/tests/unit/test_settings.py::test_precedence_is_init_then_env_then_file_then_defaults -> rust:memriver-core::tests/settings.rs::env_beats_file
+packages/memriver-core/tests/unit/test_settings.py::test_root_key_in_settings_file_is_ignored -> rust:memriver-core::tests/settings.rs::root_key_in_file_does_not_move_the_root
+packages/memriver-core/tests/unit/test_settings.py::test_root_override_beats_env -> rust:memriver-core::tests/settings.rs::env_beats_file
+packages/memriver-core/tests/unit/test_settings.py::test_search_limit_default_equal_to_the_max_is_allowed -> rust:memriver-core::tests/settings.rs::the_environment_and_the_file_are_judged_together
+packages/memriver-core/tests/unit/test_settings.py::test_search_limit_default_may_not_exceed_search_limit_max -> rust:memriver-core::tests/settings.rs::default_above_max_blames_max_when_neither_set_the_default
+packages/memriver-core/tests/unit/test_settings.py::test_settings_are_constructible_directly -> n/a: there is no construction that reads the environment; a caller builds the struct or calls Settings::light
+packages/memriver-core/tests/unit/test_settings.py::test_settings_file_in_root_is_read -> rust:memriver-core::tests/settings.rs::the_file_is_read_and_found_under_the_environment_root
+packages/memriver-core/tests/unit/test_settings.py::test_settings_file_is_found_under_the_env_root -> rust:memriver-core::tests/settings.rs::the_file_is_read_and_found_under_the_environment_root
+packages/memriver-core/tests/unit/test_settings.py::test_settings_root_defaults_to_storage_root -> rust:memriver-core::tests/settings.rs::the_file_is_read_and_found_under_the_environment_root
+packages/memriver-core/tests/unit/test_settings.py::test_storage_root_defaults_under_home -> rust:memriver-core::tests/settings.rs::empty_memriver_root_means_default
+packages/memriver-core/tests/unit/test_settings.py::test_storage_root_env_override -> rust:memriver-core::tests/settings.rs::empty_memriver_root_means_default
+packages/memriver-core/tests/unit/test_settings.py::test_storage_root_falls_back_to_an_injected_home_without_an_env_override -> rust:memriver-core::tests/settings.rs::empty_memriver_root_means_default
+packages/memriver-core/tests/unit/test_settings.py::test_storage_root_prefers_an_injected_env_over_the_process_environment -> n/a: the environment is always handed in; the process environment is read only by the binary
+packages/memriver-core/tests/unit/test_settings.py::test_the_fixed_length_and_timeout_constants_live_in_settings -> rust:memriver-core::settings::tests::the_catalogue_has_the_values_of_the_python_one
+packages/memriver-core/tests/unit/test_settings.py::test_the_session_constants_live_in_settings -> rust:memriver-core::settings::tests::the_catalogue_has_the_values_of_the_python_one
+packages/memriver-core/tests/unit/test_settings.py::test_valid_settings_file_still_wins_after_the_guard -> rust:memriver-core::tests/settings.rs::the_file_is_read_and_found_under_the_environment_root
 packages/memriver-dream/tests/phases/test_consolidate.py::test_a_change_to_global_is_listed_in_needs_you_and_a_project_change_is_not ->
 packages/memriver-dream/tests/phases/test_consolidate.py::test_a_contradiction_survives_a_crash_before_the_footer_is_written ->
 packages/memriver-dream/tests/phases/test_consolidate.py::test_a_finished_pass_is_stored_by_the_run_and_the_next_run_skips ->

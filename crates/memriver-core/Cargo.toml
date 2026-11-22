@@ -10,5 +10,10 @@ license.workspace = true
 caseless = "=0.2.2"
 getrandom = "0.4"
 serde_json = { version = "1", features = ["preserve_order"] }
+# exact: its TOML dialect and what it refuses decide which settings files are read
+toml = { version = "=0.9.12", default-features = false, features = ["parse", "preserve_order", "std"] }
 unicode-normalization = "=0.1.26"
 unicode-properties = "=0.1.5"
+
+[dev-dependencies]
+memriver-test-support = { path = "../memriver-test-support" }
