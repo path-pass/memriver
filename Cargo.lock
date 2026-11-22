@@ -156,6 +156,7 @@ dependencies = [
  "caseless",
  "getrandom",
  "libc",
+ "libsqlite3-sys",
  "memriver-test-support",
  "rusqlite",
  "serde_json",
