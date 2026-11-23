@@ -4,6 +4,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -92,8 +93,7 @@ def test_run_refuses_a_path_the_child_would_find_outside_tmp_path(tmp_path, monk
     # `--` hides no directory, and after it one may begin with hyphens
     for args in (["export", "--", "--samples/../../sibling/snapshot"],
                  ["export", "--root", "store", "--", "../sibling/snapshot"],
-                 ["export", "link/../../sibling/snapshot"], ["export", "out/snapshot"],
-                 ["--", "export", "../sibling/snapshot"]):
+                 ["export", "link/../../sibling/snapshot"], ["export", "out/snapshot"]):
         with pytest.raises(AssertionError, match="export .* is outside"):
             run(PY, args, cwd=case, **inside)
     # a relative home or store is the child's, read from the child's working directory
@@ -109,6 +109,60 @@ def test_run_refuses_a_path_the_child_would_find_outside_tmp_path(tmp_path, monk
     done = run(PY, ["list", "--root", "link/../store"], cwd=case,
                home=Path("home"), root=Path("deep/../store"))
     assert (done.stdout, done.stderr, done.code) == (b"", b"", 0)
+
+
+def _never_started(monkeypatch) -> list:
+    """Puts a record in the place of the one call that starts a process."""
+    started: list = []
+
+    def record(command, **how):
+        started.append(command)
+        return SimpleNamespace(stdout=b"", stderr=b"", returncode=0)
+    monkeypatch.setattr(harness, "sub" + "process", SimpleNamespace(run=record))
+    return started
+
+
+def test_run_refuses_a_separator_before_the_command_is_known(tmp_path, monkeypatch):
+    # The Python parser reads options again inside a command, so a `--` before the command
+    # (or before the command of `project`) ends nothing: a store named after it is one.
+    case, sibling = tmp_path / "case", tmp_path / "sibling"
+    case.mkdir()
+    monkeypatch.setattr(harness, "TMP_PATH", case)
+    inside = {"home": case / "home", "root": case / "store", "cwd": case}
+    started = _never_started(monkeypatch)
+    for store in (["--root", str(sibling)], [f"--root={sibling}"], ["--ro", "../sibling"]):
+        for args in (["--", "project", "init", *store, "--yes"],
+                     ["project", "--", "init", *store, "--yes"],
+                     ["--", "list", *store], ["--version", "--", "list", *store],
+                     ["--", "export", "snapshot", *store],
+                     ["--project-dir", "list", "--", "project", "init", *store, "--yes"],
+                     ["--root", "store", "--", "project", "--", "init", *store]):
+            with pytest.raises(AssertionError, match="`--` before the command"):
+                run(PY, args, **inside)
+        # and a store named after any `--` is held to the test's directory all the same
+        for args in (["project", "init", "--", *store], ["list", "--", *store]):
+            with pytest.raises(AssertionError, match="--root .* is outside"):
+                run(PY, args, **inside)
+    assert started == []
+    # a command's own `--` stands: what follows it is a value that may begin with a hyphen
+    for args in (["export", "--", "--samples"], ["search", "--", "-x"], ["--root", "store", "show", "--", "-5"],
+                 ["project", "init", "--", "-dir"], ["project", "explain", "--project-dir", "x", "--"]):
+        run(PY, args, **inside)
+    assert len(started) == 5
+
+
+def test_run_refuses_an_empty_home_or_store(tmp_path, monkeypatch):
+    # to the Python implementation an empty HOME is `/` and an empty MEMRIVER_ROOT is not set
+    inside = {"home": tmp_path / "home", "root": tmp_path / "store", "cwd": tmp_path}
+    started = _never_started(monkeypatch)
+    for where in ({**inside, "home": ""}, {**inside, "root": ""},
+                  {**inside, "extra_env": {"HOME": ""}}, {**inside, "extra_env": {"MEMRIVER_ROOT": ""}},
+                  {**inside, "extra_env": {"HOME": "", "MEMRIVER_ROOT": ""}}):
+        with pytest.raises(AssertionError, match="(HOME|MEMRIVER_ROOT) is empty"):
+            run(PY, ["list"], **where)
+    assert started == []
+    run(PY, ["list"], **inside)
+    assert len(started) == 1
 
 
 def test_processes_are_started_only_by_the_harness(tmp_path):

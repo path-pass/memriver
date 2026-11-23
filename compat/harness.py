@@ -95,26 +95,39 @@ def run(impl: list[str], args: list[str], *, home: Path, root: Path, cwd: Path,
     assert Path(cwd).resolve().is_relative_to(inside), \
         f"cwd={cwd} is outside the test's temporary directory"
     for name in ("HOME", "MEMRIVER_ROOT"):
+        # empty, the Python implementation's home is `/` and its store the default one
+        assert env[name], f"{name} is empty"
         assert _lands_inside(env[name], cwd, inside), \
             f"{name}={env[name]} is outside the test's temporary directory"
     # Both parsers take a shortened option, so `--ro DIR` names a store as `--root DIR`
-    # does, until a `--` ends the options. The one command that writes into a directory it
+    # does -- wherever it stands: the Python parser reads options again inside a command,
+    # so a `--` before the command (or before the command of `project`) ends nothing, and
+    # such a line is not started at all. The one command that writes into a directory it
     # is given is `export`: whatever follows it and is not the store is held to the same
-    # rule, before a `--` and after it. A directory another command is given (`project
-    # init /`) is only looked at, and may lie anywhere.
-    stores, others, takes_value, ended = [], [], False, False
+    # rule, before its own `--` and after it. A directory another command is given
+    # (`project init /`) is only looked at, and may lie anywhere.
+    stores, others, takes_value, skipped, ended = [], [], False, False, False
+    commands = 1    # the words still to come that name the command
     for arg in args:
         name, given, value = arg.partition("=")
-        was_value, takes_value = takes_value, False
+        was_value, takes_value, was_skipped, skipped = takes_value, False, skipped, False
         if was_value:
             stores.append(arg)
-        if not ended and len(name) > 2 and "--root".startswith(name):
+        if len(name) > 2 and "--root".startswith(name):
             assert given or arg is not args[-1], f"{arg} without a path"
             takes_value = not given
             if given:
                 stores.append(value)
-        elif not was_value:
-            ended = ended or arg == "--"
+            if ended:       # and, were it a directory's name, that directory
+                others.append(arg)
+        elif not was_value and not was_skipped:
+            if arg == "--":
+                assert not commands, f"`--` before the command in {args}"
+                ended = True
+            elif commands and not arg.startswith("-"):
+                commands += (arg == "project") - 1
+            elif commands and len(name) > 2 and "--project-dir".startswith(name):
+                skipped = not given     # its value is no command
             others.append(arg)
     if "export" in others:
         written = others[others.index("export") + 1:]
