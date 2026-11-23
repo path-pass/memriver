@@ -5,7 +5,8 @@
 The diagnosis reads `updated` with `datetime.fromisoformat`, refuses a time without a zone
 and one that cannot be moved to UTC, and compares the rest with a cutoff. `OUT` gets one
 JSON object a line: `text` and `utc` -- the instant as `YYYY-MM-DDTHH:MM:SS.ffffff`, or null
-when the value is refused. `crates/memriver-core/tests/updated_matrix.rs` asserts every line
+when the value is refused, and then `refused`: `naive` (no zone), `out-of-range` (it cannot
+be moved to UTC) or `invalid`. `crates/memriver-core/tests/updated_matrix.rs` asserts every line
 of the committed file; `compat/test_updated_matrix.py` records it again.
 
 The texts are fixed: a list written by hand, and `COUNT` (default 3,000) changes of valid
@@ -82,6 +83,17 @@ BY_HAND = [
     "2026-08-31T00:00:00.5+05:30", "2026-08-31T00:00+05:30", "2026-08-31T00+05:30",
     "2026-08-31T0000+0530", "2026-08-31T00-0530", "2026-08-31T-05:30", "2026-08-31T+05:30",
     "2026-08-31TZ+05:30", "2026-08-31T00:00:00+05:30:15.", "2026-08-31T00:00:00+05.5",
+    # 24:00 on a day the calendar does not have: the day moves on before the date is checked,
+    # so day 00 becomes the first, and month 00 with day 00 the first of January
+    "2026-10-00T24:00:00Z", "2026-00-00T24:00:00Z", "2026-10-00T24Z", "20261000T2400Z",
+    "2026-10-00T24:00:00.000000+05:30", "2026-10-00T24:00:00", "2026-00-00T24:00", "2026-00-00T24",
+    "2026-10-00T00:00:00Z", "2026-00-00T00:00:00Z", "2026-00-05T24:00:00Z", "2026-00-01T24:00:00Z",
+    "2026-13-00T24:00:00Z", "2026-12-00T24:00:00Z", "2026-04-30T24:00:00Z", "2026-04-31T24:00:00Z",
+    "2026-02-29T24:00:00Z", "2024-02-29T24:00:00Z", "2026-10-32T24:00:00Z", "2026-10-99T24:00:00Z",
+    "2026-10-00T24:00:01Z", "2026-10-00T24:01Z", "2026-10-00T24:00:00.000001Z", "0000-00-00T24:00Z",
+    "0001-00-00T24:00:00Z", "9999-00-00T24:00:00Z", "9999-12-00T24:00:00Z", "0001-01-00T24:00:00+00:01",
+    "0001-00-00T24:00:00+00:01", "9999-12-31T24:00:00", "2026-10-00", "2026-00-00",
+    "2026-10-00T24:00:00+24:00", "2026-10-00T25:00Z",
     # the ends of the calendar
     "0001-01-01T00:00:00+14:00", "0001-01-01T00:00:00+00:00:00.000001", "0001-01-01T00:00:00-14:00",
     "0001-01-01T13:59:59.999999+14:00", "0001-01-01T14:00:00+14:00",
@@ -122,16 +134,21 @@ def texts(count: int) -> list[str]:
     return found
 
 
-def answer(text: str) -> str | None:
+def answer(text: str) -> dict[str, str | None]:
+    """The instant, or why there is none: no zone, a time that cannot be moved to UTC, or
+    anything else."""
     try:
-        return _timestamp(text).strftime("%Y-%m-%dT%H:%M:%S.%f").rjust(26, "0")
-    except (ValueError, OverflowError):
-        return None
+        return {"utc": _timestamp(text).strftime("%Y-%m-%dT%H:%M:%S.%f").rjust(26, "0")}
+    except OverflowError:
+        return {"utc": None, "refused": "out-of-range"}
+    except ValueError as err:
+        naive = str(err) == "timestamp must include a timezone"
+        return {"utc": None, "refused": "naive" if naive else "invalid"}
 
 
 def main(out: str, count: int = 3000) -> None:
     with open(out, "w", encoding="ascii", newline="\n") as stream:
-        stream.writelines(json.dumps({"text": text, "utc": answer(text)}) + "\n"
+        stream.writelines(json.dumps({"text": text, **answer(text)}) + "\n"
                           for text in texts(count))
 
 

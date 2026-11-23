@@ -186,6 +186,73 @@ fn scan_policy_reports_history_and_current_hits() {
     assert_eq!(rows(&env), before);
 }
 
+/// A text another rule refuses than `SECRET_RULE`.
+const PASSWORD: &str = "password = hunter2hunter2hunter2";
+const PASSWORD_RULE: &str = "memriver-credential-assignment";
+
+#[test]
+fn the_hits_of_one_memory_are_in_the_order_of_its_versions() {
+    let env = setup();
+    let (first, second) = (fact(&env, "one", &[]), fact(&env, "another", &[]));
+    for id in [&first, &second] {
+        env.made(body(id, 1, "edited"));
+        env.made(body(id, 2, "edited again"));
+    }
+    // every version of both, written back to front
+    for version in [3, 1, 2] {
+        env.raw()
+            .execute(
+                "UPDATE memory_versions SET body = ?1 WHERE version = ?2",
+                (SECRET, version),
+            )
+            .unwrap();
+    }
+    let mut ids = [first, second];
+    ids.sort();
+    let hits = env.services().maintenance.scan_policy().unwrap();
+    let expected: Vec<_> = ids
+        .iter()
+        .flat_map(|id| [hit(id, 1, false), hit(id, 2, false), hit(id, 3, true)])
+        .collect();
+    assert_eq!(hits, expected);
+}
+
+#[test]
+fn a_version_is_named_by_the_rule_its_description_breaks() {
+    let env = setup();
+    let maintenance = env.services().maintenance;
+    assert_eq!(
+        maintenance.check_text(PASSWORD).as_deref(),
+        Some(PASSWORD_RULE)
+    );
+    // the description breaks one rule and the body another: the description's is named
+    let both = fact(&env, "clean", &[]);
+    let set = |description: &str, body: &str| {
+        env.raw()
+            .execute(
+                "UPDATE memory_versions SET description = ?1, body = ?2",
+                (description, body),
+            )
+            .unwrap();
+    };
+    let rule = || {
+        let hits = maintenance.scan_policy().unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(
+            (hits[0].memory_id.as_str(), hits[0].version),
+            (both.as_str(), 1)
+        );
+        hits[0].rule_id.clone()
+    };
+    set(PASSWORD, SECRET);
+    assert_eq!(rule(), PASSWORD_RULE);
+    set(SECRET, PASSWORD);
+    assert_eq!(rule(), SECRET_RULE);
+    // a description that breaks none leaves the body's
+    set("clean", PASSWORD);
+    assert_eq!(rule(), PASSWORD_RULE);
+}
+
 #[test]
 fn the_scan_skips_a_row_whose_id_is_not_addressable() {
     // an id no write of memriver makes: bytes that are not UTF-8, and text outside the

@@ -26,7 +26,7 @@ def test_the_recorded_matrix_is_what_python_answers(tmp_path: Path):
     assert done.code == 0, done.stderr.decode(errors="replace")
     again = [json.loads(line) for line in out.read_text(encoding="ascii").splitlines()]
     recorded = [json.loads(line) for line in FIXTURE.read_text(encoding="ascii").splitlines()]
-    assert len(recorded) == 3200
+    assert len(recorded) == 3234
     assert [case["text"] for case in again] == [case["text"] for case in recorded]
     for now, then in zip(again, recorded, strict=True):
         assert now == then, then["text"]
@@ -44,3 +44,10 @@ def test_the_matrix_has_values_that_are_read_and_values_that_are_refused():
     assert answers["2026-08-31T24:00:00Z"] == "2026-09-01T00:00:00.000000"
     assert answers["2026-08-31T00:00.5Z"] is None
     assert answers["2026-08-31T00:00:00:00Z"] is None
+    # 24:00 moves the day on before the calendar is asked: a day 00 becomes the first
+    assert answers["2026-10-00T24:00:00Z"] == "2026-10-01T00:00:00.000000"
+    assert answers["2026-00-00T24:00:00Z"] == "2026-01-01T00:00:00.000000"
+    # and every refusal says of which kind it is
+    kinds = {case["refused"] for case in recorded if case["utc"] is None}
+    assert kinds == {"invalid", "naive", "out-of-range"}
+    assert all("refused" not in case for case in read)

@@ -4,7 +4,8 @@
 //! may hold values earlier versions imported (`2026-08-31T00:00:00Z`), so the diagnosis
 //! reads it by this wider grammar. It is the grammar of Python 3.14, followed step by
 //! step, its oddities included: the text is walked as bytes, a NUL ends it wherever the
-//! original looks for the end of a C string, and a few malformed endings are let through.
+//! original looks for the end of a C string, a few malformed endings are let through, and
+//! a time of 24:00 moves the day on before the calendar is asked whether it has that day.
 
 use super::helpers::{civil_from_days, days_from_civil};
 
@@ -103,8 +104,9 @@ fn iso_week_day(year: i64, week: i64, day: i64) -> Option<i64> {
     Some(week_one + (week - 1) * 7 + day - 1)
 }
 
-/// The date written in `text[..end]`, as days since 1970; any year the forms can spell.
-fn date(text: &[u8], end: usize) -> Option<i64> {
+/// The year, month and day written in `text[..end]`, as written: whether the calendar
+/// has that day is asked later, by `calendar_day`. A week date is one the calendar has.
+fn date(text: &[u8], end: usize) -> Option<(i64, i64, i64)> {
     let mut at = 0;
     let year = digits(text, &mut at, 4)?;
     let dashed = byte(text, at) == b'-';
@@ -126,15 +128,33 @@ fn date(text: &[u8], end: usize) -> Option<i64> {
             }
             day = digits(text, &mut at, 1)?;
         }
-        return iso_week_day(year, week, day);
+        return iso_week_day(year, week, day).map(civil_from_days);
     }
     let month = digits(text, &mut at, 2)?;
     if !dash(&mut at) {
         return None;
     }
     let day = digits(text, &mut at, 2)?;
+    Some((year, month, day))
+}
+
+/// Days since 1970 of a day the calendar has, in the years 0001 to 9999.
+fn calendar_day((year, month, day): (i64, i64, i64)) -> Option<i64> {
     let days = days_from_civil(year, month, day);
-    ((1..=12).contains(&month) && civil_from_days(days) == (year, month, day)).then_some(days)
+    let real = (1..=9999).contains(&year)
+        && (1..=12).contains(&month)
+        && civil_from_days(days) == (year, month, day);
+    real.then_some(days)
+}
+
+/// How many days a month has; none for a month 0, as the original's table says.
+fn days_in_month(year: i64, month: i64) -> i64 {
+    match month {
+        0 => 0,
+        2 => 28 + i64::from(is_leap(year)),
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
 }
 
 /// `HH[[:]MM[[:]SS[(.|,)f+]]]` in `text[from..end]`: hour, minute, second, microsecond,
@@ -188,12 +208,12 @@ pub fn utc_micros(text: &str) -> Result<i64, Refused> {
         return Err(Refused::Invalid);
     }
     let end = date_end(text).ok_or(Refused::Invalid)?;
-    let mut days = date(text, end).ok_or(Refused::Invalid)?;
+    let (mut year, mut month, mut day) = date(text, end).ok_or(Refused::Invalid)?;
     if text.len() <= end {
         // a date alone is midnight without a zone
-        return Err(match civil_from_days(days).0 {
-            1..=9999 => Refused::Naive,
-            _ => Refused::Invalid,
+        return Err(match calendar_day((year, month, day)) {
+            Some(_) => Refused::Naive,
+            None => Refused::Invalid,
         });
     }
     // one character stands between the date and the time, whatever it is
@@ -239,13 +259,24 @@ pub fn utc_micros(text: &str) -> Result<i64, Refused> {
             whole => Some(sign * (whole * 1_000_000 + micros)),
         }
     };
-    if hour == 24 && minute == 0 && second == 0 && micro == 0 {
-        // midnight at the end of the day is the start of the next
+    if hour == 24 && minute == 0 && second == 0 && micro == 0 && month <= 12 {
+        // midnight at the end of the day is the start of the next. The day moves on
+        // before anyone asks whether the calendar has it, as in the original: a day 00
+        // becomes the first, and a month 00 with a day 00 the first of January
         hour = 0;
-        days += 1;
+        if day == days_in_month(year, month) {
+            (month, day) = (month + 1, 1);
+            if month > 12 {
+                (year, month) = (year + 1, 1);
+            }
+        } else {
+            day += 1;
+        }
     }
-    let in_calendar = (1..=9999).contains(&civil_from_days(days).0);
-    if !in_calendar || hour > 23 || minute > 59 || second > 59 {
+    let Some(days) = calendar_day((year, month, day)) else {
+        return Err(Refused::Invalid);
+    };
+    if hour > 23 || minute > 59 || second > 59 {
         return Err(Refused::Invalid);
     }
     let Some(offset) = offset else {
