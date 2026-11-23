@@ -26,7 +26,7 @@ fn places(base: &Path) -> (PathBuf, PathBuf, PathBuf) {
 
 /// Every look of that kind at `path` fails from now on, or only the next one.
 fn plant(follow: bool, path: &Path, errno: i32, once: bool) {
-    FAULTS.with_borrow_mut(|faults| faults.push((follow, path.to_path_buf(), errno, once)));
+    fault(follow, path, errno, once);
 }
 
 /// The directory at `path` counts as lying on another device, or on another mount of the

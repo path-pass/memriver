@@ -130,6 +130,12 @@ fn is_verdict_label(label: &str) -> bool {
 }
 
 impl MemoryService {
+    /// For a test: the policy this service checks text by.
+    #[cfg(test)]
+    pub(crate) fn policy_source(&self) -> &PolicySource {
+        &self.policy
+    }
+
     pub fn new(
         memory_store: MemoryStore,
         project_store: ProjectStore,

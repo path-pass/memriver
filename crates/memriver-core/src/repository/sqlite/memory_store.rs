@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use super::database::{Database, MEMORY_COLUMNS, memory_from_row, memory_to_row, values};
 use crate::models::changes::{
     Change, Citation, Confirmation, HardDeleteItem, HardDeletePlan, MemoryVersion, MetadataCaps,
-    Op, OpName, PlanCitation, SourceRef, Step, Usage,
+    Op, OpName, PlanCitation, PolicyHit, SourceRef, Step, Usage,
 };
 use crate::models::context::ReadWriteSet;
 use crate::models::errors::{
@@ -168,7 +168,7 @@ SELECT 1 FROM reach WHERE id = ? LIMIT 1";
 
 /// Everything one version records.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct State {
+pub(crate) struct State {
     type_: MemoryType,
     trust: Trust,
     sync: bool,
@@ -178,6 +178,26 @@ struct State {
     sources: Vec<SourceRef>,
     level: Option<i64>,
     tags: Vec<String>,
+}
+
+impl State {
+    /// Whether the row of `memory` is in this state; its sources are not looked at.
+    pub(crate) fn is_of(&self, memory: &Memory) -> bool {
+        (self.type_, self.trust, self.sync, self.deleted)
+            == (
+                memory.type_,
+                memory.trust,
+                memory.sync,
+                memory.deleted_at.is_some(),
+            )
+            && (&self.description, &self.body, self.level, &self.tags)
+                == (
+                    &memory.description,
+                    &memory.body,
+                    memory.level,
+                    &memory.tags,
+                )
+    }
 }
 
 /// One memory a change wrote: its project, its state before (None for one the change
@@ -884,7 +904,7 @@ fn sources_of(
 ///
 /// `memory_versions` has no CHECK on type and trust, so a damaged history row is caught
 /// here: a storage failure for a row memriver could not have written.
-fn history_state(row: &[Value]) -> Result<State, CoreError> {
+pub(crate) fn history_state(row: &[Value]) -> Result<State, CoreError> {
     let damaged = CoreError::StorageFailure;
     let flag = |value: &Value| match value {
         Value::Integer(0) => Some(false),
@@ -1363,6 +1383,49 @@ impl MemoryStore {
                 &unrecorded,
             )
         })
+    }
+
+    /// Every stored version of every memory against `check`, which names the rule that
+    /// refuses a text: one hit per version, by its description first, and no text.
+    pub fn scan(
+        &self,
+        check: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<Vec<PolicyHit>, CoreError> {
+        let found = self.database().read(|conn| match conn {
+            Some(conn) => rows(
+                conn,
+                "SELECT v.memory_id, v.version, v.description, v.body, m.version \
+                 FROM memory_versions v JOIN memories m ON m.id = v.memory_id \
+                 ORDER BY v.memory_id, v.version",
+                [],
+            ),
+            None => Ok(Vec::new()),
+        })?;
+        // checked after the read transaction: scanning must not hold the read lock
+        let mut hits = Vec::new();
+        for row in &found {
+            // an id no write makes is not addressable by any command that would act on
+            // a hit; the inspector reports the row itself
+            let (Value::Text(memory_id), Value::Integer(version)) = (&row[0], &row[1]) else {
+                continue;
+            };
+            if !is_id(memory_id) {
+                continue;
+            }
+            let refused = row[2..4].iter().find_map(|text| match text {
+                Value::Text(text) => check(text),
+                _ => None,
+            });
+            if let Some(rule_id) = refused {
+                hits.push(PolicyHit {
+                    memory_id: memory_id.clone(),
+                    version: *version,
+                    rule_id,
+                    current: row[1] == row[4],
+                });
+            }
+        }
+        Ok(hits)
     }
 
     /// What a hard delete of `memory_id` would remove: the memory and every memory a

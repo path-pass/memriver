@@ -9,10 +9,12 @@ pub mod settings;
 use std::path::Path;
 use std::sync::Arc;
 
+use application::maintenance::MaintenanceService;
 use application::memory::{MemoryLimits, MemoryService, policy_source};
 use application::projects::ProjectService;
 use application::sessions::SessionService;
 use content_policy::ContentClassifier;
+use repository::sqlite::inspector::StoreInspector;
 use repository::sqlite::memory_store::MemoryStore;
 use repository::sqlite::project_store::ProjectStore;
 use repository::sqlite::session_store::SessionStore;
@@ -24,6 +26,8 @@ pub struct Services {
     pub project: ProjectService,
     /// Shared with the memory service, whose writes ask it about their session.
     pub session: Arc<SessionService>,
+    /// The checks and repairs of the human commands and dream; no agent path reaches it.
+    pub maintenance: MaintenanceService,
 }
 
 /// The services over the store at `settings.root`. `classifier` is the optional
@@ -36,7 +40,7 @@ pub fn build_services(
     classifier: Option<Box<dyn ContentClassifier>>,
 ) -> Services {
     let root = &settings.root;
-    // one policy per composition, loaded on first use and shared by the two services
+    // one policy per composition, loaded on first use and shared by the three services
     // that check text
     let policy = policy_source();
     let session = Arc::new(SessionService::new(
@@ -45,6 +49,11 @@ pub fn build_services(
         Arc::clone(&policy),
         env.clone(),
     ));
+    let maintenance = MaintenanceService::new(
+        StoreInspector::new(root),
+        MemoryStore::new(root),
+        Arc::clone(&policy),
+    );
     let (refusing, marking) = (Arc::clone(&session), Arc::clone(&session));
     let memory = MemoryService::new(
         MemoryStore::new(root),
@@ -58,6 +67,7 @@ pub fn build_services(
     Services {
         memory,
         session,
+        maintenance,
         project: ProjectService::new(
             ProjectStore::new(root, home),
             HEADER_FIELD_CHARS,

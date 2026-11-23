@@ -88,6 +88,13 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// For a test, on its thread: the next look at `path` (every look, unless `once`) fails
+/// with `errno` -- a `stat` when `follow`, else an `lstat`.
+#[cfg(test)]
+pub(crate) fn fault(follow: bool, path: &Path, errno: i32, once: bool) {
+    FAULTS.with_borrow_mut(|faults| faults.push((follow, path.to_path_buf(), errno, once)));
+}
+
 #[cfg(test)]
 fn planted(follow: bool, path: &Path) -> Option<i32> {
     FAULTS.with_borrow_mut(|faults| {

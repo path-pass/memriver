@@ -196,17 +196,17 @@ packages/memriver-core/tests/integration/application/test_reads.py::test_recordi
 packages/memriver-core/tests/integration/application/test_reads.py::test_usage_counts_reads_and_reports_the_stored_high_water_mark -> rust:memriver-core::tests/history.rs::usage_counts_reads_and_reports_the_stored_high_water_mark
 packages/memriver-core/tests/integration/application/test_reads.py::test_versions_lists_every_version_with_its_state_sources_and_change -> rust:memriver-core::tests/history.rs::versions_lists_every_version_with_its_state_sources_and_change
 packages/memriver-core/tests/integration/application/test_reads.py::test_versions_of_an_unknown_id_is_not_found -> rust:memriver-core::tests/history.rs::versions_of_an_unknown_id_is_not_found
-packages/memriver-core/tests/integration/application/test_scan_and_hard_delete.py::test_a_confirmed_hard_delete_removes_every_member_row_and_keeps_the_change_rows ->
+packages/memriver-core/tests/integration/application/test_scan_and_hard_delete.py::test_a_confirmed_hard_delete_removes_every_member_row_and_keeps_the_change_rows -> rust:memriver-core::tests/hard_delete.rs::all_history_reads_and_sources_go_in_one_transaction + rust:memriver-core::tests/maintenance.rs::a_confirmed_hard_delete_leaves_an_incomplete_change_the_diagnosis_lists
 packages/memriver-core/tests/integration/application/test_scan_and_hard_delete.py::test_a_global_or_deleted_target_is_deleted_like_any_other -> rust:memriver-core::tests/hard_delete.rs::a_global_or_deleted_target_is_deleted_like_any_other
 packages/memriver-core/tests/integration/application/test_scan_and_hard_delete.py::test_a_hard_delete_leaves_no_copy_of_the_secret_in_the_database_file -> rust:memriver-core::tests/hard_delete.rs::no_copy_of_the_text_stays_in_the_database_file
 packages/memriver-core/tests/integration/application/test_scan_and_hard_delete.py::test_a_stale_set_or_code_deletes_nothing_and_carries_the_new_plan -> rust:memriver-core::tests/hard_delete.rs::changed_plan_is_refused
 packages/memriver-core/tests/integration/application/test_scan_and_hard_delete.py::test_an_unknown_id_is_not_found -> rust:memriver-core::tests/hard_delete.rs::an_unknown_id_is_not_found
-packages/memriver-core/tests/integration/application/test_scan_and_hard_delete.py::test_check_text_names_the_rule_of_any_text_and_has_no_side_effect ->
+packages/memriver-core/tests/integration/application/test_scan_and_hard_delete.py::test_check_text_names_the_rule_of_any_text_and_has_no_side_effect -> rust:memriver-core::tests/maintenance.rs::check_text_names_the_rule_of_any_text_and_has_no_side_effect
 packages/memriver-core/tests/integration/application/test_scan_and_hard_delete.py::test_exactly_one_confirmation_is_required -> n/a: a confirmation is one of the two by its type (`Confirmation`); none and both cannot be written
 packages/memriver-core/tests/integration/application/test_scan_and_hard_delete.py::test_the_plan_follows_every_version_of_every_member_and_never_a_members_sources -> rust:memriver-core::tests/hard_delete.rs::plan_lists_the_target_then_every_citing_memory + rust:memriver-core::tests/hard_delete.rs::code_is_stable_across_implementations
 packages/memriver-core/tests/integration/application/test_scan_and_hard_delete.py::test_the_plan_is_a_storage_failure_when_a_referrer_id_is_not_addressable -> rust:memriver-core::tests/hard_delete.rs::a_referrer_id_that_is_no_id_is_a_storage_failure
-packages/memriver-core/tests/integration/application/test_scan_and_hard_delete.py::test_the_scan_finds_secrets_in_history_deleted_memories_and_global_without_text ->
-packages/memriver-core/tests/integration/application/test_scan_and_hard_delete.py::test_the_scan_skips_a_row_whose_id_is_not_addressable ->
+packages/memriver-core/tests/integration/application/test_scan_and_hard_delete.py::test_the_scan_finds_secrets_in_history_deleted_memories_and_global_without_text -> rust:memriver-core::tests/maintenance.rs::scan_policy_reports_history_and_current_hits
+packages/memriver-core/tests/integration/application/test_scan_and_hard_delete.py::test_the_scan_skips_a_row_whose_id_is_not_addressable -> rust:memriver-core::tests/maintenance.rs::the_scan_skips_a_row_whose_id_is_not_addressable
 packages/memriver-core/tests/integration/application/test_search.py::test_agent_search_ranks_project_then_global_in_one_budget -> rust:memriver-core::tests/search.rs::limit_is_one_budget_project_first
 packages/memriver-core/tests/integration/application/test_search.py::test_search_all_ranks_across_projects_as_one_list -> rust:memriver-core::tests/history.rs::search_all_ranks_across_projects_as_one_list
 packages/memriver-core/tests/integration/application/test_sources.py::test_a_cited_version_is_deletable_only_together_with_every_version_citing_it -> rust:memriver-core::tests/hard_delete.rs::a_cited_memory_does_not_go_without_the_memories_citing_it
@@ -325,52 +325,52 @@ packages/memriver-core/tests/integration/repository/sqlite/test_database.py::tes
 packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_v5_upgraded_on_write -> n/a: the upgrade from schema 5 is not ported; version 5 is refused like 1 to 4
 packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_write_without_create_does_not_create_a_missing_store -> rust:memriver-core::tests/database.rs::write_without_create_on_a_missing_store_is_storage_failure
 packages/memriver-core/tests/integration/repository/sqlite/test_database.py::test_write_without_create_does_not_recreate_a_store_removed_after_the_check -> rust:memriver-core::repository::sqlite::database::tests::a_connection_never_creates_the_file
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_bad_older_version_under_a_healthy_current_one_is_invalid_row ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_change_with_an_undecodable_id_is_invalid_row_not_incomplete ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_change_with_fewer_steps_than_recorded_is_listed_not_a_finding ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_damaged_deleted_row_is_still_reported ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_failing_pragma_still_closes_the_connection ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_gap_in_the_versions_is_a_finding ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_healthy_session_move_is_not_a_finding ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_healthy_session_row_is_not_a_finding ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_healthy_store_lists_entries_and_projects_with_counts ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_huge_current_version_with_one_stored_row_is_a_gap_not_a_crash ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_leftover_file_store_is_legacy_layout ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_malformed_last_read_at_is_reported_and_kept_out_of_entries ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_missing_store_is_uninitialized_and_nothing_is_created ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_re_pointed_directory_is_a_finding ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_row_that_differs_from_its_latest_version_is_a_finding ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_row_whose_level_or_tags_differ_from_its_latest_version_is_a_finding ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_session_with_a_dangling_candidate_id_is_a_session_orphan_finding ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_session_with_a_dangling_project_id_is_a_session_orphan_finding ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_session_with_a_watermark_above_the_prompt_count_is_reported_as_invalid_row ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_source_citing_a_version_that_is_not_stored_is_a_finding ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_source_cycle_is_a_finding_for_every_memory_on_it ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_source_finding_never_carries_a_damaged_project_id ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_source_row_whose_own_citing_version_is_not_stored_is_also_a_finding ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_store_below_v5_is_one_unknown_schema_finding_and_is_left_untouched ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_symlinked_database_is_unsafe_and_not_followed ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_version_naming_a_change_whose_row_is_gone_is_unrecorded_version ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_version_naming_a_change_without_its_step_is_a_finding ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_version_with_tags_memriver_could_not_have_written_is_a_finding ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_an_already_unverifiable_root_is_not_paired_and_not_duplicated ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_an_invalid_row_is_reported_and_kept_out_of_entries ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_an_invalid_session_row_is_reported_as_invalid_row ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_an_offline_directory_is_a_state_not_a_finding ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_an_orphan_is_reported_and_kept_out_of_entries ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_an_undecodable_memory_column_is_invalid_row_not_a_crash ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_an_undecodable_project_column_is_invalid_row_not_a_crash ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_an_unknown_schema_is_one_finding ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_an_unverifiable_pair_is_filed_once_per_project_not_duplicated ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_damaged_session_move_reported ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_directory_checks_run_after_the_read_transaction ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_doctor_upgrades_v5 ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_inspection_never_writes ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_one_inspection_reads_one_snapshot ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_only_a_legacy_store_is_degraded_but_not_initialized ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_session_move_without_session_reported ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_two_orphans_one_with_an_undecodable_id_do_not_crash_the_sort ->
-packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_two_projects_bound_to_one_directory_by_alias_is_a_finding ->
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_bad_older_version_under_a_healthy_current_one_is_invalid_row -> rust:memriver-core::tests/inspector.rs::a_version_memriver_could_not_have_written_is_a_finding
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_change_with_an_undecodable_id_is_invalid_row_not_incomplete -> rust:memriver-core::tests/inspector.rs::a_change_with_an_undecodable_id_is_invalid_row_not_incomplete
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_change_with_fewer_steps_than_recorded_is_listed_not_a_finding -> rust:memriver-core::tests/inspector.rs::a_change_with_fewer_steps_than_recorded_is_listed_not_a_finding
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_damaged_deleted_row_is_still_reported -> rust:memriver-core::tests/inspector.rs::an_invalid_row_is_reported_and_kept_out_of_entries
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_failing_pragma_still_closes_the_connection -> n/a: the connection is closed when it goes out of scope, on every way out
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_gap_in_the_versions_is_a_finding -> rust:memriver-core::tests/inspector.rs::a_gap_in_the_versions_is_a_finding
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_healthy_session_move_is_not_a_finding -> rust:memriver-core::tests/inspector.rs::a_healthy_session_move_is_not_a_finding
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_healthy_session_row_is_not_a_finding -> rust:memriver-core::tests/inspector.rs::a_healthy_session_row_is_not_a_finding
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_healthy_store_lists_entries_and_projects_with_counts -> rust:memriver-core::tests/inspector.rs::a_healthy_store_lists_entries_and_projects_with_counts
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_huge_current_version_with_one_stored_row_is_a_gap_not_a_crash -> rust:memriver-core::tests/inspector.rs::a_huge_current_version_with_one_stored_row_is_a_gap_not_a_crash
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_leftover_file_store_is_legacy_layout -> rust:memriver-core::tests/inspector.rs::a_leftover_file_store_is_legacy_layout
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_malformed_last_read_at_is_reported_and_kept_out_of_entries -> rust:memriver-core::tests/inspector.rs::an_invalid_row_is_reported_and_kept_out_of_entries
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_missing_store_is_uninitialized_and_nothing_is_created -> rust:memriver-core::tests/inspector.rs::a_missing_store_is_uninitialized_and_nothing_is_created
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_re_pointed_directory_is_a_finding -> rust:memriver-core::tests/inspector.rs::a_re_pointed_directory_is_a_finding
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_row_that_differs_from_its_latest_version_is_a_finding -> rust:memriver-core::tests/inspector.rs::a_row_that_differs_from_its_latest_version_is_a_finding
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_row_whose_level_or_tags_differ_from_its_latest_version_is_a_finding -> rust:memriver-core::tests/inspector.rs::a_row_that_differs_from_its_latest_version_is_a_finding
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_session_with_a_dangling_candidate_id_is_a_session_orphan_finding -> rust:memriver-core::tests/inspector.rs::a_session_with_a_dangling_candidate_id_is_a_session_orphan_finding
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_session_with_a_dangling_project_id_is_a_session_orphan_finding -> rust:memriver-core::tests/inspector.rs::a_session_with_a_dangling_project_id_is_a_session_orphan_finding
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_session_with_a_watermark_above_the_prompt_count_is_reported_as_invalid_row -> rust:memriver-core::tests/inspector.rs::an_invalid_session_row_is_reported_as_invalid_row
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_source_citing_a_version_that_is_not_stored_is_a_finding -> rust:memriver-core::tests/inspector.rs::a_source_citing_a_version_that_is_not_stored_is_a_finding
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_source_cycle_is_a_finding_for_every_memory_on_it -> rust:memriver-core::tests/inspector.rs::a_source_cycle_is_a_finding_for_every_memory_on_it
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_source_finding_never_carries_a_damaged_project_id -> rust:memriver-core::tests/inspector.rs::a_source_finding_never_carries_a_damaged_project_id
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_source_row_whose_own_citing_version_is_not_stored_is_also_a_finding -> rust:memriver-core::tests/inspector.rs::a_source_row_whose_own_citing_version_is_not_stored_is_also_a_finding
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_store_below_v5_is_one_unknown_schema_finding_and_is_left_untouched -> rust:memriver-core::tests/inspector.rs::versions_1_to_5_are_unknown_schema_to_the_inspector
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_symlinked_database_is_unsafe_and_not_followed -> rust:memriver-core::tests/inspector.rs::a_symlinked_database_is_unsafe_and_not_followed
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_version_naming_a_change_whose_row_is_gone_is_unrecorded_version -> rust:memriver-core::tests/inspector.rs::a_version_naming_a_change_whose_row_is_gone_is_unrecorded_version
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_version_naming_a_change_without_its_step_is_a_finding -> rust:memriver-core::tests/inspector.rs::a_version_naming_a_change_without_its_step_is_a_finding
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_a_version_with_tags_memriver_could_not_have_written_is_a_finding -> rust:memriver-core::tests/inspector.rs::a_version_memriver_could_not_have_written_is_a_finding
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_an_already_unverifiable_root_is_not_paired_and_not_duplicated -> rust:memriver-core::repository::sqlite::inspector::tests::an_already_unverifiable_root_is_not_paired_and_not_duplicated
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_an_invalid_row_is_reported_and_kept_out_of_entries -> rust:memriver-core::tests/inspector.rs::an_invalid_row_is_reported_and_kept_out_of_entries
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_an_invalid_session_row_is_reported_as_invalid_row -> rust:memriver-core::tests/inspector.rs::an_invalid_session_row_is_reported_as_invalid_row
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_an_offline_directory_is_a_state_not_a_finding -> rust:memriver-core::tests/inspector.rs::an_offline_directory_is_a_state_not_a_finding
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_an_orphan_is_reported_and_kept_out_of_entries -> rust:memriver-core::tests/inspector.rs::an_orphan_is_reported_and_kept_out_of_entries
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_an_undecodable_memory_column_is_invalid_row_not_a_crash -> rust:memriver-core::tests/inspector.rs::an_invalid_row_is_reported_and_kept_out_of_entries
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_an_undecodable_project_column_is_invalid_row_not_a_crash -> rust:memriver-core::tests/inspector.rs::an_undecodable_project_column_is_invalid_row_not_a_crash
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_an_unknown_schema_is_one_finding -> rust:memriver-core::tests/inspector.rs::an_unknown_schema_is_one_finding
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_an_unverifiable_pair_is_filed_once_per_project_not_duplicated -> rust:memriver-core::repository::sqlite::inspector::tests::an_unverifiable_pair_is_filed_once_per_project_not_duplicated
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_damaged_session_move_reported -> rust:memriver-core::tests/inspector.rs::damaged_session_move_reported
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_directory_checks_run_after_the_read_transaction -> rust:memriver-core::repository::sqlite::inspector::tests::directory_checks_run_after_the_read_transaction
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_doctor_upgrades_v5 -> n/a: a store of schema 5 is not brought forward by anything; to the inspector it is an unknown schema
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_inspection_never_writes -> rust:memriver-core::tests/inspector.rs::inspector_never_writes
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_one_inspection_reads_one_snapshot -> rust:memriver-core::repository::sqlite::inspector::tests::one_inspection_reads_one_snapshot
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_only_a_legacy_store_is_degraded_but_not_initialized -> rust:memriver-core::tests/inspector.rs::only_a_legacy_store_is_degraded_but_not_initialized
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_session_move_without_session_reported -> rust:memriver-core::tests/inspector.rs::session_move_without_session_reported
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_two_orphans_one_with_an_undecodable_id_do_not_crash_the_sort -> rust:memriver-core::tests/inspector.rs::two_orphans_one_with_an_undecodable_id_do_not_crash_the_sort
+packages/memriver-core/tests/integration/repository/sqlite/test_inspector.py::test_two_projects_bound_to_one_directory_by_alias_is_a_finding -> rust:memriver-core::repository::sqlite::inspector::tests::two_projects_bound_to_one_directory_by_alias_is_a_finding
 packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_bad_row_fails_a_write_too_and_is_left_as_it_was -> rust:memriver-core::tests/session_store.rs::a_bad_row_fails_a_write_too_and_is_left_as_it_was
 packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_bad_row_is_skipped_by_search_and_fails_a_direct_get -> rust:memriver-core::tests/session_store.rs::a_bad_row_is_skipped_by_search_and_fails_a_direct_get
 packages/memriver-core/tests/integration/repository/sqlite/test_session_store.py::test_a_call_row_naming_an_invalid_session_is_ignored -> rust:memriver-core::tests/session_store.rs::a_call_row_naming_an_invalid_session_is_ignored
@@ -524,27 +524,27 @@ packages/memriver-core/tests/integration/repository/test_worktree.py::test_inher
 packages/memriver-core/tests/integration/repository/test_worktree.py::test_the_main_tree_root_and_its_sub_directories_are_unchanged -> rust:memriver-core::tests/worktree.rs::the_main_tree_root_and_its_sub_directories_are_unchanged
 packages/memriver-core/tests/test_smoke.py::test_every_layer_imports ->
 packages/memriver-core/tests/test_smoke.py::test_version ->
-packages/memriver-core/tests/unit/application/test_maintenance.py::test_a_legacy_store_is_degraded_and_still_says_it_is_not_initialized ->
-packages/memriver-core/tests/unit/application/test_maintenance.py::test_backend_finding_fields_are_copied_without_absolute_paths ->
-packages/memriver-core/tests/unit/application/test_maintenance.py::test_backend_findings_precede_policy_findings ->
-packages/memriver-core/tests/unit/application/test_maintenance.py::test_duplicate_pair_order_is_deterministic_by_project_then_id ->
-packages/memriver-core/tests/unit/application/test_maintenance.py::test_duplicate_pair_order_uses_project_before_id ->
-packages/memriver-core/tests/unit/application/test_maintenance.py::test_huge_stale_days_on_empty_store_does_not_overflow ->
-packages/memriver-core/tests/unit/application/test_maintenance.py::test_invalid_limits_fail_before_inspection ->
-packages/memriver-core/tests/unit/application/test_maintenance.py::test_invalid_updated_produces_finding_and_does_not_abort ->
-packages/memriver-core/tests/unit/application/test_maintenance.py::test_malformed_now_fails_before_inspection ->
-packages/memriver-core/tests/unit/application/test_maintenance.py::test_mixed_empty_and_nonempty_trigram_pair_yields_no_finding ->
-packages/memriver-core/tests/unit/application/test_maintenance.py::test_naive_updated_is_invalid_not_a_crash ->
-packages/memriver-core/tests/unit/application/test_maintenance.py::test_near_duplicate_bodies_are_flagged ->
-packages/memriver-core/tests/unit/application/test_maintenance.py::test_new_backend_kinds_get_their_own_suggestion ->
-packages/memriver-core/tests/unit/application/test_maintenance.py::test_no_shadowing_finding_exists_any_more ->
-packages/memriver-core/tests/unit/application/test_maintenance.py::test_now_none_uses_current_time_and_does_not_raise ->
-packages/memriver-core/tests/unit/application/test_maintenance.py::test_recent_entry_is_not_stale ->
-packages/memriver-core/tests/unit/application/test_maintenance.py::test_short_bodies_do_not_divide_by_zero_or_pair ->
-packages/memriver-core/tests/unit/application/test_maintenance.py::test_stale_entry_past_threshold_is_flagged ->
-packages/memriver-core/tests/unit/application/test_maintenance.py::test_state_is_derived_without_backend_guessing ->
-packages/memriver-core/tests/unit/application/test_maintenance.py::test_the_inspectors_projects_pass_through_to_the_report ->
-packages/memriver-core/tests/unit/application/test_maintenance.py::test_timestamp_conversion_overflow_is_invalid_not_a_crash ->
+packages/memriver-core/tests/unit/application/test_maintenance.py::test_a_legacy_store_is_degraded_and_still_says_it_is_not_initialized -> rust:memriver-core::application::maintenance::tests::a_legacy_store_is_degraded_and_still_says_it_is_not_initialized
+packages/memriver-core/tests/unit/application/test_maintenance.py::test_backend_finding_fields_are_copied_without_absolute_paths -> rust:memriver-core::application::maintenance::tests::backend_finding_fields_are_copied
+packages/memriver-core/tests/unit/application/test_maintenance.py::test_backend_findings_precede_policy_findings -> rust:memriver-core::application::maintenance::tests::backend_findings_precede_policy_findings
+packages/memriver-core/tests/unit/application/test_maintenance.py::test_duplicate_pair_order_is_deterministic_by_project_then_id -> rust:memriver-core::application::maintenance::tests::duplicate_pair_order_is_by_project_then_id
+packages/memriver-core/tests/unit/application/test_maintenance.py::test_duplicate_pair_order_uses_project_before_id -> rust:memriver-core::application::maintenance::tests::duplicate_pair_order_is_by_project_then_id
+packages/memriver-core/tests/unit/application/test_maintenance.py::test_huge_stale_days_on_empty_store_does_not_overflow -> rust:memriver-core::application::maintenance::tests::the_largest_number_of_days_does_not_overflow
+packages/memriver-core/tests/unit/application/test_maintenance.py::test_invalid_limits_fail_before_inspection -> rust:memriver-core::application::maintenance::tests::invalid_limits_fail_before_inspection
+packages/memriver-core/tests/unit/application/test_maintenance.py::test_invalid_updated_produces_finding_and_does_not_abort -> rust:memriver-core::application::maintenance::tests::an_updated_value_that_is_no_instant_is_a_finding_and_does_not_abort
+packages/memriver-core/tests/unit/application/test_maintenance.py::test_malformed_now_fails_before_inspection -> rust:memriver-core::application::maintenance::tests::malformed_now_fails_before_inspection
+packages/memriver-core/tests/unit/application/test_maintenance.py::test_mixed_empty_and_nonempty_trigram_pair_yields_no_finding -> rust:memriver-core::application::maintenance::tests::short_bodies_do_not_divide_by_zero_or_pair
+packages/memriver-core/tests/unit/application/test_maintenance.py::test_naive_updated_is_invalid_not_a_crash -> rust:memriver-core::application::maintenance::tests::an_updated_value_that_is_no_instant_is_a_finding_and_does_not_abort
+packages/memriver-core/tests/unit/application/test_maintenance.py::test_near_duplicate_bodies_are_flagged -> rust:memriver-core::application::maintenance::tests::near_duplicate_bodies_are_flagged
+packages/memriver-core/tests/unit/application/test_maintenance.py::test_new_backend_kinds_get_their_own_suggestion -> rust:memriver-core::application::maintenance::tests::every_backend_kind_has_its_own_suggestion
+packages/memriver-core/tests/unit/application/test_maintenance.py::test_no_shadowing_finding_exists_any_more -> n/a: a finding kind an earlier Python version had and removed; nothing here ever had it
+packages/memriver-core/tests/unit/application/test_maintenance.py::test_now_none_uses_current_time_and_does_not_raise -> rust:memriver-core::application::maintenance::tests::now_none_uses_the_clock
+packages/memriver-core/tests/unit/application/test_maintenance.py::test_recent_entry_is_not_stale -> rust:memriver-core::application::maintenance::tests::stale_after_90_days
+packages/memriver-core/tests/unit/application/test_maintenance.py::test_short_bodies_do_not_divide_by_zero_or_pair -> rust:memriver-core::application::maintenance::tests::short_bodies_do_not_divide_by_zero_or_pair
+packages/memriver-core/tests/unit/application/test_maintenance.py::test_stale_entry_past_threshold_is_flagged -> rust:memriver-core::application::maintenance::tests::stale_after_90_days
+packages/memriver-core/tests/unit/application/test_maintenance.py::test_state_is_derived_without_backend_guessing -> rust:memriver-core::application::maintenance::tests::state_precedence_degraded_uninitialized_empty_healthy
+packages/memriver-core/tests/unit/application/test_maintenance.py::test_the_inspectors_projects_pass_through_to_the_report -> rust:memriver-core::application::maintenance::tests::the_inspectors_projects_and_incomplete_changes_pass_through
+packages/memriver-core/tests/unit/application/test_maintenance.py::test_timestamp_conversion_overflow_is_invalid_not_a_crash -> rust:memriver-core::application::maintenance::tests::an_updated_value_that_is_no_instant_is_a_finding_and_does_not_abort
 packages/memriver-core/tests/unit/application/test_services.py::test_a_non_collision_failure_is_final_on_the_first_call_too -> rust:memriver-core::repository::sqlite::memory_store::tests::an_id_that_is_taken_is_a_storage_failure_and_replaces_nothing
 packages/memriver-core/tests/unit/application/test_services.py::test_a_spent_budget_skips_global -> rust:memriver-core::tests/search.rs::limit_is_one_budget_project_first
 packages/memriver-core/tests/unit/application/test_services.py::test_a_tag_expands_to_its_entries_with_rules_marked -> rust:memriver-core::tests/index.rs::the_five_line_formats
@@ -756,7 +756,7 @@ packages/memriver-core/tests/unit/test_architecture.py::test_identifiers_in_catc
 packages/memriver-core/tests/unit/test_architecture.py::test_imports_from_source_catches_every_bypass_form ->
 packages/memriver-core/tests/unit/test_architecture.py::test_imports_from_source_catches_settings_module_alias_bypass ->
 packages/memriver-core/tests/unit/test_architecture.py::test_imports_from_source_clean_module_passes ->
-packages/memriver-core/tests/unit/test_architecture.py::test_maintenance_application_depends_only_on_models_and_ports ->
+packages/memriver-core/tests/unit/test_architecture.py::test_maintenance_application_depends_only_on_models_and_ports -> n/a: the maintenance service names the one inspector and the one store there are; no port stands between them
 packages/memriver-core/tests/unit/test_architecture.py::test_no_dream_ttl_or_run_id_identifier ->
 packages/memriver-core/tests/unit/test_architecture.py::test_no_git_discovery_in_models_or_application ->
 packages/memriver-core/tests/unit/test_architecture.py::test_only_bootstrap_constructs_the_sqlite_inspector ->
@@ -772,7 +772,7 @@ packages/memriver-core/tests/unit/test_bootstrap.py::test_composes_the_four_serv
 packages/memriver-core/tests/unit/test_bootstrap.py::test_composes_the_sqlite_adapters ->
 packages/memriver-core/tests/unit/test_bootstrap.py::test_injects_the_configured_limits_and_the_fixed_constants ->
 packages/memriver-core/tests/unit/test_bootstrap.py::test_injects_the_session_constants -> n/a: the session service takes its limits from the settings module itself; nothing is handed in
-packages/memriver-core/tests/unit/test_bootstrap.py::test_maintenance_shares_the_memory_store_and_the_one_content_policy ->
+packages/memriver-core/tests/unit/test_bootstrap.py::test_maintenance_shares_the_memory_store_and_the_one_content_policy -> rust:memriver-core::application::maintenance::tests::maintenance_shares_the_one_content_policy_and_a_diagnosis_does_not_load_it
 packages/memriver-core/tests/unit/test_bootstrap.py::test_memory_writes_ask_the_session_service_through_its_callbacks -> rust:memriver-core::tests/sessions.rs::a_pending_session_writes_nothing_through_the_built_services_and_a_save_moves_its_mark
 packages/memriver-core/tests/unit/test_bootstrap.py::test_the_two_text_checking_services_share_one_content_policy ->
 packages/memriver-core/tests/unit/test_bootstrap.py::test_uses_the_settings_root_by_default ->
