@@ -21,6 +21,7 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use rusqlite::config::DbConfig;
 use rusqlite::types::{Value, ValueRef};
 use rusqlite::{Connection, OpenFlags, Row};
 
@@ -292,6 +293,57 @@ fn create_file(path: &Path) -> Result<(), CoreError> {
     is_file(path).map(drop)
 }
 
+#[cfg(test)]
+thread_local! {
+    static BEFORE_OPEN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// For a test, on its thread, once: `then` runs when a database file has been checked
+/// and is about to be opened -- where someone else can put another file in its place.
+#[cfg(test)]
+pub(crate) fn before_open(then: impl FnOnce() + 'static) {
+    BEFORE_OPEN.set(Some(Box::new(then)));
+}
+
+/// A connection to the existing database file at `path`, which is absolute: never
+/// creates it, never read-only (a hot journal can be rolled back only with write
+/// access).
+///
+/// `reading`: the connection of something that only reads. It still rolls back what a
+/// crashed writer left in a rollback journal -- nothing can be read before that.
+pub(crate) fn open(
+    path: &Path,
+    busy_timeout: Duration,
+    reading: bool,
+) -> Result<Connection, CoreError> {
+    // The file was checked a moment ago, by name; whatever stands at that name now is
+    // what would be opened. SQLite refuses a link when it is told to follow none -- but
+    // then it refuses one anywhere in the name, and a store may lie below a linked
+    // directory or be one. So the directory is resolved first and the file named in it:
+    // a link at the file itself, or one that takes a directory's place after this
+    // line, fails the open
+    let (Some(directory), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(CoreError::StorageFailure);
+    };
+    let directory = fs::canonicalize(directory).map_err(|_| CoreError::StorageFailure)?;
+    #[cfg(test)]
+    if let Some(then) = BEFORE_OPEN.take() {
+        then();
+    }
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+        | OpenFlags::SQLITE_OPEN_NO_MUTEX
+        | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+    let conn = Connection::open_with_flags(directory.join(name), flags)?;
+    conn.busy_timeout(busy_timeout)?;
+    if reading {
+        // the last connection to a store in WAL mode writes the log back into the
+        // database when it closes, `query_only` or not: a reader leaves that to a writer
+        conn.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)?;
+    }
+    Ok(conn)
+}
+
 pub struct Database {
     /// As given: where it lies is decided anew by every operation.
     path: PathBuf,
@@ -410,9 +462,7 @@ impl Database {
     /// A connection to the existing file at `path`, which is absolute: never creates
     /// it, never read-only.
     fn connect(&self, path: &Path, read_only: bool) -> Result<Connection, CoreError> {
-        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-        let conn = Connection::open_with_flags(path, flags)?;
-        conn.busy_timeout(self.busy_timeout)?;
+        let conn = open(path, self.busy_timeout, read_only)?;
         // secure_delete: a hard delete's freed pages are overwritten with zeros instead
         // of holding the plaintext until something else reuses them
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA secure_delete = ON")?;
@@ -444,6 +494,112 @@ mod tests {
         fs::create_dir(&sandbox.root).unwrap();
         assert!(database.connect(&path, false).is_err());
         assert_eq!(fs::read_dir(&sandbox.root).unwrap().count(), 0);
+    }
+
+    /// A store with one project row, and beside it another store whose project has
+    /// another name: (the first store's root, the other's database file).
+    fn two_stores(sandbox: &Sandbox) -> (PathBuf, PathBuf) {
+        let other = sandbox.dir.path().join("other");
+        for (root, name) in [(&sandbox.root, "mine"), (&other, "theirs")] {
+            Database::new(root)
+                .write(true, |conn| {
+                    conn.execute(
+                        "INSERT INTO projects (id, name) VALUES ('pppppppppp', ?1)",
+                        [name],
+                    )?;
+                    Ok(())
+                })
+                .unwrap();
+        }
+        (sandbox.root.clone(), other.join(DATABASE_FILENAME))
+    }
+
+    /// From now on, once: when a database has been checked and is about to be opened,
+    /// the file at `mine` is moved away and a link to `theirs` stands in its place.
+    fn swap_before_the_open(mine: &Path, theirs: &Path) {
+        let (mine, theirs) = (mine.join(DATABASE_FILENAME), theirs.to_path_buf());
+        before_open(move || {
+            fs::rename(&mine, mine.with_extension("moved")).unwrap();
+            std::os::unix::fs::symlink(&theirs, &mine).unwrap();
+        });
+    }
+
+    #[test]
+    fn a_database_swapped_for_a_link_after_its_check_is_not_opened() {
+        let name = |conn: Option<&Connection>| {
+            let conn = conn.expect("a store");
+            Ok(conn.query_row("SELECT name FROM projects", [], |row| {
+                row.get::<_, String>(0)
+            })?)
+        };
+        // a read, the version alone, and both kinds of write
+        for way in 0..4 {
+            let sandbox = Sandbox::new();
+            let (root, theirs) = two_stores(&sandbox);
+            let database = Database::new(&root);
+            let before = fs::read(&theirs).unwrap();
+            assert_eq!(database.read(name).unwrap(), "mine");
+            swap_before_the_open(&root, &theirs);
+            let mut ran = false;
+            let refused = match way {
+                0 => database.read(|_| {
+                    ran = true;
+                    Ok(())
+                }),
+                1 => database.schema_version().map(drop),
+                _ => database.write(way == 3, |conn| {
+                    ran = true;
+                    conn.execute("UPDATE projects SET name = 'written'", [])?;
+                    Ok(())
+                }),
+            };
+            assert_eq!(refused, Err(CoreError::StorageFailure), "way {way}");
+            assert!(!ran, "way {way}");
+            // the store the link leads to was not touched, and nothing stands beside it
+            assert_eq!(fs::read(&theirs).unwrap(), before, "way {way}");
+            assert_eq!(fs::read_dir(theirs.parent().unwrap()).unwrap().count(), 1);
+        }
+    }
+
+    #[test]
+    fn a_store_directory_swapped_for_a_link_after_its_check_is_not_opened() {
+        let sandbox = Sandbox::new();
+        let (root, theirs) = two_stores(&sandbox);
+        let before = fs::read(&theirs).unwrap();
+        let (mine, other) = (root.clone(), theirs.parent().unwrap().to_path_buf());
+        before_open(move || {
+            fs::rename(&mine, mine.with_extension("moved")).unwrap();
+            std::os::unix::fs::symlink(&other, &mine).unwrap();
+        });
+        let database = Database::new(&root);
+        assert_eq!(database.read(|_| Ok(())), Err(CoreError::StorageFailure));
+        assert!(fs::read(&theirs).unwrap() == before);
+        // from the next operation on the link is where the store is, as any alias is
+        assert_eq!(database.schema_version(), Ok(Some(SCHEMA_VERSION)));
+    }
+
+    #[test]
+    fn a_store_reached_through_a_linked_directory_is_still_opened() {
+        // the directory may be an alias; only the database file itself may not be one
+        let sandbox = Sandbox::new();
+        let (root, _) = two_stores(&sandbox);
+        let alias = sandbox.dir.path().join("alias");
+        std::os::unix::fs::symlink(&root, &alias).unwrap();
+        let database = Database::new(&alias);
+        database
+            .write(false, |conn| {
+                conn.execute("UPDATE projects SET name = 'through the alias'", [])?;
+                Ok(())
+            })
+            .unwrap();
+        let name = Database::new(&root).read(|conn| {
+            let conn = conn.expect("a store");
+            Ok(conn.query_row("SELECT name FROM projects", [], |row| {
+                row.get::<_, String>(0)
+            })?)
+        });
+        assert_eq!(name.unwrap(), "through the alias");
+        assert_eq!(database.schema_version(), Ok(Some(SCHEMA_VERSION)));
     }
 
     #[test]

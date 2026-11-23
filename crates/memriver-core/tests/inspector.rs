@@ -341,6 +341,56 @@ fn inspector_never_writes() {
     assert_eq!(names(&env.store), beside);
 }
 
+/// A store in WAL mode whose last write is still in the log: reading it -- the
+/// inspection, the diagnosis, the policy scan -- sees that write and leaves the database
+/// file as it is. Closing the last connection would otherwise write the log back.
+#[test]
+fn a_store_in_wal_mode_is_read_without_writing_its_log_back() {
+    let env = setup();
+    let id = memory(&env, "as it was written");
+    let database = env.store.join(DATABASE_FILENAME);
+    let log = env.store.join(format!("{DATABASE_FILENAME}-wal"));
+    {
+        let conn = env.raw();
+        // this writer leaves its log behind, as one that was killed does
+        conn.set_db_config(
+            rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+            true,
+        )
+        .unwrap();
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, "wal");
+        conn.execute("UPDATE memories SET body = 'only in the log'", [])
+            .unwrap();
+        conn.execute(
+            "UPDATE memory_versions SET description = ?1",
+            [common::SECRET],
+        )
+        .unwrap();
+    }
+    let before = fs::read(&database).unwrap();
+    let logged = fs::read(&log).unwrap();
+    assert!(!logged.is_empty());
+    let mismatch = [("version-mismatch".to_string(), Some(id.clone()))];
+    // each of the three reads what is in the log
+    assert_eq!(kinds(&env), mismatch);
+    assert!(
+        fs::read(&database).unwrap() == before,
+        "after the inspection"
+    );
+    assert_eq!(found(&env).len(), 1);
+    assert!(
+        fs::read(&database).unwrap() == before,
+        "after the diagnosis"
+    );
+    let hits = env.services().maintenance.scan_policy().unwrap();
+    assert_eq!((hits.len(), hits[0].memory_id.as_str()), (1, id.as_str()));
+    assert!(fs::read(&database).unwrap() == before, "after the scan");
+    assert!(fs::read(&log).unwrap() == logged, "the log itself");
+}
+
 #[test]
 fn an_unknown_schema_is_one_finding() {
     let env = setup();

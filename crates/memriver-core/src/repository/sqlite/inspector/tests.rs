@@ -136,6 +136,33 @@ fn directory_checks_run_after_the_read_transaction() {
     assert_eq!(world.inspect().findings[0].kind, "version-gap");
 }
 
+/// The check that the database is a regular file and its opening are two looks at one
+/// name: a link put there in between is not followed.
+#[test]
+fn a_database_swapped_for_a_link_after_its_check_is_not_inspected() {
+    let world = world();
+    // another store, with a project of its own
+    let other = world.tmp.join("other-store");
+    let theirs = ProjectStore::with_busy_timeout(&other, &world.tmp.join("home"), 2000);
+    theirs.ensure_global().unwrap();
+    let (mine, target) = (
+        world.store.join(DATABASE_FILENAME),
+        other.join(DATABASE_FILENAME),
+    );
+    let before = fs::read(&target).unwrap();
+    database::before_open(move || {
+        fs::rename(&mine, mine.with_extension("moved")).unwrap();
+        std::os::unix::fs::symlink(&target, &mine).unwrap();
+    });
+    let inspector = StoreInspector::with_busy_timeout(&world.store, 2000);
+    assert_eq!(inspector.inspect(), Err(CoreError::StorageFailure));
+    assert_eq!(fs::read(other.join(DATABASE_FILENAME)).unwrap(), before);
+    assert_eq!(fs::read_dir(&other).unwrap().count(), 1);
+    // the link that now stands there is what the next inspection reports
+    let report = inspector.inspect().unwrap();
+    assert_eq!(report.findings[0].kind, "unsafe-database");
+}
+
 #[test]
 fn two_projects_bound_to_one_directory_by_alias_is_a_finding() {
     let world = world();

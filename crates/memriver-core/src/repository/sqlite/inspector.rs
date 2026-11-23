@@ -11,10 +11,12 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use rusqlite::Connection;
 use rusqlite::types::Value;
-use rusqlite::{Connection, OpenFlags};
 
-use super::database::{MEMORY_COLUMNS, PROJECT_COLUMNS, memory_from_row, project_from_row, values};
+use super::database::{
+    self, MEMORY_COLUMNS, PROJECT_COLUMNS, memory_from_row, project_from_row, values,
+};
 use super::memory_store::history_state;
 use super::schema::SCHEMA_VERSION;
 use super::session_store::{
@@ -277,11 +279,8 @@ impl StoreInspector {
         // crashed writer left can be rolled back; query_only keeps it from writing) --
         // not `Database::read`, which would turn an unknown schema into a failure
         // instead of a finding
-        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-        let conn = Connection::open_with_flags(&path, flags)?;
-        conn.busy_timeout(Duration::from_millis(
-            self.busy_timeout_ms.min(i32::MAX as u64),
-        ))?;
+        let patience = Duration::from_millis(self.busy_timeout_ms.min(i32::MAX as u64));
+        let conn = database::open(&path, patience, true)?;
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA query_only = ON")?;
         // one read transaction: schema, integrity, projects, counts and entries all come
         // from the same snapshot
