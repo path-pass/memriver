@@ -85,7 +85,7 @@ def _lands_inside(path: str | Path, cwd: Path, inside: Path) -> bool:
 
 
 def run(impl: list[str], args: list[str], *, home: Path, root: Path, cwd: Path,
-        stdin: str = "", extra_env: dict[str, str] | None = None) -> Completed:
+        stdin: str | bytes = "", extra_env: dict[str, str] | None = None) -> Completed:
     """`impl + args` with a constructed environment: PATH, HOME, MEMRIVER_ROOT, extra_env."""
     env = {"PATH": "/usr/bin:/bin", "HOME": str(home), "MEMRIVER_ROOT": str(root),
            **(extra_env or {})}
@@ -136,7 +136,8 @@ def run(impl: list[str], args: list[str], *, home: Path, root: Path, cwd: Path,
     for store in stores:
         assert _lands_inside(store, cwd, inside), \
             f"--root {store} is outside the test's temporary directory"
-    done = subprocess.run([*impl, *args], input=stdin.encode(), capture_output=True,
+    data = stdin if isinstance(stdin, bytes) else stdin.encode()
+    done = subprocess.run([*impl, *args], input=data, capture_output=True,
                           env=env, cwd=cwd, check=False)
     return Completed(done.stdout, done.stderr, done.returncode)
 
@@ -215,6 +216,15 @@ TIME_COLUMNS: dict[str, tuple[str, ...]] = {
     "tags": ("updated",),
     "session_moves": ("moved_at",),
 }
+# Text columns holding JSON entries with a timestamp each (`{"at":"<time>",...}`, the
+# entry's first key, as both implementations write it): only those `at` values are named,
+# everything else in the cell is compared as it is.
+JSON_TIME_COLUMNS: dict[str, tuple[str, ...]] = {
+    "sessions": ("first_prompt", "recent_prompts"),
+}
+# an entry opens with `{"at":"`; inside a JSON string a brace and a quote cannot stand so
+JSON_TIME = re.compile(r'\{"at":"(' + TIMESTAMP + r')"')
+
 # What identifies a row of a table that has timestamps, so a step's change to one cell
 # can be told from a row that was there before. None: the table has no key and a row is
 # itself (memory_reads only ever gains rows).
@@ -286,6 +296,10 @@ class Output:
     # for an id that a pattern cannot find because free text stands on its line:
     # (the text, the side's store) -> [(start, end, kind)], from what the store holds
     locate: Callable[[str, Snapshot], list[tuple[int, int, str]]] | None = None
+    # the output is one JSON object on one line, written as Python's
+    # `json.dumps(ensure_ascii=False)` writes it, and the values are in the string at
+    # this path of keys: the patterns and `locate` apply to that string only
+    json_text: tuple[str, ...] | None = None
 
 
 def _json(key: str, value: str) -> str:
@@ -314,6 +328,25 @@ def _created_project(text: str, store: Snapshot) -> list[tuple[int, int, str]]:
     return found
 
 
+def _hook_projects(text: str, store: Snapshot) -> list[tuple[int, int, str]]:
+    """Where a hook's text names a project: `project: <name> [<id>]` (the header) and
+    `project <name> [<id>]` (a notice), the name shown and cut as a header field. Free
+    text stands before and after both, so for each project the store holds the exact
+    phrase is built and looked for, and the id taken from its known offset."""
+    from memriver.project_context import visible  # how the hook shows a name
+
+    found = []
+    for row in store.tables.get("projects", []):
+        for lead in ("project: ", "project "):
+            before = f"{lead}{visible(row['name'])[:120]} ["
+            phrase = f"{before}{row['id']}]"
+            at = text.find(phrase)
+            while at != -1:
+                found.append((at + len(before), at + len(before) + len(row["id"]), "project"))
+                at = text.find(phrase, at + 1)
+    return found
+
+
 def _history_ids(text: str, store: Snapshot) -> list[tuple[int, int, str]]:
     """Where `history` printed ids. A version's line is
     `v<n>  <at>  <changed_by>[ (<via>)]  change <id>...`, with the caller's own text before
@@ -339,6 +372,9 @@ def _history_ids(text: str, store: Snapshot) -> list[tuple[int, int, str]]:
         at += len(line)
     return found
 
+
+# the marks an index line of a memory opens with (a tag's line names no memory)
+_MARKS = "(?:user|feedback|project|reference|rule)(?:, global(?:, rule)?)?"
 
 # The caller says which kind of output it compares; nothing is renamed in "plain".
 # A pattern is used only where the value's place on its line is fixed -- first on the
@@ -409,6 +445,11 @@ OUTPUTS: dict[str, Output] = {
              (rf"^purged ({ID})$", "memory"))),
     # the directory written to is the caller's and is shown as given: nothing is generated
     "export": Output(),
+    # what a SessionStart or UserPromptSubmit hook hands the agent: an index line starts
+    # with its marks and the memory's id; a project is named by `_hook_projects`
+    "hook": Output(ids=((rf"^- \[{_MARKS}\] ({ID}): ", "memory"),),
+                   locate=_hook_projects,
+                   json_text=("hookSpecificOutput", "additionalContext")),
     # what the cases of test_dump_store.py print for a change they applied
     "change-json": Output(ids=((_json("id", ID), "memory"), (_json("project_id", ID), "project"),
                                (_json("change_id", ID), "change"))),
@@ -497,9 +538,10 @@ class Side:
     names: Names = field(default_factory=dict)             # (kind, a new id) -> <kind:n>
     times: dict[str, str] = field(default_factory=dict)    # a timestamp -> <t:n>
 
-    def run(self, args: list[str], *, cwd: Path | None = None, stdin: str = "") -> Completed:
+    def run(self, args: list[str], *, cwd: Path | None = None, stdin: str | bytes = "",
+            extra_env: dict[str, str] | None = None) -> Completed:
         return run(self.impl, args, home=self.case.home, root=self.root,
-                   cwd=cwd or self.case.work, stdin=stdin)
+                   cwd=cwd or self.case.work, stdin=stdin, extra_env=extra_env)
 
     def api(self, code: str) -> Completed:
         """Python code over this side's store (see PY_API); it must succeed."""
@@ -607,8 +649,21 @@ class Case:
                     assert span[0] <= instant <= latest, (
                         f"{table}.{name}: {stamp} is outside the step, which ran from "
                         f"{_stamp(span[0])} to {_stamp(span[1])}")
+                for name in JSON_TIME_COLUMNS.get(table, ()):
+                    there_before = set(JSON_TIME.findall(was[name] or "")) if was else set()
+                    for stamp in JSON_TIME.findall(row[name] or ""):
+                        instant = _instant(stamp)
+                        assert instant is not None, f"{table}.{name}: not a timestamp: {stamp!r}"
+                        # an entry the step added was taken while it ran
+                        if span is not None and stamp not in there_before:
+                            assert span[0] <= instant <= span[1], (
+                                f"{table}.{name}: {stamp} is outside the step, which ran from "
+                                f"{_stamp(span[0])} to {_stamp(span[1])}")
         seen = {row[name] for table, rows in now.tables.items()
                 for row in rows for name in TIME_COLUMNS[table]}
+        seen |= {stamp for table, rows in now.tables.items() for row in rows
+                 for name in JSON_TIME_COLUMNS.get(table, ())
+                 for stamp in JSON_TIME.findall(row[name] or "")}
         for stamp in sorted(seen - {None} - side.times.keys()):
             side.times[stamp] = f"<t:{len(side.times) + 1}>"
 
@@ -639,6 +694,9 @@ class Case:
                 return side.names.get((ID_COLUMNS[table][name], value), value)
             if name in TIME_COLUMNS[table]:
                 return side.times.get(value, value)
+            if name in JSON_TIME_COLUMNS.get(table, ()) and isinstance(value, str):
+                return JSON_TIME.sub(
+                    lambda found: '{"at":"' + side.times.get(found[1], found[1]) + '"', value)
             return value
         return {"user_version": now.user_version, "schema": now.schema,
                 "tables": {table: sorted((tuple(cell(table, name, value) for name, value in row.items())
@@ -676,17 +734,24 @@ class Case:
         def text(data: bytes) -> str:
             return data.decode("utf-8", "surrogateescape")
 
+        def named(head: str) -> str:
+            if output.locate is not None:   # right to left, so the places found stay valid
+                for start, end, of in sorted(output.locate(head, snapshot(side.root)), reverse=True):
+                    head = head[:start] + side.names.get((of, head[start:end]), head[start:end]) + head[end:]
+            head = head.replace(str(side.root), "<store>")
+            for pattern, of in output.ids:
+                head = _rename(pattern, head, lambda raw, of=of: side.names.get((of, raw), raw))
+            for pattern in output.times:
+                head = _rename(pattern, head, lambda raw: side.times.get(raw, raw))
+            return head
+
         head, separator, body = text(done.stdout), "", ""
         if output.body_after is not None:
             head, separator, body = head.partition(output.body_after)
-        if output.locate is not None:   # right to left, so the places found stay valid
-            for start, end, of in sorted(output.locate(head, snapshot(side.root)), reverse=True):
-                head = head[:start] + side.names.get((of, head[start:end]), head[start:end]) + head[end:]
-        head = head.replace(str(side.root), "<store>")
-        for pattern, of in output.ids:
-            head = _rename(pattern, head, lambda raw, of=of: side.names.get((of, raw), raw))
-        for pattern in output.times:
-            head = _rename(pattern, head, lambda raw: side.times.get(raw, raw))
+        if output.json_text is None:
+            head = named(head)
+        else:
+            head = _named_inside_json(head, output.json_text, named)
         return (masked(head + separator + body),
                 masked(text(done.stderr).replace(str(side.root), "<store>")), done.code)
 
@@ -696,6 +761,26 @@ class Case:
             DIFFERENCES[name]    # KeyError: not a listed difference
         left, right = self.rendered(self.py, py, kind, allow), self.rendered(self.rs, rs, kind, allow)
         assert left == right, f"the outputs differ\npython: {left!r}\nrust:   {right!r}"
+
+
+def _named_inside_json(head: str, path: tuple[str, ...], named: Callable[[str], str]) -> str:
+    """`head` with `named` applied to the string at `path` of the one JSON object it holds.
+    Only output in exactly the form Python's `json.dumps(ensure_ascii=False)` writes, with
+    a line break after it, is opened and written back so; anything else is left as it is
+    and so compared byte for byte."""
+    try:
+        value = json.loads(head)
+    except ValueError:
+        return head
+    if json.dumps(value, ensure_ascii=False) + "\n" != head:
+        return head
+    holder = value
+    for key in path[:-1]:
+        holder = holder.get(key) if isinstance(holder, dict) else None
+    if not (isinstance(holder, dict) and isinstance(holder.get(path[-1]), str)):
+        return head
+    holder[path[-1]] = named(holder[path[-1]])
+    return json.dumps(value, ensure_ascii=False) + "\n"
 
 
 # -------------------------------------------------------------------- seeds

@@ -823,10 +823,15 @@ impl SessionService {
         // control character where the line has a blank) must not be kept either, so
         // both the prompt and what would be written are checked
         let preview = cut(&line, SESSION_PROMPT_CHARS);
-        // any fault of the policy omits the text, never fails the hook
+        // any fault of the policy omits the text, never fails the hook. One check of the
+        // two: a rule both need is compiled once
         let checked = catch_unwind(AssertUnwindSafe(|| {
-            let refused = |text: &str| self.policy.check(text, text.chars().count()).is_some();
-            refused(prompt) || refused(preview)
+            let budget = |text: &str| text.chars().count();
+            let texts = [
+                (prompt.as_str(), budget(prompt)),
+                (preview, budget(preview)),
+            ];
+            self.policy.check_all(&texts).iter().any(Option::is_some)
         }));
         match checked {
             Err(_) => omitted(PromptOmission::ScanError),

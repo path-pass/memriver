@@ -50,9 +50,21 @@ fn gather(
     Ok((argv, env, home, cwd))
 }
 
+/// What a failed `gather` prints and exits with. A hook never fails its harness: a
+/// harness may read exit code 2 as a blocking error (Claude Code does), so a `hook`
+/// invocation exits 0 and says nothing. Every other command prints the one line and
+/// exits 2.
+fn refusal(args: &[OsString], message: &str) -> (Option<String>, i32) {
+    match args.get(1).is_some_and(|command| command == "hook") {
+        true => (None, 0),
+        false => (Some(format!("memriver: {message}")), 2),
+    }
+}
+
 fn main() {
+    let args: Vec<OsString> = std::env::args_os().collect();
     let gathered = gather(
-        std::env::args_os(),
+        args.iter().cloned(),
         std::env::vars_os(),
         std::env::home_dir(),
         std::env::current_dir(),
@@ -60,8 +72,11 @@ fn main() {
     let (argv, env, home, cwd) = match gathered {
         Ok(gathered) => gathered,
         Err(message) => {
-            eprintln!("memriver: {message}");
-            std::process::exit(2);
+            let (line, code) = refusal(&args, &message);
+            if let Some(line) = line {
+                eprintln!("{line}");
+            }
+            std::process::exit(code);
         }
     };
     let stdin = std::io::stdin();
@@ -169,6 +184,65 @@ mod tests {
         for home in [None, Some("")] {
             let error = gathered(vec![], vec![], home, Ok(PathBuf::new()));
             assert_eq!(error.unwrap_err(), "cannot determine the home directory");
+        }
+    }
+
+    #[test]
+    fn a_hook_is_silent_and_exits_0_on_every_failure_of_gather() {
+        let hook = |more: &[&str]| -> Vec<OsString> {
+            ["memriver", "hook"]
+                .iter()
+                .chain(more)
+                .map(|arg| os(arg))
+                .collect()
+        };
+        let gone = || Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+        let mut failures = vec![
+            // an argument that is not UTF-8
+            gathered(
+                [
+                    hook(&["stop", "--harness", "codex", "--root"]),
+                    vec![not_utf8()],
+                ]
+                .concat(),
+                vec![],
+                Some("/h"),
+                Ok(PathBuf::from("/w")),
+            ),
+            // a MEMRIVER_ variable that is not UTF-8
+            gathered(
+                hook(&["stop"]),
+                vec![(os("MEMRIVER_ROOT"), not_utf8())],
+                Some("/h"),
+                Ok(PathBuf::from("/w")),
+            ),
+            // no working directory
+            gathered(hook(&["stop"]), vec![], Some("/h"), gone()),
+        ];
+        // no home, or an empty one
+        for home in [None, Some("")] {
+            failures.push(gathered(
+                hook(&["stop"]),
+                vec![],
+                home,
+                Ok(PathBuf::from("/w")),
+            ));
+        }
+        for failed in failures {
+            let message = failed.unwrap_err();
+            assert_eq!(refusal(&hook(&["session-start"]), &message), (None, 0));
+            // any other command, and a hook word that is not the command, keep the line
+            for args in [
+                vec![os("memriver"), os("list")],
+                vec![os("memriver"), os("search"), os("hook")],
+                vec![os("memriver")],
+                vec![],
+            ] {
+                assert_eq!(
+                    refusal(&args, &message),
+                    (Some(format!("memriver: {message}")), 2)
+                );
+            }
         }
     }
 

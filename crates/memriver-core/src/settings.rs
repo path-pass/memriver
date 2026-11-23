@@ -326,11 +326,24 @@ pub fn load_settings(
 ) -> Result<Settings, SettingsError> {
     let root = root_override.map_or_else(|| storage_root(env, home), located_root);
     let text = settings_file(&root)?.unwrap_or_default();
+    settings_of(root, &text, env)
+}
+
+/// The defaults and the `MEMRIVER_*` variables for `root`, never `settings.toml`: what
+/// the Python implementation's `Settings(root=...)` reads. The hooks that must stay
+/// light (Stop, PreToolUse) are built on it, and an invalid variable stops them as it
+/// stops the Python ones.
+pub fn env_settings(root: PathBuf, env: &Env) -> Result<Settings, SettingsError> {
+    settings_of(root, "", env)
+}
+
+/// The settings of the file `text` and the environment, for `root`.
+fn settings_of(root: PathBuf, text: &str, env: &Env) -> Result<Settings, SettingsError> {
     // a byte order mark is not TOML to the Python implementation's parser
     if text.starts_with('\u{feff}') {
         return Err(SettingsError::unreadable());
     }
-    let table = DeTable::parse(&text)
+    let table = DeTable::parse(text)
         .map_err(|_| SettingsError::unreadable())?
         .into_inner();
     // keys are matched in any case; of two spellings of one key the first in the file counts

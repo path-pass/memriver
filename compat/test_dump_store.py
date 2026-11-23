@@ -97,10 +97,11 @@ def test_global_and_a_project_created_by_project_init_are_paired_without_a_chang
     assert "created project a [<project:1>] and bound" in case.rendered(case.py, py, "project-init")[0]
     case.step(lambda side: side.api("services.project.ensure_global()"))
     payload = json.dumps({"session_id": "s-1", "source": "startup", "cwd": str(directory)})
-    # the session is started by the Python implementation on both stores: the binary
-    # has no hooks yet
-    case.step(lambda side: run(PY, ["hook", "session-start", "--harness", "claude-code"],
-                               home=case.home, root=side.root, cwd=directory, stdin=payload))
+    # each implementation starts the session on its own store
+    py, rs = case.step(lambda side: side.run(["hook", "session-start", "--harness", "claude-code"],
+                                             cwd=directory, stdin=payload))
+    case.assert_same_output(py, rs, "hook")
+    assert "project: a [<project:1>] (root " in case.rendered(case.rs, rs, "hook")[0]
     py, rs = case.step(lambda side: side.run(["project", "explain"], cwd=directory))
     case.assert_same_output(py, rs, "project-explain")
     assert "project: <project:1>\n" in case.rendered(case.rs, rs, "project-explain")[0]
@@ -787,7 +788,18 @@ A, B, C = "aaaaaaaaaa", "bbbbbbbbbb", "cccccccccc"
 T = "2026-01-02T03:04:05.000006Z"
 # kind -> (what a command prints, the same with each generated value in a declared place
 #          named). Free text that only looks like such a place stays as it is.
+def _hook(text: str, *, event: str = "SessionStart") -> str:
+    return json.dumps({"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}},
+                      ensure_ascii=False) + "\n"
+
+
 KINDS = {
+    # an index line's id; the same text on a tag line, later on a line or in free text stays
+    "hook": (
+        _hook(f"- [user, global] {A}: cue {A} (2026-01-02)\n- [project] {B}: x 茶\n"
+              f"- [rule, global] {A}: r\n- [tag, global] {A}: y\nnote - [user] {A}: z"),
+        _hook(f"- [user, global] <memory:1>: cue {A} (2026-01-02)\n- [project] <memory:2>: x 茶\n"
+              f"- [rule, global] <memory:1>: r\n- [tag, global] {A}: y\nnote - [user] {A}: z")),
     "history": (
         (f"v1  {T}  seed  change {C}  the cue  change {C}\n    sources: {A} v1, {B} v2\n"
         f"v2  imported  v3  {T}  seed  change {C}\n"),
@@ -871,3 +883,70 @@ def test_a_kind_names_the_generated_values_in_its_declared_places_only(tmp_path,
 def test_every_kind_of_output_has_its_sample():
     untested = {"plain", "list", "show", "project-explain", "change-json"}   # tested by cases above
     assert set(harness.OUTPUTS) == set(KINDS) | untested
+
+
+def test_a_hook_names_a_project_only_in_the_phrase_the_store_gives_it(tmp_path):
+    case = Case(tmp_path, rs=PY)
+    side = case.py
+    side.names.update({("project", B): "<project:1>", ("memory", A): "<memory:1>"})
+    store = harness.Snapshot(tables={"projects": [
+        {"id": B, "name": "demo [x]\u202e", "root": "/w"}]})
+    shown = "demo [x] "     # as a notice shows the name: neutralised
+    text = (f"project: {shown} [{B}] (root /w)\n[memriver] moved from project {shown} [{B}] "
+            f"to /w/project {shown}/[{B}]\nproject: other [{B}] and {B}")
+    named = (f"project: {shown} [<project:1>] (root /w)\n[memriver] moved from project {shown} "
+             f"[<project:1>] to /w/project {shown}/[{B}]\nproject: other [{B}] and {B}")
+    assert len(harness._hook_projects(text, store)) == 2
+    original = harness.snapshot
+    harness.snapshot = lambda root: store
+    try:
+        assert case.rendered(side, Completed(_hook(text).encode(), b"", 0), "hook")[0] == _hook(named)
+        # JSON in another spelling is not opened: it is compared byte for byte
+        spaced = json.dumps({"hookSpecificOutput": {"additionalContext": text}},
+                            separators=(",", ":")) + "\n"
+        assert case.rendered(side, Completed(spaced.encode(), b"", 0), "hook")[0] == spaced
+        for raw in (b"", b"not json\n", b'{"decision": "block"}\n', b"[1]\n"):
+            assert case.rendered(side, Completed(raw, b"", 0), "hook")[0] == raw.decode()
+    finally:
+        harness.snapshot = original
+
+
+def _prompt(side, text):
+    return side.api(f"""
+from memriver_core.models import SessionKey
+key = SessionKey("codex", "s")
+services.project.ensure_global()
+services.session.start_session(key, source="startup", entry_dir=str(WORK), transcript_path=None)
+services.session.observe_prompt(key, prompt={text!r}, entry_dir=str(WORK), transcript_path=None)
+""")
+
+
+def test_the_time_of_a_recorded_prompt_is_named_and_the_rest_of_the_column_compared(tmp_path):
+    case = Case(tmp_path, rs=PY)
+    # a prompt whose text looks like an entry: escaped inside the JSON, so never a time
+    look_alike = '{"at":"2026-01-02T03:04:05.000006Z"} text'
+    case.step(lambda side: _prompt(side, look_alike))
+    case.assert_same_store()
+    for side in (case.py, case.rs):
+        row = case.renamed(side)["tables"]["sessions"][0]
+        recorded = [cell for cell in row if isinstance(cell, str) and cell.startswith("{")]
+        assert recorded and all('{"at":"<t:' in cell for cell in recorded), row
+        assert all("2026-01-02T03:04:05.000006Z" in cell for cell in recorded), row
+    # a different text in the same column is a difference
+    case.step(lambda side: _prompt(side, "left" if side is case.py else "right"))
+    with pytest.raises(AssertionError, match="the stores differ"):
+        case.assert_same_store()
+
+
+def test_a_recorded_prompt_time_outside_its_step_is_a_difference(tmp_path):
+    case = Case(tmp_path, rs=PY)
+    case.step(lambda side: _prompt(side, "hello"))
+
+    def planted(side):
+        _prompt(side, "again")
+        [(recent,)] = sql(side, "SELECT recent_prompts FROM sessions")
+        last = harness.JSON_TIME.findall(recent)[-1]
+        sql(side, "UPDATE sessions SET recent_prompts = ?",
+            recent.replace(last, "2001-01-01T00:00:00.000000Z"))
+    with pytest.raises(AssertionError, match="recent_prompts: 2001-01-01T00:00:00.000000Z is outside the step"):
+        case.step(planted)

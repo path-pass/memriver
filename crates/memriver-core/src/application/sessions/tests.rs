@@ -576,3 +576,34 @@ fn a_start_and_the_first_transcript_path_it_brings_are_one_write() {
         assert_eq!(seen, [before], "{source}");
     }
 }
+
+#[test]
+fn a_prompt_and_its_stored_line_compile_each_rule_once() {
+    use crate::content_policy::secret_scanner::COMPILED;
+    // the prompt and the line that would be stored pass the same keyword prefilters:
+    // the rules both need are compiled once, as for the prompt alone
+    let world = world();
+    let prompt = "deploy notes: ghp_ tokens and AKIA keys live in the vault";
+    let compiled = |run: &dyn Fn()| {
+        COMPILED.with(|count| count.set(0));
+        run();
+        COMPILED.with(std::cell::Cell::get)
+    };
+    let alone = compiled(&|| {
+        let policy = crate::content_policy::secret_scanner::Policy::embedded();
+        assert!(policy.check(prompt, prompt.chars().count()).is_none());
+    });
+    let observed = compiled(&|| {
+        world
+            .session()
+            .observe_prompt(&key(), Some(&json!(prompt)), &world.work, None, None)
+            .unwrap();
+    });
+    assert!(alone > 5, "{alone}");
+    assert_eq!(observed, alone);
+    let row = world.row();
+    assert_eq!(
+        row.first_prompt.unwrap().body(),
+        &PromptBody::Text(prompt.to_string())
+    );
+}

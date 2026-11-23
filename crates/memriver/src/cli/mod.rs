@@ -13,6 +13,7 @@ use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser};
 use memriver_core::models::errors::{CoreError, WriteError};
 use memriver_core::models::helpers::py_strip;
+use memriver_core::models::session::Harness;
 use memriver_core::settings::{Env, SettingsError, load_settings};
 use memriver_core::{Services, build_services};
 
@@ -259,13 +260,41 @@ fn dispatch(command: Command, inv: &mut Invocation) -> Outcome {
             inv.say(format_args!("{}\n", env!("CARGO_PKG_VERSION")));
             Ok(0)
         }
+        Command::Hook(args) => Ok(hook(&args, inv)),
         Command::Serve(_)
-        | Command::Hook(_)
         | Command::Install(_)
         | Command::Uninstall(_)
         | Command::Doctor(_)
         | Command::Dream { .. } => not_implemented(inv.io),
     }
+}
+
+/// One hook event over the payload on stdin. Input that cannot be read, or is not UTF-8,
+/// is no payload: SessionStart says so, the others do nothing.
+fn hook(args: &args::Hook, inv: &mut Invocation) -> i32 {
+    let mut payload = String::new();
+    if inv.io.stdin.read_to_string(&mut payload).is_err() {
+        payload.clear();
+    }
+    let harness = match args.harness {
+        args::SessionHarness::ClaudeCode => Harness::ClaudeCode,
+        args::SessionHarness::Codex => Harness::Codex,
+    };
+    let result = crate::hooks::run_hook(
+        args.event,
+        harness,
+        &payload,
+        args.root.as_deref().map(Path::new),
+        args.project_dir.as_deref().map(Path::new),
+        inv.cwd,
+        inv.env,
+        inv.home,
+    );
+    // only what the hook composed: anything else on stdout is read by the harness as a
+    // malformed hook response
+    let _ = inv.io.stdout.write_all(result.stdout.as_bytes());
+    let _ = inv.io.stderr.write_all(result.stderr.as_bytes());
+    result.exit_code
 }
 
 /// Runs `argv` (the program name first) and returns the exit code.

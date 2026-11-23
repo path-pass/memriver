@@ -248,4 +248,6 @@ def test_the_ledger_has_lines_put_off_and_none_past_its_phase():
     assert waiting == ["test_a_server_built_before_bind_keeps_its_identity",
                        "test_find_git_root_climbs_past_a_looping_git_marker",
                        "test_find_git_root_is_kept_for_installers",
-                       "test_find_git_root_raises_when_a_marker_cannot_be_checked"]
+                       "test_find_git_root_raises_when_a_marker_cannot_be_checked",
+                       "test_hook_and_memory_index_render_the_same_project_identically",
+                       "test_hook_and_server_cannot_name_different_projects"]

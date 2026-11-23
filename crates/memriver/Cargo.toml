@@ -8,6 +8,7 @@ license.workspace = true
 clap = { version = "4", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
 libc = "0.2"
 memriver-core = { path = "../memriver-core" }
+serde = "1"
 serde_json = { version = "1", features = ["preserve_order"] }
 # exact, as in memriver-core: the parser decides which settings files are read
 toml = { version = "=0.9.12", default-features = false, features = ["parse", "preserve_order", "std"] }

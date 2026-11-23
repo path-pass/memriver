@@ -5,7 +5,7 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 
 use memriver_core::settings::{
-    Env, Settings, SettingsError, load_settings, settings_file, storage_root,
+    Env, Settings, SettingsError, env_settings, load_settings, settings_file, storage_root,
 };
 use memriver_test_support::{Sandbox, isolated_command};
 
@@ -662,4 +662,45 @@ fn settings_matrix_equals_python() {
         different += 1;
     }
     assert_eq!(different, 45);
+}
+
+#[test]
+fn env_settings_read_the_variables_and_never_the_file() {
+    // what the Python implementation's `Settings(root=...)` reads: the light hooks
+    let sandbox = Sandbox::new();
+    let root = sandbox.root.clone();
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("settings.toml"), "= = =\nmax_body_chars = 7\n").unwrap();
+    let env = |pairs: &[(&str, &str)]| -> Env {
+        pairs
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect()
+    };
+    let read = env_settings(root.clone(), &env(&[])).unwrap();
+    assert_eq!(read, Settings::light(root.clone()));
+    let read = env_settings(root.clone(), &env(&[("memriver_index_budget_lines", "7")])).unwrap();
+    assert_eq!(read.index_budget_lines, 7);
+    // the same refusals as with the file, for the variables
+    for (pairs, error) in [
+        (
+            vec![("MEMRIVER_MAX_BODY_CHARS", "x")],
+            "MEMRIVER_MAX_BODY_CHARS",
+        ),
+        (
+            vec![("MEMRIVER_INDEX_BUDGET_LINES", "0")],
+            "MEMRIVER_INDEX_BUDGET_LINES",
+        ),
+        (
+            vec![
+                ("MEMRIVER_SEARCH_LIMIT_DEFAULT", "9"),
+                ("MEMRIVER_SEARCH_LIMIT_MAX", "3"),
+            ],
+            "MEMRIVER_SEARCH_LIMIT_DEFAULT",
+        ),
+    ] {
+        let refused = env_settings(root.clone(), &env(&pairs)).unwrap_err();
+        assert_eq!(refused.env_vars, [error], "{pairs:?}");
+        assert!(refused.fields.is_empty() && !refused.unreadable);
+    }
 }

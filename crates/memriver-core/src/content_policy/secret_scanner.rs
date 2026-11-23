@@ -97,6 +97,35 @@ fn candidates<'t>(
     })
 }
 
+/// Why `text` is refused before any rule is asked: it is empty once controls are taken
+/// out, or longer than `max_chars` characters.
+fn unscanned(text: &str, max_chars: usize) -> Option<Rejection> {
+    let visible: String = text.chars().filter(|c| !control(*c)).collect();
+    if py_strip(&visible).is_empty() {
+        return Some(Rejection {
+            rule_id: "empty".to_string(),
+            message: "content is empty; nothing to store".to_string(),
+        });
+    }
+    let length = text.chars().count();
+    if length > max_chars {
+        return Some(Rejection {
+            rule_id: "too-large".to_string(),
+            message: format!(
+                "content too large ({length} > {max_chars} chars); \
+                 store a summary or pointer instead"
+            ),
+        });
+    }
+    None
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many rules this thread has compiled.
+    pub(crate) static COMPILED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub struct Policy {
     rules: Vec<Rule>,
     cache: Mutex<Cache<Regex>>,
@@ -152,6 +181,8 @@ impl Policy {
     fn with_rule<R>(&self, at: usize, run: impl FnOnce(&Regex) -> R) -> R {
         let rule = &self.rules[at];
         let compile = || {
+            #[cfg(test)]
+            COMPILED.with(|count| count.set(count.get() + 1));
             Regex::new(&rule.pattern)
                 .unwrap_or_else(|_| panic!("rule {} does not compile", rule.id))
         };
@@ -171,48 +202,65 @@ impl Policy {
     /// Why `text` may not be stored, or None. `max_chars` is the caller's budget, in
     /// characters.
     pub fn check(&self, text: &str, max_chars: usize) -> Option<Rejection> {
-        let visible: String = text.chars().filter(|c| !control(*c)).collect();
-        if py_strip(&visible).is_empty() {
-            return Some(Rejection {
-                rule_id: "empty".to_string(),
-                message: "content is empty; nothing to store".to_string(),
-            });
-        }
-        let length = text.chars().count();
-        if length > max_chars {
-            return Some(Rejection {
-                rule_id: "too-large".to_string(),
-                message: format!(
-                    "content too large ({length} > {max_chars} chars); \
-                     store a summary or pointer instead"
-                ),
-            });
-        }
-        self.scan(text).map(secret)
+        self.check_all(&[(text, max_chars)]).pop().flatten()
     }
 
-    /// The first rule `text` matches, in rule order.
-    fn scan(&self, text: &str) -> Option<&str> {
-        let lowered = text.to_lowercase();
+    /// `check` of each text with its budget, in one pass over the rules: a rule several
+    /// of the texts need is compiled once for all of them, whatever `POLICY_RULE_CACHE`
+    /// keeps afterwards. Each answer is the one `check` gives that text alone.
+    pub fn check_all(&self, texts: &[(&str, usize)]) -> Vec<Option<Rejection>> {
+        let mut verdicts: Vec<Option<Rejection>> = texts
+            .iter()
+            .map(|&(text, max_chars)| unscanned(text, max_chars))
+            .collect();
+        let open: Vec<usize> = (0..texts.len())
+            .filter(|&at| verdicts[at].is_none())
+            .collect();
+        let scanned: Vec<&str> = open.iter().map(|&at| texts[at].0).collect();
+        for (at, found) in open.into_iter().zip(self.scan(&scanned)) {
+            verdicts[at] = found.map(secret);
+        }
+        verdicts
+    }
+
+    /// For each text, the first rule it matches, in rule order. A rule is compiled at
+    /// most once, and only when a text still undecided passes its keyword prefilter.
+    fn scan(&self, texts: &[&str]) -> Vec<Option<&str>> {
+        let lowered: Vec<String> = texts.iter().map(|text| text.to_lowercase()).collect();
+        let mut found: Vec<Option<&str>> = vec![None; texts.len()];
         for (at, rule) in self.rules.iter().enumerate() {
             // a rule that declares keywords cannot match a text that holds none of
             // them, and skipping it is what keeps it from being compiled at all
-            let passes = |keyword: &String| lowered.contains(keyword.as_str());
-            if !rule.keywords.is_empty() && !rule.keywords.iter().any(passes) {
+            let wanted: Vec<usize> = (0..texts.len())
+                .filter(|&number| found[number].is_none())
+                .filter(|&number| {
+                    let passes = |keyword: &String| lowered[number].contains(keyword.as_str());
+                    rule.keywords.is_empty() || rule.keywords.iter().any(passes)
+                })
+                .collect();
+            if wanted.is_empty() {
                 continue;
             }
-            let hit = self.with_rule(at, |regex| match rule.entropy {
-                None => regex.is_match(text),
-                // a rule can have several candidates in one text, and a first one of
-                // low entropy must not hide a later one
-                Some(threshold) => candidates(regex, rule.secret_group, text)
-                    .any(|candidate| shannon_entropy(candidate) >= threshold),
+            let hits: Vec<bool> = self.with_rule(at, |regex| {
+                let hit = |text: &str| match rule.entropy {
+                    None => regex.is_match(text),
+                    // a rule can have several candidates in one text, and a first one of
+                    // low entropy must not hide a later one
+                    Some(threshold) => candidates(regex, rule.secret_group, text)
+                        .any(|candidate| shannon_entropy(candidate) >= threshold),
+                };
+                wanted.iter().map(|&number| hit(texts[number])).collect()
             });
-            if hit {
-                return Some(&rule.id);
+            for (number, hit) in wanted.into_iter().zip(hits) {
+                if hit {
+                    found[number] = Some(&rule.id);
+                }
+            }
+            if found.iter().all(Option::is_some) {
+                break;
             }
         }
-        None
+        found
     }
 
     /// What the rule `rule_id` would measure for entropy in `text`, match by match.
@@ -231,6 +279,8 @@ impl Policy {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::*;
 
     fn verdict(policy: &Policy, text: &str, max_chars: usize) -> Option<String> {
@@ -407,6 +457,37 @@ mod tests {
         // exactly at the threshold counts
         assert!(hit(&rule("ZQ-(\\w+)", ""), "ZQ-ab"));
         assert_eq!(first.measured("r", "ZQ-aa ZQ-bc"), ["aa", "bc"]);
+    }
+
+    #[test]
+    fn several_texts_are_checked_with_each_rule_compiled_once() {
+        // a prompt and its stored line pass the same keywords: one check of both
+        // compiles what they need once, and gives what two checks would
+        let policy = Policy::embedded();
+        let texts = [
+            ("ship it with ghp_ and AKIA in the notes", 8000),
+            ("ghp_ and AKIA again", 8000),
+            ("password = hunter2hunter2", 8000),
+            ("", 8000),
+            ("abcdefgh", 7),
+        ];
+        COMPILED.with(|count| count.set(0));
+        let one_by_one: Vec<_> = texts
+            .iter()
+            .map(|&(text, max)| policy.check(text, max))
+            .collect();
+        let separately = COMPILED.with(Cell::get);
+        COMPILED.with(|count| count.set(0));
+        let together = policy.check_all(&texts);
+        let once = COMPILED.with(Cell::get);
+        assert_eq!(together, one_by_one);
+        assert!(one_by_one[2].is_some() && one_by_one[3].is_some() && one_by_one[4].is_some());
+        // the two first texts pass the same prefilters: separately they compiled those
+        // rules twice, together once
+        assert!(once > 0 && separately > once, "{separately} {once}");
+        let first = policy.check_all(&texts[..1]).len();
+        assert_eq!(first, 1);
+        assert!(policy.check_all(&[]).is_empty());
     }
 
     #[test]

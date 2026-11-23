@@ -262,6 +262,7 @@ dependencies = [
  "memriver-core",
  "memriver-test-support",
  "rusqlite",
+ "serde",
  "serde_json",
  "toml",
  "unicode-properties",

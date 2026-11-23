@@ -76,18 +76,7 @@ fn the_form_without_a_command_is_serve() {
 #[test]
 fn the_commands_of_later_work_are_parsed_and_say_they_are_not_built() {
     for args in [
-        &["hook", "session-start", "--harness", "claude-code"][..],
-        &[
-            "hook",
-            "pre-tool-use",
-            "--harness",
-            "codex",
-            "--root",
-            "R",
-            "--project-dir",
-            "D",
-        ],
-        &["install"],
+        &["install"][..],
         &["install", "--harness", "kiro", "--yes", "--dry-run"],
         &["install", "--all"],
         &["uninstall", "--all", "--purge-data", "--root", "R"],

@@ -20,8 +20,9 @@ a line `phase <n>: <glob>, <glob>, ...` naming the Python test files it covers;
 from then on every function of those files needs a target, and a glob that matches
 no test file is an error.
 
-finished phases: 1
+finished phases: 1, 2
 phase 1: packages/memriver-core/tests/**, packages/memriver/tests/test_memory_commands.py, packages/memriver/tests/test_project_commands.py, packages/memriver/tests/test_views.py, packages/memriver/tests/test_project_context.py, packages/memriver/tests/test_settings.py
+phase 2: packages/memriver/tests/test_hooks.py
 
 packages/memriver-core/tests/contract/test_project_directories.py::test_a_case_alias_of_a_bound_directory_is_bound_elsewhere -> rust:memriver-core::repository::sqlite::project_store::tests::an_alias_of_a_bound_directory_is_bound_elsewhere + rust:memriver-core::tests/projects.rs::on_a_file_system_that_ignores_case_a_case_alias_of_a_bound_directory_is_bound_elsewhere
 packages/memriver-core/tests/contract/test_project_directories.py::test_a_confirmed_target_re_pointed_through_a_symlink_is_refused -> rust:memriver-core::tests/projects.rs::plan_out_of_date_is_refused
@@ -1676,7 +1677,7 @@ packages/memriver/tests/test_architecture.py::test_the_hot_paths_never_load_drea
 packages/memriver/tests/test_architecture.py::test_the_umbrella_uses_memriver_dream_through_its_facade_only ->
 packages/memriver/tests/test_architecture.py::test_umbrella_never_imports_core_application_or_repository_internals ->
 packages/memriver/tests/test_architecture.py::test_umbrella_never_names_the_concrete_inspector ->
-packages/memriver/tests/test_cli.py::test_a_broken_settings_file_fails_each_settings_loading_hook_with_the_line ->
+packages/memriver/tests/test_cli.py::test_a_broken_settings_file_fails_each_settings_loading_hook_with_the_line -> rust:memriver::tests/hooks_events.rs::settings_error_is_exit_1_on_three_events_only + compat:test_hooks.py::test_a_settings_error_is_the_same_line_and_exit_1
 packages/memriver/tests/test_cli.py::test_a_broken_settings_file_gives_doctor_the_named_line_and_exit_two ->
 packages/memriver/tests/test_cli.py::test_a_broken_settings_file_stops_a_command_with_one_named_line ->
 packages/memriver/tests/test_cli.py::test_a_broken_settings_file_stops_install_before_any_change ->
@@ -1692,8 +1693,8 @@ packages/memriver/tests/test_cli.py::test_delete_flag_matrix_is_a_usage_error ->
 packages/memriver/tests/test_cli.py::test_doctor_rejects_a_non_positive_stale_days_without_a_traceback ->
 packages/memriver/tests/test_cli.py::test_explicit_serve_starts_the_same_stdio_server ->
 packages/memriver/tests/test_cli.py::test_hook_harness_and_event_choices_match_the_literals ->
-packages/memriver/tests/test_cli.py::test_hook_subcommand_writes_only_hook_result_streams ->
-packages/memriver/tests/test_cli.py::test_hook_without_project_dir_keeps_the_payload_cwd_fallback_reachable ->
+packages/memriver/tests/test_cli.py::test_hook_subcommand_writes_only_hook_result_streams -> rust:memriver::tests/hooks_events.rs::session_start_envelope_is_pinned_and_both_harnesses_carry_the_same_text
+packages/memriver/tests/test_cli.py::test_hook_without_project_dir_keeps_the_payload_cwd_fallback_reachable -> rust:memriver::tests/hooks_events.rs::entry_dir_precedence
 packages/memriver/tests/test_cli.py::test_importing_the_cli_does_not_import_the_server_stack ->
 packages/memriver/tests/test_cli.py::test_install_harness_choices_match_the_installer ->
 packages/memriver/tests/test_cli.py::test_install_parses_its_selector_and_confirmation_flags ->
@@ -1723,7 +1724,7 @@ packages/memriver/tests/test_cli.py::test_settings_file_in_root_is_honoured_end_
 packages/memriver/tests/test_cli.py::test_store_step_for_an_uninitialized_store_creates_global_only_when_applied ->
 packages/memriver/tests/test_cli.py::test_store_step_is_none_once_global_exists ->
 packages/memriver/tests/test_cli.py::test_top_level_help_lists_the_serve_hook_and_install_commands ->
-packages/memriver/tests/test_cli.py::test_undecodable_stdin_never_fails_the_hook ->
+packages/memriver/tests/test_cli.py::test_undecodable_stdin_never_fails_the_hook -> rust:memriver::tests/hooks_events.rs::invalid_json_on_session_start_writes_the_fixed_stderr_line_exit_0 + rust:memriver::tests/hooks_events.rs::other_events_are_silent_on_bad_input
 packages/memriver/tests/test_cli.py::test_version_flag_survives_the_legacy_store_options ->
 packages/memriver/tests/test_cli.py::test_view_subcommands_parse ->
 packages/memriver/tests/test_doctor.py::test_a_change_a_hard_delete_cut_is_listed_as_incomplete_but_not_a_finding ->
@@ -1783,82 +1784,82 @@ packages/memriver/tests/test_error_mapping.py::test_update_forwards_the_content_
 packages/memriver/tests/test_error_mapping.py::test_write_mapping ->
 packages/memriver/tests/test_error_mapping.py::test_write_over_another_backend_answers_identically ->
 packages/memriver/tests/test_error_mapping.py::test_write_without_a_project_states_the_project_context_not_a_path ->
-packages/memriver/tests/test_hooks.py::test_a_codex_fork_registers_a_new_row_at_its_own_entry ->
-packages/memriver/tests/test_hooks.py::test_a_codex_sub_agent_prompt_is_neither_recorded_nor_counted ->
-packages/memriver/tests/test_hooks.py::test_a_decoder_failure_that_is_not_a_json_error_is_still_invalid_input ->
-packages/memriver/tests/test_hooks.py::test_a_failing_pre_tool_use_never_fails_the_harness ->
-packages/memriver/tests/test_hooks.py::test_a_failing_store_never_fails_the_harness ->
-packages/memriver/tests/test_hooks.py::test_a_full_index_fits_the_metric_the_harness_itself_counts ->
-packages/memriver/tests/test_hooks.py::test_a_harness_cut_reaches_project_lines_never_global_ones ->
-packages/memriver/tests/test_hooks.py::test_a_missing_store_is_silent_even_for_an_unresolvable_entry ->
-packages/memriver/tests/test_hooks.py::test_a_missing_store_makes_every_hook_a_silent_no_op ->
-packages/memriver/tests/test_hooks.py::test_a_pending_notice_without_a_candidate_says_so_and_offers_no_confirmation ->
-packages/memriver/tests/test_hooks.py::test_a_pending_session_is_never_nudged ->
-packages/memriver/tests/test_hooks.py::test_a_prompt_that_is_not_text_is_counted_as_invalid ->
-packages/memriver/tests/test_hooks.py::test_a_resume_from_elsewhere_keeps_the_sessions_project ->
-packages/memriver/tests/test_hooks.py::test_a_resume_without_a_row_injects_the_pending_notice_naming_the_stored_entry ->
-packages/memriver/tests/test_hooks.py::test_a_session_started_in_an_unregistered_directory_says_it_has_no_project ->
-packages/memriver/tests/test_hooks.py::test_a_short_index_is_left_exactly_as_it_is ->
-packages/memriver/tests/test_hooks.py::test_a_startup_registers_the_session_at_its_entry ->
-packages/memriver/tests/test_hooks.py::test_a_store_with_only_unreadable_entries_is_empty_not_broken ->
-packages/memriver/tests/test_hooks.py::test_a_stored_description_cannot_forge_the_index_delimiters ->
-packages/memriver/tests/test_hooks.py::test_a_vanished_project_is_named_by_its_id ->
-packages/memriver/tests/test_hooks.py::test_an_empty_or_relative_claude_project_dir_is_ignored ->
-packages/memriver/tests/test_hooks.py::test_an_index_of_thousands_of_lines_is_still_fitted ->
-packages/memriver/tests/test_hooks.py::test_an_invalid_or_missing_session_id_makes_every_hook_a_silent_no_op ->
-packages/memriver/tests/test_hooks.py::test_an_invisible_character_in_the_entry_is_neutralised_in_the_notice ->
-packages/memriver/tests/test_hooks.py::test_an_unknown_harness_never_raises_out_of_run_hook ->
-packages/memriver/tests/test_hooks.py::test_an_unreadable_root_reports_the_unreadable_settings_file ->
-packages/memriver/tests/test_hooks.py::test_an_unregistered_directory_is_global_only ->
-packages/memriver/tests/test_hooks.py::test_an_unusable_store_is_one_path_free_stderr_line ->
-packages/memriver/tests/test_hooks.py::test_both_harnesses_carry_the_same_composed_text ->
-packages/memriver/tests/test_hooks.py::test_claude_code_registers_at_claude_project_dir_over_the_payload_cwd ->
-packages/memriver/tests/test_hooks.py::test_compact_after_cd_leads_with_move_notice ->
-packages/memriver/tests/test_hooks.py::test_compact_source_uses_the_compact_prefix_and_rescue_suffix ->
-packages/memriver/tests/test_hooks.py::test_composition_failures_stay_inside_the_fail_open_boundary ->
-packages/memriver/tests/test_hooks.py::test_each_harness_stop_envelope_is_independently_pinned ->
-packages/memriver/tests/test_hooks.py::test_each_harness_user_prompt_submit_envelope_is_independently_pinned ->
-packages/memriver/tests/test_hooks.py::test_empty_store_still_shows_the_header ->
-packages/memriver/tests/test_hooks.py::test_every_non_compact_source_uses_the_normal_anchor ->
-packages/memriver/tests/test_hooks.py::test_fallback_cwd_is_used_when_the_payload_has_no_string_cwd ->
-packages/memriver/tests/test_hooks.py::test_header_survives_truncation ->
-packages/memriver/tests/test_hooks.py::test_hook_and_memory_index_render_the_same_project_identically ->
-packages/memriver/tests/test_hooks.py::test_hook_and_server_cannot_name_different_projects ->
-packages/memriver/tests/test_hooks.py::test_move_notice_long_fields_fit_budget ->
-packages/memriver/tests/test_hooks.py::test_non_ascii_index_is_not_escaped ->
-packages/memriver/tests/test_hooks.py::test_partial_corruption_shows_the_healthy_entries ->
-packages/memriver/tests/test_hooks.py::test_payload_cwd_beats_the_supplied_fallback ->
-packages/memriver/tests/test_hooks.py::test_pre_tool_use_is_a_silent_no_op_for_codex ->
-packages/memriver/tests/test_hooks.py::test_pre_tool_use_never_creates_the_store ->
-packages/memriver/tests/test_hooks.py::test_pre_tool_use_records_cwd ->
-packages/memriver/tests/test_hooks.py::test_pre_tool_use_records_the_call_silently ->
-packages/memriver/tests/test_hooks.py::test_pre_tool_use_stays_light ->
-packages/memriver/tests/test_hooks.py::test_pre_tool_use_with_an_invalid_id_records_nothing ->
-packages/memriver/tests/test_hooks.py::test_pre_tool_use_with_an_unusable_payload_records_nothing ->
-packages/memriver/tests/test_hooks.py::test_project_dir_option_beats_payload_cwd_and_fallback ->
-packages/memriver/tests/test_hooks.py::test_session_end_records_the_end_silently ->
-packages/memriver/tests/test_hooks.py::test_session_start_envelopes_are_independently_pinned ->
-packages/memriver/tests/test_hooks.py::test_session_start_shows_the_degraded_header_for_a_re_pointed_root ->
-packages/memriver/tests/test_hooks.py::test_stop_falls_back_to_the_configured_store_root ->
-packages/memriver/tests/test_hooks.py::test_stop_is_silent_under_a_degraded_registry_and_never_fails ->
-packages/memriver/tests/test_hooks.py::test_stop_only_continues_for_literal_false ->
-packages/memriver/tests/test_hooks.py::test_stop_stays_light ->
-packages/memriver/tests/test_hooks.py::test_stop_writes_only_its_activity_and_nudge_fields_and_never_creates_the_store ->
-packages/memriver/tests/test_hooks.py::test_the_first_stop_emits_the_harness_nudge_envelope ->
-packages/memriver/tests/test_hooks.py::test_the_nudge_follows_the_prompt_count_through_real_hook_calls ->
-packages/memriver/tests/test_hooks.py::test_the_pending_notice_reaches_a_resumed_unregistered_session_once ->
-packages/memriver/tests/test_hooks.py::test_the_pending_notice_survives_index_fitting ->
-packages/memriver/tests/test_hooks.py::test_truncation_adds_to_the_count_core_already_omitted ->
-packages/memriver/tests/test_hooks.py::test_unusable_session_input_is_a_silent_invalid_input_line ->
-packages/memriver/tests/test_hooks.py::test_ups_after_cd_injects_move_notice_and_new_index ->
-packages/memriver/tests/test_hooks.py::test_ups_cd_degraded_injects_unresolved_notice ->
-packages/memriver/tests/test_hooks.py::test_ups_cd_pending_notice_claims_no_access ->
-packages/memriver/tests/test_hooks.py::test_ups_cd_to_unregistered_injects_none_notice ->
-packages/memriver/tests/test_hooks.py::test_ups_index_failure_after_move_is_silent_and_not_resent ->
-packages/memriver/tests/test_hooks.py::test_ups_move_notice_only_once ->
-packages/memriver/tests/test_hooks.py::test_ups_same_project_cd_silent ->
-packages/memriver/tests/test_hooks.py::test_ups_shell_cd_silent ->
-packages/memriver/tests/test_hooks.py::test_user_prompt_submit_records_each_prompt_silently ->
+packages/memriver/tests/test_hooks.py::test_a_codex_fork_registers_a_new_row_at_its_own_entry -> rust:memriver::tests/hooks_events.rs::a_startup_registers_the_session_at_its_entry_and_a_fork_gets_its_own_row
+packages/memriver/tests/test_hooks.py::test_a_codex_sub_agent_prompt_is_neither_recorded_nor_counted -> rust:memriver::tests/hooks_events.rs::codex_subagent_prompt_is_ignored + compat:test_hooks.py::test_prompts_moves_stops_and_ends
+packages/memriver/tests/test_hooks.py::test_a_decoder_failure_that_is_not_a_json_error_is_still_invalid_input -> rust:memriver::tests/hooks_events.rs::invalid_json_on_session_start_writes_the_fixed_stderr_line_exit_0 + rust:memriver::tests/hooks_events.rs::json_python_reads_and_this_version_does_not_is_invalid_input_and_writes_nothing
+packages/memriver/tests/test_hooks.py::test_a_failing_pre_tool_use_never_fails_the_harness -> rust:memriver::hooks::tests::a_fault_inside_a_hook_never_fails_the_harness
+packages/memriver/tests/test_hooks.py::test_a_failing_store_never_fails_the_harness -> rust:memriver::hooks::tests::a_fault_inside_a_hook_never_fails_the_harness + rust:memriver::tests/hooks_events.rs::an_unusable_store_is_one_path_free_stderr_line
+packages/memriver/tests/test_hooks.py::test_a_full_index_fits_the_metric_the_harness_itself_counts -> rust:memriver::hooks::compose::tests::budget_is_utf16_for_claude_code_and_utf8_for_codex + compat:test_hooks.py::test_a_large_index_is_cut_to_what_each_harness_forwards
+packages/memriver/tests/test_hooks.py::test_a_harness_cut_reaches_project_lines_never_global_ones -> rust:memriver::tests/hooks_events.rs::a_harness_cut_reaches_project_lines_never_global_ones
+packages/memriver/tests/test_hooks.py::test_a_missing_store_is_silent_even_for_an_unresolvable_entry -> rust:memriver::tests/hooks_events.rs::no_store_means_no_output_and_no_file_created
+packages/memriver/tests/test_hooks.py::test_a_missing_store_makes_every_hook_a_silent_no_op -> rust:memriver::tests/hooks_events.rs::no_store_means_no_output_and_no_file_created
+packages/memriver/tests/test_hooks.py::test_a_pending_notice_without_a_candidate_says_so_and_offers_no_confirmation -> rust:memriver::tests/hooks_events.rs::a_pending_notice_without_a_candidate_says_so_and_offers_no_confirmation
+packages/memriver/tests/test_hooks.py::test_a_pending_session_is_never_nudged -> rust:memriver::tests/hooks_events.rs::a_pending_or_degraded_session_is_never_nudged
+packages/memriver/tests/test_hooks.py::test_a_prompt_that_is_not_text_is_counted_as_invalid -> rust:memriver::tests/hooks_events.rs::a_prompt_that_is_not_text_is_counted_as_invalid_and_a_secret_is_left_out
+packages/memriver/tests/test_hooks.py::test_a_resume_from_elsewhere_keeps_the_sessions_project -> rust:memriver::tests/hooks_events.rs::a_resume_from_elsewhere_keeps_the_sessions_project
+packages/memriver/tests/test_hooks.py::test_a_resume_without_a_row_injects_the_pending_notice_naming_the_stored_entry -> rust:memriver::tests/hooks_events.rs::a_resume_without_a_row_injects_the_pending_notice_naming_the_stored_entry
+packages/memriver/tests/test_hooks.py::test_a_session_started_in_an_unregistered_directory_says_it_has_no_project -> rust:memriver::tests/hooks_events.rs::the_header_and_the_body_are_the_ones_the_context_grants
+packages/memriver/tests/test_hooks.py::test_a_short_index_is_left_exactly_as_it_is -> rust:memriver::tests/hooks_events.rs::the_header_and_the_body_are_the_ones_the_context_grants + rust:memriver::hooks::compose::tests::compact_uses_the_rescue_suffix
+packages/memriver/tests/test_hooks.py::test_a_startup_registers_the_session_at_its_entry -> rust:memriver::tests/hooks_events.rs::a_startup_registers_the_session_at_its_entry_and_a_fork_gets_its_own_row
+packages/memriver/tests/test_hooks.py::test_a_store_with_only_unreadable_entries_is_empty_not_broken -> rust:memriver::tests/hooks_events.rs::rows_the_index_cannot_read_are_left_out_and_the_rest_shown
+packages/memriver/tests/test_hooks.py::test_a_stored_description_cannot_forge_the_index_delimiters -> rust:memriver::tests/hooks_events.rs::a_stored_description_cannot_forge_the_index_delimiters + rust:memriver::hooks::compose::tests::delimiter_text_inside_data_is_neutralised
+packages/memriver/tests/test_hooks.py::test_a_vanished_project_is_named_by_its_id -> rust:memriver::hooks::tests::a_vanished_project_is_named_by_its_id
+packages/memriver/tests/test_hooks.py::test_an_empty_or_relative_claude_project_dir_is_ignored -> rust:memriver::tests/hooks_events.rs::entry_dir_precedence
+packages/memriver/tests/test_hooks.py::test_an_index_of_thousands_of_lines_is_still_fitted -> rust:memriver::hooks::compose::tests::only_body_lines_drop_and_the_count_merges_with_cores_line
+packages/memriver/tests/test_hooks.py::test_an_invalid_or_missing_session_id_makes_every_hook_a_silent_no_op -> rust:memriver::tests/hooks_events.rs::an_invalid_or_missing_session_id_makes_every_hook_a_silent_no_op
+packages/memriver/tests/test_hooks.py::test_an_invisible_character_in_the_entry_is_neutralised_in_the_notice -> rust:memriver::tests/hooks_events.rs::an_invisible_character_in_the_entry_is_neutralised_in_the_notice + rust:memriver::hooks::tests::move_notice_long_fields_fit_budget
+packages/memriver/tests/test_hooks.py::test_an_unknown_harness_never_raises_out_of_run_hook -> n/a: the harness is an enum of two; the command line refuses any other name as a usage error before a hook runs, as Python's argparse does
+packages/memriver/tests/test_hooks.py::test_an_unreadable_root_reports_the_unreadable_settings_file -> rust:memriver::tests/hooks_events.rs::an_unreadable_root_reports_the_unreadable_settings_file
+packages/memriver/tests/test_hooks.py::test_an_unregistered_directory_is_global_only -> rust:memriver::tests/hooks_events.rs::the_header_and_the_body_are_the_ones_the_context_grants
+packages/memriver/tests/test_hooks.py::test_an_unusable_store_is_one_path_free_stderr_line -> rust:memriver::tests/hooks_events.rs::an_unusable_store_is_one_path_free_stderr_line + rust:memriver::hooks::tests::a_fault_inside_a_hook_never_fails_the_harness
+packages/memriver/tests/test_hooks.py::test_both_harnesses_carry_the_same_composed_text -> rust:memriver::tests/hooks_events.rs::session_start_envelope_is_pinned_and_both_harnesses_carry_the_same_text
+packages/memriver/tests/test_hooks.py::test_claude_code_registers_at_claude_project_dir_over_the_payload_cwd -> rust:memriver::tests/hooks_events.rs::entry_dir_precedence
+packages/memriver/tests/test_hooks.py::test_compact_after_cd_leads_with_move_notice -> rust:memriver::tests/hooks_events.rs::a_compact_after_a_cd_leads_with_the_move_notice
+packages/memriver/tests/test_hooks.py::test_compact_source_uses_the_compact_prefix_and_rescue_suffix -> rust:memriver::tests/hooks_events.rs::every_non_compact_source_uses_the_normal_anchor_and_compact_the_rescue_suffix + rust:memriver::hooks::compose::tests::compact_uses_the_rescue_suffix
+packages/memriver/tests/test_hooks.py::test_composition_failures_stay_inside_the_fail_open_boundary -> rust:memriver::hooks::tests::a_fault_inside_a_hook_never_fails_the_harness
+packages/memriver/tests/test_hooks.py::test_each_harness_stop_envelope_is_independently_pinned -> rust:memriver::tests/hooks_events.rs::stop_requires_the_json_literal_false
+packages/memriver/tests/test_hooks.py::test_each_harness_user_prompt_submit_envelope_is_independently_pinned -> rust:memriver::tests/hooks_events.rs::pending_notice_alone_on_first_prompt
+packages/memriver/tests/test_hooks.py::test_empty_store_still_shows_the_header -> rust:memriver::tests/hooks_events.rs::the_header_and_the_body_are_the_ones_the_context_grants
+packages/memriver/tests/test_hooks.py::test_every_non_compact_source_uses_the_normal_anchor -> rust:memriver::tests/hooks_events.rs::every_non_compact_source_uses_the_normal_anchor_and_compact_the_rescue_suffix
+packages/memriver/tests/test_hooks.py::test_fallback_cwd_is_used_when_the_payload_has_no_string_cwd -> rust:memriver::tests/hooks_events.rs::entry_dir_precedence
+packages/memriver/tests/test_hooks.py::test_header_survives_truncation -> rust:memriver::hooks::compose::tests::kept_may_be_zero + rust:memriver::hooks::compose::tests::only_body_lines_drop_and_the_count_merges_with_cores_line
+packages/memriver/tests/test_hooks.py::test_hook_and_memory_index_render_the_same_project_identically -> n/a until phase 3: it compares the hook with the MCP server's memory_index
+packages/memriver/tests/test_hooks.py::test_hook_and_server_cannot_name_different_projects -> n/a until phase 3: it starts the MCP server after the hooks
+packages/memriver/tests/test_hooks.py::test_move_notice_long_fields_fit_budget -> rust:memriver::hooks::tests::move_notice_long_fields_fit_budget
+packages/memriver/tests/test_hooks.py::test_non_ascii_index_is_not_escaped -> rust:memriver::tests/hooks_events.rs::non_ascii_index_text_is_not_escaped + rust:memriver::hooks::tests::emit_spaces_items_as_python_and_keeps_text_outside_ascii
+packages/memriver/tests/test_hooks.py::test_partial_corruption_shows_the_healthy_entries -> rust:memriver::tests/hooks_events.rs::rows_the_index_cannot_read_are_left_out_and_the_rest_shown
+packages/memriver/tests/test_hooks.py::test_payload_cwd_beats_the_supplied_fallback -> rust:memriver::tests/hooks_events.rs::entry_dir_precedence
+packages/memriver/tests/test_hooks.py::test_pre_tool_use_is_a_silent_no_op_for_codex -> rust:memriver::tests/hooks_events.rs::pre_tool_use_never_prints_and_is_a_noop_for_codex
+packages/memriver/tests/test_hooks.py::test_pre_tool_use_never_creates_the_store -> rust:memriver::tests/hooks_events.rs::pre_tool_use_never_prints_and_is_a_noop_for_codex
+packages/memriver/tests/test_hooks.py::test_pre_tool_use_records_cwd -> rust:memriver::tests/hooks_events.rs::pre_tool_use_records_the_call_and_its_directory_silently + compat:test_hooks.py::test_session_start_over_every_kind_of_entry_and_input
+packages/memriver/tests/test_hooks.py::test_pre_tool_use_records_the_call_silently -> rust:memriver::tests/hooks_events.rs::pre_tool_use_records_the_call_and_its_directory_silently
+packages/memriver/tests/test_hooks.py::test_pre_tool_use_stays_light -> rust:memriver::hooks::tests::stop_and_pre_tool_use_never_load_the_content_policy + rust:memriver::tests/hooks_events.rs::stop_and_pre_tool_use_ignore_a_broken_settings_file_and_stop_at_a_bad_memriver_env
+packages/memriver/tests/test_hooks.py::test_pre_tool_use_with_an_invalid_id_records_nothing -> rust:memriver::tests/hooks_events.rs::pre_tool_use_with_an_invalid_id_or_payload_records_nothing
+packages/memriver/tests/test_hooks.py::test_pre_tool_use_with_an_unusable_payload_records_nothing -> rust:memriver::tests/hooks_events.rs::pre_tool_use_with_an_invalid_id_or_payload_records_nothing
+packages/memriver/tests/test_hooks.py::test_project_dir_option_beats_payload_cwd_and_fallback -> rust:memriver::tests/hooks_events.rs::entry_dir_precedence
+packages/memriver/tests/test_hooks.py::test_session_end_records_the_end_silently -> rust:memriver::tests/hooks_events.rs::session_end_records_the_end_silently
+packages/memriver/tests/test_hooks.py::test_session_start_envelopes_are_independently_pinned -> rust:memriver::tests/hooks_events.rs::session_start_envelope_is_pinned_and_both_harnesses_carry_the_same_text
+packages/memriver/tests/test_hooks.py::test_session_start_shows_the_degraded_header_for_a_re_pointed_root -> rust:memriver::tests/hooks_events.rs::session_start_shows_the_degraded_header_for_a_re_pointed_root
+packages/memriver/tests/test_hooks.py::test_stop_falls_back_to_the_configured_store_root -> rust:memriver::tests/hooks_events.rs::stop_falls_back_to_the_configured_store_root
+packages/memriver/tests/test_hooks.py::test_stop_is_silent_under_a_degraded_registry_and_never_fails -> rust:memriver::tests/hooks_events.rs::a_pending_or_degraded_session_is_never_nudged
+packages/memriver/tests/test_hooks.py::test_stop_only_continues_for_literal_false -> rust:memriver::tests/hooks_events.rs::stop_requires_the_json_literal_false
+packages/memriver/tests/test_hooks.py::test_stop_stays_light -> rust:memriver::hooks::tests::stop_and_pre_tool_use_never_load_the_content_policy + rust:memriver::tests/hooks_events.rs::stop_and_pre_tool_use_ignore_a_broken_settings_file_and_stop_at_a_bad_memriver_env
+packages/memriver/tests/test_hooks.py::test_stop_writes_only_its_activity_and_nudge_fields_and_never_creates_the_store -> rust:memriver::tests/hooks_events.rs::stop_writes_only_its_activity_and_nudge_fields_and_never_creates_the_store
+packages/memriver/tests/test_hooks.py::test_the_first_stop_emits_the_harness_nudge_envelope -> rust:memriver::tests/hooks_events.rs::stop_requires_the_json_literal_false
+packages/memriver/tests/test_hooks.py::test_the_nudge_follows_the_prompt_count_through_real_hook_calls -> rust:memriver::tests/hooks_events.rs::the_nudge_follows_the_prompt_count_through_real_hook_calls + compat:test_hooks.py::test_prompts_moves_stops_and_ends
+packages/memriver/tests/test_hooks.py::test_the_pending_notice_reaches_a_resumed_unregistered_session_once -> rust:memriver::tests/hooks_events.rs::pending_notice_alone_on_first_prompt
+packages/memriver/tests/test_hooks.py::test_the_pending_notice_survives_index_fitting -> rust:memriver::hooks::compose::tests::only_body_lines_drop_and_the_count_merges_with_cores_line + rust:memriver::hooks::compose::tests::kept_may_be_zero
+packages/memriver/tests/test_hooks.py::test_truncation_adds_to_the_count_core_already_omitted -> rust:memriver::hooks::compose::tests::only_body_lines_drop_and_the_count_merges_with_cores_line
+packages/memriver/tests/test_hooks.py::test_unusable_session_input_is_a_silent_invalid_input_line -> rust:memriver::tests/hooks_events.rs::invalid_json_on_session_start_writes_the_fixed_stderr_line_exit_0
+packages/memriver/tests/test_hooks.py::test_ups_after_cd_injects_move_notice_and_new_index -> rust:memriver::tests/hooks_events.rs::move_notice_leads_the_reinjected_index + compat:test_hooks.py::test_prompts_moves_stops_and_ends
+packages/memriver/tests/test_hooks.py::test_ups_cd_degraded_injects_unresolved_notice -> rust:memriver::tests/hooks_events.rs::a_cd_into_a_directory_that_cannot_be_resolved_injects_the_unresolved_notice
+packages/memriver/tests/test_hooks.py::test_ups_cd_pending_notice_claims_no_access -> rust:memriver::tests/hooks_events.rs::a_cd_of_a_pending_session_claims_no_access
+packages/memriver/tests/test_hooks.py::test_ups_cd_to_unregistered_injects_none_notice -> rust:memriver::tests/hooks_events.rs::a_cd_to_an_unregistered_directory_injects_the_none_notice
+packages/memriver/tests/test_hooks.py::test_ups_index_failure_after_move_is_silent_and_not_resent -> rust:memriver::tests/hooks_events.rs::an_index_failure_after_a_move_is_silent_and_the_notice_not_resent
+packages/memriver/tests/test_hooks.py::test_ups_move_notice_only_once -> rust:memriver::tests/hooks_events.rs::move_notice_leads_the_reinjected_index
+packages/memriver/tests/test_hooks.py::test_ups_same_project_cd_silent -> rust:memriver::tests/hooks_events.rs::a_cd_inside_the_project_or_a_shell_cd_is_silent
+packages/memriver/tests/test_hooks.py::test_ups_shell_cd_silent -> rust:memriver::tests/hooks_events.rs::a_cd_inside_the_project_or_a_shell_cd_is_silent
+packages/memriver/tests/test_hooks.py::test_user_prompt_submit_records_each_prompt_silently -> rust:memriver::tests/hooks_events.rs::user_prompt_submit_records_each_prompt_silently
 packages/memriver/tests/test_memory_commands.py::test_a_global_memory_hard_deleted_meanwhile_is_no_such_memory -> rust:memriver::tests/cli_memory_commands.rs::a_global_memory_hard_deleted_meanwhile_is_no_such_memory
 packages/memriver/tests/test_memory_commands.py::test_a_global_memory_is_soft_deleted_by_id_from_anywhere -> rust:memriver::tests/cli_memory_commands.rs::a_global_memory_is_soft_deleted_by_id_from_anywhere
 packages/memriver/tests/test_memory_commands.py::test_a_restore_conflict_rereads_and_asks_again -> rust:memriver::tests/cli_memory_commands.rs::a_restore_conflict_rereads_and_asks_again
