@@ -1,0 +1,17 @@
+{
+  "directories": [
+    "{{WORK}}/project-a/sub"
+  ],
+  "git": [
+    {
+      "path": "{{WORK}}/repo",
+      "branch": "trunk",
+      "worktrees": [
+        {
+          "path": "{{WORK}}/repo-linked",
+          "branch": "feature/x"
+        }
+      ]
+    }
+  ]
+}

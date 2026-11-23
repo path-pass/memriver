@@ -1,0 +1,34 @@
+[package]
+name = "memriver-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# the three crates below carry the Unicode tables; a new version of one is a change of
+# behaviour, to be measured again
+caseless = "=0.2.2"
+getrandom = "0.4"
+libc = "0.2"
+# exact, both: libsqlite3-sys carries the SQLite that is built in (3.54.1), and a new
+# version of either can bring another
+libsqlite3-sys = "=0.40.0"
+# exact, all three: regex-syntax carries the Unicode tables the content policy matches by
+# (case folding, word boundaries, white space), and regex-automata is the engine whose
+# memory the rule cache was measured with
+regex = "=1.13.2"
+regex-automata = "=0.4.19"
+regex-syntax = "=0.8.12"
+rusqlite = { version = "=0.43.0", default-features = false, features = ["bundled"] }
+sha2 = "0.11"
+serde_json = { version = "1", features = ["preserve_order"] }
+# exact, all three: which settings files are read is decided by the parser (toml_parser) and
+# by what it takes for a date (toml_datetime), which toml itself would let move
+toml = { version = "=0.9.12", default-features = false, features = ["parse", "preserve_order", "std"] }
+toml_datetime = "=0.7.5"
+toml_parser = "=1.1.6"
+unicode-normalization = "=0.1.26"
+unicode-properties = "=0.1.5"
+
+[dev-dependencies]
+memriver-test-support = { path = "../memriver-test-support" }

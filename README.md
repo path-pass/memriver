@@ -439,7 +439,10 @@ every project, including global, but never a soft-deleted memory; `show
 `show` and `export` also expose `last_read_at`, set by a successful
 `memory_read`: `show` prints it as `never` until the first one, `export`
 writes the same field as JSON, `null` until then -- neither is part of what an
-agent can read.
+agent can read. `export` makes its directory `0700` and its files `0600`, but
+they still inherit any ACL set on the directory above (macOS: an inheritable
+entry there can let others read the snapshot): export into a directory whose
+access you know.
 
 **History.** Every change of a memory's description, body, sources or deleted
 state creates a new version, and old versions are kept for good; a write that

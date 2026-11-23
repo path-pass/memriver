@@ -1,0 +1,65 @@
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''(?i)x\\w'''\n", "text": "x\u212a", "python": "r", "rust": "r", "difference": null, "why": "under i the narrowed word class folds to the Kelvin sign, as Python's does"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''(?i)x\\w'''\n", "text": "x\u017f", "python": "r", "rust": "r", "difference": null, "why": "and to the long s"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''x\\w'''\n", "text": "x\u212a", "python": "r", "rust": null, "difference": "a", "why": "without i the narrowed class is ASCII"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''x\\w'''\n", "text": "x\u017f", "python": "r", "rust": null, "difference": "a", "why": "without i the narrowed class is ASCII"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''x\\w'''\n", "text": "xK", "python": "r", "rust": "r", "difference": null, "why": "control: the ASCII letter, without i"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''(?i)x\\w'''\n", "text": "xK", "python": "r", "rust": "r", "difference": null, "why": "control: the ASCII letter, with i"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''x\\w'''\n", "text": "x\u00e9", "python": "r", "rust": null, "difference": "a", "why": "a letter outside ASCII is no word character"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''x\\w'''\n", "text": "x\uff15", "python": "r", "rust": null, "difference": "a", "why": "a full-width digit is no word character"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''(?i)x\\w'''\n", "text": "x\u00e9", "python": "r", "rust": null, "difference": "a", "why": "nor under i"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''x\\d'''\n", "text": "x\uff15", "python": "r", "rust": null, "difference": "a", "why": "a full-width digit is no digit"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''(?i)x\\d'''\n", "text": "x\uff15", "python": "r", "rust": null, "difference": "a", "why": "nor under i"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''x[\\w-]'''\n", "text": "x\u00e9", "python": "r", "rust": null, "difference": "a", "why": "the same inside a bracket expression"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''x[^\\w]'''\n", "text": "x\u00e9", "python": null, "rust": "r", "difference": "a", "why": "and negated: a letter outside ASCII is a non-word character"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''x\\W'''\n", "text": "x\u00e9", "python": null, "rust": "r", "difference": "a", "why": "as it is to the negated class"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''x\\D'''\n", "text": "x\uff15", "python": null, "rust": "r", "difference": "a", "why": "a full-width digit is a non-digit"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''(?i)x[a-z]'''\n", "text": "x\u212a", "python": "r", "rust": "r", "difference": null, "why": "an explicit letter class folds the same in both"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''(?i)x[a-z]'''\n", "text": "x\u017f", "python": "r", "rust": "r", "difference": null, "why": "an explicit letter class folds the same in both"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''x[a-z]'''\n", "text": "x\u212a", "python": null, "rust": null, "difference": null, "why": "and without i matches neither"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''\\bkey'''\n", "text": "a\u0301key", "python": "r", "rust": null, "difference": "b", "why": "a combining mark is a word character to the crate only"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''key\\b'''\n", "text": "key\u0301", "python": "r", "rust": null, "difference": "b", "why": "a combining mark is a word character to the crate only"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''key\\b'''\n", "text": "key\u203f", "python": "r", "rust": null, "difference": "b", "why": "connector punctuation other than _ likewise"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''key\\b'''\n", "text": "key\u00b2", "python": null, "rust": "r", "difference": "b", "why": "a numeric character that is no decimal digit: Python's only"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''key\\b'''\n", "text": "key_", "python": null, "rust": null, "difference": null, "why": "control: the underscore is a word character to both"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''key\\b'''\n", "text": "key-", "python": "r", "rust": "r", "difference": null, "why": "control: a hyphen is not"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''(?i)api'''\n", "text": "ap\u0131", "python": "r", "rust": null, "difference": "c", "why": "dotless i matches i under Python's IGNORECASE only"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''(?i)api'''\n", "text": "AP\u0130", "python": "r", "rust": null, "difference": "c", "why": "and so does the dotted capital I"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''(?i)api'''\n", "text": "API", "python": "r", "rust": "r", "difference": null, "why": "control: ASCII case folding"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''A$'''\n", "text": "A\n", "python": "r", "rust": "r", "difference": null, "why": "$ before one final line feed"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''A$'''\n", "text": "A\n\n", "python": null, "rust": null, "difference": null, "why": "not before two"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''A$'''\n", "text": "A", "python": "r", "rust": "r", "difference": null, "why": "$ at the end"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''A$'''\n", "text": "A\r\n", "python": null, "rust": null, "difference": null, "why": "a carriage return is no line end"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''A$'''\n", "text": "xA\ny", "python": null, "rust": null, "difference": null, "why": "nor is a line end in the middle"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''(?:A|B$|C)'''\n", "text": "B\n", "python": "r", "rust": "r", "difference": null, "why": "$ as the last item of an alternative"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''(?:A|B$|C)'''\n", "text": "B\nx", "python": null, "rust": null, "difference": null, "why": "$ as the last item of an alternative"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''(?:x(?:A$|B)|C$)'''\n", "text": "xA\n", "python": "r", "rust": "r", "difference": null, "why": "$ in a nested alternative at the end"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''k\\sv'''\n", "text": "k\u001fv", "python": "r", "rust": "r", "difference": null, "why": "U+001F is white space to Python"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''k\\sv'''\n", "text": "k\u001cv", "python": "r", "rust": "r", "difference": null, "why": "and so is U+001C"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''k\\sv'''\n", "text": "k\u0085v", "python": "r", "rust": "r", "difference": null, "why": "U+0085 is white space to both"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''k\\sv'''\n", "text": "k\u3000v", "python": "r", "rust": "r", "difference": null, "why": "the ideographic space is white space to both"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''k\\sv'''\n", "text": "k\bv", "python": null, "rust": null, "difference": null, "why": "control: a backspace is not"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''k[\\s:]v'''\n", "text": "k\u001ev", "python": "r", "rust": "r", "difference": null, "why": "the same inside a bracket expression"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''k[^\\s]v'''\n", "text": "k\u001cv", "python": null, "rust": null, "difference": null, "why": "and negated"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''k[\\S]v'''\n", "text": "k\u001cv", "python": null, "rust": null, "difference": null, "why": "\\S inside a bracket expression is a nested class"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''k[\\S]v'''\n", "text": "kxv", "python": "r", "rust": "r", "difference": null, "why": "\\S inside a bracket expression is a nested class"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''k[\\s\\S-]v'''\n", "text": "k\u001dv", "python": "r", "rust": "r", "difference": null, "why": "white space or not, both in one bracket expression"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''k\\Sv'''\n", "text": "k\u001dv", "python": null, "rust": null, "difference": null, "why": "\\S outside one"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''k\\Sv'''\n", "text": "k-v", "python": "r", "rust": "r", "difference": null, "why": "\\S outside one"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''[[:alnum:]]{3}x'''\n", "text": "a1Zx", "python": "r", "rust": "r", "difference": null, "why": "a POSIX class is ASCII to both"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''[[:alnum:]]{3}x'''\n", "text": "a\u00e9Zx", "python": null, "rust": null, "difference": null, "why": "a POSIX class is ASCII to both"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''a(?i)b|c'''\n", "text": "aB", "python": "r", "rust": "r", "difference": null, "why": "a flag group in the middle holds to the end of its group"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''a(?i)b|c'''\n", "text": "C", "python": "r", "rust": "r", "difference": null, "why": "across the alternation"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''a(?i)b|c'''\n", "text": "Ab", "python": null, "rust": null, "difference": null, "why": "and not before itself"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''(?:a(?i)b)c'''\n", "text": "aBC", "python": null, "rust": null, "difference": null, "why": "a flag group ends with the group it stands in"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''(?i)a(?-i)b'''\n", "text": "Ab", "python": "r", "rust": "r", "difference": null, "why": "a flag turned off again"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''(?i)a(?-i)b'''\n", "text": "AB", "python": null, "rust": null, "difference": null, "why": "a flag turned off again"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''a\\z'''\n", "text": "a\n", "python": null, "rust": null, "difference": null, "why": "\\z is the very end only"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''a\\z'''\n", "text": "a", "python": "r", "rust": "r", "difference": null, "why": "\\z is the very end only"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''A$\\b'''\n", "rust_error": "DollarNotInTailPosition", "why": "a zero-width assertion after $"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''A$B'''\n", "rust_error": "DollarNotInTailPosition", "why": "a character after $"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''(?:A$)+'''\n", "rust_error": "DollarNotInTailPosition", "why": "a quantified group around $"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''(?:A$|B)C'''\n", "rust_error": "DollarNotInTailPosition", "why": "something after the group $ ends"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''(?m)A$'''\n", "rust_error": "MultilineFlag", "why": "$ is a line end under m in both engines"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''(?im:A)'''\n", "rust_error": "MultilineFlag", "why": "the m flag, scoped"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''[[:blank:]]x'''\n", "rust_error": "UnknownClass", "why": "a POSIX class the Python implementation drops the rule for"}
+{"rules": "[[rules]]\nid = \"r\"\nregex = '''\\pLx'''\n", "rust_error": "UnknownClass", "why": "a Unicode class the Python implementation has no syntax for"}
