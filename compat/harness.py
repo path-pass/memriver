@@ -21,6 +21,7 @@ left alone.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -73,6 +74,16 @@ class Completed:
     code: int
 
 
+def _lands_inside(path: str | Path, cwd: Path, inside: Path) -> bool:
+    """Whether `path`, as a process in `cwd` names it, lies under `inside` -- both where
+    the system leads through every link, and where its text leads once `..` is taken off
+    it: the Rust implementation tidies a store's path so, and a link followed by `..`
+    then ends somewhere else."""
+    named = os.path.join(Path(cwd).resolve(), path)
+    return all(Path(landing).resolve().is_relative_to(inside)
+               for landing in (named, os.path.normpath(named)))
+
+
 def run(impl: list[str], args: list[str], *, home: Path, root: Path, cwd: Path,
         stdin: str = "", extra_env: dict[str, str] | None = None) -> Completed:
     """`impl + args` with a constructed environment: PATH, HOME, MEMRIVER_ROOT, extra_env."""
@@ -80,34 +91,37 @@ def run(impl: list[str], args: list[str], *, home: Path, root: Path, cwd: Path,
            **(extra_env or {})}
     assert TMP_PATH is not None, "no test is running"
     inside = TMP_PATH.resolve()
-    for name in ("HOME", "MEMRIVER_ROOT"):
-        assert Path(env[name]).resolve().is_relative_to(inside), \
-            f"{name}={env[name]} is outside the test's temporary directory"
-    # a store named on the command line, and the directory a relative one is read from
+    # the directory every relative path of the child is read from, these two included
     assert Path(cwd).resolve().is_relative_to(inside), \
         f"cwd={cwd} is outside the test's temporary directory"
+    for name in ("HOME", "MEMRIVER_ROOT"):
+        assert _lands_inside(env[name], cwd, inside), \
+            f"{name}={env[name]} is outside the test's temporary directory"
     # Both parsers take a shortened option, so `--ro DIR` names a store as `--root DIR`
-    # does. The one command that writes into a directory it is given is `export`: its
-    # directory is held to the same rule. A directory another command is given
-    # (`project init /`) is only looked at, and may lie anywhere.
-    stores, takes_value = [], False
+    # does, until a `--` ends the options. The one command that writes into a directory it
+    # is given is `export`: whatever follows it and is not the store is held to the same
+    # rule, before a `--` and after it. A directory another command is given (`project
+    # init /`) is only looked at, and may lie anywhere.
+    stores, others, takes_value, ended = [], [], False, False
     for arg in args:
         name, given, value = arg.partition("=")
-        if takes_value:
+        was_value, takes_value = takes_value, False
+        if was_value:
             stores.append(arg)
-        takes_value = False
-        if len(name) > 2 and "--root".startswith(name):
+        if not ended and len(name) > 2 and "--root".startswith(name):
             assert given or arg is not args[-1], f"{arg} without a path"
             takes_value = not given
             if given:
                 stores.append(value)
-    if "export" in args:
-        written = [arg for arg in args[args.index("export") + 1:]
-                   if not arg.startswith("--") and arg not in stores]
-        assert all((Path(cwd) / target).resolve().is_relative_to(inside) for target in written), \
+        elif not was_value:
+            ended = ended or arg == "--"
+            others.append(arg)
+    if "export" in others:
+        written = others[others.index("export") + 1:]
+        assert all(_lands_inside(target, cwd, inside) for target in written), \
             f"export {written} is outside the test's temporary directory"
     for store in stores:
-        assert (Path(cwd) / store).resolve().is_relative_to(inside), \
+        assert _lands_inside(store, cwd, inside), \
             f"--root {store} is outside the test's temporary directory"
     done = subprocess.run([*impl, *args], input=stdin.encode(), capture_output=True,
                           env=env, cwd=cwd, check=False)

@@ -4,7 +4,6 @@ use std::fmt;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use memriver_core::models::helpers::py_strip;
-use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
 
 const ROOT_HELP: &str = "storage root (default: $MEMRIVER_ROOT or ~/agent-memory)";
 /// The digits a number may be written with, as the Python implementation's `int()`.
@@ -32,58 +31,16 @@ impl fmt::Display for PositiveInt {
     }
 }
 
-/// Put before an argument that begins with a hyphen and is a value all the same, so that
-/// the parser takes it for one; taken off again when the value is read.
-const HELD: char = '\u{e000}';
-
-/// The arguments as the parser is given them. The Python implementation's parser took an
-/// argument that begins with a hyphen for a value, not for an option, when a digit follows
-/// the hyphen (or a dot and a digit: `-1`, `-.5`, `-1e3`), or when it holds a space and is
-/// not `--name=value`: such an argument is held. So is one that begins with the mark
-/// itself, wherever it stands, so that taking one mark off gives back what was typed.
-pub fn held(argv: Vec<String>) -> Vec<String> {
-    let mut options_ended = false;
-    let mut hold = |at: usize, arg: String| {
-        let mut rest = arg.strip_prefix('-').unwrap_or_default().chars();
-        let number = match rest.next() {
-            Some('.') => rest.next().is_some_and(decimal_digit),
-            Some(first) => decimal_digit(first),
-            None => false,
-        };
-        let spaced = arg.contains(' ') && !(arg.starts_with("--") && arg.contains('='));
-        let value = arg.starts_with('-') && arg.len() > 1 && (number || spaced);
-        let held = at > 0 && (arg.starts_with(HELD) || (value && !options_ended));
-        options_ended |= arg == "--";
-        if held { format!("{HELD}{arg}") } else { arg }
-    };
-    argv.into_iter()
-        .enumerate()
-        .map(|(at, arg)| hold(at, arg))
-        .collect()
-}
-
-fn decimal_digit(c: char) -> bool {
-    c.general_category() == GeneralCategory::DecimalNumber
-}
-
-fn released(written: &str) -> &str {
-    written.strip_prefix(HELD).unwrap_or(written)
-}
-
-/// What was printed for the parser's refusal, without the marks.
-pub fn without_marks(text: &str) -> String {
-    text.replace(HELD, "")
-}
-
-/// A value of free text, as it was typed.
-fn text(written: &str) -> Result<String, std::convert::Infallible> {
-    Ok(released(written).to_string())
+/// What Python's `int()` takes off both ends of a number: its own white space, without
+/// the four separators U+001C to U+001F that `str.strip()` also takes off.
+fn int_strip(written: &str) -> &str {
+    let kept = |c: char| ('\u{1c}'..='\u{1f}').contains(&c);
+    written.trim_matches(|c: char| !kept(c) && py_strip(c.encode_utf8(&mut [0; 4])).is_empty())
 }
 
 /// White space around it, a sign, digits with single underscores between them.
 fn positive_int(written: &str) -> Result<PositiveInt, String> {
-    let written = released(written);
-    let text = py_strip(written);
+    let text = int_strip(written);
     let (negative, unsigned) = match text.strip_prefix('-') {
         Some(rest) => (true, rest),
         None => (false, text.strip_prefix('+').unwrap_or(text)),
@@ -194,11 +151,11 @@ pub struct Serve {
     pub version: bool,
     /// Storage root, which also holds the optional settings.toml (default:
     /// $MEMRIVER_ROOT or ~/agent-memory)
-    #[arg(long, value_parser = text)]
+    #[arg(long, allow_negative_numbers = true)]
     pub root: Option<String>,
     /// Directory where project discovery starts (the bound directories decide the
     /// project; default: the current working directory)
-    #[arg(long, value_parser = text)]
+    #[arg(long, allow_negative_numbers = true)]
     pub project_dir: Option<String>,
     /// The harness this server is registered with (default: none; the project is decided
     /// by --project-dir)
@@ -214,11 +171,11 @@ pub struct Hook {
     pub harness: SessionHarness,
     /// Storage root, which also holds the optional settings.toml (default:
     /// $MEMRIVER_ROOT or ~/agent-memory)
-    #[arg(long, value_parser = text)]
+    #[arg(long, allow_negative_numbers = true)]
     pub root: Option<String>,
     /// Entry directory registered for a session memriver has not seen yet; an existing
     /// session keeps its project
-    #[arg(long, value_parser = text)]
+    #[arg(long, allow_negative_numbers = true)]
     pub project_dir: Option<String>,
 }
 
@@ -257,14 +214,14 @@ pub struct Uninstall {
     pub purge_data: bool,
     /// Storage root to purge with --purge-data (default: $MEMRIVER_ROOT or
     /// ~/agent-memory)
-    #[arg(long, value_parser = text)]
+    #[arg(long, allow_negative_numbers = true)]
     pub root: Option<String>,
 }
 
 #[derive(Args, Debug)]
 pub struct Doctor {
     /// Storage root to check (default: $MEMRIVER_ROOT or ~/agent-memory)
-    #[arg(long, value_parser = text)]
+    #[arg(long, allow_negative_numbers = true)]
     pub root: Option<String>,
     /// Emit a machine-readable JSON report
     #[arg(long)]
@@ -279,13 +236,13 @@ pub enum ProjectCommand {
     /// Register a new project rooted at a directory
     Init {
         /// Project root (default: the current working directory)
-        #[arg(value_parser = text)]
+        #[arg(allow_negative_numbers = true)]
         directory: Option<String>,
         /// Readable project name (default: the directory's name)
-        #[arg(long, value_parser = text)]
+        #[arg(long, allow_negative_numbers = true)]
         name: Option<String>,
         /// Memory store root (default: $MEMRIVER_ROOT or ~/agent-memory)
-        #[arg(long, value_parser = text)]
+        #[arg(long, allow_negative_numbers = true)]
         root: Option<String>,
         /// Accept the plan shown, without prompting
         #[arg(long)]
@@ -294,13 +251,13 @@ pub enum ProjectCommand {
     /// Bind a directory to an existing project id
     Adopt {
         /// Id of the project to bind to
-        #[arg(value_parser = text)]
+        #[arg(allow_negative_numbers = true)]
         project_id: String,
         /// Project root (default: the current working directory)
-        #[arg(value_parser = text)]
+        #[arg(allow_negative_numbers = true)]
         directory: Option<String>,
         /// Memory store root (default: $MEMRIVER_ROOT or ~/agent-memory)
-        #[arg(long, value_parser = text)]
+        #[arg(long, allow_negative_numbers = true)]
         root: Option<String>,
         /// Accept the plan shown, without prompting
         #[arg(long)]
@@ -309,13 +266,13 @@ pub enum ProjectCommand {
     /// Remove a root from a project
     Unbind {
         /// Id of the project to edit
-        #[arg(value_parser = text)]
+        #[arg(allow_negative_numbers = true)]
         project_id: String,
         /// Root to remove, as registered
-        #[arg(value_parser = text)]
+        #[arg(allow_negative_numbers = true)]
         directory: String,
         /// Memory store root (default: $MEMRIVER_ROOT or ~/agent-memory)
-        #[arg(long, value_parser = text)]
+        #[arg(long, allow_negative_numbers = true)]
         root: Option<String>,
         /// Accept the plan shown, without prompting
         #[arg(long)]
@@ -324,10 +281,10 @@ pub enum ProjectCommand {
     /// Show which project a directory resolves to
     Explain {
         /// Directory to explain (default: the current working directory)
-        #[arg(long, value_parser = text)]
+        #[arg(long, allow_negative_numbers = true)]
         project_dir: Option<String>,
         /// Memory store root (default: $MEMRIVER_ROOT or ~/agent-memory)
-        #[arg(long, value_parser = text)]
+        #[arg(long, allow_negative_numbers = true)]
         root: Option<String>,
     },
 }
@@ -335,20 +292,20 @@ pub enum ProjectCommand {
 #[derive(Args, Debug)]
 pub struct List {
     /// Only this project id
-    #[arg(long, value_parser = text)]
+    #[arg(long, allow_negative_numbers = true)]
     pub project: Option<String>,
-    #[arg(long, help = ROOT_HELP, value_parser = text)]
+    #[arg(long, help = ROOT_HELP, allow_negative_numbers = true)]
     pub root: Option<String>,
 }
 
 #[derive(Args, Debug)]
 pub struct Show {
-    #[arg(value_parser = text)]
+    #[arg(allow_negative_numbers = true)]
     pub memory_id: String,
     /// Also show a deleted memory
     #[arg(long)]
     pub deleted: bool,
-    #[arg(long, help = ROOT_HELP, value_parser = text)]
+    #[arg(long, help = ROOT_HELP, allow_negative_numbers = true)]
     pub root: Option<String>,
 }
 
@@ -356,23 +313,23 @@ pub struct Show {
 pub struct Search {
     /// Space-separated keywords; an entry matching any keyword is returned, entries
     /// matching more keywords first
-    #[arg(value_parser = text)]
+    #[arg(allow_negative_numbers = true)]
     pub query: String,
     /// Only this project id
-    #[arg(long, value_parser = text)]
+    #[arg(long, allow_negative_numbers = true)]
     pub project: Option<String>,
     #[arg(long, value_parser = positive_int)]
     pub limit: Option<PositiveInt>,
-    #[arg(long, help = ROOT_HELP, value_parser = text)]
+    #[arg(long, help = ROOT_HELP, allow_negative_numbers = true)]
     pub root: Option<String>,
 }
 
 #[derive(Args, Debug)]
 pub struct Export {
     /// A directory that does not exist yet
-    #[arg(value_parser = text)]
+    #[arg(allow_negative_numbers = true)]
     pub directory: String,
-    #[arg(long, help = ROOT_HELP, value_parser = text)]
+    #[arg(long, help = ROOT_HELP, allow_negative_numbers = true)]
     pub root: Option<String>,
 }
 
@@ -381,34 +338,34 @@ pub struct Sessions {
     /// Space-separated keywords matched against a prompt, summary, branch or entry
     /// directory; an entry matching any keyword is returned, entries matching more
     /// keywords first (none: every session)
-    #[arg(default_value = "", value_parser = text)]
+    #[arg(default_value = "", allow_negative_numbers = true)]
     pub query: String,
     /// Only this project id
-    #[arg(long, value_parser = text)]
+    #[arg(long, allow_negative_numbers = true)]
     pub project: Option<String>,
     #[arg(long, value_parser = positive_int)]
     pub limit: Option<PositiveInt>,
     /// Emit the session_search item shape as JSON
     #[arg(long)]
     pub json: bool,
-    #[arg(long, help = ROOT_HELP, value_parser = text)]
+    #[arg(long, help = ROOT_HELP, allow_negative_numbers = true)]
     pub root: Option<String>,
 }
 
 #[derive(Args, Debug)]
 pub struct History {
-    #[arg(value_parser = text)]
+    #[arg(allow_negative_numbers = true)]
     pub memory_id: String,
     /// Print version N in full
     #[arg(long, value_name = "N", value_parser = positive_int)]
     pub show: Option<PositiveInt>,
-    #[arg(long, help = ROOT_HELP, value_parser = text)]
+    #[arg(long, help = ROOT_HELP, allow_negative_numbers = true)]
     pub root: Option<String>,
 }
 
 #[derive(Args, Debug)]
 pub struct Restore {
-    #[arg(value_parser = text)]
+    #[arg(allow_negative_numbers = true)]
     pub memory_id: String,
     /// The version memriver history printed
     #[arg(long = "to", value_name = "N", value_parser = positive_int)]
@@ -416,24 +373,24 @@ pub struct Restore {
     /// Confirm without prompting
     #[arg(long)]
     pub yes: bool,
-    #[arg(long, help = ROOT_HELP, value_parser = text)]
+    #[arg(long, help = ROOT_HELP, allow_negative_numbers = true)]
     pub root: Option<String>,
 }
 
 #[derive(Args, Debug)]
 pub struct Undo {
-    #[arg(value_parser = text)]
+    #[arg(allow_negative_numbers = true)]
     pub change_id: String,
     /// Confirm without prompting
     #[arg(long)]
     pub yes: bool,
-    #[arg(long, help = ROOT_HELP, value_parser = text)]
+    #[arg(long, help = ROOT_HELP, allow_negative_numbers = true)]
     pub root: Option<String>,
 }
 
 #[derive(Args, Debug)]
 pub struct Delete {
-    #[arg(value_parser = text)]
+    #[arg(allow_negative_numbers = true)]
     pub memory_id: String,
     /// The version memriver show printed (soft delete only)
     #[arg(long, value_parser = positive_int)]
@@ -446,12 +403,12 @@ pub struct Delete {
     #[arg(long, conflicts_with = "confirm")]
     pub dry_run: bool,
     /// With --hard: delete the plan --dry-run printed, without prompting
-    #[arg(long, value_name = "CODE", value_parser = text)]
+    #[arg(long, value_name = "CODE", allow_negative_numbers = true)]
     pub confirm: Option<String>,
     /// Confirm without prompting
     #[arg(long)]
     pub yes: bool,
-    #[arg(long, help = ROOT_HELP, value_parser = text)]
+    #[arg(long, help = ROOT_HELP, allow_negative_numbers = true)]
     pub root: Option<String>,
 }
 
@@ -491,7 +448,7 @@ pub enum DreamCommand {
         /// Confirm without prompting
         #[arg(long)]
         yes: bool,
-        #[arg(long, help = ROOT_HELP, value_parser = text)]
+        #[arg(long, help = ROOT_HELP, allow_negative_numbers = true)]
         root: Option<String>,
     },
     /// Run dream once now (what the schedule runs)
@@ -501,19 +458,19 @@ pub enum DreamCommand {
         phase: Option<DreamPhase>,
         #[arg(long, value_enum, default_value = "manual", hide = true)]
         trigger: DreamTrigger,
-        #[arg(long, help = ROOT_HELP, value_parser = text)]
+        #[arg(long, help = ROOT_HELP, allow_negative_numbers = true)]
         root: Option<String>,
     },
     /// Print a dream run's report
     Report {
         /// The run to show (default: the latest)
-        #[arg(value_parser = text)]
+        #[arg(allow_negative_numbers = true)]
         run_id: Option<String>,
         /// List the last N runs (10)
         #[arg(long = "list", value_name = "N", num_args = 0..=1, default_missing_value = "10",
               value_parser = positive_int)]
         list_count: Option<PositiveInt>,
-        #[arg(long, help = ROOT_HELP, value_parser = text)]
+        #[arg(long, help = ROOT_HELP, allow_negative_numbers = true)]
         root: Option<String>,
     },
     /// Say how the daily schedule is stopped; settings and data stay
@@ -536,13 +493,33 @@ mod tests {
             ("+7", "7"),
             ("007", "7"),
             ("1_000", "1000"),
-            ("\u{1f}12", "12"),
+            ("\u{a0}7\u{3000}", "7"),
+            ("\u{b}7\u{c}\r\n", "7"),
             ("99999999999999999999", "99999999999999999999"),
         ] {
             assert_eq!(read(written).as_deref(), Some(number), "{written:?}");
         }
         for written in [
-            "0", "-1", "-0", "", " ", "1.0", "1e3", "0x10", "1__0", "_1", "1_", "+-1", "one", "1 0",
+            "0",
+            "-1",
+            "-0",
+            "",
+            " ",
+            "1.0",
+            "1e3",
+            "0x10",
+            "1__0",
+            "_1",
+            "1_",
+            "+-1",
+            "one",
+            "1 0",
+            "\u{1f}12",
+            "\u{1c}1",
+            "1\u{1d}",
+            "\u{1e}1",
+            " \u{1f}1",
+            "\u{200b}1",
         ] {
             assert_eq!(read(written), None, "{written:?}");
         }
@@ -556,77 +533,6 @@ mod tests {
         assert_eq!((huge.as_i64(), huge.as_usize()), (i64::MAX, usize::MAX));
         let small = positive_int("42").unwrap();
         assert_eq!((small.as_i64(), small.as_usize()), (42, 42));
-    }
-
-    #[test]
-    fn a_hyphen_argument_that_is_a_value_is_held_as_the_python_parser_took_it() {
-        let held_of = |arg: &str| held(vec!["memriver".to_string(), arg.to_string()])[1].clone();
-        for value in [
-            "-1",
-            "-12",
-            "-1.5",
-            "-.5",
-            "-1e3",
-            "-1.",
-            "-0x10",
-            "-1_0",
-            "-\u{ff11}",
-            "-\u{663}",
-            "- 1",
-            "-x y",
-            "--not an option",
-            "-1=2",
-        ] {
-            assert_eq!(held_of(value), format!("{HELD}{value}"), "{value:?}");
-        }
-        for option in [
-            "-",
-            "--",
-            "-x",
-            "-.",
-            "-.x",
-            "--limit",
-            "--limit=1",
-            "--name=a b",
-            "x",
-            "x y",
-            "+1",
-            "",
-            "-\u{b2}",
-            "\u{2212}1",
-        ] {
-            assert_eq!(held_of(option), option, "{option:?}");
-        }
-        // after `--` everything is a value already; the program's name is never one
-        let argv = ["-1", "show", "-1", "--", "-2", "-x y"]
-            .map(str::to_string)
-            .to_vec();
-        let expected = ["-1", "show", "\u{e000}-1", "--", "-2", "-x y"];
-        assert_eq!(held(argv), expected);
-    }
-
-    #[test]
-    fn taking_the_mark_off_gives_back_what_was_typed() {
-        // an argument that begins with the mark itself is held too, before and after `--`
-        let typed = ["memriver", "\u{e000}-1", "\u{e000}", "--", "\u{e000}x"];
-        let argv = held(typed.map(str::to_string).to_vec());
-        assert_eq!(
-            argv[1..],
-            [
-                "\u{e000}\u{e000}-1",
-                "\u{e000}\u{e000}",
-                "--",
-                "\u{e000}\u{e000}x"
-            ]
-        );
-        assert_eq!(text(&argv[1]).unwrap(), typed[1]);
-        assert_eq!(text("plain").unwrap(), "plain");
-        assert_eq!(positive_int("\u{e000}-1"), positive_int("-1"));
-        assert_eq!(positive_int("\u{e000}7").unwrap().to_string(), "7");
-        assert_eq!(
-            without_marks("unexpected argument '\u{e000}-1'"),
-            "unexpected argument '-1'"
-        );
     }
 
     #[test]

@@ -5,12 +5,11 @@
 //! This module renders and words refusals, nothing else.
 
 use std::collections::HashMap;
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::{self, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
 
 use memriver_core::models::errors::CoreError;
@@ -533,21 +532,47 @@ fn opened(descriptor: libc::c_int) -> io::Result<OwnedFd> {
 const DIRECTORY: libc::c_int =
     libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
 
-/// Opens a directory that was just made, by path, refusing a link in its place.
-fn held(path: &Path) -> io::Result<OwnedFd> {
-    let path = CString::new(path.as_os_str().as_bytes())?;
-    // SAFETY: `path` is a valid C string for the length of the call
-    opened(unsafe { libc::open(path.as_ptr(), DIRECTORY) })
+/// A directory opened to be searched and nothing more: what making and opening a name
+/// inside it need, and what a directory that may not be listed still allows.
+#[cfg(target_os = "linux")]
+const SEARCHED: libc::c_int = libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC;
+#[cfg(not(target_os = "linux"))]
+const SEARCHED: libc::c_int = libc::O_SEARCH | libc::O_CLOEXEC;
+
+/// The directory `target` is to be made in, opened and held, and the name it is to have
+/// there. Everything of an export is made and opened from this descriptor on: a path
+/// looked up a second time can lead elsewhere, when a directory above it was swapped for
+/// a link in between.
+fn above_of(target: &Path) -> io::Result<(OwnedFd, CString)> {
+    let (Some(above), Some(name)) = (target.parent(), target.components().next_back()) else {
+        return Err(io::Error::from_raw_os_error(libc::EEXIST));
+    };
+    let above = CString::new(above.as_os_str().as_bytes())?;
+    // SAFETY: `above` is a valid C string for the length of the call
+    let above = opened(unsafe { libc::open(above.as_ptr(), SEARCHED) })?;
+    Ok((above, CString::new(name.as_os_str().as_bytes())?))
+}
+
+/// Makes the directory `name` inside the held directory.
+fn make_in(directory: &OwnedFd, name: &CStr) -> io::Result<()> {
+    // SAFETY: the descriptor is open and `name` is a valid C string for the call
+    match unsafe { libc::mkdirat(directory.as_raw_fd(), name.as_ptr(), 0o700) } {
+        0 => Ok(()),
+        _ => Err(io::Error::last_os_error()),
+    }
+}
+
+/// Opens the directory `name` inside the held directory, refusing a link in its place.
+fn open_in(directory: &OwnedFd, name: &CStr) -> io::Result<OwnedFd> {
+    // SAFETY: the descriptor is open and `name` is a valid C string for the call
+    opened(unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), DIRECTORY) })
 }
 
 /// Makes the directory `name` inside the held directory and opens it, never by path.
 fn folder(directory: &OwnedFd, name: &str) -> io::Result<OwnedFd> {
     let name = export_name(name)?;
-    // SAFETY: the descriptor is open and `name` is a valid C string for both calls
-    if unsafe { libc::mkdirat(directory.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    opened(unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), DIRECTORY) })
+    make_in(directory, &name)?;
+    open_in(directory, &name)
 }
 
 /// Writes `name` inside the held directory, never by path: a link swapped in after the
@@ -588,10 +613,11 @@ fn header(memory: &Memory) -> String {
         .collect()
 }
 
-/// Writes the snapshot into the directory that was just made; counts the memories as
-/// they are written, so a failure half-way can say how far it came.
+/// Writes the snapshot into the directory `name` that was just made inside `above`;
+/// counts the memories as they are written, so a failure half-way can say how far it came.
 fn snapshot(
-    target: &Path,
+    above: &OwnedFd,
+    name: &CStr,
     listed: &[(Project, Vec<Memory>)],
     global_id: Option<&str>,
     count: &mut usize,
@@ -599,7 +625,7 @@ fn snapshot(
     // Held descriptors, not path checks: a name looked up again after its directory was
     // made can be swapped for a link. Everything below is created relative to a
     // descriptor opened right after its directory's own creation, refusing links.
-    let directory = held(target)?;
+    let directory = open_in(above, name)?;
     let projects: String = listed
         .iter()
         .map(|(project, _)| {
@@ -623,6 +649,19 @@ fn snapshot(
     Ok(())
 }
 
+#[cfg(test)]
+thread_local! {
+    static MEANWHILE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// For a test, on its thread, once: `then` runs when the next export has made its
+/// directory and before it opens it -- where somebody else can move what lies above it.
+#[cfg(test)]
+fn meanwhile(then: impl FnOnce() + 'static) {
+    MEANWHILE.set(Some(Box::new(then)));
+}
+
 pub(crate) fn export(args: &Export, inv: &mut Invocation) -> Outcome {
     let target = tidied(&inv.cwd.join(&args.directory));
     let shown = visible(&target.to_string_lossy());
@@ -640,20 +679,31 @@ pub(crate) fn export(args: &Export, inv: &mut Invocation) -> Outcome {
         Err(CoreError::StorageFailure) => return unreadable(inv),
         Err(other) => return Err(other.into()),
     };
-    if let Err(error) = std::fs::DirBuilder::new().mode(0o700).create(&target) {
-        match error.raw_os_error() {
-            Some(libc::EEXIST) => inv.say(format_args!("refused: {shown} already exists\n")),
-            errno => {
-                let reason = errno.map_or_else(|| "error".to_string(), strerror);
-                inv.say(format_args!(
-                    "refused: {shown} could not be created ({reason})\n"
-                ));
+    let made = above_of(&target).and_then(|(above, name)| {
+        make_in(&above, &name)?;
+        Ok((above, name))
+    });
+    let (above, name) = match made {
+        Ok(made) => made,
+        Err(error) => {
+            match error.raw_os_error() {
+                Some(libc::EEXIST) => inv.say(format_args!("refused: {shown} already exists\n")),
+                errno => {
+                    let reason = errno.map_or_else(|| "error".to_string(), strerror);
+                    inv.say(format_args!(
+                        "refused: {shown} could not be created ({reason})\n"
+                    ));
+                }
             }
+            return Ok(2);
         }
-        return Ok(2);
+    };
+    #[cfg(test)]
+    if let Some(then) = MEANWHILE.take() {
+        then();
     }
     let mut count = 0;
-    if let Err(error) = snapshot(&target, &listed, global_id.as_deref(), &mut count) {
+    if let Err(error) = snapshot(&above, &name, &listed, global_id.as_deref(), &mut count) {
         let reason = error
             .raw_os_error()
             .map_or_else(|| "write failed".to_string(), strerror);

@@ -2239,3 +2239,161 @@ fn an_undo_names_every_memory_that_changed_since() {
     assert_eq!(said(&done), (2, expected.as_str(), ""));
     assert_eq!(current(&world, &first).version, 2);
 }
+
+// --- a value is what was typed, and nothing else is a value ---
+
+/// Every memory, version and change of the store, as text.
+fn rows(world: &World) -> Vec<String> {
+    let conn = world.sql();
+    let mut rows = Vec::new();
+    for query in [
+        "SELECT 'memory ' || id || ' v' || version || ' ' || coalesce(deleted_at, 'live') \
+         || ' ' || body FROM memories ORDER BY id",
+        "SELECT 'version ' || memory_id || ' v' || version FROM memory_versions ORDER BY 1",
+        "SELECT 'change ' || change_id FROM changes ORDER BY 1",
+    ] {
+        let mut statement = conn.prepare(query).unwrap();
+        let read = statement.query_map([], |row| row.get::<_, String>(0));
+        rows.extend(read.unwrap().map(Result::unwrap));
+    }
+    rows
+}
+
+fn usage_error(done: &Done) {
+    assert_eq!((done.code, done.stdout.as_str()), (2, ""), "{done:?}");
+    assert!(done.stderr.starts_with("error: "), "{done:?}");
+}
+
+// a code or a number with a character before it is another code and no number, however
+// the option and its value are joined
+#[test]
+fn a_character_before_a_code_or_a_version_is_part_of_what_was_typed() {
+    let world = world();
+    let id = world.memory.id.as_str();
+    dream_update(&world, id, 1, "second body");
+    let code = plan_code(&world, id);
+    let before = rows(&world);
+    assert_eq!(before.len(), 1 + 2 + 2, "{before:?}");
+
+    let marked = format!("\u{e000}{code}");
+    for confirm in [
+        vec!["--confirm".to_string(), marked.clone()],
+        vec![format!("--confirm={marked}")],
+    ] {
+        let mut args = vec!["delete", id, "--hard"];
+        args.extend(confirm.iter().map(String::as_str));
+        let done = world.run(&args);
+        assert_eq!((done.code, done.stderr.as_str()), (2, ""), "{args:?}");
+        let refused = "refused: the plan changed since it was printed; nothing was deleted\n";
+        assert!(
+            done.stdout.starts_with(refused),
+            "{args:?}: {}",
+            done.stdout
+        );
+        assert_eq!(rows(&world), before, "{args:?}");
+    }
+    for version in [
+        "\u{e000}1",
+        "\u{1c}1",
+        "\u{1d}1",
+        "\u{1e}1",
+        "\u{1f}1",
+        "1\u{1f}",
+    ] {
+        let joined = format!("--to={version}");
+        for to in [&["--to", version][..], &[joined.as_str()]] {
+            let args = [&["restore", id][..], to, &["--yes"]].concat();
+            let done = world.run(&args);
+            usage_error(&done);
+            assert!(done.stderr.contains(version), "{args:?}: {}", done.stderr);
+            assert_eq!(rows(&world), before, "{args:?}");
+        }
+        let done = world.run(&["delete", id, "--version", version, "--yes"]);
+        usage_error(&done);
+        assert_eq!(rows(&world), before, "{version:?}");
+    }
+    assert_eq!(current(&world, id).version, 2);
+}
+
+// a store whose name begins with a private-use character is that store, not the one
+// named without it
+#[test]
+fn a_store_named_with_a_private_use_character_is_the_one_that_is_written() {
+    let world = world();
+    let id = world.memory.id.as_str();
+    let (plain, marked) = (world.tmp.join("copy"), world.tmp.join("\u{e000}copy"));
+    for copy in [&plain, &marked] {
+        fs::create_dir(copy).unwrap();
+        for (name, bytes) in world.files() {
+            fs::write(copy.join(name), bytes).unwrap();
+        }
+    }
+    let code = plan_code(&world, id);
+    let confirm = format!("--confirm={code}");
+    for root in [&["--root=\u{e000}copy"][..], &["--root", "\u{e000}copy"]] {
+        let args = [&["delete", id, "--hard", "--dry-run"][..], root].concat();
+        let done = world.run_from(&world.tmp, &args);
+        assert_eq!(done.code, 0, "{done:?}");
+        assert!(done.stdout.ends_with("/\u{e000}copy'\n"), "{}", done.stdout);
+    }
+    let args = ["delete", id, "--hard", &confirm, "--root=\u{e000}copy"];
+    let done = world.run_from(&world.tmp, &args);
+    assert_eq!(said(&done), (0, format!("purged {id}\n").as_str(), ""));
+    let holds = |store: &Path| {
+        let services = common::services(store, &world.home, &world.env);
+        services.memory.show(id, true).is_ok()
+    };
+    assert!(holds(&plain) && !holds(&marked));
+    assert!(!gone(&world, id));
+}
+
+// what a person typed is printed as it was typed
+#[test]
+fn a_private_use_character_of_the_callers_own_is_kept() {
+    let world = world();
+    let done = world.run(&["show", "\u{e000}x"]);
+    assert_eq!(said(&done), (2, "no such memory: \u{e000}x\n", ""));
+    for args in [
+        &["search", "x", "--limit", "\u{e000}7"][..],
+        &["list", "\u{e000}extra"],
+        &["history", "x", "--show=\u{e000}\u{e000}2"],
+    ] {
+        let done = world.run(args);
+        usage_error(&done);
+        let typed = args.last().unwrap().trim_start_matches("--show=");
+        assert!(done.stderr.contains(typed), "{args:?}: {}", done.stderr);
+    }
+}
+
+// The Python implementation's parser read `-h sample` as its option -h, and refused it
+// as the value of another option. It is never the name of a store or of a memory.
+#[test]
+fn a_spaced_argument_that_begins_with_a_hyphen_is_no_value() {
+    let world = world();
+    let id = world.memory.id.as_str();
+    let before = rows(&world);
+    for root in [&["--root", "-h sample"][..], &["--root", "- x"]] {
+        let args = [&["delete", id, "--version", "1", "--yes"][..], root].concat();
+        let done = world.run_from(&world.tmp, &args);
+        usage_error(&done);
+        assert_eq!(rows(&world), before, "{args:?}");
+    }
+    for args in [
+        &["show", "- x"][..],
+        &["delete", "- x", "--version", "1", "--yes"],
+        &["search", "--not an option"],
+    ] {
+        usage_error(&world.run(args));
+    }
+    // as the one argument of a command it asks for the command's help, and nothing is read
+    let done = world.run(&["show", "-h sample"]);
+    assert!(!done.stdout.contains("no such memory"), "{done:?}");
+    // after `--` it is a value like any other
+    let done = world.run(&["show", "--", "-h sample"]);
+    assert_eq!(said(&done), (2, "no such memory: -h sample\n", ""));
+    let done = world.run(&["delete", "--version", "1", "--yes", "--", "-h sample"]);
+    assert_eq!(said(&done), (2, "no such memory: -h sample\n", ""));
+    assert_eq!(rows(&world), before);
+    assert!(!world.tmp.join("-h sample").exists() && !world.tmp.join("- x").exists());
+    assert!(!world.work.join("-h sample").exists());
+}

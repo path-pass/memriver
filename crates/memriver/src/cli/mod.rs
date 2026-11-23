@@ -177,7 +177,7 @@ fn normalize_legacy_serve(mut argv: Vec<String>) -> Vec<String> {
 }
 
 fn usage_error(error: &clap::Error, io: &mut Io) -> i32 {
-    let text = args::without_marks(&error.render().to_string());
+    let text = error.render().to_string();
     let _ = match error.use_stderr() {
         true => io.stderr.write_all(text.as_bytes()),
         false => io.stdout.write_all(text.as_bytes()),
@@ -270,7 +270,7 @@ fn dispatch(command: Command, inv: &mut Invocation) -> Outcome {
 
 /// Runs `argv` (the program name first) and returns the exit code.
 pub fn run(argv: Vec<String>, env: &Env, home: &Path, cwd: &Path, io: &mut Io) -> i32 {
-    let cli = match Cli::try_parse_from(args::held(normalize_legacy_serve(argv))) {
+    let cli = match Cli::try_parse_from(normalize_legacy_serve(argv)) {
         Ok(cli) => cli,
         Err(error) => return usage_error(&error, io),
     };

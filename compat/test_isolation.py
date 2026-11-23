@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from pathlib import Path
 
 import pytest
 
-from .harness import PY, run
+from . import conftest, harness
+from .harness import PY, REPO, run
 
 ENV = ["/usr/bin/env"]
+# What this module was imported with, which is what the top of any case's module sees.
+AT_IMPORT = {name: value for name, value in os.environ.items()
+             if name == "HOME" or name.upper().startswith("MEMRIVER_")}
 
 
 def test_run_refuses_a_home_outside_tmp_path(tmp_path):
@@ -49,7 +54,7 @@ def test_run_refuses_a_store_argument_or_a_working_directory_outside_tmp_path(tm
     # a shortened option names a store too, and the last of two is the one that is used
     for args in (["--version", "--roo", str(outside / "store")], ["list", f"--ro={outside}"],
                  ["list", "--r", "../../store"], ["list", "--root", "ok", "--root", str(outside)],
-                 ["list", "--roo"]):
+                 ["list", "--roo"], ["list", "--root", "--root", str(outside)]):
         with pytest.raises(AssertionError, match="outside|without a path"):
             run(PY, args, cwd=tmp_path, **inside)
     # the one directory a command writes into
@@ -66,6 +71,44 @@ def test_run_refuses_a_store_argument_or_a_working_directory_outside_tmp_path(tm
     done = run(PY, ["list", "--root", "../other-store"], cwd=tmp_path / "work", **inside)
     assert (done.stdout, done.code) == (b"", 0)
     assert not (tmp_path / "other-store").exists()
+
+
+def test_run_refuses_a_path_the_child_would_find_outside_tmp_path(tmp_path, monkeypatch):
+    # the test's directory is `case`; `sibling` beside it stands for another test's
+    case, sibling = tmp_path / "case", tmp_path / "sibling"
+    (case / "deep" / "er").mkdir(parents=True)
+    (case / "--samples").mkdir()
+    sibling.mkdir()
+    monkeypatch.setattr(harness, "TMP_PATH", case)
+    inside = {"home": case / "home", "root": case / "store"}
+    # a link and `..`: the system goes up from where the link leads and stays inside, a
+    # path tidied by its text goes up from where the link lies
+    (case / "link").symlink_to(case / "deep" / "er")
+    (case / "out").symlink_to(sibling)
+    for store in ("link/../../sibling/store", "out/store", str(case / "link" / ".." / ".." / "sibling")):
+        for args in (["project", "init", "--root", store, "--yes"], ["list", f"--ro={store}"]):
+            with pytest.raises(AssertionError, match="--root .* is outside"):
+                run(PY, args, cwd=case, **inside)
+    # `--` hides no directory, and after it one may begin with hyphens
+    for args in (["export", "--", "--samples/../../sibling/snapshot"],
+                 ["export", "--root", "store", "--", "../sibling/snapshot"],
+                 ["export", "link/../../sibling/snapshot"], ["export", "out/snapshot"],
+                 ["--", "export", "../sibling/snapshot"]):
+        with pytest.raises(AssertionError, match="export .* is outside"):
+            run(PY, args, cwd=case, **inside)
+    # a relative home or store is the child's, read from the child's working directory
+    monkeypatch.chdir(case / "deep" / "er")
+    for where in ({"home": Path("../.."), "root": case / "store"},
+                  {"home": case / "home", "root": Path("../../store")},
+                  {**inside, "extra_env": {"HOME": "../.."}},
+                  {**inside, "extra_env": {"MEMRIVER_ROOT": "link/../../sibling"}}):
+        with pytest.raises(AssertionError, match="(HOME|MEMRIVER_ROOT)=.* is outside"):
+            run(ENV, [], cwd=case, **where)
+    assert list(sibling.iterdir()) == [] and not (tmp_path / "store").exists()
+    # the same spellings that stay inside are let through
+    done = run(PY, ["list", "--root", "link/../store"], cwd=case,
+               home=Path("home"), root=Path("deep/../store"))
+    assert (done.stdout, done.stderr, done.code) == (b"", b"", 0)
 
 
 def test_processes_are_started_only_by_the_harness(tmp_path):
@@ -95,6 +138,31 @@ def test_the_tests_own_process_finds_its_home_and_store_under_tmp_path(tmp_path,
     assert storage_root() == tmp_path / "home" / "agent-memory"        # default-store: asserted
     assert not [name for name in os.environ if name.upper().startswith("MEMRIVER_")]
     assert not (tmp_path / "store").exists() and not (tmp_path / "home" / "agent-memory").exists()
+
+
+def test_a_module_is_imported_with_the_sessions_home_and_store():
+    # set before anything was collected: the top of a module and a fixture of a wider
+    # scope run before the fixture that gives each test its own
+    session = conftest.SESSION
+    assert AT_IMPORT == {"HOME": str(session / "home"), "MEMRIVER_ROOT": str(session / "store")}
+    started = conftest.STARTED_WITH
+    assert not session.is_relative_to(Path(started["HOME"]).resolve())
+    assert not set(started.values()) & set(AT_IMPORT.values())
+
+
+def test_what_pytest_is_started_with_reaches_no_module(tmp_path):
+    # the suite started as from a developer's shell, up to the collection of one module
+    shell = {"home": tmp_path / "shell-home", "root": tmp_path / "shell-store",
+             "extra_env": {"MEMRIVER_SEARCH_LIMIT_MAX": "7", "memriver_tags_max": "3",
+                           "TMPDIR": str(tmp_path)}}
+    done = run([sys.executable, "-B", "-m", "pytest"],
+               [str(REPO / "compat" / "test_isolation.py"), "--rootdir", str(REPO),
+                "-c", str(REPO / "pyproject.toml"), "-p", "no:cacheprovider", "-q",
+                "--basetemp", str(tmp_path / "cases"),
+                "-k", "test_a_module_is_imported_with_the_sessions_home_and_store"],
+               cwd=tmp_path, **shell)
+    assert done.code == 0 and b"1 passed" in done.stdout, done.stdout.decode()
+    assert not shell["home"].exists() and not shell["root"].exists()
 
 
 def test_a_variable_of_the_developers_shell_does_not_reach_a_test(tmp_path):

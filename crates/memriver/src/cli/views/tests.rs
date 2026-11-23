@@ -24,6 +24,23 @@ fn inner() -> (Sandbox, PathBuf, PathBuf) {
     (sandbox, base, inner)
 }
 
+/// The directory at `path`, opened inside the one above it, refusing a link in its place.
+fn held(path: &Path) -> io::Result<OwnedFd> {
+    let (above, name) = above_of(path)?;
+    open_in(&above, &name)
+}
+
+/// The snapshot written into the directory at `target`, which is there already.
+fn snapshot_at(
+    target: &Path,
+    listed: &[(Project, Vec<Memory>)],
+    global_id: Option<&str>,
+    count: &mut usize,
+) -> io::Result<()> {
+    let (above, name) = above_of(target)?;
+    snapshot(&above, &name, listed, global_id, count)
+}
+
 fn names_in(directory: &Path) -> Vec<String> {
     let mut names: Vec<String> = fs::read_dir(directory)
         .unwrap()
@@ -598,7 +615,7 @@ fn a_snapshot_counts_the_memories_it_wrote() {
         (project(OTHER, None), Vec::new()),
     ];
     let mut count = 0;
-    snapshot(&inner, &listed, Some(OTHER), &mut count).unwrap();
+    snapshot_at(&inner, &listed, Some(OTHER), &mut count).unwrap();
     assert_eq!(count, 2);
     assert_eq!(names_in(&inner), [DEMO, "projects.md"]);
     assert_eq!(
@@ -628,7 +645,7 @@ fn a_snapshot_is_not_written_through_a_target_that_became_a_link() {
         vec![memory("mmmmmmmmm1", DEMO, "one")],
     )];
     let mut count = 0;
-    let stopped = snapshot(&target, &listed, None, &mut count).unwrap_err();
+    let stopped = snapshot_at(&target, &listed, None, &mut count).unwrap_err();
     let errno = stopped.raw_os_error();
     assert!(
         errno == Some(libc::ELOOP) || errno == Some(libc::ENOTDIR),
@@ -649,7 +666,7 @@ fn a_snapshot_is_not_written_through_a_project_folder_that_is_a_link() {
         vec![memory("mmmmmmmmm1", DEMO, "one")],
     )];
     let mut count = 0;
-    let stopped = snapshot(&inner, &listed, None, &mut count).unwrap_err();
+    let stopped = snapshot_at(&inner, &listed, None, &mut count).unwrap_err();
     assert_eq!(stopped.raw_os_error(), Some(libc::EEXIST));
     assert_eq!(count, 0);
     assert_eq!(names_in(&outside), Vec::<String>::new());
@@ -666,7 +683,7 @@ fn a_snapshot_that_stops_half_way_has_counted_what_it_wrote() {
     ];
     let listed = [(project(DEMO, Some("/w")), twice)];
     let mut count = 0;
-    let stopped = snapshot(&inner, &listed, None, &mut count).unwrap_err();
+    let stopped = snapshot_at(&inner, &listed, None, &mut count).unwrap_err();
     assert_eq!((stopped.raw_os_error(), count), (Some(libc::EEXIST), 1));
     let written = fs::read_to_string(inner.join(DEMO).join("mmmmmmmmm1.md")).unwrap();
     assert!(written.ends_with("---\none"), "{written}");
@@ -680,7 +697,7 @@ fn a_snapshot_that_stops_half_way_has_counted_what_it_wrote() {
             vec![memory(memory_id, DEMO, "one")],
         )];
         let mut count = 0;
-        let stopped = snapshot(&second, &listed, None, &mut count).unwrap_err();
+        let stopped = snapshot_at(&second, &listed, None, &mut count).unwrap_err();
         assert_eq!(
             (stopped.raw_os_error(), count),
             (None, 0),
@@ -688,4 +705,89 @@ fn a_snapshot_that_stops_half_way_has_counted_what_it_wrote() {
         );
         assert!(!base.join("x").exists() && !base.join("x.md").exists());
     }
+}
+
+/// `memriver export <directory>` over a store that is not there, and what it printed.
+fn exported(base: &Path, directory: &Path) -> (i32, String) {
+    let store = base.join("mem").to_string_lossy().into_owned();
+    let env = memriver_core::settings::Env::from([("MEMRIVER_ROOT".to_string(), store)]);
+    let (mut stdin, mut stdout, mut stderr) = (&b""[..], Vec::new(), Vec::new());
+    let mut io = crate::cli::Io {
+        stdin: &mut stdin,
+        stdin_is_tty: false,
+        stdout: &mut stdout,
+        stderr: &mut stderr,
+    };
+    let home = base.join("home");
+    let mut inv = Invocation {
+        env: &env,
+        home: &home,
+        cwd: base,
+        io: &mut io,
+    };
+    let args = Export {
+        directory: directory.to_string_lossy().into_owned(),
+        root: None,
+    };
+    let code = export(&args, &mut inv).unwrap();
+    assert_eq!(stderr, b"");
+    (code, String::from_utf8(stdout).unwrap())
+}
+
+// the directory above the one that was just made is moved away, and a link to another
+// directory, which has one of the same name, stands in its place
+#[test]
+fn an_export_is_written_into_the_directory_it_made_whatever_stands_above_it_then() {
+    let (_sandbox, base, _inner) = inner();
+    let (above, moved, other) = (base.join("above"), base.join("moved"), base.join("other"));
+    fs::create_dir(&above).unwrap();
+    fs::create_dir_all(other.join("snap")).unwrap();
+    {
+        let (above, moved, other) = (above.clone(), moved.clone(), other.clone());
+        meanwhile(move || {
+            fs::rename(&above, &moved).unwrap();
+            symlink(&other, &above).unwrap();
+        });
+    }
+    let (code, printed) = exported(&base, &above.join("snap"));
+    let shown = above.join("snap");
+    assert_eq!(
+        (code, printed),
+        (0, format!("exported 0 memories to {}\n", shown.display()))
+    );
+    assert_eq!(names_in(&moved.join("snap")), ["projects.md"]);
+    assert_eq!(names_in(&other.join("snap")), Vec::<String>::new());
+    assert_eq!(mode(&moved.join("snap")), 0o700);
+}
+
+// the directory an export is made in need only be one that can be searched and written
+#[test]
+fn an_export_is_made_in_a_directory_that_cannot_be_listed() {
+    let (_sandbox, base, inner) = inner();
+    fs::set_permissions(&inner, fs::Permissions::from_mode(0o300)).unwrap();
+    let (code, printed) = exported(&base, Path::new("inner/snap"));
+    fs::set_permissions(&inner, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(code, 0, "{printed}");
+    assert_eq!(names_in(&inner.join("snap")), ["projects.md"]);
+    // and what the system says of a directory that is not there, or is a file, is said
+    fs::write(base.join("file"), "").unwrap();
+    for (directory, reason) in [
+        ("missing/snap", "No such file or directory"),
+        ("file/snap", "Not a directory"),
+        ("missing/..", "No such file or directory"),
+    ] {
+        let (code, printed) = exported(&base, Path::new(directory));
+        let shown = base.join(directory);
+        let refused = format!(
+            "refused: {} could not be created ({reason})\n",
+            shown.display()
+        );
+        assert_eq!((code, printed), (2, refused));
+    }
+    let (code, printed) = exported(&base, Path::new("inner/snap/"));
+    assert_eq!(code, 2);
+    assert!(
+        printed.ends_with("/inner/snap already exists\n"),
+        "{printed}"
+    );
 }

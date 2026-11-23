@@ -227,22 +227,26 @@ fn an_option_given_twice_counts_once_and_the_last_value_is_taken() {
     );
 }
 
+// A hyphen and a number written in ASCII digits is a value, as the Python implementation's
+// parser took it. Every other argument that begins with a hyphen is an option; that parser
+// took more of them for values (see the list of differences), and none is taken here.
 #[test]
-fn a_hyphen_and_a_digit_or_a_space_make_a_value_and_anything_else_an_option() {
+fn a_hyphen_and_a_number_make_a_value_and_anything_else_an_option() {
     for (args, printed) in [
         (&["show", "-5"][..], "no such memory: -5\n"),
         (&["show", "-5", "--deleted"], "no such memory: -5\n"),
-        (&["show", "--deleted", "-.5"], "no such memory: -.5\n"),
-        (&["show", "- x"], "no such memory: - x\n"),
-        (
-            &["show", "--not an option"],
-            "no such memory: --not an option\n",
-        ),
+        (&["show", "--deleted", "-1.5"], "no such memory: -1.5\n"),
+        (&["show", "-1."], "no such memory: -1.\n"),
+        (&["show", "-1e3"], "no such memory: -1e3\n"),
+        (&["show", "-"], "no such memory: -\n"),
+        (&["show", "--", "-x y"], "no such memory: -x y\n"),
         (
             &["undo", "-7", "--yes"],
             "refused (not-found): no change -7\n",
         ),
         (&["list", "--project", "-1"], "no such project: -1\n"),
+        (&["list", "--project=-x"], "no such project: -x\n"),
+        (&["list", "--project=- x"], "no such project: - x\n"),
         (&["show", "\u{e000}-5"], "no such memory: \u{e000}-5\n"),
     ] {
         let done = run(args);
@@ -257,11 +261,26 @@ fn a_hyphen_and_a_digit_or_a_space_make_a_value_and_anything_else_an_option() {
         &["show", "-5", "-6"],
         &["list", "-1"],
         &["list", "--project", "-x"],
+        &["list", "--project", "--root"],
+        &["list", "--root", "--project", "x"],
         &["search", "x", "--limit", "-1"],
         &["-1"],
         &["show", "-."],
+        &["show", "-.5"],
+        &["show", "-0x10"],
+        &["show", "-1_0"],
+        &["show", "-1e"],
+        &["show", "-1e+3"],
+        &["show", "-1.2.3"],
+        &["show", "-\u{ff11}"],
+        &["show", "-\u{663}"],
+        &["show", "- x"],
+        &["show", "-x y"],
+        &["show", "--not an option"],
+        &["list", "--project", "- 1"],
+        &["delete", "mmmmmmmmmm", "--hard", "--confirm", "-x"],
+        &["delete", "mmmmmmmmmm", "--hard", "--confirm", "--yes"],
     ] {
-        let refused = usage_error(args);
-        assert!(!refused.contains('\u{e000}'), "{refused}");
+        usage_error(args);
     }
 }

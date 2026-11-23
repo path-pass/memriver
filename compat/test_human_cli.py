@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
 import stat
 from contextlib import closing
@@ -300,7 +301,7 @@ def test_a_command_line_that_is_no_command_is_refused_before_anything_is_read(tm
 
 # Command lines the two parsers could read differently and do not: an option given twice
 # (the last one counts), and an argument that begins with a hyphen and is a value all the
-# same -- a digit after the hyphen, or a space in it.
+# same -- a number in ASCII digits after the hyphen.
 @pytest.mark.parametrize(("args", "code"), [
     (["delete", "zzzzzzzzzz", "--version", "1", "--yes", "--yes"], 2),
     (["delete", "zzzzzzzzzz", "--version", "9", "--version", "1", "--yes"], 2),
@@ -311,16 +312,15 @@ def test_a_command_line_that_is_no_command_is_refused_before_anything_is_read(tm
     (["search", "note 1", "--limit", "1", "--limit", "2"], 0),
     (["search", "note", "--limit=3", "--limit=1"], 0),
     (["sessions", "--json", "--json"], 0),
-    (["search", "-1"], 0), (["search", "-1.5"], 0), (["search", "-.5"], 0), (["search", "-1e3"], 0),
-    (["search", "-1."], 0), (["search", "-0x10"], 0), (["search", "-1_0"], 0), (["search", "-１"], 0),
-    (["search", "-٣"], 0), (["search", "- 1"], 0), (["search", "-x y"], 0),
-    (["search", "--not an option"], 0), (["search", "-"], 0), (["search", "+1"], 0),
+    (["search", "-1"], 0), (["search", "-1.5"], 0), (["search", "-1e3"], 0), (["search", "-1."], 0),
+    (["search", "-"], 0), (["search", "+1"], 0),
     (["search", "--", "-x"], 0), (["search", "--", "-1"], 0), (["search", "\ue000-1"], 0),
     (["search", "\ue000x"], 0), (["search", "--", "\ue000x"], 0),
     (["show", "-5"], 2), (["show", "-5", "--deleted"], 2), (["show", "--deleted", "-5"], 2),
     (["show", "--", "--deleted"], 2), (["show", "-"], 2),
     (["history", "-5", "--show", "1"], 2), (["undo", "-7", "--yes"], 2),
     (["sessions", "-3"], 0), (["list", "--project", "-1"], 2), (["list", "--project=-x"], 2),
+    (["list", "--project=- x"], 2), (["list", "--project", "-1e3"], 2),
     (["project", "explain", "--project-dir", "-1"], 1),
 ])
 def test_a_command_line_both_parsers_take_is_carried_out_alike(tmp_path, args, code):
@@ -346,6 +346,94 @@ def test_a_name_that_looks_like_an_option_is_a_name_and_the_last_of_two_roots_co
     case.assert_same_store()
 
 
+# Arguments that begin with a hyphen and that only the Python parser took for values: a
+# number not written as ASCII digits with at most one dot and an exponent, and anything
+# with a space in it. The Rust parser refuses each before anything is read (item 9).
+@pytest.mark.parametrize(("args", "code"), [
+    (["search", "-.5"], 0), (["search", "-0x10"], 0), (["search", "-1_0"], 0),
+    (["search", "-１"], 0), (["search", "-٣"], 0), (["search", "- 1"], 0), (["search", "-x y"], 0),
+    (["search", "--not an option"], 0), (["show", "- x"], 2), (["show", "-.5", "--deleted"], 2),
+    (["list", "--project", "- 1"], 2), (["undo", "-7 ", "--yes"], 2),
+    (["show", "-1e+3"], 2), (["show", "-1.2.3"], 2),
+])
+def test_a_hyphen_argument_only_the_python_parser_took_is_refused_by_the_other(tmp_path, args, code):
+    case = seeded(tmp_path)
+    py, rs = case.step(lambda side: side.run(args))
+    assert (py.code, py.stderr) == (code, b""), (args, py)      # carried out: no usage error
+    assert (rs.stdout, rs.code) == (b"", 2) and rs.stderr.startswith(b"error: "), (args, rs)
+    case.assert_same_store()
+
+
+# `-h sample` where a memory's id is expected is the option -h to both parsers: the
+# command's help is printed and nothing is read. After `--` it is an id like any other.
+def test_a_spaced_argument_that_begins_with_the_help_option_asks_for_help(tmp_path):
+    case = seeded(tmp_path)
+    for args in (["show", "-h sample"], ["show", "--deleted", "-h sample"],
+                 ["delete", "-h sample", "--version", "1", "--yes"]):
+        py, rs = case.step(lambda side, args=args: side.run(args))
+        assert (py.code, rs.code, py.stderr, rs.stderr) == (0, 0, b"", b""), (args, py, rs)
+        assert b"usage: memriver " + args[0].encode() in py.stdout
+        assert b"Usage: memriver " + args[0].encode() in rs.stdout
+    assert same(case, ["show", "--", "-h sample"], code=2) == "no such memory: -h sample\n"
+    assert same(case, ["delete", "--version", "1", "--yes", "--", "-h sample"],
+                code=2) == "no such memory: -h sample\n"
+    case.assert_same_store()
+
+
+# What the Python parser refuses is never carried out by the other one. Each of these was
+# once: over a memory that is there, with --yes, so that carrying it out would write.
+@pytest.mark.parametrize("tail", [
+    ["--root", "-h sample"],                    # -h and its value, not the name of a store
+    ["--root", "--yes"], ["--root", "-x"],
+])
+def test_a_store_the_python_parser_refuses_is_never_written(tmp_path, tail):
+    case = seeded(tmp_path)
+    plain = memory(case, "note 3 about")
+    # where the store would be read from, were it one
+    shutil.copytree(case.py.root, case.work / "proj" / tail[1])
+    py, rs = case.step(lambda side: side.run(
+        ["delete", plain["id"], "--version", "1", "--yes", *tail], cwd=case.work / "proj"))
+    case.assert_same_output(py, rs, allow=("usage-text",))
+    assert (py.stdout, py.code, rs.stdout, rs.code) == (b"", 2, b"", 2)
+    copied = snapshot(case.work / "proj" / tail[1]).tables["memories"]
+    assert [row["version"] for row in copied if row["id"] == plain["id"]] == [1]
+    case.assert_same_store()
+
+
+# Python's int() takes white space off a number, and the four separators U+001C to U+001F
+# are none to it (they are to str.strip): such a version is no number on either side.
+@pytest.mark.parametrize("version", ["\x1c1", "\x1d1", "\x1e1", "\x1f1", "1\x1f", "\ue0001"])
+def test_a_version_that_is_no_number_to_python_writes_nothing(tmp_path, version):
+    case = seeded(tmp_path)
+    plain = memory(case, "note 3 about")
+    same(case, ["delete", plain["id"], "--version", "1", "--yes"], "delete", cwd=case.work / "proj")
+    for args in (["restore", plain["id"], "--to", version, "--yes"],
+                 ["restore", plain["id"], f"--to={version}", "--yes"],
+                 ["delete", plain["id"], "--version", version.replace("1", "2"), "--yes"]):
+        py, rs = case.step(lambda side, args=args: side.run(args, cwd=case.work / "proj"))
+        case.assert_same_output(py, rs, allow=("usage-text",))
+        assert (py.stdout, py.code, rs.stdout, rs.code) == (b"", 2, b"", 2), (args, py, rs)
+    assert memory(case, "note 3 about")["version"] == 2
+    # and white space that int() does take off is taken off by both
+    same(case, ["restore", plain["id"], "--to", "\u3000 1\t\x0b", "--yes"], "restore")
+    assert memory(case, "note 3 about")["version"] == 3
+    case.assert_same_store()
+
+
+# A confirmation code with a character before it is another code: nothing is deleted.
+@pytest.mark.parametrize("joined", [True, False])
+def test_a_code_with_a_private_use_character_before_it_deletes_nothing(tmp_path, joined):
+    case = seeded(tmp_path)
+    plain = memory(case, "note 3 about")
+    planned = same(case, ["delete", plain["id"], "--hard", "--dry-run"], "delete")
+    code = planned.rstrip("\n").rsplit(" ", 1)[1]
+    confirm = [f"--confirm=\ue000{code}"] if joined else ["--confirm", f"\ue000{code}"]
+    out = same(case, ["delete", plain["id"], "--hard", *confirm], "delete", code=2)
+    assert out.startswith("refused: the plan changed since it was printed; nothing was deleted\n")
+    assert memory(case, "note 3 about")["version"] == 1
+    case.assert_same_store()
+
+
 # An argument that begins with a hyphen and is no value stays a usage error on both sides.
 @pytest.mark.parametrize("args", [
     ["search", "-x"], ["search", "-1", "-2"], ["list", "-1"], ["list", "--project", "-x"],
@@ -353,7 +441,8 @@ def test_a_name_that_looks_like_an_option_is_a_name_and_the_last_of_two_roots_co
     ["search", "-.x"], ["project", "init", "--name", "-x"], ["sessions", "a", "-1"],
     ["list", "--version"], ["show", "-5", "-6"],
     ["history", "zzzzzzzzzz", "--show", "0", "--show", "2"],
-    ["history", "zzzzzzzzzz", "--show", "2", "--show", "0"]])
+    ["history", "zzzzzzzzzz", "--show", "2", "--show", "0"],
+    ["list", "--project", "-h sample"], ["delete", "zzzzzzzzzz", "--hard", "--confirm", "--yes"]])
 def test_a_hyphen_argument_that_is_no_value_is_refused_by_both(tmp_path, args):
     case = seeded(tmp_path)
     py, rs = case.step(lambda side: side.run(args))
