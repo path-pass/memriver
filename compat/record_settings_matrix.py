@@ -29,7 +29,7 @@ FIELDS = ["max_body_chars", "search_limit_max", "search_limit_default", "index_b
           "memory_reads_retention_days", "standing_max_count", "standing_max_chars", "tags_max",
           "tags_per_memory_max"]
 BIG = "123456789012345678901234567890"
-TOML_1_1 = "TOML 1.1 syntax, which the Python parser (TOML 1.0) refuses"
+TOML_1_1 = "TOML 1.1 syntax, which the parser of Python 3.14 (TOML 1.0) refuses"
 DIGITS = "an integer of more than 4,300 decimal digits, which the Python parser cannot convert"
 NO_DIGITS = "a prefix without digits, which only the Python parser refuses as TOML"
 DATES = "a second of 60 or a year of 0000, which only the Python parser refuses as TOML"

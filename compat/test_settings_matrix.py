@@ -14,6 +14,11 @@ RECORDER = [sys.executable, "-I", "-B", str(REPO / "compat/record_settings_matri
 
 
 def test_the_recorded_matrix_is_what_python_answers(tmp_path: Path):
+    # the matrix is what Python 3.14 answers: from 3.15 tomllib reads TOML 1.1, and four cases
+    # recorded as refused are read
+    assert sys.version_info[:2] == (3, 14), (
+        "the settings matrix is recorded with Python 3.14: run this with 3.14, not "
+        + sys.version.split()[0])
     work = tmp_path / "work"
     work.mkdir()
     out = tmp_path / "matrix.json"

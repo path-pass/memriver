@@ -1231,27 +1231,43 @@ fn a_variable_git_checks_when_it_starts_goes_to_git() {
         "[core]\n\tbigfilethreshold = x\n",
     );
     it.left_to_git(&main);
-    // values that spoil the branch, and with a worktree to list sometimes the place too:
+    // a value that spoils the branch, and with a worktree to list sometimes the place too:
     // git never names a branch then
-    for text in [
-        "[core]\n\tlogallrefupdates = banana\n",
-        "[core]\n\twarnambiguousrefs = maybe\n",
-    ] {
-        let it = fixture();
-        let main = it.repository("main");
-        append(&main.join(".git/config"), text);
-        assert_eq!(it.left_to_git(&main), Some(at(&main, None)), "{text:?}");
-        let it = fixture();
-        let main = it.repository("main");
-        let worktree = it.worktree(&main, "wt", "feature");
-        append(&main.join(".git/config"), text);
-        for dir in [&main, &worktree] {
-            let answer = it.left_to_git(dir);
-            assert!(
-                answer.is_none_or(|facts| facts.branch.is_none()),
-                "{text:?}"
-            );
-        }
+    let text = "[core]\n\twarnambiguousrefs = maybe\n";
+    let it = fixture();
+    let main = it.repository("main");
+    append(&main.join(".git/config"), text);
+    assert_eq!(it.left_to_git(&main), Some(at(&main, None)), "{text:?}");
+    let it = fixture();
+    let main = it.repository("main");
+    let worktree = it.worktree(&main, "wt", "feature");
+    append(&main.join(".git/config"), text);
+    for dir in [&main, &worktree] {
+        let answer = it.left_to_git(dir);
+        assert!(
+            answer.is_none_or(|facts| facts.branch.is_none()),
+            "{text:?}"
+        );
+    }
+    // a value whose effect depends on the version of git: git 2.55 and earlier read this
+    // variable when they open the reference store and refuse to name a branch; from 2.56.0 it
+    // is read only when a reference is written, and the branch is named. The place is known
+    // either way, and the branch is whatever this git says
+    let text = "[core]\n\tlogallrefupdates = banana\n";
+    let it = fixture();
+    let main = it.repository("main");
+    append(&main.join(".git/config"), text);
+    assert_eq!(
+        it.left_to_git(&main).map(|facts| facts.main_tree),
+        Some(main.clone()),
+        "{text:?}"
+    );
+    let it = fixture();
+    let main = it.repository("main");
+    let worktree = it.worktree(&main, "wt", "feature");
+    append(&main.join(".git/config"), text);
+    for dir in [&main, &worktree] {
+        it.left_to_git(dir);
     }
 }
 
@@ -1534,7 +1550,9 @@ fn a_number_git_does_not_read_as_a_boolean_goes_to_git() {
             assert_eq!((in_main, in_worktree), (None, None), "{number}");
             assert!(!it.git_knows_the_layout(&main), "{number}");
         }
-        // where git reads it only for the branch, the place is known and the branch is not
+        // where git reads it only for the branch, the place is known. The branch depends on
+        // the version of git: 2.55 and earlier read this variable when they open the reference
+        // store and name no branch; from 2.56.0 it is read only when a reference is written
         let it = fixture();
         let main = it.repository("main");
         append(
@@ -1543,7 +1561,11 @@ fn a_number_git_does_not_read_as_a_boolean_goes_to_git() {
         );
         let answer = it.left_to_git(&main);
         if number != "-2147483648" {
-            assert_eq!(answer, Some(at(&main, None)), "{number}");
+            assert_eq!(
+                answer.map(|facts| facts.main_tree),
+                Some(main.clone()),
+                "{number}"
+            );
         }
     }
 }
