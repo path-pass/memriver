@@ -19,7 +19,8 @@ a line `phase <n>: <glob>, <glob>, ...` naming the Python test files it covers;
 from then on every function of those files needs a target, and a glob that matches
 no test file is an error.
 
-finished phases:
+finished phases: 1
+phase 1: packages/memriver-core/tests/**, packages/memriver/tests/test_memory_commands.py, packages/memriver/tests/test_project_commands.py, packages/memriver/tests/test_views.py, packages/memriver/tests/test_project_context.py, packages/memriver/tests/test_settings.py
 
 packages/memriver-core/tests/contract/test_project_directories.py::test_a_case_alias_of_a_bound_directory_is_bound_elsewhere -> rust:memriver-core::repository::sqlite::project_store::tests::an_alias_of_a_bound_directory_is_bound_elsewhere + rust:memriver-core::tests/projects.rs::on_a_file_system_that_ignores_case_a_case_alias_of_a_bound_directory_is_bound_elsewhere
 packages/memriver-core/tests/contract/test_project_directories.py::test_a_confirmed_target_re_pointed_through_a_symlink_is_refused -> rust:memriver-core::tests/projects.rs::plan_out_of_date_is_refused
@@ -72,20 +73,20 @@ packages/memriver-core/tests/contract/test_store_contract.py::test_an_invalid_ro
 packages/memriver-core/tests/contract/test_store_contract.py::test_an_orphan_memory_is_never_readable -> rust:memriver-core::tests/agent_path.rs::other_projects_memory_is_not_found
 packages/memriver-core/tests/contract/test_store_contract.py::test_an_undecodable_row_in_the_same_project_is_skipped_by_search_and_index_not_a_crash -> rust:memriver-core::tests/search.rs::no_terms_no_hits
 packages/memriver-core/tests/contract/test_store_contract.py::test_an_undecodable_row_of_another_project_answers_exactly_like_an_absent_id -> rust:memriver-core::tests/agent_path.rs::damaged_row_in_another_project_is_not_found_not_failure
-packages/memriver-core/tests/contract/test_store_contract.py::test_an_uninitialized_store_has_no_global ->
+packages/memriver-core/tests/contract/test_store_contract.py::test_an_uninitialized_store_has_no_global -> rust:memriver-core::tests/projects.rs::init_creates_the_store_and_global
 packages/memriver-core/tests/contract/test_store_contract.py::test_an_update_to_the_current_text_writes_nothing_and_returns_the_memory_as_checked -> rust:memriver-core::tests/agent_path.rs::unchanged_update_writes_nothing_and_returns_current
 packages/memriver-core/tests/contract/test_store_contract.py::test_citing_sources_is_not_an_agent_operation -> rust:memriver-core::tests/agent_path.rs::what_only_the_management_path_may_do_is_no_agent_operation
 packages/memriver-core/tests/contract/test_store_contract.py::test_concurrent_records_from_two_instances_all_land -> rust:memriver-core::tests/agent_path.rs::records_from_many_writers_at_once_all_land
-packages/memriver-core/tests/contract/test_store_contract.py::test_create_with_a_name_the_read_path_would_reject_writes_nothing ->
-packages/memriver-core/tests/contract/test_store_contract.py::test_created_project_reads_back_with_its_directory ->
-packages/memriver-core/tests/contract/test_store_contract.py::test_ensure_global_creates_a_named_unbound_project_once ->
-packages/memriver-core/tests/contract/test_store_contract.py::test_ensure_global_keeps_existing_global_memories ->
+packages/memriver-core/tests/contract/test_store_contract.py::test_create_with_a_name_the_read_path_would_reject_writes_nothing -> rust:memriver-core::tests/projects.rs::a_name_that_is_not_one_creates_nothing
+packages/memriver-core/tests/contract/test_store_contract.py::test_created_project_reads_back_with_its_directory -> rust:memriver-core::tests/projects.rs::init_creates_the_project_and_its_directory_together
+packages/memriver-core/tests/contract/test_store_contract.py::test_ensure_global_creates_a_named_unbound_project_once -> rust:memriver-core::tests/projects.rs::init_creates_the_store_and_global
+packages/memriver-core/tests/contract/test_store_contract.py::test_ensure_global_keeps_existing_global_memories -> rust:memriver-core::tests/bootstrap.rs::ensure_global_keeps_the_global_memories_that_are_there
 packages/memriver-core/tests/contract/test_store_contract.py::test_every_write_method_reads_back_what_it_wrote -> rust:memriver-core::tests/agent_path.rs::an_update_replaces_the_text_and_moves_the_version_and_the_time
 packages/memriver-core/tests/contract/test_store_contract.py::test_global_memories_are_read_only -> rust:memriver-core::tests/agent_path.rs::global_is_read_only_on_this_path
 packages/memriver-core/tests/contract/test_store_contract.py::test_keyword_hits_follow_the_four_order_rules -> rust:memriver-core::tests/search.rs::rank_orders_phrase_then_terms_then_description_then_newest
 packages/memriver-core/tests/contract/test_store_contract.py::test_one_id_means_the_same_memory_in_every_read_write_set_that_may_read_it -> rust:memriver-core::tests/agent_path.rs::write_records_one_change_one_step_one_version
-packages/memriver-core/tests/contract/test_store_contract.py::test_read_any_reads_every_project_including_global ->
-packages/memriver-core/tests/contract/test_store_contract.py::test_read_any_sees_a_soft_deleted_memory_only_when_asked ->
+packages/memriver-core/tests/contract/test_store_contract.py::test_read_any_reads_every_project_including_global -> rust:memriver-core::tests/history.rs::show_reads_any_memory_and_a_deleted_one_only_when_asked
+packages/memriver-core/tests/contract/test_store_contract.py::test_read_any_sees_a_soft_deleted_memory_only_when_asked -> rust:memriver-core::tests/history.rs::show_reads_any_memory_and_a_deleted_one_only_when_asked
 packages/memriver-core/tests/contract/test_store_contract.py::test_record_into_a_missing_project_is_refused_even_with_a_matching_read_write_set -> rust:memriver-core::tests/agent_path.rs::other_projects_memory_is_not_found
 packages/memriver-core/tests/contract/test_store_contract.py::test_record_into_a_removed_store_is_refused_and_never_recreates_it -> rust:memriver-core::tests/agent_path.rs::write_into_a_missing_store_is_project_unavailable
 packages/memriver-core/tests/contract/test_store_contract.py::test_record_into_another_project_is_refused -> rust:memriver-core::tests/agent_path.rs::other_projects_memory_is_not_found
@@ -107,7 +108,7 @@ packages/memriver-core/tests/contract/test_store_contract.py::test_the_managemen
 packages/memriver-core/tests/contract/test_store_contract.py::test_touch_read_sets_last_read_at_and_nothing_else -> rust:memriver-core::tests/agent_path.rs::read_records_a_read_and_survives_a_failing_touch
 packages/memriver-core/tests/contract/test_store_contract.py::test_touch_read_with_a_malformed_at_is_a_no_op -> rust:memriver-core::tests/agent_path.rs::read_records_a_read_and_survives_a_failing_touch
 packages/memriver-core/tests/contract/test_store_contract.py::test_two_writers_with_the_same_version_exactly_one_wins -> rust:memriver-core::tests/agent_path.rs::of_two_writers_with_one_version_exactly_one_wins
-packages/memriver-core/tests/contract/test_store_contract.py::test_unknown_or_malformed_project_is_not_found ->
+packages/memriver-core/tests/contract/test_store_contract.py::test_unknown_or_malformed_project_is_not_found -> rust:memriver-core::tests/projects.rs::an_invalid_project_row_is_storage_failure_not_absence
 packages/memriver-core/tests/contract/test_store_contract.py::test_update_description_empty_string_clears_it -> rust:memriver-core::tests/agent_path.rs::blank_body_refused_blank_description_allowed
 packages/memriver-core/tests/contract/test_store_contract.py::test_update_or_delete_is_refused_once_the_target_project_becomes_global -> rust:memriver-core::tests/agent_path.rs::global_is_read_only_on_this_path
 packages/memriver-core/tests/contract/test_store_contract.py::test_update_replaces_content_advances_updated_and_version_and_keeps_the_rest -> rust:memriver-core::tests/agent_path.rs::an_update_replaces_the_text_and_moves_the_version_and_the_time
@@ -144,21 +145,21 @@ packages/memriver-core/tests/integration/application/test_apply.py::test_update_
 packages/memriver-core/tests/integration/application/test_apply.py::test_writes_leave_read_facts_unchanged -> rust:memriver-core::tests/apply.rs::writes_leave_the_read_facts_alone
 packages/memriver-core/tests/integration/application/test_classifier.py::test_a_blank_description_is_not_sent -> rust:memriver-core::tests/agent_path.rs::the_classifier_is_sent_only_the_new_text_and_never_a_secret
 packages/memriver-core/tests/integration/application/test_classifier.py::test_a_block_refuses_the_write_with_the_category_and_writes_nothing -> rust:memriver-core::tests/agent_path.rs::classifier_runs_before_the_transaction_and_blocks
-packages/memriver-core/tests/integration/application/test_classifier.py::test_a_held_write_lock_really_times_out_a_writer ->
+packages/memriver-core/tests/integration/application/test_classifier.py::test_a_held_write_lock_really_times_out_a_writer -> rust:memriver-core::tests/database.rs::busy_writer_gives_up_after_the_timeout_with_storage_failure
 packages/memriver-core/tests/integration/application/test_classifier.py::test_a_malformed_category_from_the_classifier_reads_as_invalid -> rust:memriver-core::tests/agent_path.rs::a_classifier_that_cannot_decide_refuses_and_its_labels_are_never_echoed
 packages/memriver-core/tests/integration/application/test_classifier.py::test_a_malformed_detail_from_the_classifier_reads_as_unknown -> rust:memriver-core::tests/agent_path.rs::a_classifier_that_cannot_decide_refuses_and_its_labels_are_never_echoed
-packages/memriver-core/tests/integration/application/test_classifier.py::test_a_policy_refusal_carries_no_detail ->
-packages/memriver-core/tests/integration/application/test_classifier.py::test_a_policy_refusal_in_apply_has_the_same_shape_with_or_without_a_classifier ->
+packages/memriver-core/tests/integration/application/test_classifier.py::test_a_policy_refusal_carries_no_detail -> rust:memriver-core::tests/agent_path.rs::a_delete_whose_text_a_newer_rule_refuses_is_refused
+packages/memriver-core/tests/integration/application/test_classifier.py::test_a_policy_refusal_in_apply_has_the_same_shape_with_or_without_a_classifier -> rust:memriver-core::tests/apply.rs::the_policy_refuses_in_the_same_words_with_or_without_a_classifier
 packages/memriver-core/tests/integration/application/test_classifier.py::test_a_secret_is_refused_by_the_policy_before_the_classifier_sees_it -> rust:memriver-core::tests/agent_path.rs::the_classifier_is_sent_only_the_new_text_and_never_a_secret
 packages/memriver-core/tests/integration/application/test_classifier.py::test_an_empty_detail_from_the_classifier_reads_as_unknown -> rust:memriver-core::tests/agent_path.rs::a_classifier_that_cannot_decide_refuses_and_its_labels_are_never_echoed
-packages/memriver-core/tests/integration/application/test_classifier.py::test_an_exception_from_the_classifier_is_a_bug_and_propagates ->
+packages/memriver-core/tests/integration/application/test_classifier.py::test_an_exception_from_the_classifier_is_a_bug_and_propagates -> n/a: a classifier answers with a verdict; a panic inside one is not caught anywhere and ends the call like any other fault
 packages/memriver-core/tests/integration/application/test_classifier.py::test_an_undecided_classifier_refuses_with_its_reason_and_points_at_doctor -> rust:memriver-core::tests/agent_path.rs::a_classifier_that_cannot_decide_refuses_and_its_labels_are_never_echoed
-packages/memriver-core/tests/integration/application/test_classifier.py::test_apply_checks_creates_and_text_updates_in_op_order_only ->
+packages/memriver-core/tests/integration/application/test_classifier.py::test_apply_checks_creates_and_text_updates_in_op_order_only -> rust:memriver-core::tests/apply.rs::the_classifier_is_asked_about_every_new_text_before_anything_is_written
 packages/memriver-core/tests/integration/application/test_classifier.py::test_record_sends_the_description_and_body_joined_by_a_blank_line -> rust:memriver-core::tests/agent_path.rs::classifier_runs_before_the_transaction_and_blocks
-packages/memriver-core/tests/integration/application/test_classifier.py::test_restore_and_undo_send_nothing ->
+packages/memriver-core/tests/integration/application/test_classifier.py::test_restore_and_undo_send_nothing -> rust:memriver-core::tests/bootstrap.rs::a_restore_and_an_undo_ask_the_classifier_nothing
 packages/memriver-core/tests/integration/application/test_classifier.py::test_the_classifier_never_runs_under_the_write_lock -> rust:memriver-core::tests/agent_path.rs::classifier_runs_before_the_transaction_and_blocks
-packages/memriver-core/tests/integration/application/test_classifier.py::test_the_first_block_refuses_the_whole_batch ->
-packages/memriver-core/tests/integration/application/test_classifier.py::test_the_port_is_part_of_the_public_core_surface ->
+packages/memriver-core/tests/integration/application/test_classifier.py::test_the_first_block_refuses_the_whole_batch -> rust:memriver-core::tests/apply.rs::the_classifier_is_asked_about_every_new_text_before_anything_is_written
+packages/memriver-core/tests/integration/application/test_classifier.py::test_the_port_is_part_of_the_public_core_surface -> n/a: what the crate offers is what it declares public, and the compiler checks every use of it
 packages/memriver-core/tests/integration/application/test_classifier.py::test_update_sends_its_new_text_and_delete_sends_nothing -> rust:memriver-core::tests/agent_path.rs::classifier_runs_before_the_transaction_and_blocks
 packages/memriver-core/tests/integration/application/test_classifier.py::test_without_a_classifier_writes_behave_as_before -> rust:memriver-core::tests/agent_path.rs::write_records_one_change_one_step_one_version
 packages/memriver-core/tests/integration/application/test_metadata.py::test_a_bad_level_or_tag_name_is_refused_and_nothing_is_written -> rust:memriver-core::tests/metadata.rs::a_bad_level_or_tag_name_is_refused_and_nothing_is_written
@@ -522,8 +523,8 @@ packages/memriver-core/tests/integration/repository/test_worktree.py::test_git_n
 packages/memriver-core/tests/integration/repository/test_worktree.py::test_git_that_hangs_past_the_timeout_is_degraded -> rust:memriver-core::tests/worktree.rs::git_that_hangs_past_the_timeout_is_unknown
 packages/memriver-core/tests/integration/repository/test_worktree.py::test_inherited_git_variables_are_ignored -> rust:memriver-core::tests/worktree.rs::inherited_git_variables_are_ignored
 packages/memriver-core/tests/integration/repository/test_worktree.py::test_the_main_tree_root_and_its_sub_directories_are_unchanged -> rust:memriver-core::tests/worktree.rs::the_main_tree_root_and_its_sub_directories_are_unchanged
-packages/memriver-core/tests/test_smoke.py::test_every_layer_imports ->
-packages/memriver-core/tests/test_smoke.py::test_version ->
+packages/memriver-core/tests/test_smoke.py::test_every_layer_imports -> rust:memriver-core::tests/bootstrap.rs::the_four_services_are_built_over_the_root_of_the_settings
+packages/memriver-core/tests/test_smoke.py::test_version -> rust:memriver::tests/cli_version.rs::version_through_the_library_entry
 packages/memriver-core/tests/unit/application/test_maintenance.py::test_a_legacy_store_is_degraded_and_still_says_it_is_not_initialized -> rust:memriver-core::application::maintenance::tests::a_legacy_store_is_degraded_and_still_says_it_is_not_initialized
 packages/memriver-core/tests/unit/application/test_maintenance.py::test_backend_finding_fields_are_copied_without_absolute_paths -> rust:memriver-core::application::maintenance::tests::backend_finding_fields_are_copied
 packages/memriver-core/tests/unit/application/test_maintenance.py::test_backend_findings_precede_policy_findings -> rust:memriver-core::application::maintenance::tests::backend_findings_precede_policy_findings
@@ -750,32 +751,32 @@ packages/memriver-core/tests/unit/models/test_session.py::test_a_session_move_ho
 packages/memriver-core/tests/unit/models/test_session.py::test_a_session_move_rejects_a_value_it_could_not_hold -> rust:memriver-core::models::session::tests::a_session_move_rejects_a_value_it_could_not_hold
 packages/memriver-core/tests/unit/models/test_store_diagnostics.py::test_diagnostics_report_carries_projects_with_an_empty_default -> n/a: a plain value with no rule of its own
 packages/memriver-core/tests/unit/models/test_store_diagnostics.py::test_store_report_keeps_memories_projects_and_findings -> n/a: a plain value with no rule of its own
-packages/memriver-core/tests/unit/test_architecture.py::test_application_names_the_store_ports_not_the_adapters ->
-packages/memriver-core/tests/unit/test_architecture.py::test_forbidden_import_edge ->
-packages/memriver-core/tests/unit/test_architecture.py::test_identifiers_in_catches_every_new_node_kind ->
-packages/memriver-core/tests/unit/test_architecture.py::test_imports_from_source_catches_every_bypass_form ->
-packages/memriver-core/tests/unit/test_architecture.py::test_imports_from_source_catches_settings_module_alias_bypass ->
-packages/memriver-core/tests/unit/test_architecture.py::test_imports_from_source_clean_module_passes ->
+packages/memriver-core/tests/unit/test_architecture.py::test_application_names_the_store_ports_not_the_adapters -> n/a: the services name the one store of each kind there is; no port stands between them
+packages/memriver-core/tests/unit/test_architecture.py::test_forbidden_import_edge -> rust:memriver::tests/architecture.rs::the_crates_depend_only_downwards
+packages/memriver-core/tests/unit/test_architecture.py::test_identifiers_in_catches_every_new_node_kind -> n/a: a test of the Python scanner itself, which has no counterpart
+packages/memriver-core/tests/unit/test_architecture.py::test_imports_from_source_catches_every_bypass_form -> n/a: a test of the Python scanner itself, which has no counterpart
+packages/memriver-core/tests/unit/test_architecture.py::test_imports_from_source_catches_settings_module_alias_bypass -> n/a: a test of the Python scanner itself, which has no counterpart
+packages/memriver-core/tests/unit/test_architecture.py::test_imports_from_source_clean_module_passes -> n/a: a test of the Python scanner itself, which has no counterpart
 packages/memriver-core/tests/unit/test_architecture.py::test_maintenance_application_depends_only_on_models_and_ports -> n/a: the maintenance service names the one inspector and the one store there are; no port stands between them
-packages/memriver-core/tests/unit/test_architecture.py::test_no_dream_ttl_or_run_id_identifier ->
-packages/memriver-core/tests/unit/test_architecture.py::test_no_git_discovery_in_models_or_application ->
-packages/memriver-core/tests/unit/test_architecture.py::test_only_bootstrap_constructs_the_sqlite_inspector ->
-packages/memriver-core/tests/unit/test_architecture.py::test_only_bootstrap_imports_settings ->
-packages/memriver-core/tests/unit/test_architecture.py::test_only_bootstrap_names_a_composed_service ->
-packages/memriver-core/tests/unit/test_architecture.py::test_only_bootstrap_names_a_concrete_adapter ->
-packages/memriver-core/tests/unit/test_architecture.py::test_strict_layer_allowlist ->
-packages/memriver-core/tests/unit/test_bootstrap.py::test_an_explicit_root_wins_over_the_settings_root ->
-packages/memriver-core/tests/unit/test_bootstrap.py::test_bootstrap_exports_the_services_builder_the_empty_index_and_the_purge ->
+packages/memriver-core/tests/unit/test_architecture.py::test_no_dream_ttl_or_run_id_identifier -> rust:memriver::tests/architecture.rs::memriver_core_takes_no_word_of_the_crates_above_it
+packages/memriver-core/tests/unit/test_architecture.py::test_no_git_discovery_in_models_or_application -> rust:memriver::tests/architecture.rs::git_is_started_in_one_module_of_memriver_core
+packages/memriver-core/tests/unit/test_architecture.py::test_only_bootstrap_constructs_the_sqlite_inspector -> n/a: the services are composed by one function over plain structs; there is no second place to keep from doing it
+packages/memriver-core/tests/unit/test_architecture.py::test_only_bootstrap_imports_settings -> n/a: the fixed limits are constants of the settings module and are used where they apply; only what a user can set is handed in
+packages/memriver-core/tests/unit/test_architecture.py::test_only_bootstrap_names_a_composed_service -> n/a: the services are composed by one function over plain structs; there is no second place to keep from doing it
+packages/memriver-core/tests/unit/test_architecture.py::test_only_bootstrap_names_a_concrete_adapter -> n/a: the services are composed by one function over plain structs; there is no second place to keep from doing it
+packages/memriver-core/tests/unit/test_architecture.py::test_strict_layer_allowlist -> rust:memriver::tests/architecture.rs::the_crates_depend_only_downwards
+packages/memriver-core/tests/unit/test_bootstrap.py::test_an_explicit_root_wins_over_the_settings_root -> n/a: the services are built from the settings alone; their root is the store
+packages/memriver-core/tests/unit/test_bootstrap.py::test_bootstrap_exports_the_services_builder_the_empty_index_and_the_purge -> n/a: what the crate offers is what it declares public, and the compiler checks every use of it
 packages/memriver-core/tests/unit/test_bootstrap.py::test_building_the_services_never_loads_the_secret_scanner -> rust:memriver-core::application::sessions::tests::building_the_services_and_the_calls_that_check_no_text_never_load_the_policy
 packages/memriver-core/tests/unit/test_bootstrap.py::test_composes_the_directory_callables -> n/a: the session service calls the directory and git functions itself; nothing is handed in
-packages/memriver-core/tests/unit/test_bootstrap.py::test_composes_the_four_services ->
-packages/memriver-core/tests/unit/test_bootstrap.py::test_composes_the_sqlite_adapters ->
-packages/memriver-core/tests/unit/test_bootstrap.py::test_injects_the_configured_limits_and_the_fixed_constants ->
+packages/memriver-core/tests/unit/test_bootstrap.py::test_composes_the_four_services -> rust:memriver-core::tests/bootstrap.rs::the_four_services_are_built_over_the_root_of_the_settings
+packages/memriver-core/tests/unit/test_bootstrap.py::test_composes_the_sqlite_adapters -> rust:memriver-core::tests/bootstrap.rs::the_four_services_are_built_over_the_root_of_the_settings
+packages/memriver-core/tests/unit/test_bootstrap.py::test_injects_the_configured_limits_and_the_fixed_constants -> rust:memriver-core::tests/bootstrap.rs::the_limits_of_the_settings_reach_the_services
 packages/memriver-core/tests/unit/test_bootstrap.py::test_injects_the_session_constants -> n/a: the session service takes its limits from the settings module itself; nothing is handed in
 packages/memriver-core/tests/unit/test_bootstrap.py::test_maintenance_shares_the_memory_store_and_the_one_content_policy -> rust:memriver-core::application::maintenance::tests::maintenance_shares_the_one_content_policy_and_a_diagnosis_does_not_load_it
 packages/memriver-core/tests/unit/test_bootstrap.py::test_memory_writes_ask_the_session_service_through_its_callbacks -> rust:memriver-core::tests/sessions.rs::a_pending_session_writes_nothing_through_the_built_services_and_a_save_moves_its_mark
-packages/memriver-core/tests/unit/test_bootstrap.py::test_the_two_text_checking_services_share_one_content_policy ->
-packages/memriver-core/tests/unit/test_bootstrap.py::test_uses_the_settings_root_by_default ->
+packages/memriver-core/tests/unit/test_bootstrap.py::test_the_two_text_checking_services_share_one_content_policy -> rust:memriver-core::application::sessions::tests::building_the_services_and_the_calls_that_check_no_text_never_load_the_policy + rust:memriver-core::application::maintenance::tests::maintenance_shares_the_one_content_policy_and_a_diagnosis_does_not_load_it
+packages/memriver-core/tests/unit/test_bootstrap.py::test_uses_the_settings_root_by_default -> rust:memriver-core::tests/bootstrap.rs::the_four_services_are_built_over_the_root_of_the_settings
 packages/memriver-core/tests/unit/test_settings.py::test_a_cross_field_failure_from_the_environment_alone_blames_the_environment -> rust:memriver-core::tests/settings.rs::default_above_max_blames_max_when_neither_set_the_default
 packages/memriver-core/tests/unit/test_settings.py::test_a_cross_field_failure_from_the_file_names_the_files_max -> rust:memriver-core::tests/settings.rs::default_above_max_blames_max_when_neither_set_the_default
 packages/memriver-core/tests/unit/test_settings.py::test_a_direct_construction_reads_no_settings_file -> rust:memriver-core::tests/settings.rs::light_settings_read_nothing
@@ -1857,86 +1858,86 @@ packages/memriver/tests/test_hooks.py::test_ups_move_notice_only_once ->
 packages/memriver/tests/test_hooks.py::test_ups_same_project_cd_silent ->
 packages/memriver/tests/test_hooks.py::test_ups_shell_cd_silent ->
 packages/memriver/tests/test_hooks.py::test_user_prompt_submit_records_each_prompt_silently ->
-packages/memriver/tests/test_memory_commands.py::test_a_global_memory_hard_deleted_meanwhile_is_no_such_memory ->
-packages/memriver/tests/test_memory_commands.py::test_a_global_memory_is_soft_deleted_by_id_from_anywhere ->
-packages/memriver/tests/test_memory_commands.py::test_a_restore_conflict_rereads_and_asks_again ->
-packages/memriver/tests/test_memory_commands.py::test_a_restore_conflict_under_yes_fails_instead_of_asking ->
-packages/memriver/tests/test_memory_commands.py::test_a_restore_refused_by_the_content_policy_prints_the_rule ->
-packages/memriver/tests/test_memory_commands.py::test_a_soft_delete_of_a_global_memory_whose_text_now_hits_the_policy_is_refused ->
-packages/memriver/tests/test_memory_commands.py::test_a_soft_delete_of_a_project_memory_whose_text_now_hits_the_policy_is_refused ->
-packages/memriver/tests/test_memory_commands.py::test_a_stale_code_deletes_nothing_and_prints_the_new_plan ->
-packages/memriver/tests/test_memory_commands.py::test_a_version_with_no_recorded_change_shows_imported ->
-packages/memriver/tests/test_memory_commands.py::test_an_undo_or_restore_past_a_metadata_limit_prints_the_setting ->
-packages/memriver/tests/test_memory_commands.py::test_an_undo_refused_by_the_content_policy_prints_the_rule ->
-packages/memriver/tests/test_memory_commands.py::test_cli_wires_history_and_a_hard_dry_run ->
-packages/memriver/tests/test_memory_commands.py::test_confirm_with_the_printed_code_purges_every_member ->
-packages/memriver/tests/test_memory_commands.py::test_hard_delete_declined_deletes_nothing ->
-packages/memriver/tests/test_memory_commands.py::test_hard_delete_of_an_unknown_memory_is_refused ->
-packages/memriver/tests/test_memory_commands.py::test_hard_delete_under_yes_fails_when_the_plan_changes ->
-packages/memriver/tests/test_memory_commands.py::test_hard_dry_run_prints_the_plan_and_the_confirm_command ->
-packages/memriver/tests/test_memory_commands.py::test_hard_dry_run_refuses_cleanly_when_a_referrer_id_is_not_addressable ->
-packages/memriver/tests/test_memory_commands.py::test_history_lists_every_version_with_its_change_and_state ->
-packages/memriver/tests/test_memory_commands.py::test_history_of_a_version_with_an_undecodable_source_id_is_store_unreadable ->
-packages/memriver/tests/test_memory_commands.py::test_history_refuses_an_unknown_memory_or_version ->
-packages/memriver/tests/test_memory_commands.py::test_history_show_prints_one_version_in_full ->
-packages/memriver/tests/test_memory_commands.py::test_interactive_hard_delete_asks_again_when_the_plan_changes ->
-packages/memriver/tests/test_memory_commands.py::test_restore_declined_or_without_a_terminal_changes_nothing ->
-packages/memriver/tests/test_memory_commands.py::test_restore_shows_both_states_then_records_a_human_change ->
-packages/memriver/tests/test_memory_commands.py::test_restore_to_an_unknown_version_is_refused ->
-packages/memriver/tests/test_memory_commands.py::test_restoring_a_live_version_undeletes ->
-packages/memriver/tests/test_memory_commands.py::test_soft_delete_declined_at_eof_or_without_a_terminal_changes_nothing ->
-packages/memriver/tests/test_memory_commands.py::test_soft_delete_from_outside_the_project_names_the_owning_project ->
-packages/memriver/tests/test_memory_commands.py::test_soft_delete_from_the_project_directory_is_a_human_change ->
-packages/memriver/tests/test_memory_commands.py::test_soft_delete_needs_the_current_version ->
-packages/memriver/tests/test_memory_commands.py::test_soft_delete_with_yes_skips_the_prompt ->
-packages/memriver/tests/test_memory_commands.py::test_undo_declined_changes_nothing ->
-packages/memriver/tests/test_memory_commands.py::test_undo_of_a_change_a_hard_delete_cut_is_refused ->
-packages/memriver/tests/test_memory_commands.py::test_undo_refusals_print_their_reason ->
-packages/memriver/tests/test_memory_commands.py::test_undo_shows_the_change_and_its_inverse_then_round_trips ->
-packages/memriver/tests/test_project_commands.py::test_a_server_built_before_bind_keeps_its_identity ->
-packages/memriver/tests/test_project_commands.py::test_a_store_link_redirected_during_the_prompt_is_refused ->
-packages/memriver/tests/test_project_commands.py::test_adopt_applies_the_same_target_checks ->
-packages/memriver/tests/test_project_commands.py::test_adopt_binds_an_existing_project_and_is_idempotent ->
-packages/memriver/tests/test_project_commands.py::test_adopt_of_a_project_removed_during_confirmation_exits_2 ->
-packages/memriver/tests/test_project_commands.py::test_adopt_refuses_the_global_project ->
-packages/memriver/tests/test_project_commands.py::test_adopt_survives_the_project_read_failing_after_has_directory ->
-packages/memriver/tests/test_project_commands.py::test_an_invalid_project_id_argument_cannot_forge_an_output_line ->
-packages/memriver/tests/test_project_commands.py::test_explain_diagnostic_never_forges_a_fake_root_line ->
-packages/memriver/tests/test_project_commands.py::test_explain_keeps_consecutive_spaces_in_a_registered_root ->
-packages/memriver/tests/test_project_commands.py::test_explain_never_creates_or_writes_the_store ->
-packages/memriver/tests/test_project_commands.py::test_explain_states_and_exit_codes ->
-packages/memriver/tests/test_project_commands.py::test_init_aborts_on_no_and_refuses_non_tty_without_yes ->
-packages/memriver/tests/test_project_commands.py::test_init_creates_a_named_project_and_binds_the_directory ->
-packages/memriver/tests/test_project_commands.py::test_init_independent_list_never_forges_a_fake_project_line ->
-packages/memriver/tests/test_project_commands.py::test_init_inside_a_registered_parent_is_allowed ->
-packages/memriver/tests/test_project_commands.py::test_init_is_one_transaction_and_a_changed_target_creates_nothing ->
-packages/memriver/tests/test_project_commands.py::test_init_of_a_directory_named_with_a_newline_never_forges_a_line ->
-packages/memriver/tests/test_project_commands.py::test_init_prompt_eof_aborts_without_a_traceback ->
-packages/memriver/tests/test_project_commands.py::test_init_refuses_a_directory_inside_the_memory_store ->
-packages/memriver/tests/test_project_commands.py::test_init_refuses_an_unaddressable_path_without_a_traceback ->
-packages/memriver/tests/test_project_commands.py::test_init_refuses_case_alias_of_home_and_of_the_store_parent ->
-packages/memriver/tests/test_project_commands.py::test_init_refuses_missing_directory_and_already_bound_dir ->
-packages/memriver/tests/test_project_commands.py::test_init_refuses_root_home_and_home_ancestors ->
-packages/memriver/tests/test_project_commands.py::test_init_refuses_store_inside_target ->
-packages/memriver/tests/test_project_commands.py::test_init_refuses_when_containment_cannot_be_verified ->
-packages/memriver/tests/test_project_commands.py::test_init_takes_a_name_option_and_refuses_a_bad_name_before_the_prompt ->
-packages/memriver/tests/test_project_commands.py::test_no_command_or_refusal_touches_the_target ->
-packages/memriver/tests/test_project_commands.py::test_parent_init_lists_existing_child_roots_as_independent ->
-packages/memriver/tests/test_project_commands.py::test_parent_plan_lists_a_case_alias_child_root_as_independent ->
-packages/memriver/tests/test_project_commands.py::test_read_project_is_how_existence_is_decided ->
-packages/memriver/tests/test_project_commands.py::test_relative_directories_resolve_against_the_injected_cwd ->
-packages/memriver/tests/test_project_commands.py::test_store_repointed_into_target_while_the_prompt_is_open_is_refused ->
-packages/memriver/tests/test_project_commands.py::test_target_deleted_while_the_prompt_is_open_is_refused ->
-packages/memriver/tests/test_project_commands.py::test_unbind_executes_exactly_the_pair_it_showed ->
-packages/memriver/tests/test_project_commands.py::test_unbind_literal_first_and_shows_next_identity ->
-packages/memriver/tests/test_project_commands.py::test_unbind_of_a_root_that_became_a_symlink_removes_the_stored_spelling ->
-packages/memriver/tests/test_project_commands.py::test_unbind_resolves_a_relative_directory_against_the_injected_cwd ->
-packages/memriver/tests/test_project_commands.py::test_unbind_shows_parent_as_next_identity ->
-packages/memriver/tests/test_project_context.py::test_count_child_git_markers ->
-packages/memriver/tests/test_project_context.py::test_find_git_root_climbs_past_a_looping_git_marker ->
-packages/memriver/tests/test_project_context.py::test_find_git_root_is_kept_for_installers ->
-packages/memriver/tests/test_project_context.py::test_find_git_root_raises_when_a_marker_cannot_be_checked ->
-packages/memriver/tests/test_project_context.py::test_visible_replaces_controls_one_for_one_and_keeps_ordinary_spaces ->
+packages/memriver/tests/test_memory_commands.py::test_a_global_memory_hard_deleted_meanwhile_is_no_such_memory -> rust:memriver::tests/cli_memory_commands.rs::a_global_memory_hard_deleted_meanwhile_is_no_such_memory
+packages/memriver/tests/test_memory_commands.py::test_a_global_memory_is_soft_deleted_by_id_from_anywhere -> rust:memriver::tests/cli_memory_commands.rs::a_global_memory_is_soft_deleted_by_id_from_anywhere
+packages/memriver/tests/test_memory_commands.py::test_a_restore_conflict_rereads_and_asks_again -> rust:memriver::tests/cli_memory_commands.rs::a_restore_conflict_rereads_and_asks_again
+packages/memriver/tests/test_memory_commands.py::test_a_restore_conflict_under_yes_fails_instead_of_asking -> rust:memriver::tests/cli_memory_commands.rs::a_restore_conflict_under_yes_fails_instead_of_asking
+packages/memriver/tests/test_memory_commands.py::test_a_restore_refused_by_the_content_policy_prints_the_rule -> rust:memriver::tests/cli_memory_commands.rs::a_restore_refused_by_the_content_policy_prints_the_rule
+packages/memriver/tests/test_memory_commands.py::test_a_soft_delete_of_a_global_memory_whose_text_now_hits_the_policy_is_refused -> rust:memriver::tests/cli_memory_commands.rs::a_soft_delete_of_a_global_memory_whose_text_now_hits_the_policy_is_refused
+packages/memriver/tests/test_memory_commands.py::test_a_soft_delete_of_a_project_memory_whose_text_now_hits_the_policy_is_refused -> rust:memriver::tests/cli_memory_commands.rs::a_soft_delete_of_a_project_memory_whose_text_now_hits_the_policy_is_refused
+packages/memriver/tests/test_memory_commands.py::test_a_stale_code_deletes_nothing_and_prints_the_new_plan -> rust:memriver::tests/cli_memory_commands.rs::a_stale_code_deletes_nothing_and_prints_the_new_plan
+packages/memriver/tests/test_memory_commands.py::test_a_version_with_no_recorded_change_shows_imported -> rust:memriver::tests/cli_memory_commands.rs::a_version_with_no_recorded_change_shows_imported
+packages/memriver/tests/test_memory_commands.py::test_an_undo_or_restore_past_a_metadata_limit_prints_the_setting -> rust:memriver::tests/cli_memory_commands.rs::an_undo_or_restore_past_a_metadata_limit_prints_the_setting
+packages/memriver/tests/test_memory_commands.py::test_an_undo_refused_by_the_content_policy_prints_the_rule -> rust:memriver::tests/cli_memory_commands.rs::an_undo_refused_by_the_content_policy_prints_the_rule
+packages/memriver/tests/test_memory_commands.py::test_cli_wires_history_and_a_hard_dry_run -> rust:memriver::tests/cli_memory_commands.rs::cli_wires_history_and_a_hard_dry_run
+packages/memriver/tests/test_memory_commands.py::test_confirm_with_the_printed_code_purges_every_member -> rust:memriver::tests/cli_memory_commands.rs::confirm_with_the_printed_code_purges_every_member
+packages/memriver/tests/test_memory_commands.py::test_hard_delete_declined_deletes_nothing -> rust:memriver::tests/cli_memory_commands.rs::hard_delete_declined_deletes_nothing + rust:memriver::tests/cli_memory_commands.rs::declined_is_exit_1
+packages/memriver/tests/test_memory_commands.py::test_hard_delete_of_an_unknown_memory_is_refused -> rust:memriver::tests/cli_memory_commands.rs::hard_delete_of_an_unknown_memory_is_refused
+packages/memriver/tests/test_memory_commands.py::test_hard_delete_under_yes_fails_when_the_plan_changes -> rust:memriver::tests/cli_memory_commands.rs::hard_delete_under_yes_fails_when_the_plan_changes
+packages/memriver/tests/test_memory_commands.py::test_hard_dry_run_prints_the_plan_and_the_confirm_command -> rust:memriver::tests/cli_memory_commands.rs::hard_dry_run_prints_the_plan_and_the_confirm_command
+packages/memriver/tests/test_memory_commands.py::test_hard_dry_run_refuses_cleanly_when_a_referrer_id_is_not_addressable -> rust:memriver::tests/cli_memory_commands.rs::hard_dry_run_refuses_cleanly_when_a_referrer_id_is_not_addressable
+packages/memriver/tests/test_memory_commands.py::test_history_lists_every_version_with_its_change_and_state -> rust:memriver::tests/cli_memory_commands.rs::history_lists_every_version_with_its_change_and_state
+packages/memriver/tests/test_memory_commands.py::test_history_of_a_version_with_an_undecodable_source_id_is_store_unreadable -> rust:memriver::tests/cli_memory_commands.rs::history_of_a_version_with_an_undecodable_source_id_is_store_unreadable
+packages/memriver/tests/test_memory_commands.py::test_history_refuses_an_unknown_memory_or_version -> rust:memriver::tests/cli_memory_commands.rs::history_refuses_an_unknown_memory_or_version
+packages/memriver/tests/test_memory_commands.py::test_history_show_prints_one_version_in_full -> rust:memriver::tests/cli_memory_commands.rs::history_show_prints_one_version_in_full
+packages/memriver/tests/test_memory_commands.py::test_interactive_hard_delete_asks_again_when_the_plan_changes -> rust:memriver::tests/cli_memory_commands.rs::interactive_hard_delete_asks_again_when_the_plan_changes
+packages/memriver/tests/test_memory_commands.py::test_restore_declined_or_without_a_terminal_changes_nothing -> rust:memriver::tests/cli_memory_commands.rs::restore_declined_or_without_a_terminal_changes_nothing + rust:memriver::tests/cli_memory_commands.rs::declined_is_exit_1 + rust:memriver::tests/cli_memory_commands.rs::non_tty_without_yes_is_exit_2
+packages/memriver/tests/test_memory_commands.py::test_restore_shows_both_states_then_records_a_human_change -> rust:memriver::tests/cli_memory_commands.rs::restore_shows_both_states_then_records_a_human_change
+packages/memriver/tests/test_memory_commands.py::test_restore_to_an_unknown_version_is_refused -> rust:memriver::tests/cli_memory_commands.rs::restore_to_an_unknown_version_is_refused
+packages/memriver/tests/test_memory_commands.py::test_restoring_a_live_version_undeletes -> rust:memriver::tests/cli_memory_commands.rs::restoring_a_live_version_undeletes
+packages/memriver/tests/test_memory_commands.py::test_soft_delete_declined_at_eof_or_without_a_terminal_changes_nothing -> rust:memriver::tests/cli_memory_commands.rs::soft_delete_declined_at_eof_or_without_a_terminal_changes_nothing + rust:memriver::tests/cli_memory_commands.rs::declined_is_exit_1 + rust:memriver::tests/cli_memory_commands.rs::non_tty_without_yes_is_exit_2
+packages/memriver/tests/test_memory_commands.py::test_soft_delete_from_outside_the_project_names_the_owning_project -> rust:memriver::tests/cli_memory_commands.rs::soft_delete_from_outside_the_project_names_the_owning_project
+packages/memriver/tests/test_memory_commands.py::test_soft_delete_from_the_project_directory_is_a_human_change -> rust:memriver::tests/cli_memory_commands.rs::soft_delete_from_the_project_directory_is_a_human_change
+packages/memriver/tests/test_memory_commands.py::test_soft_delete_needs_the_current_version -> rust:memriver::tests/cli_memory_commands.rs::soft_delete_needs_the_current_version
+packages/memriver/tests/test_memory_commands.py::test_soft_delete_with_yes_skips_the_prompt -> rust:memriver::tests/cli_memory_commands.rs::soft_delete_with_yes_skips_the_prompt + rust:memriver::tests/cli_memory_commands.rs::with_yes_nothing_is_asked_and_each_command_goes_ahead
+packages/memriver/tests/test_memory_commands.py::test_undo_declined_changes_nothing -> rust:memriver::tests/cli_memory_commands.rs::undo_declined_changes_nothing + rust:memriver::tests/cli_memory_commands.rs::declined_is_exit_1
+packages/memriver/tests/test_memory_commands.py::test_undo_of_a_change_a_hard_delete_cut_is_refused -> rust:memriver::tests/cli_memory_commands.rs::undo_of_a_change_a_hard_delete_cut_is_refused
+packages/memriver/tests/test_memory_commands.py::test_undo_refusals_print_their_reason -> rust:memriver::tests/cli_memory_commands.rs::undo_refusals_print_their_reason
+packages/memriver/tests/test_memory_commands.py::test_undo_shows_the_change_and_its_inverse_then_round_trips -> rust:memriver::tests/cli_memory_commands.rs::undo_shows_the_change_and_its_inverse_then_round_trips
+packages/memriver/tests/test_project_commands.py::test_a_server_built_before_bind_keeps_its_identity -> n/a: a test of the MCP server, not of a project command: a server that is running keeps the project it started with, which the server's own tests show
+packages/memriver/tests/test_project_commands.py::test_a_store_link_redirected_during_the_prompt_is_refused -> rust:memriver::tests/cli_project_commands.rs::a_store_link_redirected_during_the_prompt_is_refused
+packages/memriver/tests/test_project_commands.py::test_adopt_applies_the_same_target_checks -> rust:memriver::tests/cli_project_commands.rs::adopt_applies_the_same_target_checks
+packages/memriver/tests/test_project_commands.py::test_adopt_binds_an_existing_project_and_is_idempotent -> rust:memriver::tests/cli_project_commands.rs::adopt_binds_an_existing_project_and_is_idempotent
+packages/memriver/tests/test_project_commands.py::test_adopt_of_a_project_removed_during_confirmation_exits_2 -> rust:memriver::tests/cli_project_commands.rs::adopt_of_a_project_removed_during_confirmation_exits_2
+packages/memriver/tests/test_project_commands.py::test_adopt_refuses_the_global_project -> rust:memriver::tests/cli_project_commands.rs::adopt_refuses_the_global_project
+packages/memriver/tests/test_project_commands.py::test_adopt_survives_the_project_read_failing_after_has_directory -> n/a: the second read follows the first inside one call, with no prompt between them, and no real state fails only the second; the two sentences it answers with are asserted where a real state reaches them
+packages/memriver/tests/test_project_commands.py::test_an_invalid_project_id_argument_cannot_forge_an_output_line -> rust:memriver::tests/cli_project_commands.rs::an_invalid_project_id_argument_cannot_forge_an_output_line
+packages/memriver/tests/test_project_commands.py::test_explain_diagnostic_never_forges_a_fake_root_line -> rust:memriver::tests/cli_project_commands.rs::explain_diagnostic_never_forges_a_fake_root_line
+packages/memriver/tests/test_project_commands.py::test_explain_keeps_consecutive_spaces_in_a_registered_root -> rust:memriver::tests/cli_project_commands.rs::explain_keeps_consecutive_spaces_in_a_registered_root
+packages/memriver/tests/test_project_commands.py::test_explain_never_creates_or_writes_the_store -> rust:memriver::tests/cli_project_commands.rs::explain_never_creates_or_writes_the_store
+packages/memriver/tests/test_project_commands.py::test_explain_states_and_exit_codes -> rust:memriver::tests/cli_project_commands.rs::explain_states_and_exit_codes + rust:memriver::tests/cli_project_commands.rs::explain_of_a_store_of_a_later_schema_is_unavailable
+packages/memriver/tests/test_project_commands.py::test_init_aborts_on_no_and_refuses_non_tty_without_yes -> rust:memriver::tests/cli_project_commands.rs::init_aborts_on_no_and_refuses_non_tty_without_yes
+packages/memriver/tests/test_project_commands.py::test_init_creates_a_named_project_and_binds_the_directory -> rust:memriver::tests/cli_project_commands.rs::init_creates_a_named_project_and_binds_the_directory
+packages/memriver/tests/test_project_commands.py::test_init_independent_list_never_forges_a_fake_project_line -> rust:memriver::tests/cli_project_commands.rs::init_independent_list_never_forges_a_fake_project_line
+packages/memriver/tests/test_project_commands.py::test_init_inside_a_registered_parent_is_allowed -> rust:memriver::tests/cli_project_commands.rs::init_inside_a_registered_parent_is_allowed
+packages/memriver/tests/test_project_commands.py::test_init_is_one_transaction_and_a_changed_target_creates_nothing -> rust:memriver::tests/cli_project_commands.rs::init_is_one_transaction_and_a_changed_target_creates_nothing
+packages/memriver/tests/test_project_commands.py::test_init_of_a_directory_named_with_a_newline_never_forges_a_line -> rust:memriver::tests/cli_project_commands.rs::init_of_a_directory_named_with_a_newline_never_forges_a_line
+packages/memriver/tests/test_project_commands.py::test_init_prompt_eof_aborts_without_a_traceback -> rust:memriver::tests/cli_project_commands.rs::init_prompt_eof_aborts_without_a_traceback
+packages/memriver/tests/test_project_commands.py::test_init_refuses_a_directory_inside_the_memory_store -> rust:memriver::tests/cli_project_commands.rs::init_refuses_a_directory_inside_the_memory_store
+packages/memriver/tests/test_project_commands.py::test_init_refuses_an_unaddressable_path_without_a_traceback -> rust:memriver::tests/cli_project_commands.rs::init_refuses_an_unaddressable_path_without_a_traceback
+packages/memriver/tests/test_project_commands.py::test_init_refuses_case_alias_of_home_and_of_the_store_parent -> rust:memriver::tests/cli_project_commands.rs::init_refuses_case_alias_of_home_and_of_the_store_parent
+packages/memriver/tests/test_project_commands.py::test_init_refuses_missing_directory_and_already_bound_dir -> rust:memriver::tests/cli_project_commands.rs::init_refuses_missing_directory_and_already_bound_dir
+packages/memriver/tests/test_project_commands.py::test_init_refuses_root_home_and_home_ancestors -> rust:memriver::tests/cli_project_commands.rs::init_refuses_root_home_and_home_ancestors
+packages/memriver/tests/test_project_commands.py::test_init_refuses_store_inside_target -> rust:memriver::tests/cli_project_commands.rs::init_refuses_store_inside_target
+packages/memriver/tests/test_project_commands.py::test_init_refuses_when_containment_cannot_be_verified -> rust:memriver::tests/cli_project_commands.rs::init_refuses_when_containment_cannot_be_verified
+packages/memriver/tests/test_project_commands.py::test_init_takes_a_name_option_and_refuses_a_bad_name_before_the_prompt -> rust:memriver::tests/cli_project_commands.rs::init_takes_a_name_option_and_refuses_a_bad_name_before_the_prompt
+packages/memriver/tests/test_project_commands.py::test_no_command_or_refusal_touches_the_target -> rust:memriver::tests/cli_project_commands.rs::no_command_or_refusal_touches_the_target
+packages/memriver/tests/test_project_commands.py::test_parent_init_lists_existing_child_roots_as_independent -> rust:memriver::tests/cli_project_commands.rs::parent_init_lists_existing_child_roots_as_independent
+packages/memriver/tests/test_project_commands.py::test_parent_plan_lists_a_case_alias_child_root_as_independent -> rust:memriver::tests/cli_project_commands.rs::parent_plan_lists_a_case_alias_child_root_as_independent
+packages/memriver/tests/test_project_commands.py::test_read_project_is_how_existence_is_decided -> rust:memriver::tests/cli_project_commands.rs::read_project_is_how_existence_is_decided
+packages/memriver/tests/test_project_commands.py::test_relative_directories_resolve_against_the_injected_cwd -> rust:memriver::tests/cli_project_commands.rs::relative_directories_resolve_against_the_injected_cwd
+packages/memriver/tests/test_project_commands.py::test_store_repointed_into_target_while_the_prompt_is_open_is_refused -> rust:memriver::tests/cli_project_commands.rs::store_repointed_into_target_while_the_prompt_is_open_is_refused
+packages/memriver/tests/test_project_commands.py::test_target_deleted_while_the_prompt_is_open_is_refused -> rust:memriver::tests/cli_project_commands.rs::target_deleted_while_the_prompt_is_open_is_refused
+packages/memriver/tests/test_project_commands.py::test_unbind_executes_exactly_the_pair_it_showed -> rust:memriver::tests/cli_project_commands.rs::unbind_executes_exactly_the_pair_it_showed
+packages/memriver/tests/test_project_commands.py::test_unbind_literal_first_and_shows_next_identity -> rust:memriver::tests/cli_project_commands.rs::unbind_literal_first_and_shows_next_identity
+packages/memriver/tests/test_project_commands.py::test_unbind_of_a_root_that_became_a_symlink_removes_the_stored_spelling -> rust:memriver::tests/cli_project_commands.rs::unbind_of_a_root_that_became_a_symlink_removes_the_stored_spelling
+packages/memriver/tests/test_project_commands.py::test_unbind_resolves_a_relative_directory_against_the_injected_cwd -> rust:memriver::tests/cli_project_commands.rs::unbind_resolves_a_relative_directory_against_the_injected_cwd
+packages/memriver/tests/test_project_commands.py::test_unbind_shows_parent_as_next_identity -> rust:memriver::tests/cli_project_commands.rs::unbind_shows_parent_as_next_identity
+packages/memriver/tests/test_project_context.py::test_count_child_git_markers -> rust:memriver::cli::project_commands::tests::count_child_git_markers_counts_direct_children_only + rust:memriver::tests/cli_project_commands.rs::the_plan_counts_direct_children_that_hold_a_git_marker_of_any_kind
+packages/memriver/tests/test_project_context.py::test_find_git_root_climbs_past_a_looping_git_marker -> n/a: the finder places a harness's instruction file; it is built with the install commands and tested there
+packages/memriver/tests/test_project_context.py::test_find_git_root_is_kept_for_installers -> n/a: the finder places a harness's instruction file; it is built with the install commands and tested there
+packages/memriver/tests/test_project_context.py::test_find_git_root_raises_when_a_marker_cannot_be_checked -> n/a: the finder places a harness's instruction file; it is built with the install commands and tested there
+packages/memriver/tests/test_project_context.py::test_visible_replaces_controls_one_for_one_and_keeps_ordinary_spaces -> rust:memriver::cli::views::tests::visible_replaces_controls_one_for_one_and_keeps_ordinary_spaces
 packages/memriver/tests/test_protocol_text.py::test_a_pending_notice_without_a_candidate_never_offers_confirmation ->
 packages/memriver/tests/test_protocol_text.py::test_compact_prefix_is_the_spec_copy ->
 packages/memriver/tests/test_protocol_text.py::test_compact_rescue_suffix_is_the_spec_copy ->
@@ -2030,25 +2031,25 @@ packages/memriver/tests/test_server.py::test_update_rewrites_in_place_and_descri
 packages/memriver/tests/test_server.py::test_write_rejections_never_echo_the_value ->
 packages/memriver/tests/test_server.py::test_write_then_read_returns_the_eleven_agent_fields ->
 packages/memriver/tests/test_server.py::test_write_without_a_project_is_refused_with_the_state_text ->
-packages/memriver/tests/test_settings.py::test_a_headless_executor_defaults_to_a_sixty_second_timeout ->
-packages/memriver/tests/test_settings.py::test_a_jev_table_is_read_with_its_defaults ->
-packages/memriver/tests/test_settings.py::test_a_whitelisted_provider_is_returned_as_it_is ->
-packages/memriver/tests/test_settings.py::test_an_invalid_table_raises_naming_only_the_file_and_the_field ->
-packages/memriver/tests/test_settings.py::test_an_unreadable_file_is_unreadable ->
-packages/memriver/tests/test_settings.py::test_check_classifier_table_raises_a_validation_error ->
-packages/memriver/tests/test_settings.py::test_codex_overrides_are_read_from_their_subtable ->
-packages/memriver/tests/test_settings.py::test_each_refusal_is_its_fixed_line ->
-packages/memriver/tests/test_settings.py::test_each_switch_set_to_false_is_read_as_false ->
-packages/memriver/tests/test_settings.py::test_every_bad_classifier_key_is_named_together_in_one_line ->
-packages/memriver/tests/test_settings.py::test_every_bad_executor_key_is_named_together_in_field_order ->
-packages/memriver/tests/test_settings.py::test_keys_match_case_insensitively_and_unknown_keys_are_ignored ->
-packages/memriver/tests/test_settings.py::test_no_file_or_no_table_means_no_classifier_settings ->
-packages/memriver/tests/test_settings.py::test_overrides_outside_the_whitelist_are_refused_without_echoing_values ->
-packages/memriver/tests/test_settings.py::test_the_classifier_defaults_live_here_and_back_the_fields ->
-packages/memriver/tests/test_settings.py::test_the_dream_keys_memriver_adds_have_their_values_here ->
-packages/memriver/tests/test_settings.py::test_the_executor_keys_are_read_with_their_defaults ->
-packages/memriver/tests/test_settings.py::test_the_fixed_values_of_the_executors_live_here ->
-packages/memriver/tests/test_settings.py::test_the_old_key_names_are_unknown_keys ->
+packages/memriver/tests/test_settings.py::test_a_headless_executor_defaults_to_a_sixty_second_timeout -> rust:memriver::tests/settings.rs::a_headless_executor_defaults_to_a_sixty_second_timeout
+packages/memriver/tests/test_settings.py::test_a_jev_table_is_read_with_its_defaults -> rust:memriver::tests/settings.rs::a_jev_table_is_read_with_its_defaults
+packages/memriver/tests/test_settings.py::test_a_whitelisted_provider_is_returned_as_it_is -> rust:memriver::tests/settings.rs::a_whitelisted_provider_is_returned_as_it_is
+packages/memriver/tests/test_settings.py::test_an_invalid_table_raises_naming_only_the_file_and_the_field -> rust:memriver::tests/settings.rs::an_invalid_table_raises_naming_only_the_file_and_the_field
+packages/memriver/tests/test_settings.py::test_an_unreadable_file_is_unreadable -> rust:memriver::tests/settings.rs::an_unreadable_file_is_unreadable
+packages/memriver/tests/test_settings.py::test_check_classifier_table_raises_a_validation_error -> rust:memriver::tests/settings.rs::check_classifier_table_raises_a_validation_error
+packages/memriver/tests/test_settings.py::test_codex_overrides_are_read_from_their_subtable -> rust:memriver::tests/settings.rs::codex_overrides_are_read_from_their_subtable
+packages/memriver/tests/test_settings.py::test_each_refusal_is_its_fixed_line -> rust:memriver::tests/settings.rs::each_refusal_is_its_fixed_line
+packages/memriver/tests/test_settings.py::test_each_switch_set_to_false_is_read_as_false -> rust:memriver::tests/settings.rs::each_switch_set_to_false_is_read_as_false
+packages/memriver/tests/test_settings.py::test_every_bad_classifier_key_is_named_together_in_one_line -> rust:memriver::tests/settings.rs::every_bad_classifier_key_is_named_together_in_one_line
+packages/memriver/tests/test_settings.py::test_every_bad_executor_key_is_named_together_in_field_order -> rust:memriver::tests/settings.rs::every_bad_executor_key_is_named_together_in_field_order
+packages/memriver/tests/test_settings.py::test_keys_match_case_insensitively_and_unknown_keys_are_ignored -> rust:memriver::tests/settings.rs::keys_match_case_insensitively_and_unknown_keys_are_ignored
+packages/memriver/tests/test_settings.py::test_no_file_or_no_table_means_no_classifier_settings -> rust:memriver::tests/settings.rs::no_file_or_no_table_means_no_classifier_settings
+packages/memriver/tests/test_settings.py::test_overrides_outside_the_whitelist_are_refused_without_echoing_values -> rust:memriver::tests/settings.rs::overrides_outside_the_whitelist_are_refused_without_echoing_values
+packages/memriver/tests/test_settings.py::test_the_classifier_defaults_live_here_and_back_the_fields -> rust:memriver::tests/settings.rs::the_classifier_defaults_live_here_and_back_the_fields
+packages/memriver/tests/test_settings.py::test_the_dream_keys_memriver_adds_have_their_values_here -> n/a: this version installs no schedule of its own: it has no schedule time to set and no label
+packages/memriver/tests/test_settings.py::test_the_executor_keys_are_read_with_their_defaults -> rust:memriver::tests/settings.rs::the_executor_keys_are_read_with_their_defaults
+packages/memriver/tests/test_settings.py::test_the_fixed_values_of_the_executors_live_here -> rust:memriver::tests/settings.rs::the_fixed_values_of_the_executors_live_here
+packages/memriver/tests/test_settings.py::test_the_old_key_names_are_unknown_keys -> rust:memriver::tests/settings.rs::the_old_key_names_are_unknown_keys
 packages/memriver/tests/test_smoke.py::test_fastmcp_floor_and_ceiling_match_the_api_the_server_uses ->
 packages/memriver/tests/test_smoke.py::test_version ->
 packages/memriver/tests/test_unsupported_store.py::test_every_command_exits_one_with_the_hint ->
@@ -2056,43 +2057,43 @@ packages/memriver/tests/test_unsupported_store.py::test_every_hook_does_nothing 
 packages/memriver/tests/test_unsupported_store.py::test_every_memory_tool_answers_with_the_schema_mismatch ->
 packages/memriver/tests/test_unsupported_store.py::test_install_stops_at_the_hint_before_any_harness ->
 packages/memriver/tests/test_unsupported_store.py::test_session_mode_tools_answer_with_the_schema_mismatch ->
-packages/memriver/tests/test_views.py::test_a_failure_mid_export_says_the_snapshot_is_partial ->
-packages/memriver/tests/test_views.py::test_export_header_includes_last_read_at ->
-packages/memriver/tests/test_views.py::test_export_into_a_missing_parent_is_a_fixed_refusal ->
-packages/memriver/tests/test_views.py::test_export_losing_the_creation_race_is_a_refusal ->
-packages/memriver/tests/test_views.py::test_export_refuses_an_existing_directory ->
-packages/memriver/tests/test_views.py::test_export_refuses_when_a_project_folder_becomes_a_symlink_after_its_mkdir ->
-packages/memriver/tests/test_views.py::test_export_refuses_when_the_target_becomes_a_symlink_after_its_own_mkdir ->
-packages/memriver/tests/test_views.py::test_export_skips_a_soft_deleted_memory ->
-packages/memriver/tests/test_views.py::test_export_writes_a_private_snapshot_and_never_reads_it_back ->
-packages/memriver/tests/test_views.py::test_list_and_search_neutralise_control_characters_in_stored_fields ->
-packages/memriver/tests/test_views.py::test_list_reports_a_fixed_sentence_when_the_service_cannot_be_built ->
-packages/memriver/tests/test_views.py::test_list_shows_every_project_and_its_memories ->
-packages/memriver/tests/test_views.py::test_list_with_an_unknown_project_id_is_refused ->
-packages/memriver/tests/test_views.py::test_search_finds_across_projects_and_by_project ->
-packages/memriver/tests/test_views.py::test_search_takes_keywords_and_ranks_across_projects ->
-packages/memriver/tests/test_views.py::test_session_search_item_has_no_moves_key ->
-packages/memriver/tests/test_views.py::test_sessions_filters_by_project_and_query_and_limit ->
-packages/memriver/tests/test_views.py::test_sessions_json_has_moves_list ->
-packages/memriver/tests/test_views.py::test_sessions_json_matches_the_session_search_item_shape ->
-packages/memriver/tests/test_views.py::test_sessions_lists_harness_project_branch_and_prompts ->
-packages/memriver/tests/test_views.py::test_sessions_lists_pending_sessions_with_their_status ->
-packages/memriver/tests/test_views.py::test_sessions_neutralises_an_invisible_character_in_a_prompt ->
-packages/memriver/tests/test_views.py::test_sessions_report_an_unreadable_move_record_as_store_unreadable ->
-packages/memriver/tests/test_views.py::test_sessions_reports_a_fixed_sentence_when_the_service_cannot_be_built ->
-packages/memriver/tests/test_views.py::test_sessions_show_a_published_summary_as_one_line ->
-packages/memriver/tests/test_views.py::test_sessions_shows_the_relative_age_from_the_injected_now ->
-packages/memriver/tests/test_views.py::test_sessions_take_keywords_and_rank_by_how_many_match ->
-packages/memriver/tests/test_views.py::test_sessions_text_shows_moves ->
-packages/memriver/tests/test_views.py::test_sessions_with_an_unknown_project_id_is_refused ->
-packages/memriver/tests/test_views.py::test_sessions_with_no_rows_says_so ->
-packages/memriver/tests/test_views.py::test_show_neutralises_an_escape_planted_in_the_description ->
-packages/memriver/tests/test_views.py::test_show_neutralises_terminal_escapes_in_the_body_but_keeps_newlines ->
-packages/memriver/tests/test_views.py::test_show_of_a_soft_deleted_memory_needs_the_flag ->
-packages/memriver/tests/test_views.py::test_show_prints_fields_then_the_body_with_its_newlines ->
-packages/memriver/tests/test_views.py::test_show_reports_a_fixed_sentence_when_the_service_cannot_be_built ->
-packages/memriver/tests/test_views.py::test_show_reports_never_read_then_the_timestamp_once_read ->
-packages/memriver/tests/test_views.py::test_write_private_refuses_a_name_that_would_leave_the_directory ->
+packages/memriver/tests/test_views.py::test_a_failure_mid_export_says_the_snapshot_is_partial -> rust:memriver::tests/cli_views.rs::a_failure_mid_export_says_the_snapshot_is_partial
+packages/memriver/tests/test_views.py::test_export_header_includes_last_read_at -> rust:memriver::tests/cli_views.rs::export_header_includes_last_read_at
+packages/memriver/tests/test_views.py::test_export_into_a_missing_parent_is_a_fixed_refusal -> rust:memriver::tests/cli_views.rs::export_into_a_missing_parent_is_a_fixed_refusal
+packages/memriver/tests/test_views.py::test_export_losing_the_creation_race_is_a_refusal -> n/a: nothing can be put between the look at the target and its creation without a hook; the sentence is the one a target that is there gets, and the creation's own refusal is asserted for a missing parent
+packages/memriver/tests/test_views.py::test_export_refuses_an_existing_directory -> rust:memriver::tests/cli_views.rs::export_refuses_an_existing_directory
+packages/memriver/tests/test_views.py::test_export_refuses_when_a_project_folder_becomes_a_symlink_after_its_mkdir -> rust:memriver::cli::views::tests::a_snapshot_is_not_written_through_a_project_folder_that_is_a_link
+packages/memriver/tests/test_views.py::test_export_refuses_when_the_target_becomes_a_symlink_after_its_own_mkdir -> rust:memriver::cli::views::tests::a_snapshot_is_not_written_through_a_target_that_became_a_link
+packages/memriver/tests/test_views.py::test_export_skips_a_soft_deleted_memory -> rust:memriver::tests/cli_views.rs::export_skips_a_soft_deleted_memory
+packages/memriver/tests/test_views.py::test_export_writes_a_private_snapshot_and_never_reads_it_back -> rust:memriver::tests/cli_views.rs::export_writes_a_private_snapshot_and_never_reads_it_back
+packages/memriver/tests/test_views.py::test_list_and_search_neutralise_control_characters_in_stored_fields -> rust:memriver::tests/cli_views.rs::list_and_search_neutralise_control_characters_in_stored_fields
+packages/memriver/tests/test_views.py::test_list_reports_a_fixed_sentence_when_the_service_cannot_be_built -> rust:memriver::tests/cli_views.rs::list_reports_a_fixed_sentence_when_the_service_cannot_be_built
+packages/memriver/tests/test_views.py::test_list_shows_every_project_and_its_memories -> rust:memriver::tests/cli_views.rs::list_shows_every_project_and_its_memories
+packages/memriver/tests/test_views.py::test_list_with_an_unknown_project_id_is_refused -> rust:memriver::tests/cli_views.rs::list_with_an_unknown_project_id_is_refused
+packages/memriver/tests/test_views.py::test_search_finds_across_projects_and_by_project -> rust:memriver::tests/cli_views.rs::search_finds_across_projects_and_by_project
+packages/memriver/tests/test_views.py::test_search_takes_keywords_and_ranks_across_projects -> rust:memriver::tests/cli_views.rs::search_takes_keywords_and_ranks_across_projects
+packages/memriver/tests/test_views.py::test_session_search_item_has_no_moves_key -> rust:memriver::tests/cli_views.rs::session_search_item_has_no_moves_key
+packages/memriver/tests/test_views.py::test_sessions_filters_by_project_and_query_and_limit -> rust:memriver::tests/cli_views.rs::sessions_filters_by_project_and_query_and_limit
+packages/memriver/tests/test_views.py::test_sessions_json_has_moves_list -> rust:memriver::tests/cli_views.rs::sessions_json_has_moves_list
+packages/memriver/tests/test_views.py::test_sessions_json_matches_the_session_search_item_shape -> rust:memriver::tests/cli_views.rs::sessions_json_matches_the_session_search_item_shape
+packages/memriver/tests/test_views.py::test_sessions_lists_harness_project_branch_and_prompts -> rust:memriver::tests/cli_views.rs::sessions_lists_harness_project_branch_and_prompts
+packages/memriver/tests/test_views.py::test_sessions_lists_pending_sessions_with_their_status -> rust:memriver::tests/cli_views.rs::sessions_lists_pending_sessions_with_their_status
+packages/memriver/tests/test_views.py::test_sessions_neutralises_an_invisible_character_in_a_prompt -> rust:memriver::tests/cli_views.rs::sessions_neutralises_an_invisible_character_in_a_prompt
+packages/memriver/tests/test_views.py::test_sessions_report_an_unreadable_move_record_as_store_unreadable -> rust:memriver::tests/cli_views.rs::sessions_report_an_unreadable_move_record_as_store_unreadable
+packages/memriver/tests/test_views.py::test_sessions_reports_a_fixed_sentence_when_the_service_cannot_be_built -> rust:memriver::tests/cli_views.rs::sessions_reports_a_fixed_sentence_when_the_service_cannot_be_built
+packages/memriver/tests/test_views.py::test_sessions_show_a_published_summary_as_one_line -> rust:memriver::tests/cli_views.rs::sessions_show_a_published_summary_as_one_line
+packages/memriver/tests/test_views.py::test_sessions_shows_the_relative_age_from_the_injected_now -> rust:memriver::tests/cli_views.rs::sessions_shows_the_relative_age_from_the_injected_now
+packages/memriver/tests/test_views.py::test_sessions_take_keywords_and_rank_by_how_many_match -> rust:memriver::tests/cli_views.rs::sessions_take_keywords_and_rank_by_how_many_match
+packages/memriver/tests/test_views.py::test_sessions_text_shows_moves -> rust:memriver::tests/cli_views.rs::sessions_text_shows_moves
+packages/memriver/tests/test_views.py::test_sessions_with_an_unknown_project_id_is_refused -> rust:memriver::tests/cli_views.rs::sessions_with_an_unknown_project_id_is_refused
+packages/memriver/tests/test_views.py::test_sessions_with_no_rows_says_so -> rust:memriver::tests/cli_views.rs::sessions_with_no_rows_says_so
+packages/memriver/tests/test_views.py::test_show_neutralises_an_escape_planted_in_the_description -> rust:memriver::tests/cli_views.rs::show_neutralises_an_escape_planted_in_the_description
+packages/memriver/tests/test_views.py::test_show_neutralises_terminal_escapes_in_the_body_but_keeps_newlines -> rust:memriver::tests/cli_views.rs::show_neutralises_terminal_escapes_in_the_body_but_keeps_newlines
+packages/memriver/tests/test_views.py::test_show_of_a_soft_deleted_memory_needs_the_flag -> rust:memriver::tests/cli_views.rs::show_of_a_soft_deleted_memory_needs_the_flag
+packages/memriver/tests/test_views.py::test_show_prints_fields_then_the_body_with_its_newlines -> rust:memriver::tests/cli_views.rs::show_prints_fields_then_the_body_with_its_newlines
+packages/memriver/tests/test_views.py::test_show_reports_a_fixed_sentence_when_the_service_cannot_be_built -> rust:memriver::tests/cli_views.rs::show_reports_a_fixed_sentence_when_the_service_cannot_be_built
+packages/memriver/tests/test_views.py::test_show_reports_never_read_then_the_timestamp_once_read -> rust:memriver::tests/cli_views.rs::show_reports_never_read_then_the_timestamp_once_read
+packages/memriver/tests/test_views.py::test_write_private_refuses_a_name_that_would_leave_the_directory -> rust:memriver::cli::views::tests::write_private_refuses_a_name_that_would_leave_the_directory
 tools/test_internal_pins.py::test_memriver_dream_pins_memriver_core_to_its_released_version ->
 tools/test_internal_pins.py::test_memriver_pins_its_own_packages_to_their_released_version ->
 tools/test_source_text.py::test_no_raw_invisible_characters_in_committed_text ->

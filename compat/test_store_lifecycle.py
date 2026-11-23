@@ -12,11 +12,7 @@ import pytest
 from .differences import MASKS
 from .harness import PY, RS, Case, run, snapshot
 
-# the binary gets `project init` and the commands that read a store later; until then
-# the Rust side cannot take part, and each case is checked between two Python sides
-BOTH = [pytest.param(PY, id="python-twice"),
-        pytest.param(RS, id="rust",
-                     marks=pytest.mark.xfail(strict=True, reason="needs project init"))]
+BOTH = [pytest.param(PY, id="python-twice"), pytest.param(RS, id="rust")]
 
 
 def _files(root: Path) -> dict[str, bytes]:
@@ -61,7 +57,17 @@ def test_a_store_below_5_is_refused_by_both_and_left_byte_identical(tmp_path, rs
     case = Case(tmp_path, seed=seed, rs=rs)
     before = [_files(side.root) for side in (case.py, case.rs)]
     assert before[0] == before[1] and list(before[0]) == ["memriver.db"]
-    for command in (["list"], ["search", "x"], ["project", "explain"], ["sessions"], ["doctor"]):
+    commands = [["list"], ["search", "x"], ["project", "explain"], ["sessions"],
+                ["show", "zzzzzzzzzz"], ["history", "zzzzzzzzzz"], ["undo", "zzzzzzzzzz", "--yes"],
+                ["restore", "zzzzzzzzzz", "--to", "1", "--yes"],
+                ["delete", "zzzzzzzzzz", "--version", "1", "--yes"],
+                ["delete", "zzzzzzzzzz", "--hard", "--dry-run"],
+                ["project", "init", str(work / "b"), "--yes"],
+                ["project", "unbind", "zzzzzzzzzz", str(work / "a"), "--yes"]]
+    (work / "b").mkdir()
+    if rs == PY:    # the binary has no doctor yet
+        commands.append(["doctor"])
+    for command in commands:
         py, rs_done = case.step(lambda side, command=command: side.run(command, cwd=work / "a"))
         assert (py.stdout, py.code) == (b"", 1), command
         # one line, whatever the command puts before it (`memriver:`, `memriver doctor:`)
@@ -70,6 +76,31 @@ def test_a_store_below_5_is_refused_by_both_and_left_byte_identical(tmp_path, rs
         ), command
         case.assert_same_output(py, rs_done, allow=("needs-upgrade-line",))
         assert [_files(side.root) for side in (case.py, case.rs)] == before, command
+
+
+@pytest.mark.parametrize("rs", BOTH)
+def test_a_store_of_a_later_schema_is_unreadable_to_both_and_left_byte_identical(tmp_path, rs):
+    home, work, seed = tmp_path / "home", tmp_path / "work", tmp_path / "seed"
+    (work / "a").mkdir(parents=True)
+    (work / "b").mkdir()
+    home.mkdir()
+    made = run(PY, ["project", "init", str(work / "a"), "--yes"], home=home, root=seed, cwd=work)
+    assert made.code == 0
+    with closing(sqlite3.connect(seed / "memriver.db")) as conn:
+        conn.execute("PRAGMA user_version = 7")
+    case = Case(tmp_path, seed=seed, rs=rs)
+    before = [_files(side.root) for side in (case.py, case.rs)]
+    codes = []
+    for command in (["list"], ["search", "x"], ["sessions"], ["show", "zzzzzzzzzz"],
+                    ["history", "zzzzzzzzzz"], ["undo", "zzzzzzzzzz", "--yes"],
+                    ["delete", "zzzzzzzzzz", "--hard", "--dry-run"],
+                    ["project", "explain"], ["project", "init", str(work / "b"), "--yes"]):
+        py, rs_done = case.step(lambda side, command=command: side.run(command, cwd=work / "a"))
+        case.assert_same_output(py, rs_done)
+        assert py.stderr == b"" and py.stdout.count(b"\n") >= 1, command
+        codes.append(py.code)
+        assert [_files(side.root) for side in (case.py, case.rs)] == before, command
+    assert codes == [2, 2, 2, 2, 2, 2, 2, 1, 2]
 
 
 def test_the_needs_upgrade_mask_covers_only_the_tail_that_differs():

@@ -31,7 +31,7 @@ fn version_through_the_library_entry() {
 }
 
 #[test]
-fn anything_else_is_not_implemented() {
+fn a_command_that_is_not_built_yet_says_so() {
     let (mut stdin, mut stdout, mut stderr) = (&b""[..], Vec::new(), Vec::new());
     let mut io = Io {
         stdin: &mut stdin,
@@ -39,7 +39,7 @@ fn anything_else_is_not_implemented() {
         stdout: &mut stdout,
         stderr: &mut stderr,
     };
-    let argv = vec!["memriver".to_string(), "list".to_string()];
+    let argv = vec!["memriver".to_string(), "doctor".to_string()];
     let code = run(
         argv,
         &HashMap::new(),

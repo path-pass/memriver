@@ -14,6 +14,8 @@ DIFFERENCES: dict[str, int] = {
     "version-string": 0,   # Python prints 0.1.0, Rust 0.2.0
     # a store below schema 6: Python names a stale version, Rust says what can upgrade
     "needs-upgrade-line": 10,
+    # a command line that is no command: each parser words its own refusal
+    "usage-text": 9,
 }
 
 MASKS: dict[str, re.Pattern[str]] = {
@@ -22,4 +24,7 @@ MASKS: dict[str, re.Pattern[str]] = {
     "needs-upgrade-line": re.compile(
         r"(?<=; this memriver )needs schema version "
         r"(?:4|6\. Upgrade the store to version 6 with an earlier memriver release first)\n\Z"),
+    # the whole of what a parser prints when it refuses: it starts with the usage line
+    # (Python) or with the error (Rust), and nothing else of an output starts so
+    "usage-text": re.compile(r"\A(?:usage: memriver\b|error: )[^\0]*\Z"),
 }

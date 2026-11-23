@@ -282,7 +282,9 @@ fn from_float(written: &str) -> Option<u64> {
     (whole && (1.0..9_223_372_036_854_775_808.0).contains(&value)).then_some(value as u64)
 }
 
-fn from_file(value: &DeValue<'_>) -> Option<u64> {
+/// A whole number above zero as a value of the settings file spells it, or None. Public so
+/// that another crate's table reads its counts by the same rule.
+pub fn from_file(value: &DeValue<'_>) -> Option<u64> {
     match value {
         DeValue::String(text) => from_text(text),
         DeValue::Integer(integer) => from_integer(integer.as_str(), integer.radix()),

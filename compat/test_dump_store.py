@@ -87,7 +87,7 @@ def test_swapped_foreign_keys_are_a_difference(tmp_path):
 
 
 def test_global_and_a_project_created_by_project_init_are_paired_without_a_changes_row(tmp_path):
-    case = Case(tmp_path, rs=PY)
+    case = Case(tmp_path)
     directory = case.work / "a"
     directory.mkdir()
     py, rs = case.step(lambda side: side.run(["project", "init", str(directory), "--yes"]))
@@ -97,8 +97,10 @@ def test_global_and_a_project_created_by_project_init_are_paired_without_a_chang
     assert "created project a [<project:1>] and bound" in case.rendered(case.py, py, "project-init")[0]
     case.step(lambda side: side.api("services.project.ensure_global()"))
     payload = json.dumps({"session_id": "s-1", "source": "startup", "cwd": str(directory)})
-    case.step(lambda side: side.run(["hook", "session-start", "--harness", "claude-code"],
-                                    cwd=directory, stdin=payload))
+    # the session is started by the Python implementation on both stores: the binary
+    # has no hooks yet
+    case.step(lambda side: run(PY, ["hook", "session-start", "--harness", "claude-code"],
+                               home=case.home, root=side.root, cwd=directory, stdin=payload))
     py, rs = case.step(lambda side: side.run(["project", "explain"], cwd=directory))
     case.assert_same_output(py, rs, "project-explain")
     assert "project: <project:1>\n" in case.rendered(case.rs, rs, "project-explain")[0]
@@ -779,3 +781,93 @@ def test_a_bare_dump_is_refused_by_the_loader(tmp_path):
     data.write_text("".join(lines[:-1]))
     with pytest.raises(AssertionError, match="user_version"):
         load_seed("small", tmp_path / "loaded", seeds=seeds)
+
+
+A, B, C = "aaaaaaaaaa", "bbbbbbbbbb", "cccccccccc"
+T = "2026-01-02T03:04:05.000006Z"
+# kind -> (what a command prints, the same with each generated value in a declared place
+#          named). Free text that only looks like such a place stays as it is.
+KINDS = {
+    "history": (
+        (f"v1  {T}  seed  change {C}  the cue  change {C}\n    sources: {A} v1, {B} v2\n"
+        f"v2  imported  v3  {T}  seed  change {C}\n"),
+        (f"v1  <t:1>  seed  change <change:1>  the cue  change {C}\n    sources: <memory:1> v1, <memory:2> v2\n"
+        f"v2  imported  v3  {T}  seed  change {C}\n")),
+    "history-version": (
+        f"id: {A}\nchange: {T}  seed  change {C}\nsources: {B} v2\n---\nid: {A}\nsources: {B} v2\n",
+        (f"id: <memory:1>\nchange: <t:1>  seed  change <change:1>\nsources: <memory:2> v2\n---\nid: {A}\n"
+        f"sources: {B} v2\n")),
+    "search": (f"  {A}  [project]  2026-01-02  cue   {B}  [project]\n(no matches)\n",
+               f"  <memory:1>  [project]  2026-01-02  cue   {B}  [project]\n(no matches)\n"),
+    "sessions": (
+        (f"codex s-1\n  last active: {T} (just now)\n  project: demo ({A}) ({B})\n"
+        f"  moved: {T} from /a ({A} ({B})) to /b (x ({B}))\n  first recorded: {T}\n"
+        f"  last end event: {T}\n  first prompt:   first recorded: {T}\n"),
+        (f"codex s-1\n  last active: <t:1> (just now)\n  project: demo ({A}) (<project:1>)\n"
+        f"  moved: <t:1> from /a ({A} ({B})) to /b (x (<project:1>))\n  first recorded: <t:1>\n"
+        f"  last end event: <t:1>\n  first prompt:   first recorded: {T}\n")),
+    "sessions-json": (
+        (f'[\n  {{\n    "project": "{B}",\n    "entry_cwd": "{B}",\n    "last_active_at": "{T}",\n'
+        f'    "first_prompt": {{\n      "at": "{T}",\n      "text": "\\"project\\": \\"{B}\\""\n    }}\n'
+        f'  }}\n]\n'),
+        (f'[\n  {{\n    "project": "<project:1>",\n    "entry_cwd": "{B}",\n    "last_active_at": "<t:1>",\n'
+        f'    "first_prompt": {{\n      "at": "<t:1>",\n      "text": "\\"project\\": \\"{B}\\""\n    }}\n'
+        f'  }}\n]\n')),
+    "undo": (
+        (f"memriver undo: change {C} at {T} by seed, an undo of {C}\n"
+        f"  {A}  project {B}  update v1->v2  cue   {A}  project {B}  \nthe undo:\n"
+        f"  {A}: restore the state of v1\nundone change {C} by change {C}\n"
+        f"refused (changed): {A} changed after change {C}; nothing\n"),
+        (f"memriver undo: change <change:1> at <t:1> by seed, an undo of <change:1>\n"
+        f"  <memory:1>  project <project:1>  update v1->v2  cue   {A}  project {B}  \nthe undo:\n"
+        f"  <memory:1>: restore the state of v1\nundone change <change:1> by change <change:1>\n"
+        f"refused (changed): <memory:1> changed after change <change:1>; nothing\n")),
+    "restore": (
+        (f"memriver restore: {A} from v2 to the state of v1\n  now (v2): restored {A} to\n"
+        f"restored {A} to the state of v1 as v3 (change {C})\nno such version: {A} v9\n"),
+        (f"memriver restore: <memory:1> from v2 to the state of v1\n  now (v2): restored {A} to\n"
+        f"restored <memory:1> to the state of v1 as v3 (change <change:1>)\nno such version: <memory:1> v9\n")),
+    "delete": (
+        (f"memriver delete: {A} [project] in project {B}: deleted {A}  (soft)\ndeleted {A}\n"
+        f"refused: {A} belongs to project {B}, not this directory's project; run\n"
+        f"refused: {A} changed since version 2; run memriver show {A} and retry\n"
+        f"  {A}  project {B}  v2  (deleted)  cue\n    because {A} v1 (history) cites {A} v2\n"
+        f"to delete exactly these, run: memriver delete {A} --hard --confirm 0123456789abcdef\n"
+        f"purged {A}\n"),
+        (f"memriver delete: <memory:1> [project] in project <project:1>: deleted {A}  (soft)\n"
+        f"deleted <memory:1>\n"
+        f"refused: <memory:1> belongs to project <project:1>, not this directory's project; run\n"
+        f"refused: <memory:1> changed since version 2; run memriver show <memory:1> and retry\n"
+        f"  <memory:1>  project <project:1>  v2  (deleted)  cue\n"
+        f"    because <memory:1> v1 (history) cites <memory:1> v2\n"
+        f"to delete exactly these, run: memriver delete <memory:1> --hard --confirm 0123456789abcdef\n"
+        f"purged <memory:1>\n")),
+    "export": (f"exported 3 memories to /x/{A}\n", f"exported 3 memories to /x/{A}\n"),
+    "project-unbind": (
+        (f"  directory before: registered {B}\n"
+        f"  the current directory resolves afterwards: registered {B}\n"),
+        (f"  directory before: registered {B}\n"
+        f"  the current directory resolves afterwards: registered <project:1>\n")),
+    "project-init": (f"refused: /a is already bound to project {B}\n",
+                     "refused: /a is already bound to project <project:1>\n"),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(KINDS))
+def test_a_kind_names_the_generated_values_in_its_declared_places_only(tmp_path, kind, monkeypatch):
+    printed, named = KINDS[kind]
+    case = Case(tmp_path, rs=PY)
+    side = case.py
+    side.names.update({("memory", A): "<memory:1>", ("project", B): "<project:1>",
+                       ("change", C): "<change:1>", ("memory", B): "<memory:2>"})
+    side.times[T] = "<t:1>"
+    # the store the output is read against: one change, as `history` shows it
+    store = harness.Snapshot(tables={"changes": [
+        {"change_id": C, "at": T, "changed_by": "seed", "changed_via": None}]})
+    monkeypatch.setattr(harness, "snapshot", lambda root: store)
+    assert case.rendered(side, Completed(printed.encode(), b"", 0), kind)[0] == named
+
+
+def test_every_kind_of_output_has_its_sample():
+    untested = {"plain", "list", "show", "project-explain", "change-json"}   # tested by cases above
+    assert set(harness.OUTPUTS) == set(KINDS) | untested

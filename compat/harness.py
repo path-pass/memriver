@@ -70,9 +70,20 @@ def run(impl: list[str], args: list[str], *, home: Path, root: Path, cwd: Path,
     env = {"PATH": "/usr/bin:/bin", "HOME": str(home), "MEMRIVER_ROOT": str(root),
            **(extra_env or {})}
     assert TMP_PATH is not None, "no test is running"
+    inside = TMP_PATH.resolve()
     for name in ("HOME", "MEMRIVER_ROOT"):
-        assert Path(env[name]).resolve().is_relative_to(TMP_PATH.resolve()), \
+        assert Path(env[name]).resolve().is_relative_to(inside), \
             f"{name}={env[name]} is outside the test's temporary directory"
+    # a store named on the command line, and the directory a relative one is read from
+    assert Path(cwd).resolve().is_relative_to(inside), \
+        f"cwd={cwd} is outside the test's temporary directory"
+    for at, arg in enumerate(args):
+        named = args[at + 1:at + 2] if arg == "--root" else \
+            [arg.removeprefix("--root=")] if arg.startswith("--root=") else []
+        assert arg != "--root" or named, "--root without a path"
+        for store in named:
+            assert (Path(cwd) / store).resolve().is_relative_to(inside), \
+                f"--root {store} is outside the test's temporary directory"
     done = subprocess.run([*impl, *args], input=stdin.encode(), capture_output=True,
                           env=env, cwd=cwd, check=False)
     return Completed(done.stdout, done.stderr, done.returncode)
@@ -119,6 +130,8 @@ def snapshot(root: Path) -> Snapshot:
 # ------------------------------------------------- where generated values stand
 
 ID = "[0-9a-hjkmnp-tv-z]{10}"
+# an id where another pattern of the same line may already have put its name
+SEEN = rf"(?:{ID}|<[a-z]+:[0-9]+>)"
 TIMESTAMP = r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z"
 
 # every table of the store is listed in both; a new table fails until it is declared.
@@ -249,14 +262,43 @@ def _created_project(text: str, store: Snapshot) -> list[tuple[int, int, str]]:
     return found
 
 
+def _history_ids(text: str, store: Snapshot) -> list[tuple[int, int, str]]:
+    """Where `history` printed ids. A version's line is
+    `v<n>  <at>  <changed_by>[ (<via>)]  change <id>...`, with the caller's own text before
+    the id, so the start of the line is built from the change rows the store holds and
+    the id taken at its known offset. A `sources:` line is ids and versions only."""
+    from memriver.project_context import visible  # how the command shows stored text
+
+    found = []
+    at = 0
+    for line in text.splitlines(keepends=True):
+        cited = re.fullmatch(rf"(?:    )?sources: {ID} v[0-9]+(?:, {ID} v[0-9]+)*\n?", line)
+        if cited:
+            found += [(at + m.start(1), at + m.end(1), "memory")
+                      for m in re.finditer(rf"(?:: |, )({ID}) v[0-9]+", line)]
+        for row in store.tables.get("changes", []):
+            via = f" ({visible(row['changed_via'])})" if row["changed_via"] else ""
+            head = f"  {visible(row['at'])}  {visible(row['changed_by'])}{via}  change "
+            start = re.match(r"v[0-9]+", line)
+            if start and line[start.end():].startswith(head + row["change_id"]):
+                begin = at + start.end() + len(head)
+                found.append((begin, begin + len(row["change_id"]), "change"))
+                break
+        at += len(line)
+    return found
+
+
 # The caller says which kind of output it compares; nothing is renamed in "plain".
 # A pattern is used only where the value's place on its line is fixed -- first on the
 # line, or last (`history-version`), with any free text on the other side of it -- and
 # these commands print free text with line breaks replaced, so it cannot start a line.
 OUTPUTS: dict[str, Output] = {
     "plain": Output(),
-    "project-init": Output(locate=_created_project),
+    "project-init": Output(ids=((rf"^refused: .* is already bound to project ({ID})$", "project"),),
+                           locate=_created_project),
     "project-explain": Output(ids=((rf"^(?:project|reads|writes): ({ID})(?=,|$)", "project"),)),
+    "project-unbind": Output(ids=(
+        (rf"^  the current directory resolves afterwards: registered ({ID})$", "project"),)),
     "list": Output(ids=((rf"^({ID})  ", "project"), (rf"^  ({ID})  \[", "memory"))),
     "show": Output(
         ids=((rf"^id: ({ID})$", "memory"), (rf"^project: ({ID})$", "project")),
@@ -266,7 +308,55 @@ OUTPUTS: dict[str, Output] = {
     "history-version": Output(
         ids=((rf"^id: ({ID})$", "memory"), (rf"^change: .*  change ({ID})$", "change")),
         times=(rf"^change: ({TIMESTAMP})  ",),
-        body_after="\n---\n"),
+        body_after="\n---\n", locate=_history_ids),
+    "history": Output(times=(rf"^v[0-9]+  ({TIMESTAMP})  ",), locate=_history_ids),
+    "search": Output(ids=((rf"^  ({ID})  \[", "memory"),)),
+    "sessions": Output(
+        # a move's first project stands between two directories: it is not renamed
+        ids=((rf"^  project: .* \(({ID})\)$", "project"),
+             (rf"^  moved: .*\(({ID})\)\)$", "project")),
+        times=(rf"^  last active: ({TIMESTAMP}) \(", rf"^  moved: ({TIMESTAMP}) from ",
+               rf"^  first recorded: ({TIMESTAMP})$", rf"^  last end event: ({TIMESTAMP})$")),
+    "sessions-json": Output(
+        ids=((rf'^ +"(?:project|from_project_id|to_project_id)": "({ID})",?$', "project"),),
+        times=((rf'^ +"(?:first_recorded|last_active_at|last_end_event_at|summary_at|at|moved_at)"'
+               rf': "({TIMESTAMP})",?$'),)),
+    "undo": Output(
+        ids=((rf"^memriver undo: change ({ID}) at ", "change"),
+             (rf"^memriver undo: change .*, an undo of ({ID})$", "change"),
+             (rf"^  ({ID})  (?:global|project {SEEN})  ", "memory"),
+             (rf"^  {SEEN}  project ({ID})  ", "project"),
+             (rf"^  ({ID}): (?:soft delete|restore the state of v[0-9]+)$", "memory"),
+             (rf"^undone change ({ID}) by change {SEEN}$", "change"),
+             (rf"^undone change {SEEN} by change ({ID})$", "change"),
+             (rf"^refused \(hard-deleted\): a hard delete removed part of change ({ID}); ", "change"),
+             (rf"^refused \(changed\): ({ID}) changed after change {SEEN}; ", "memory"),
+             (rf"^refused \(changed\): {SEEN} changed after change ({ID}); ", "change")),
+        times=(rf"^memriver undo: change {SEEN} at ({TIMESTAMP}) by ",)),
+    "restore": Output(
+        ids=((rf"^memriver restore: ({ID}) from v[0-9]+ to the state of v[0-9]+$", "memory"),
+             (rf"^restored ({ID}) to the state of v[0-9]+ as v[0-9]+ \(change {SEEN}\)$", "memory"),
+             (rf"^restored {SEEN} to the state of v[0-9]+ as v[0-9]+ \(change ({ID})\)$", "change"),
+             (rf"^no such version: ({ID}) v[0-9]+$", "memory"),
+             (rf"^refused \(version\): ({ID}) changed while waiting; ", "memory"))),
+    "delete": Output(
+        ids=((rf"^memriver delete: ({ID}) \[[a-z]+\] in ", "memory"),
+             (rf"^memriver delete: {SEEN} \[[a-z]+\] in project ({ID}): ", "project"),
+             (rf"^deleted ({ID})$", "memory"),
+             (rf"^refused: ({ID}) belongs to project {SEEN}, not this ", "memory"),
+             (rf"^refused: {SEEN} belongs to project ({ID}), not this ", "project"),
+             (rf"^refused: ({ID}) changed since version [0-9]+; run memriver show {SEEN} and retry$",
+              "memory"),
+             (rf"^refused: {SEEN} changed since version [0-9]+; run memriver show ({ID}) and retry$",
+              "memory"),
+             (rf"^  ({ID})  (?:global|project {SEEN})  v[0-9]+", "memory"),
+             (rf"^  {SEEN}  project ({ID})  v[0-9]+", "project"),
+             (rf"^    because ({ID}) v[0-9]+(?: \(history\))? cites {SEEN} v[0-9]+$", "memory"),
+             (rf"^    because {SEEN} v[0-9]+(?: \(history\))? cites ({ID}) v[0-9]+$", "memory"),
+             (rf"^to delete exactly these, run: memriver delete ({ID}) --hard --confirm ", "memory"),
+             (rf"^purged ({ID})$", "memory"))),
+    # the directory written to is the caller's and is shown as given: nothing is generated
+    "export": Output(),
     # what the cases of test_dump_store.py print for a change they applied
     "change-json": Output(ids=((_json("id", ID), "memory"), (_json("project_id", ID), "project"),
                                (_json("change_id", ID), "change"))),

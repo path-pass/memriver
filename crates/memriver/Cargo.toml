@@ -5,7 +5,16 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+clap = { version = "4", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
+libc = "0.2"
 memriver-core = { path = "../memriver-core" }
+serde_json = { version = "1", features = ["preserve_order"] }
+# exact, as in memriver-core: the parser decides which settings files are read
+toml = { version = "=0.9.12", default-features = false, features = ["parse", "preserve_order", "std"] }
+# exact, as in memriver-core: it carries the Unicode tables `visible` reads
+unicode-properties = "=0.1.5"
 
 [dev-dependencies]
 memriver-test-support = { path = "../memriver-test-support" }
+# as in memriver-core: the tests plant rows no command writes
+rusqlite = { version = "=0.43.0", default-features = false, features = ["bundled"] }

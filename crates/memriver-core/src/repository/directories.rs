@@ -75,7 +75,8 @@ impl fmt::Display for OsFailure {
     }
 }
 
-fn strerror(errno: i32) -> String {
+/// The system's words for an error number, without the number.
+pub fn strerror(errno: i32) -> String {
     let text = io::Error::from_raw_os_error(errno).to_string();
     let suffix = format!(" (os error {errno})");
     text.strip_suffix(&suffix).unwrap_or(&text).to_string()

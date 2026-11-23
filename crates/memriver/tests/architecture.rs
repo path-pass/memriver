@@ -114,3 +114,69 @@ fn test_support_depends_on_no_memriver_crate() {
     assert_eq!(named, Vec::<&str>::new());
     assert!(manifest.contains("name = \"memriver-test-support\""));
 }
+
+fn dependencies_of(name: &str) -> Vec<String> {
+    let manifest = fs::read_to_string(crates_dir().join(name).join("Cargo.toml")).unwrap();
+    let section = manifest
+        .split("[dependencies]")
+        .nth(1)
+        .unwrap_or_default()
+        .split("\n[")
+        .next()
+        .unwrap_or_default();
+    section
+        .lines()
+        .filter_map(|line| line.split('=').next())
+        .map(|name| name.trim().to_string())
+        .filter(|name| name.starts_with("memriver"))
+        .collect()
+}
+
+#[test]
+fn the_crates_depend_only_downwards() {
+    assert_eq!(dependencies_of("memriver-core"), Vec::<String>::new());
+    let dream = dependencies_of("memriver-dream");
+    assert!(
+        dream.iter().all(|name| name == "memriver-core"),
+        "{dream:?}"
+    );
+    // the scan reads a manifest that names one
+    assert!(dependencies_of("memriver").contains(&"memriver-core".to_string()));
+}
+
+/// The code of a line: what stands before a line comment.
+fn code(line: &str) -> &str {
+    line.split("//").next().unwrap_or_default()
+}
+
+#[test]
+fn memriver_core_takes_no_word_of_the_crates_above_it() {
+    // it never names dream, nor takes its vocabulary (a time to live, a run) into an
+    // identifier; a comment may say who calls
+    let mut seen = 0;
+    for file in sources(&["memriver-core"], "src") {
+        let text = fs::read_to_string(crates_dir().join(&file)).unwrap();
+        for line in text.lines().map(code) {
+            let lower = line.to_lowercase();
+            assert!(
+                !lower.contains("dream") && !lower.contains("run_id"),
+                "{file}: {line}"
+            );
+            let mut words = lower.split(|c: char| !c.is_ascii_alphanumeric());
+            assert!(words.all(|word| word != "ttl"), "{file}: {line}");
+            seen += 1;
+        }
+    }
+    assert!(seen > 10_000, "{seen} lines read");
+    assert_eq!(code("let ttl = 1; // dream"), "let ttl = 1; ");
+}
+
+#[test]
+fn git_is_started_in_one_module_of_memriver_core() {
+    let token = concat!("Command", "::new");
+    let files = sources(&["memriver-core"], "src");
+    assert_eq!(
+        offenders(&files, &[token], |_| false),
+        ["memriver-core/src/repository/worktree.rs"]
+    );
+}
