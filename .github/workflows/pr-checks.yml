@@ -101,10 +101,12 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
-      # the matrices are recorded with Python 3.14: tomllib reads TOML 1.1 from 3.15
+      # the matrices are recorded with Python 3.14.0, to the patch: tomllib reads TOML 1.1
+      # from 3.15, and 3.14.10 already answers two recorded cases differently (a URL with an
+      # IPvFuture host, a time with a bare dot after the seconds)
       - uses: astral-sh/setup-uv@v10.2.0
         with:
-          python-version: "3.14"
+          python-version: "3.14.0"
       - name: Install the toolchain rust-toolchain.toml names
         run: >
           rustup toolchain install

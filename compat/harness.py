@@ -56,6 +56,15 @@ exec(sys.argv[1])
 
 TMP_PATH: Path | None = None    # the running test's tmp_path
 
+# The Python the recorded matrices are what it answers, to the patch: later patch releases
+# of 3.14 already differ on recorded cases, and 3.15 reads another TOML.
+RECORDED_WITH = (3, 14, 0)
+NOT_THE_RECORDING_PYTHON = (
+    "the matrices are recorded with Python " + ".".join(map(str, RECORDED_WITH))
+    + " exactly; this is " + sys.version.split()[0]
+    + ". Another version answers some recorded cases differently, so the comparison says "
+    "nothing here: run the suite with that version")
+
 
 @dataclass(frozen=True)
 class Completed:
@@ -77,13 +86,29 @@ def run(impl: list[str], args: list[str], *, home: Path, root: Path, cwd: Path,
     # a store named on the command line, and the directory a relative one is read from
     assert Path(cwd).resolve().is_relative_to(inside), \
         f"cwd={cwd} is outside the test's temporary directory"
-    for at, arg in enumerate(args):
-        named = args[at + 1:at + 2] if arg == "--root" else \
-            [arg.removeprefix("--root=")] if arg.startswith("--root=") else []
-        assert arg != "--root" or named, "--root without a path"
-        for store in named:
-            assert (Path(cwd) / store).resolve().is_relative_to(inside), \
-                f"--root {store} is outside the test's temporary directory"
+    # Both parsers take a shortened option, so `--ro DIR` names a store as `--root DIR`
+    # does. The one command that writes into a directory it is given is `export`: its
+    # directory is held to the same rule. A directory another command is given
+    # (`project init /`) is only looked at, and may lie anywhere.
+    stores, takes_value = [], False
+    for arg in args:
+        name, given, value = arg.partition("=")
+        if takes_value:
+            stores.append(arg)
+        takes_value = False
+        if len(name) > 2 and "--root".startswith(name):
+            assert given or arg is not args[-1], f"{arg} without a path"
+            takes_value = not given
+            if given:
+                stores.append(value)
+    if "export" in args:
+        written = [arg for arg in args[args.index("export") + 1:]
+                   if not arg.startswith("--") and arg not in stores]
+        assert all((Path(cwd) / target).resolve().is_relative_to(inside) for target in written), \
+            f"export {written} is outside the test's temporary directory"
+    for store in stores:
+        assert (Path(cwd) / store).resolve().is_relative_to(inside), \
+            f"--root {store} is outside the test's temporary directory"
     done = subprocess.run([*impl, *args], input=stdin.encode(), capture_output=True,
                           env=env, cwd=cwd, check=False)
     return Completed(done.stdout, done.stderr, done.returncode)

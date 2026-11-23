@@ -203,3 +203,65 @@ fn a_long_option_may_be_shortened_while_it_names_one() {
     );
     usage_error(&["delete", "mmmmmmmmmm", "--version", "1", "--d"]);
 }
+
+#[test]
+fn an_option_given_twice_counts_once_and_the_last_value_is_taken() {
+    // as the Python implementation's parser did; before, each was a usage error
+    let done = run(&["show", "mmmmmmmmmm", "--deleted", "--deleted"]);
+    assert_eq!(
+        (done.code, done.stdout.as_str()),
+        (2, "no such memory: mmmmmmmmmm\n")
+    );
+    let done = run(&["history", "mmmmmmmmmm", "--show", "1", "--show", "2"]);
+    assert_eq!(
+        (done.code, done.stdout.as_str()),
+        (2, "no such memory: mmmmmmmmmm\n")
+    );
+    // each value is still read: one that is no number is refused wherever it stands
+    usage_error(&["history", "mmmmmmmmmm", "--show", "2", "--show", "0"]);
+    usage_error(&["history", "mmmmmmmmmm", "--show", "0", "--show", "2"]);
+    let done = run(&["delete", "mmmmmmmmmm", "--version", "1", "--yes", "--yes"]);
+    assert_eq!(
+        (done.code, done.stdout.as_str()),
+        (2, "no such memory: mmmmmmmmmm\n")
+    );
+}
+
+#[test]
+fn a_hyphen_and_a_digit_or_a_space_make_a_value_and_anything_else_an_option() {
+    for (args, printed) in [
+        (&["show", "-5"][..], "no such memory: -5\n"),
+        (&["show", "-5", "--deleted"], "no such memory: -5\n"),
+        (&["show", "--deleted", "-.5"], "no such memory: -.5\n"),
+        (&["show", "- x"], "no such memory: - x\n"),
+        (
+            &["show", "--not an option"],
+            "no such memory: --not an option\n",
+        ),
+        (
+            &["undo", "-7", "--yes"],
+            "refused (not-found): no change -7\n",
+        ),
+        (&["list", "--project", "-1"], "no such project: -1\n"),
+        (&["show", "\u{e000}-5"], "no such memory: \u{e000}-5\n"),
+    ] {
+        let done = run(args);
+        assert_eq!(
+            (done.code, done.stdout.as_str(), done.stderr.as_str()),
+            (2, printed, ""),
+            "{args:?}"
+        );
+    }
+    for args in [
+        &["show", "-x"][..],
+        &["show", "-5", "-6"],
+        &["list", "-1"],
+        &["list", "--project", "-x"],
+        &["search", "x", "--limit", "-1"],
+        &["-1"],
+        &["show", "-."],
+    ] {
+        let refused = usage_error(args);
+        assert!(!refused.contains('\u{e000}'), "{refused}");
+    }
+}

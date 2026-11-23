@@ -177,7 +177,7 @@ fn normalize_legacy_serve(mut argv: Vec<String>) -> Vec<String> {
 }
 
 fn usage_error(error: &clap::Error, io: &mut Io) -> i32 {
-    let text = error.render().to_string();
+    let text = args::without_marks(&error.render().to_string());
     let _ = match error.use_stderr() {
         true => io.stderr.write_all(text.as_bytes()),
         false => io.stdout.write_all(text.as_bytes()),
@@ -270,7 +270,7 @@ fn dispatch(command: Command, inv: &mut Invocation) -> Outcome {
 
 /// Runs `argv` (the program name first) and returns the exit code.
 pub fn run(argv: Vec<String>, env: &Env, home: &Path, cwd: &Path, io: &mut Io) -> i32 {
-    let cli = match Cli::try_parse_from(normalize_legacy_serve(argv)) {
+    let cli = match Cli::try_parse_from(args::held(normalize_legacy_serve(argv))) {
         Ok(cli) => cli,
         Err(error) => return usage_error(&error, io),
     };
@@ -296,43 +296,103 @@ pub fn run(argv: Vec<String>, env: &Env, home: &Path, cwd: &Path, io: &mut Io) -
 
 #[cfg(test)]
 mod tests {
-    use memriver_core::models::errors::ValueError;
+    use memriver_core::models::changes::HardDeletePlan;
+    use memriver_core::models::errors::{
+        BatchConflictReason, BindingReason, Cap, UndoRefusedReason, ValueError,
+    };
 
     use super::*;
 
     #[test]
     fn an_unexpected_error_is_named_by_its_kind_and_never_by_what_it_holds() {
-        let typed = "an id\nsomebody typed /a/path";
-        let stops: [Stop; 4] = [
-            CoreError::MemoryNotFound(typed.to_string()).into(),
-            CoreError::ProjectUnavailable {
-                reason: typed.to_string(),
-            }
-            .into(),
-            WriteError::Core(CoreError::VersionConflict(typed.to_string())).into(),
-            WriteError::Value(ValueError::new(typed)).into(),
-        ];
-        let kinds: Vec<&str> = stops
-            .iter()
-            .map(|stop| match stop {
-                Stop::Unexpected(kind) => *kind,
-                other => panic!("{other:?}"),
-            })
-            .collect();
-        assert_eq!(
-            kinds,
-            [
-                "memory-not-found",
+        let typed = "an id\nsomebody typed /a/path".to_string();
+        let plan = HardDeletePlan {
+            target: typed.clone(),
+            items: Vec::new(),
+            code: typed.clone(),
+        };
+        // every kind of error the core has, each holding what a caller typed where it can
+        let named = [
+            (
+                CoreError::BatchConflict {
+                    index: 0,
+                    memory_id: Some(typed.clone()),
+                    reason: BatchConflictReason::Version,
+                },
+                "batch-conflict",
+            ),
+            (
+                CoreError::BindingRefused {
+                    reason: BindingReason::BoundElsewhere,
+                    project_id: Some(typed.clone()),
+                },
+                "binding-refused",
+            ),
+            (
+                CoreError::CapExceeded {
+                    cap: Cap::TagsMax,
+                    memory_id: Some(typed.clone()),
+                },
+                "cap-exceeded",
+            ),
+            (
+                CoreError::ContentRejected {
+                    message: typed.clone(),
+                    rule_id: typed.clone(),
+                    memory_id: Some(typed.clone()),
+                    detail: typed.clone(),
+                },
+                "content-rejected",
+            ),
+            (CoreError::GlobalReadOnly, "global-read-only"),
+            (CoreError::MemoryNotFound(typed.clone()), "memory-not-found"),
+            (CoreError::PlanChanged(plan), "plan-changed"),
+            (
+                CoreError::ProjectNotFound(typed.clone()),
+                "project-not-found",
+            ),
+            (
+                CoreError::ProjectUnavailable {
+                    reason: typed.clone(),
+                },
                 "project-unavailable",
+            ),
+            (CoreError::SessionMoved, "session-moved"),
+            (CoreError::StorageFailure, "storage-failure"),
+            (CoreError::StoreNeedsUpgrade(3), "store-needs-upgrade"),
+            (
+                CoreError::UndoRefused {
+                    reason: UndoRefusedReason::Changed,
+                    memory_ids: vec![typed.clone()],
+                },
+                "undo-refused",
+            ),
+            (
+                CoreError::VersionConflict(typed.clone()),
                 "version-conflict",
-                "invalid-value"
-            ]
-        );
-        // a store of an older schema and unusable settings keep their own lines
-        assert!(matches!(
-            CoreError::StoreNeedsUpgrade(3).into(),
-            Stop::NeedsUpgrade(3)
-        ));
+            ),
+        ];
+        let mut names = vec!["invalid-value", "invalid-name"];
+        for (error, name) in named {
+            assert_eq!(kind(&error), name, "{error:?}");
+            names.push(name);
+            // what a command is stopped by is that name, from a read and from a write
+            let stops: [Stop; 2] = [error.clone().into(), WriteError::Core(error.clone()).into()];
+            for stop in stops {
+                match (stop, &error) {
+                    (Stop::NeedsUpgrade(3), CoreError::StoreNeedsUpgrade(3)) => {}
+                    (Stop::Unexpected(stopped), _) => assert_eq!(stopped, name),
+                    (other, _) => panic!("{other:?}"),
+                }
+            }
+        }
+        // no two kinds share a name, and a name is a word of the program's own
+        let distinct: std::collections::BTreeSet<&str> = names.iter().copied().collect();
+        assert_eq!((distinct.len(), names.len()), (16, 16));
+        let plain = |name: &&str| name.chars().all(|c| c.is_ascii_lowercase() || c == '-');
+        assert!(names.iter().all(plain), "{names:?}");
+        let value: Stop = WriteError::Value(ValueError::new(typed)).into();
+        assert!(matches!(value, Stop::Unexpected("invalid-value")));
     }
 
     #[test]

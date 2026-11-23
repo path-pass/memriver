@@ -214,6 +214,10 @@ pub(crate) fn adopt(
             ..
         }) => {
             // a second read: the project may be gone or the store broken by now
+            #[cfg(test)]
+            if let Some(meanwhile) = tests::BEFORE_THE_SECOND_READ.take() {
+                meanwhile();
+            }
             let current = match projects.read_project(project_id) {
                 Ok(project) => project.root.unwrap_or_default(),
                 Err(CoreError::ProjectNotFound(_)) => return no_such_project(project_id, inv),
@@ -401,9 +405,107 @@ pub(crate) fn explain(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::fs;
+
+    use memriver_core::repository::directories::DATABASE_FILENAME;
+    use memriver_core::settings::{Env, Settings};
     use memriver_test_support::Sandbox;
 
     use super::*;
+    use crate::cli::{Io, run};
+
+    thread_local! {
+        /// For a test, on its thread: run once between the refusal that says a project
+        /// has a directory and the read that asks which -- nothing a caller can do
+        /// reaches that moment.
+        pub(super) static BEFORE_THE_SECOND_READ: RefCell<Option<Box<dyn FnOnce()>>> =
+            const { RefCell::new(None) };
+    }
+
+    /// `project adopt <bound project> <another directory> --yes`, with `meanwhile` run
+    /// between adopt's two reads: (exit code, stdout, stderr, the project's id).
+    fn adopt_with(meanwhile: impl FnOnce(&Path, &str) + 'static) -> (i32, String, String, String) {
+        let sandbox = Sandbox::new();
+        let tmp = fs::canonicalize(sandbox.dir.path()).unwrap();
+        let (home, store) = (tmp.join("home"), tmp.join("mem"));
+        let (bound, other) = (tmp.join("bound"), tmp.join("other"));
+        for directory in [&home, &bound, &other] {
+            fs::create_dir_all(directory).unwrap();
+        }
+        let store_text = store.to_string_lossy().into_owned();
+        let env = Env::from([("MEMRIVER_ROOT".to_string(), store_text)]);
+        let services =
+            memriver_core::build_services(&Settings::light(store.clone()), &home, &env, None);
+        let plan = services.project.plan_root(&bound, None).unwrap();
+        let id = services.project.init_project("demo", &plan).unwrap().id;
+        let (database, gone) = (store.join(DATABASE_FILENAME), id.clone());
+        BEFORE_THE_SECOND_READ.set(Some(Box::new(move || meanwhile(&database, &gone))));
+        let argv = [
+            "memriver",
+            "project",
+            "adopt",
+            &id,
+            other.to_str().unwrap(),
+            "--yes",
+        ];
+        let (mut stdin, mut stdout, mut stderr) = (&b""[..], Vec::new(), Vec::new());
+        let mut io = Io {
+            stdin: &mut stdin,
+            stdin_is_tty: false,
+            stdout: &mut stdout,
+            stderr: &mut stderr,
+        };
+        let code = run(
+            argv.map(str::to_string).to_vec(),
+            &env,
+            &home,
+            &tmp,
+            &mut io,
+        );
+        assert!(
+            BEFORE_THE_SECOND_READ.take().is_none(),
+            "the second read was reached"
+        );
+        let text = |bytes: Vec<u8>| String::from_utf8(bytes).unwrap();
+        (code, text(stdout), text(stderr), id)
+    }
+
+    #[test]
+    fn adopt_of_a_project_that_keeps_its_directory_names_the_directory() {
+        let (code, stdout, stderr, id) = adopt_with(|_, _| {});
+        assert!(stdout.starts_with(&format!("refused: project {id} already has a directory (")));
+        assert!(stdout.ends_with("/bound); unbind it first\n"), "{stdout}");
+        assert_eq!((code, stderr.as_str()), (2, ""));
+    }
+
+    #[test]
+    fn adopt_of_a_project_gone_between_its_two_reads_says_there_is_none() {
+        let (code, stdout, stderr, id) = adopt_with(|database, id| {
+            let conn = rusqlite::Connection::open(database).unwrap();
+            let gone = conn.execute("DELETE FROM projects WHERE id = ?1", [id]);
+            assert_eq!(gone, Ok(1));
+        });
+        assert_eq!(
+            (code, stdout, stderr.as_str()),
+            (2, format!("no such project: {id}\n"), "")
+        );
+    }
+
+    #[test]
+    fn adopt_whose_second_read_fails_says_the_store_failed() {
+        let (code, stdout, stderr, _) = adopt_with(|database, _| {
+            fs::write(database, b"no database any more").unwrap();
+        });
+        assert_eq!(
+            (code, stdout.as_str(), stderr.as_str()),
+            (
+                2,
+                "refused: could not complete the store write; inspect with memriver project explain\n",
+                ""
+            )
+        );
+    }
 
     #[test]
     fn count_child_git_markers_counts_direct_children_only() {

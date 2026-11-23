@@ -360,6 +360,40 @@ fn list_and_search_neutralise_control_characters_in_stored_fields() {
     let done = world.run(&["search", "line"]);
     assert!(!done.stdout.contains('\u{1b}'));
     assert_eq!(out(&done), (0, line.as_str(), ""));
+
+    // a project's name and its directory are stored text too: a name may hold a
+    // right-to-left override, a directory's name an escape
+    let directory = world.tmp.join("es\u{1b}[31mc");
+    fs::create_dir(&directory).unwrap();
+    let plan = world.services.project.plan_root(&directory, None).unwrap();
+    let named = world.services.project.init_project("na\u{202e}me", &plan);
+    let hostile = named.unwrap();
+    assert_eq!(
+        (hostile.name.as_str(), hostile.root.as_deref()),
+        ("na\u{202e}me", Some(text(&directory)))
+    );
+    let shown = format!("{}/es [31mc", text(&world.tmp));
+    let done = world.run(&["list", "--project", &hostile.id]);
+    let listed = format!("{}  na me  ({shown})\n  (no memories)\n", hostile.id);
+    assert_eq!(out(&done), (0, listed.as_str(), ""));
+    // the cell of a session that runs there
+    start(&world, &codex("s-hostile"), &directory, "startup");
+    let done = world.run(&["sessions", "--project", &hostile.id]);
+    let cell = format!("\n  project: na me ({})\n", hostile.id);
+    assert!(done.stdout.contains(&cell), "{}", done.stdout);
+    assert!(
+        !done.stdout.contains(['\u{1b}', '\u{202e}']),
+        "{}",
+        done.stdout
+    );
+    // the snapshot is a file, not a terminal: the name is kept on one line as it is
+    // stored, the directory is shown as everywhere
+    let target = world.tmp.join("snapshot");
+    assert_eq!(export(&world, &target).code, 0);
+    let projects = fs::read_to_string(target.join("projects.md")).unwrap();
+    let entry = format!("- {} na\u{202e}me ({shown})\n", hostile.id);
+    assert!(projects.contains(&entry), "{projects}");
+    assert!(!projects.contains('\u{1b}'));
 }
 
 #[test]

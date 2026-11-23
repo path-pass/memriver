@@ -94,6 +94,18 @@ def test_list_shows_every_project_and_one(tmp_path):
     for unknown in ("zzzzzzzzzz", "no\x1b[31mne", "x" * 300, ""):
         out = same(case, ["list", "--project", unknown], "list", code=2)
         assert out.startswith("no such project: ") and len(out) <= len("no such project: \n") + 255
+    # a name with an escape and a right-to-left override, in a directory named with an
+    # escape: the override and the directory's escape are stored, and neither is printed
+    hostile = case.work / "es\x1b[31mc"
+    hostile.mkdir()
+    made = same(case, ["project", "init", str(hostile), "--name", "a\x1b[31mb\u202ec", "--yes"],
+                "project-init")
+    assert "created project a [31mb c [" in made and "\x1b" not in made and "\u202e" not in made
+    stored = [row for row in snapshot(case.py.root).tables["projects"] if "\u202e" in row["name"]]
+    assert [(row["name"], row["root"]) for row in stored] == [("a [31mb\u202ec", str(hostile))]
+    listed = same(case, ["list"], "list")
+    assert "  a [31mb c  (" in listed and "/es [31mc)\n" in listed
+    assert "\x1b" not in listed and "\u202e" not in listed
     case.assert_same_store()
 
 
@@ -279,6 +291,70 @@ def test_a_broken_settings_file_or_variable_stops_a_command_with_one_line(tmp_pa
     ["restore", "zzzzzzzzzz"], ["project"], ["project", "unbind", "zzzzzzzzzz"], ["nothing"],
     ["list", "--nothing"], ["show"], ["export"]])
 def test_a_command_line_that_is_no_command_is_refused_before_anything_is_read(tmp_path, args):
+    case = seeded(tmp_path)
+    py, rs = case.step(lambda side: side.run(args))
+    case.assert_same_output(py, rs, allow=("usage-text",))
+    assert (py.stdout, py.code, rs.stdout, rs.code) == (b"", 2, b"", 2)
+    case.assert_same_store()
+
+
+# Command lines the two parsers could read differently and do not: an option given twice
+# (the last one counts), and an argument that begins with a hyphen and is a value all the
+# same -- a digit after the hyphen, or a space in it.
+@pytest.mark.parametrize(("args", "code"), [
+    (["delete", "zzzzzzzzzz", "--version", "1", "--yes", "--yes"], 2),
+    (["delete", "zzzzzzzzzz", "--version", "9", "--version", "1", "--yes"], 2),
+    (["delete", "zzzzzzzzzz", "--hard", "--dry-run", "--dry-run"], 2),
+    (["restore", "zzzzzzzzzz", "--to", "1", "--to", "2", "--yes", "--yes"], 2),
+    (["undo", "zzzzzzzzzz", "--yes", "--yes"], 2),
+    (["show", "zzzzzzzzzz", "--deleted", "--deleted"], 2),
+    (["search", "note 1", "--limit", "1", "--limit", "2"], 0),
+    (["search", "note", "--limit=3", "--limit=1"], 0),
+    (["sessions", "--json", "--json"], 0),
+    (["search", "-1"], 0), (["search", "-1.5"], 0), (["search", "-.5"], 0), (["search", "-1e3"], 0),
+    (["search", "-1."], 0), (["search", "-0x10"], 0), (["search", "-1_0"], 0), (["search", "-１"], 0),
+    (["search", "-٣"], 0), (["search", "- 1"], 0), (["search", "-x y"], 0),
+    (["search", "--not an option"], 0), (["search", "-"], 0), (["search", "+1"], 0),
+    (["search", "--", "-x"], 0), (["search", "--", "-1"], 0), (["search", "\ue000-1"], 0),
+    (["search", "\ue000x"], 0), (["search", "--", "\ue000x"], 0),
+    (["show", "-5"], 2), (["show", "-5", "--deleted"], 2), (["show", "--deleted", "-5"], 2),
+    (["show", "--", "--deleted"], 2), (["show", "-"], 2),
+    (["history", "-5", "--show", "1"], 2), (["undo", "-7", "--yes"], 2),
+    (["sessions", "-3"], 0), (["list", "--project", "-1"], 2), (["list", "--project=-x"], 2),
+    (["project", "explain", "--project-dir", "-1"], 1),
+])
+def test_a_command_line_both_parsers_take_is_carried_out_alike(tmp_path, args, code):
+    case = seeded(tmp_path)
+    py, rs = case.step(lambda side: side.run(args))
+    case.assert_same_output(py, rs, "search" if args[0] == "search" else "plain")
+    assert (py.code, rs.code, py.stderr) == (code, code, b""), (args, py, rs)
+    case.assert_same_store()
+
+
+def test_a_name_that_looks_like_an_option_is_a_name_and_the_last_of_two_roots_counts(tmp_path):
+    case = seeded(tmp_path)
+    (case.work / "n").mkdir()
+    py, rs = case.step(lambda side: side.run(
+        ["project", "init", str(case.work / "n"), "--name", "-1", "--yes", "--yes"]))
+    case.assert_same_output(py, rs, "project-init")
+    assert py.code == 0 and b"created project -1 [" in py.stdout
+    # the store named last is the one that is read: the first is never made
+    py, rs = case.step(lambda side: side.run(
+        ["list", "--root", str(side.root.parent / "never"), "--root", str(side.root)]))
+    case.assert_same_output(py, rs, "list")
+    assert py.code == 0 and b"  -1  (" in py.stdout and not (tmp_path / "never").exists()
+    case.assert_same_store()
+
+
+# An argument that begins with a hyphen and is no value stays a usage error on both sides.
+@pytest.mark.parametrize("args", [
+    ["search", "-x"], ["search", "-1", "-2"], ["list", "-1"], ["list", "--project", "-x"],
+    ["search", "x", "--limit", "-1"], ["search", "x", "--limit", "- 1"], ["-1"], ["search", "-."],
+    ["search", "-.x"], ["project", "init", "--name", "-x"], ["sessions", "a", "-1"],
+    ["list", "--version"], ["show", "-5", "-6"],
+    ["history", "zzzzzzzzzz", "--show", "0", "--show", "2"],
+    ["history", "zzzzzzzzzz", "--show", "2", "--show", "0"]])
+def test_a_hyphen_argument_that_is_no_value_is_refused_by_both(tmp_path, args):
     case = seeded(tmp_path)
     py, rs = case.step(lambda side: side.run(args))
     case.assert_same_output(py, rs, allow=("usage-text",))

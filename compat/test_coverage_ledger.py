@@ -206,3 +206,46 @@ def test_a_target_names_only_files_of_this_repository(tmp_path):
     ledger = "".join(f"x.py::test_{n} -> {target}\n" for n, target in enumerate(refused + accepted))
     assert problems(ledger, repo) == [f"x.py::test_{n}: {target} does not exist"
                                       for n, target in enumerate(refused)]
+
+
+def test_a_line_put_off_until_a_phase_fails_when_that_phase_is_finished(tmp_path):
+    ledger = """finished phases: 1, 3
+phase 1: packages/a/**
+phase 3: packages/c/**
+
+packages/a/test_a.py::test_now -> n/a: never applies
+packages/a/test_a.py::test_later -> n/a until phase 4: the installer's tests show it
+packages/a/test_a.py::test_due -> n/a until phase 3: the server's tests show it
+packages/a/test_a.py::test_due_already -> n/a until phase 1: this phase
+packages/a/test_a.py::test_no_reason -> n/a until phase 4:
+packages/a/test_a.py::test_no_phase -> n/a until phase: later
+packages/a/test_a.py::test_no_number -> n/a until phase x: later
+packages/a/test_a.py::test_other_words -> n/a until later: a reason
+packages/c/test_c.py::test_c -> n/a until phase 4: later still
+"""
+    assert problems(ledger, tmp_path) == [
+        "packages/a/test_a.py::test_due: put off until phase 3, which is finished: name its test",
+        "packages/a/test_a.py::test_due_already: put off until phase 1, which is finished: name its test",
+        "packages/a/test_a.py::test_no_reason: n/a without a reason",
+        "packages/a/test_a.py::test_no_phase: n/a without a reason",
+        "packages/a/test_a.py::test_no_number: n/a without a reason",
+        "packages/a/test_a.py::test_other_words: n/a without a reason",
+    ]
+    # when the phase it waits for is finished, the line that was fine is a problem
+    later = ledger.replace("finished phases: 1, 3", "finished phases: 1, 3, 4").replace(
+        "phase 3: packages/c/**", "phase 3: packages/c/**\nphase 4: packages/c/**")
+    assert [found for found in problems(later, tmp_path) if "phase 4, which" in found] == [
+        "packages/a/test_a.py::test_later: put off until phase 4, which is finished: name its test",
+        "packages/a/test_a.py::test_no_reason: put off until phase 4, which is finished: name its test",
+        "packages/c/test_c.py::test_c: put off until phase 4, which is finished: name its test",
+    ]
+
+
+def test_the_ledger_has_lines_put_off_and_none_past_its_phase():
+    targets = parse(LEDGER.read_text()).targets
+    waiting = sorted(key.split("::")[1] for key, target in targets.items()
+                     if target.startswith("n/a until phase "))
+    assert waiting == ["test_a_server_built_before_bind_keeps_its_identity",
+                       "test_find_git_root_climbs_past_a_looping_git_marker",
+                       "test_find_git_root_is_kept_for_installers",
+                       "test_find_git_root_raises_when_a_marker_cannot_be_checked"]

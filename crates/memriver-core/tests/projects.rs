@@ -1065,9 +1065,12 @@ fn open_project_context_registered_names_the_project_and_its_root() {
     let project = service.init_project("demo", &plan).unwrap();
     let context = service.open_project_context(&env.dir("work/src")).unwrap();
     assert_eq!(context.state, ProjectContextState::Registered);
+    // a field of the header holds 120 characters: wherever the temporary directory lies,
+    // the root is named by as many as that
+    let shown: String = text(&env.work).chars().take(120).collect();
     assert_eq!(
         context.header,
-        format!("project: demo [{}] (root {})", project.id, text(&env.work))
+        format!("project: demo [{}] (root {shown})", project.id)
     );
     assert_eq!(
         context.read_write_set,
@@ -1076,8 +1079,22 @@ fn open_project_context_registered_names_the_project_and_its_root() {
             global_project_id: Some(global),
         }
     );
-    assert_eq!(context.project, Some(project));
+    assert_eq!(context.project.as_ref(), Some(&project));
     assert_eq!((context.diagnostic, context.session_key), (None, None));
+
+    // and a root longer than a field is cut there, in the header only
+    let long = env.work.join("d".repeat(130));
+    fs::create_dir(&long).unwrap();
+    let plan = service.plan_root(&long, None).unwrap();
+    let deep = service.init_project("deep", &plan).unwrap();
+    let context = service.open_project_context(&long).unwrap();
+    let cut: String = text(&long).chars().take(120).collect();
+    assert!(text(&long).chars().count() > 130 && cut != text(&long));
+    assert_eq!(
+        context.header,
+        format!("project: deep [{}] (root {cut})", deep.id)
+    );
+    assert_eq!(context.project.unwrap().root.as_deref(), Some(text(&long)));
 }
 
 #[test]

@@ -1,8 +1,8 @@
 """The recorded `updated` values the Rust tests assert (`crates/memriver-core/tests/
 updated_matrix.rs`) are what the Python implementation answers today: the file is recorded
-again and compared. Python 3.14 is the reference -- earlier versions read a time of 24:00
-and a fraction after the hour or the minute differently -- so on another version this is
-skipped."""
+again and compared. Python 3.14.0 is the reference -- earlier versions read a time of 24:00
+and a fraction after the hour or the minute differently, and a later patch release reads a
+bare dot after the seconds differently -- so on another version this fails and says why."""
 
 from __future__ import annotations
 
@@ -10,16 +10,14 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
-
-from .harness import REPO, run
+from .harness import NOT_THE_RECORDING_PYTHON, RECORDED_WITH, REPO, run
 
 FIXTURE = REPO / "crates/memriver-core/tests/fixtures/updated_matrix.jsonl"
 RECORDER = [sys.executable, "-I", "-B", str(REPO / "compat/record_updated_matrix.py")]
 
 
-@pytest.mark.skipif(sys.version_info[:2] != (3, 14), reason="recorded on Python 3.14")
 def test_the_recorded_matrix_is_what_python_answers(tmp_path: Path):
+    assert sys.version_info[:3] == RECORDED_WITH, NOT_THE_RECORDING_PYTHON
     out = tmp_path / "matrix.jsonl"
     done = run(RECORDER, [str(out)], home=tmp_path / "home", root=tmp_path / "store",
                cwd=tmp_path)
